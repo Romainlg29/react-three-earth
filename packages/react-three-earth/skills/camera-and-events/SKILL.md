@@ -144,6 +144,7 @@ All fire from `earth.update`, at most once per frame each, in this order:
 | `moveend` | the first frame it holds still |
 | `load` | once, the first time the Earth is idle |
 | `idle` | camera still, no morph, no terrain or imagery loading or waiting, atmosphere generated (or failed) |
+| `update` | the end of every `earth.update`: camera, morph and tiles are final for the frame about to draw. Markers and popups place themselves here; see `markers-and-popups` |
 
 `earth.loaded` and `earth.idle` tell the current state, for code that mounts after `load` fired.
 

@@ -245,6 +245,57 @@ control takes the `earth` and `container` in an options object (the brief left t
 | Unit tests | collection, de-duplication, order, events, the style, TileJSON and PMTiles metadata, sanitising (script, `javascript:` and encoded variants, event attributes, nesting, entities, malformed tags) |
 | Browser, `?fixtures` | OSM link with `target` and `rel`, terrain first, bottom-right; compact with the button at 400 px and expands on click; a style's source attribution appears after the style loads |
 
+### Markers and popups (W9)
+
+HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/core/Marker.ts`, `src/core/Popup.ts`,
+`src/core/ScreenOverlay.ts`, `src/core/markerLayout.ts`, `src/react/Marker.tsx`, `src/react/Popup.tsx`,
+`src/react/domRoot.tsx`).
+
+- **API.** Vanilla `Marker` and `Popup` (three `EventDispatcher`s) with `addTo(earth, container)`, and React `<Marker>` and
+  `<Popup>`. A `<Popup>` that is a direct child of `<Marker>` attaches to it and opens on click, Enter or Space; any other
+  child is the marker's content. `<Popup>` outside a marker points at a position, follows the pointer (`trackPointer`) or
+  is controlled with `open` and `onClose`. Markers take `heightMeters` (a number, or `'terrain'`, the default), `anchor`,
+  `offsetPixels`, `rotationDegrees`, `rotationAlignment` and `pitchAlignment`, `draggable`, `occludedOpacity` and a
+  `label` for screen readers.
+- **React content.** React Three Fiber's reconciler cannot hold DOM nodes, so the content of each marker and popup renders
+  in its own `react-dom` root, with an `its-fine` context bridge: `useEarth`, `useMarker` and the app's own contexts work
+  inside it.
+- **Placement.** Every marker and popup of an earth shares one `ScreenOverlay`, which listens to the new Earth `update`
+  event, fired at the end of `earth.update`, so the DOM is placed from the camera, morph and tiles of the frame that draws
+  (no lag behind the map). The overlay gives each frame a budget of 4 terrain raycasts, spent on terrain height reads
+  (`heightMeters: 'terrain'`) and occlusion tests; each marker re-checks every 250 ms.
+- **Visibility.** `'visible'`, `'occluded'` (faded to `occludedOpacity`) or `'hidden'` (behind the camera or the globe's
+  horizon). Terrain occlusion runs only on the globe at rest: on the flat map the tiles are moved on the GPU, so the meshes
+  the raycast sees do not match what is drawn.
+
+Changed from the brief:
+
+- The CSS is injected once per document and themed with CSS variables (`--react-three-earth-marker-color`,
+  `--react-three-earth-popup-background`, `-color`, `-shadow`, `-radius`, `-padding`, `-font`), like `AttributionControl`,
+  instead of a separate CSS export to import.
+- `anchor` defaults to `'bottom'` for the default pin and `'center'` for an element or content of your own.
+- A popup on a marker opens beside the marker's box (`popupPointOnBox`), so it clears any pin or content size, instead of
+  a per-anchor offset table.
+- New Earth `update` event (see above), so markers are placed in the frame that draws.
+- Terrain occlusion only on the globe at rest (see above).
+- A popup on a marker restores focus to the marker when it closes (a press on the map can keep the marker from taking
+  focus), and `aria-expanded` follows it.
+- A shared `containerPosition` helper (`holdContainerPosition`, `releaseContainerPosition`) makes a static container
+  `position: relative` for markers, popups and now `AttributionControl` too.
+
+Not supported yet: wheel over a marker in a vanilla container that is not inside the controls' element does not zoom;
+occluded markers still take clicks; no clustering (draw thousands of places as W2 / W6 symbols, not DOM).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/markers.test.ts`: anchors, offsets and transforms, popup side and placement beside the marker's box, rotation and tilt with the map, marker lands on `earth.camera.project` in the same update, hidden behind the globe and the camera, shared layer per container, focus and labels, popup open and close (Escape, map click, drag, camera move), pointer tracking |
+| Browser (`?fixtures&markers`, SwiftShader) | the pin on the 3900 m hill reads a terrain height of 3899.99 m |
+| | a marker buried under the hill (height 0) is `'occluded'` at opacity 0.2 |
+| | over 41 frames of camera motion, the pin's transform differs from `earth.project` by at most 0.66 px (whole-pixel rounding, 0.71 px at worst) and the DOM element's tip by 0.66 px |
+| | hidden from the far side of the globe |
+| | the popup opens on click above the pin (gap 0 px, centred within 1 px) with focus inside; `Escape` closes it and returns focus to the marker |
+| | dragging 80 px moves the pin 80 px, fires one `dragend`, and moves the camera 0 m |
+
 ## Atmosphere and @aeronautic effects
 
 @aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one
