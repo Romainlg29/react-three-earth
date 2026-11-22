@@ -14,11 +14,14 @@ import {
 export type ViewMode = '2d' | '3d'
 
 export interface ViewTransitionOptions {
-  /** Length of the morph. 0 switches at once. Default: 1.5. */
+  /**
+   * Length of the transition: dive, projection swap, rise. 0 switches at once. Close to the ground,
+   * where there is no dive, it takes 40 % of this. Default: 2.4.
+   */
   durationSeconds?: number
 }
 
-const DEFAULT_TRANSITION_SECONDS = 1.5
+const DEFAULT_TRANSITION_SECONDS = 2.4
 /** Most copies of the world drawn side by side on the flat map. */
 export const MAXIMUM_WORLD_COPIES = 5
 const WORLD_WIDTH_METERS = 2 * WEB_MERCATOR_HALF_EXTENT_METERS
@@ -44,17 +47,40 @@ const screenRight = new Vector3()
 const anchorNorth = new Vector3()
 const NDC_CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const
 
-/** Camera motion from the pose at the start of a 3D-to-2D morph to looking straight down at the anchor. */
-interface CameraFlight {
-  camera: Camera
-  pivot: Vector3
-  distanceMeters: number
-  /** Distance at the end: no higher than the flat map allows (`maximumFlatCameraHeightMeters`). */
-  endDistanceMeters: number
-  startDirection: Vector3
-  directionRotation: Quaternion
-  startQuaternion: Quaternion
-  endQuaternion: Quaternion
+/**
+ * A transition between globe and map, as a timeline the camera follows: dive to `swapDistanceMeters`
+ * while turning to look straight down, swap the projection there (the morph, where curvature is too small
+ * to see), then rise to the end distance. Time runs from 0 (start view) to 1 (target view), and backwards
+ * when the transition is reversed halfway.
+ */
+interface Transition {
+  /** True if time 1 is the flat map. */
+  readonly towardsFlatMap: boolean
+  timeFraction: number
+  /** +1 playing forward, -1 reversed. */
+  direction: 1 | -1
+  readonly durationSeconds: number
+  /** Shares of the timeline: dive, then swap, then rise (they sum to 1). */
+  readonly diveShare: number
+  readonly swapShare: number
+  readonly camera: Camera
+  readonly pivot: Vector3
+  readonly startDirection: Vector3
+  readonly directionRotation: Quaternion
+  readonly startQuaternion: Quaternion
+  readonly topDownQuaternion: Quaternion
+  readonly startDistanceMeters: number
+  readonly swapDistanceMeters: number
+  readonly endDistanceMeters: number
+}
+
+function smootherstep(value: number): number {
+  return value * value * value * (value * (value * 6 - 15) + 10)
+}
+
+/** Interpolates distances geometrically, so a dive from orbit feels like a steady zoom. */
+function logarithmicLerp(from: number, to: number, amount: number): number {
+  return from * Math.pow(to / from, amount)
 }
 
 function smoothstep(value: number): number {
@@ -77,12 +103,19 @@ export class ViewMorph {
   /** The view shown, or being morphed to. */
   mode: ViewMode = '3d'
 
-  /** Linear progress from the globe (0) to the map (1). */
+  /** Progress of the projection swap from the globe (0) to the map (1). */
   protected progress = 0
   protected durationSeconds = DEFAULT_TRANSITION_SECONDS
   /** Set by `setMode`, consumed by the next `update`, which has the camera. */
   protected pendingStart = false
-  protected flight: CameraFlight | null = null
+  protected transition: Transition | null = null
+
+  /**
+   * Height (distance to the point looked at) where the projection swaps during a transition. From higher,
+   * the camera dives to it first and rises back after, so the swap happens where the Earth's curvature
+   * is too small to see. Default: 200 km.
+   */
+  transitionAltitudeMeters = 200_000
 
   anchorLongitudeRadians = 0
   anchorLatitudeRadians = 0
@@ -129,27 +162,28 @@ export class ViewMorph {
     return smoothstep(this.progress)
   }
 
-  /** True while morphing, or until the next `update` after `setMode`. */
+  /** True while a transition runs, or until the next `update` after `setMode`. */
   get transitioning(): boolean {
-    return this.pendingStart || this.progress !== this.targetProgress
-  }
-
-  protected get targetProgress(): number {
-    return this.mode === '2d' ? 1 : 0
+    return this.pendingStart || this.transition !== null
   }
 
   /**
-   * Starts morphing to a view. The morph begins on the next `update`. Switching back halfway reverses it
-   * from where it is; asking for the view already shown or morphed to only changes the morph's length.
+   * Starts a transition to a view; it begins on the next `update`. Switching back halfway plays it in
+   * reverse from where it is. Asking for the view already shown or headed to only changes the length.
    */
   setMode(mode: ViewMode, { durationSeconds = DEFAULT_TRANSITION_SECONDS }: ViewTransitionOptions = {}): void {
     if (mode === this.mode) {
-      // Already headed there: only a running morph changes speed (a pending one keeps its own length).
+      // Already headed there: only a running transition changes speed (a pending one keeps its own length).
       if (!this.pendingStart) this.durationSeconds = Math.max(0, durationSeconds)
       return
     }
     this.mode = mode
     this.durationSeconds = Math.max(0, durationSeconds)
+    const transition = this.transition
+    if (transition !== null) {
+      transition.direction = (mode === '2d') === transition.towardsFlatMap ? 1 : -1
+      return
+    }
     this.pendingStart = true
   }
 
@@ -186,21 +220,22 @@ export class ViewMorph {
   }
 
   /**
-   * Advances the morph. Call once per frame with the camera the map is seen through: at the start of a
-   * morph it picks the anchor from the camera, and on the way to 2D it turns the camera to look straight
-   * down. Returns true while the morph is running.
+   * Advances the transition. Call once per frame with the camera the map is seen through: the transition
+   * picks its anchor from the camera when it starts, then flies it (see `transitionAltitudeMeters`).
+   * Returns true while the transition runs.
    */
   update(camera: Camera, deltaSeconds: number): boolean {
     if (this.pendingStart) {
       this.pendingStart = false
-      this.begin(camera)
+      this.transition = this.begin(camera)
     }
-    const target = this.targetProgress
-    if (this.progress === target) return false
-    const step = this.durationSeconds === 0 ? 1 : deltaSeconds / this.durationSeconds
-    this.progress = target > this.progress ? Math.min(target, this.progress + step) : Math.max(target, this.progress - step)
-    this.flyCamera()
-    if (this.progress === target) this.flight = null
+    const transition = this.transition
+    if (transition === null) return false
+    const step = transition.durationSeconds === 0 ? 1 : deltaSeconds / transition.durationSeconds
+    transition.timeFraction = MathUtils.clamp(transition.timeFraction + transition.direction * step, 0, 1)
+    this.applyTransition(transition)
+    const finished = transition.direction === 1 ? transition.timeFraction === 1 : transition.timeFraction === 0
+    if (finished) this.transition = null
     return true
   }
 
@@ -284,24 +319,21 @@ export class ViewMorph {
     return true
   }
 
-  protected begin(camera: Camera): void {
+  protected begin(camera: Camera): Transition | null {
     camera.updateMatrixWorld()
-    if (this.mode === '2d') {
-      // Leaving the globe: anchor the map where the camera looks, then fly to a top-down view of it.
-      if (this.progress !== 0) return
+    const towardsFlatMap = this.mode === '2d'
+    if (towardsFlatMap) {
+      // Leaving the globe: anchor the map where the camera looks.
       const pivot = this.findGlobeCenterPoint(camera, scratchPosition)
       WGS84_ELLIPSOID.getPositionToCartographic(pivot, cartographic)
       this.setAnchor(cartographic.lon, cartographic.lat)
-      this.flight = this.createFlight(camera, this.anchorPosition)
     } else {
       // Leaving the map: re-anchor where the camera looks now, so the globe rolls up around that place.
-      this.flight = null
-      if (this.progress !== 1) return
       this.reanchorAtMapCenter(camera)
     }
+    return this.createTransition(camera, towardsFlatMap)
   }
 
-  /** The ellipsoid point at the centre of the screen, or under the camera when the centre misses the Earth. */
   protected findGlobeCenterPoint(camera: Camera, target: Vector3): Vector3 {
     ray.origin.setFromMatrixPosition(camera.matrixWorld)
     ray.direction.set(0, 0, -1).transformDirection(camera.matrixWorld)
@@ -328,45 +360,67 @@ export class ViewMorph {
     camera.updateMatrixWorld()
   }
 
-  protected createFlight(camera: PerspectiveLike, pivot: Vector3): CameraFlight | null {
-    const position = scratchVector.setFromMatrixPosition(camera.matrixWorld)
-    const distanceMeters = position.distanceTo(pivot)
-    if (distanceMeters === 0) return null
-    const startDirection = position.clone().sub(pivot).divideScalar(distanceMeters)
+  protected createTransition(camera: PerspectiveLike, towardsFlatMap: boolean): Transition {
+    const pivot = this.anchorPosition.clone()
+    const position = new Vector3().setFromMatrixPosition(camera.matrixWorld)
+    const startDistanceMeters = Math.max(position.distanceTo(pivot), 1)
     const up = this.anchorUp
+    const startDirection = position.clone().sub(pivot).divideScalar(startDistanceMeters)
 
     // Keep the heading: screen-up becomes the camera's forward direction, flattened onto the map plane.
     const forward = new Vector3(0, 0, -1).transformDirection(camera.matrixWorld)
     const heading = forward.clone().addScaledVector(up, -forward.dot(up))
-    if (heading.lengthSq() < 1e-8) {
+    if (heading.lengthSq() < 1e-6) {
       heading.set(0, 1, 0).transformDirection(camera.matrixWorld)
       heading.addScaledVector(up, -heading.dot(up))
     }
-    if (heading.lengthSq() < 1e-8) heading.set(0, 0, 1).addScaledVector(up, -up.z)
+    if (heading.lengthSq() < 1e-8) heading.set(0, 1, 0).transformDirection(this.anchorFrame)
     heading.normalize()
     const right = new Vector3().crossVectors(heading, up)
-    const endQuaternion = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(right, heading, up))
+    const topDownQuaternion = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(right, heading, up))
 
+    const swapDistanceMeters = Math.min(startDistanceMeters, this.transitionAltitudeMeters)
+    // Back up where the view started, but no higher than the flat map's full height.
+    const endDistanceMeters = towardsFlatMap
+      ? Math.min(startDistanceMeters, this.maximumFlatCameraHeightMeters(camera, topDownQuaternion))
+      : startDistanceMeters
+    const dives = startDistanceMeters > swapDistanceMeters * 1.05
     return {
+      towardsFlatMap,
+      timeFraction: 0,
+      direction: 1,
+      // Close to the ground there is no dive: only the turn and the swap, in a shorter time.
+      durationSeconds: dives ? this.durationSeconds : this.durationSeconds * 0.4,
+      diveShare: dives ? 0.4 : 0.5,
+      swapShare: dives ? 0.2 : 0.5,
       camera,
-      pivot: pivot.clone(),
-      distanceMeters,
-      endDistanceMeters: Math.min(distanceMeters, this.maximumFlatCameraHeightMeters(camera, endQuaternion)),
+      pivot,
       startDirection,
       directionRotation: new Quaternion().setFromUnitVectors(startDirection, up),
       startQuaternion: camera.quaternion.clone(),
-      endQuaternion,
+      topDownQuaternion,
+      startDistanceMeters,
+      swapDistanceMeters,
+      endDistanceMeters,
     }
   }
 
-  protected flyCamera(): void {
-    const flight = this.flight
-    if (flight === null || this.mode !== '2d') return
-    const amount = this.morph
-    const { camera } = flight
-    scratchQuaternion.identity().slerp(flight.directionRotation, amount)
-    camera.position.copy(flight.startDirection).applyQuaternion(scratchQuaternion).multiplyScalar(MathUtils.lerp(flight.distanceMeters, flight.endDistanceMeters, amount)).add(flight.pivot)
-    camera.quaternion.slerpQuaternions(flight.startQuaternion, flight.endQuaternion, amount)
+  /** Poses the camera and sets the projection for the transition's current time. */
+  protected applyTransition(transition: Transition): void {
+    const { timeFraction, diveShare, swapShare, camera } = transition
+    const dive = smootherstep(MathUtils.clamp(timeFraction / diveShare, 0, 1))
+    const swap = MathUtils.clamp((timeFraction - diveShare) / swapShare, 0, 1)
+    const riseShare = 1 - diveShare - swapShare
+    const rise = riseShare <= 0 ? 1 : smootherstep(MathUtils.clamp((timeFraction - diveShare - swapShare) / riseShare, 0, 1))
+    this.progress = transition.towardsFlatMap ? swap : 1 - swap
+
+    const distance =
+      timeFraction <= diveShare
+        ? logarithmicLerp(transition.startDistanceMeters, transition.swapDistanceMeters, dive)
+        : logarithmicLerp(transition.swapDistanceMeters, transition.endDistanceMeters, rise)
+    scratchQuaternion.identity().slerp(transition.directionRotation, dive)
+    camera.position.copy(transition.startDirection).applyQuaternion(scratchQuaternion).multiplyScalar(distance).add(transition.pivot)
+    camera.quaternion.slerpQuaternions(transition.startQuaternion, transition.topDownQuaternion, dive)
     camera.up.copy(this.anchorUp)
     camera.updateMatrixWorld()
   }
