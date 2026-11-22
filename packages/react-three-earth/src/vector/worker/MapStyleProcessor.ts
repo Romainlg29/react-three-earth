@@ -16,14 +16,30 @@ import {
 } from './labels.js'
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
 import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
+import { StyleImages, type ImageDecoder } from './sprites.js'
 import { compileStyleLayers, toRgba, type CompiledStyleLayer, type StyleFeature, type StyleLayerSpecification } from './styleLayers.js'
 import { createVectorTileFetcher, resolveTemplate, type VectorSourceSpecification, type VectorTileFetcher } from './tileSources.js'
-import { TILE_EXTENT, TILE_SIZE_PIXELS, type AtlasUpdate, type MapStyleProcessorOptions, type MapStyleSummary, type TileBucket, type TileRequest } from './types.js'
+import {
+  TILE_EXTENT,
+  TILE_SIZE_PIXELS,
+  type AtlasUpdate,
+  type BackgroundPattern,
+  type ImageAtlasUpdate,
+  type ImageChange,
+  type MapStyleProcessorOptions,
+  type MapStyleSummary,
+  type PatternRectangle,
+  type StyleImage,
+  type TileBucket,
+  type TileRequest,
+} from './types.js'
 
 /** Hooks for tests: Node has neither the network fixtures nor OffscreenCanvas. */
 export interface MapStyleProcessorHooks {
   fetch?: typeof fetch
   drawLocalGlyph?: (fontStack: string, codePoint: number) => Glyph | null
+  /** Decodes sprite sheets (Node has no `createImageBitmap`). */
+  decodeImage?: ImageDecoder
 }
 
 interface StyleDocument {
@@ -31,6 +47,21 @@ interface StyleDocument {
   sources?: Record<string, VectorSourceSpecification>
   layers?: StyleLayerSpecification[]
   glyphs?: string
+  sprite?: unknown
+}
+
+/** Pattern lookups of one tile: the images it asked for, and those that do not exist. */
+interface TileImages {
+  used: Set<string>
+  missing: Set<string>
+}
+
+/** Where a tile sits in the world, for patterns that continue seamlessly across tiles. */
+export interface TilePlacement {
+  x: number
+  y: number
+  /** Map pixels per tile at the evaluated zoom. */
+  tileSizePixels: number
 }
 
 /** Raw tiles kept for reuse (overzoomed levels and neighbouring regions read the same tile). */
@@ -66,6 +97,7 @@ export class MapStyleProcessor {
   protected readonly layers: CompiledStyleLayer[]
   protected readonly fetchers: Map<string, VectorTileFetcher>
   protected readonly glyphs: GlyphProvider
+  protected readonly images: StyleImages
   protected readonly rawTiles = new Map<string, RawTileEntry>()
   /** Tiles fetched this session, oldest first (at most 4096), so `invalidate` knows which the browser may cache. */
   protected readonly fetchedTiles = new Map<string, { x: number; y: number; z: number }>()
@@ -75,15 +107,25 @@ export class MapStyleProcessor {
    */
   protected readonly revalidatedTiles = new Set<string>()
 
-  protected constructor(layers: CompiledStyleLayer[], fetchers: Map<string, VectorTileFetcher>, glyphs: GlyphProvider, skipped: string[], attributions: string[]) {
+  protected constructor(
+    layers: CompiledStyleLayer[],
+    fetchers: Map<string, VectorTileFetcher>,
+    glyphs: GlyphProvider,
+    images: StyleImages,
+    skipped: string[],
+    attributions: string[],
+  ) {
     this.layers = layers
     this.fetchers = fetchers
     this.glyphs = glyphs
+    this.images = images
     this.summary = {
       sources: [...fetchers].map(([id, fetcher]) => ({ id, minimumZoom: fetcher.minimumZoom, maximumZoom: fetcher.maximumZoom })),
       backgroundByZoom: Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => this.backgroundAt(zoom)),
       skippedLayers: skipped,
       attributions,
+      backgroundPatternByZoom: this.backgroundPatterns(),
+      spriteImageIds: images.spriteImageIds(),
     }
   }
 
@@ -111,6 +153,15 @@ export class MapStyleProcessor {
         }
       }),
     )
+    const imagesPromise = StyleImages.load({
+      sprite: style.sprite,
+      baseUrl: options.baseUrl,
+      pixelRatio: options.spritePixelRatio ?? 1,
+      requestHeaders: options.requestHeaders,
+      fetch,
+      images: options.images ?? [],
+      ...(hooks.decodeImage !== undefined ? { decodeImage: hooks.decodeImage } : {}),
+    })
     const drawable = layers.filter(layer => layer.type === 'background' || (layer.source !== undefined && fetchers.has(layer.source)))
     const glyphs = new GlyphProvider({
       glyphsUrl: style.glyphs === undefined ? null : resolveTemplate(style.glyphs, options.baseUrl),
@@ -127,12 +178,27 @@ export class MapStyleProcessor {
       const attribution = source.attribution ?? fetcher.attribution
       return typeof attribution === 'string' ? [attribution] : []
     })
-    return new MapStyleProcessor(drawable, fetchers, glyphs, skipped, attributions)
+    return new MapStyleProcessor(drawable, fetchers, glyphs, await imagesPromise, skipped, attributions)
   }
 
   /** Glyph atlas changes since the last call. Send them with (and before) the next bucket. */
   takeAtlasUpdate(): AtlasUpdate | null {
     return this.glyphs.atlas.takeUpdate()
+  }
+
+  /** Image atlas changes since the last call. Send them with (and before) the next result. */
+  takeImageAtlasUpdate(): ImageAtlasUpdate | null {
+    return this.images.atlas.takeUpdate()
+  }
+
+  /**
+   * Adds or replaces (`image`) or removes (`null`) a runtime image. Tiles processed from now on use it; the
+   * answer says whether tiles processed before must be rebuilt or only redrawn.
+   */
+  setImage(id: string, image: StyleImage | null): ImageChange {
+    const rebuild = this.images.set(id, image)
+    this.summary.backgroundPatternByZoom = this.backgroundPatterns()
+    return { rebuild, backgroundPatternByZoom: this.summary.backgroundPatternByZoom }
   }
 
   /** Tessellates one tile. The bucket's `atlas` is left null: the caller attaches `takeAtlasUpdate()`. */
@@ -141,9 +207,11 @@ export class MapStyleProcessor {
     signal?.throwIfAborted()
     const tile = await this.getRawTile(sourceId, x, y, z, signal)
     signal?.throwIfAborted()
-    if (tile === null) return { shapes: null, text: null, atlas: null, byteLength: 0 }
+    if (tile === null) return { shapes: null, text: null, atlas: null, images: [], missingImages: [], byteLength: 0 }
 
     const unitsPerPixel = TILE_EXTENT / (TILE_SIZE_PIXELS * 2 ** (zoom - z))
+    const placement: TilePlacement = { x, y, tileSizePixels: TILE_SIZE_PIXELS * 2 ** (zoom - z) }
+    const images: TileImages = { used: new Set(), missing: new Set() }
     const shapes = new ShapeBuilder()
     const symbols: SymbolCandidate[] = []
     for (const layer of this.layers) {
@@ -159,26 +227,59 @@ export class MapStyleProcessor {
         if (layer.type === 'symbol') {
           const candidate = this.createSymbolCandidate(layer, feature, vectorFeature.type, geometry, zoom, symbols.length)
           if (candidate !== null) symbols.push(candidate)
-        } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel)
+        } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images)
       }
     }
     const text = await this.layoutLabels(symbols, zoom, unitsPerPixel, signal)
     const shapeMesh = shapes.build()
     const byteLength =
       (shapeMesh === null ? 0 : shapeMesh.positions.byteLength + shapeMesh.colors.byteLength + shapeMesh.indices.byteLength) +
+      (shapeMesh?.patterns == null ? 0 : shapeMesh.patterns.byteLength + (shapeMesh.patternCoordinates?.byteLength ?? 0)) +
       (text === null ? 0 : text.positions.byteLength * 2 + text.colors.byteLength * 2 + text.haloEdges.byteLength + text.indices.byteLength)
-    return { shapes: shapeMesh, text, atlas: null, byteLength }
+    return { shapes: shapeMesh, text, atlas: null, images: [...images.used], missingImages: [...images.missing], byteLength }
   }
 
+  /** The colour of the top-most background layer that draws at this zoom with a colour (not a pattern). */
   protected backgroundAt(zoom: number): [number, number, number, number] | null {
     let color: [number, number, number, number] | null = null
     for (const layer of this.layers) {
       if (layer.type !== 'background' || !layer.isVisibleAtZoom(zoom)) continue
       const opacity = layer.evaluate<number>('paint', 'background-opacity', zoom)
+      if (patternName(layer, 'background-pattern', zoom) !== null) continue
       const next = layer.evaluateColor('background-color', zoom, undefined, opacity)
       if (next[3] > 0) color = next
     }
     return color
+  }
+
+  /**
+   * `background-pattern` per zoom: the top-most background layer's pattern, when that layer is patterned (a
+   * colour layer above it wins, as it covers it). A missing image draws nothing, as in MapLibre.
+   */
+  protected backgroundPatterns(): Array<BackgroundPattern | null> {
+    return Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => {
+      let pattern: BackgroundPattern | null = null
+      for (const layer of this.layers) {
+        if (layer.type !== 'background' || !layer.isVisibleAtZoom(zoom)) continue
+        const opacity = layer.evaluate<number>('paint', 'background-opacity', zoom)
+        const name = patternName(layer, 'background-pattern', zoom)
+        if (name === null) {
+          if (layer.evaluateColor('background-color', zoom, undefined, opacity)[3] > 0) pattern = null
+          continue
+        }
+        const rectangle = this.images.getPattern(name)
+        pattern = rectangle === null || opacity <= 0 ? null : { imageId: name, rectangle, opacity }
+      }
+      return pattern
+    })
+  }
+
+  /** The pattern's place in the atlas, recording the lookup for the tile's image lists. */
+  protected lookUpPattern(name: string, images: TileImages): PatternRectangle | null {
+    images.used.add(name)
+    const rectangle = this.images.getPattern(name)
+    if (rectangle === null && this.images.isMissing(name)) images.missing.add(name)
+    return rectangle
   }
 
   protected addShape(
@@ -189,14 +290,27 @@ export class MapStyleProcessor {
     geometry: Point[][],
     zoom: number,
     unitsPerPixel: number,
+    placement: TilePlacement,
+    images: TileImages,
   ): void {
     shapes.setGroup(layer.group)
     if (layer.type === 'fill' || layer.type === 'fill-extrusion') {
       if (type !== 3) return
       const prefix = layer.type
       const opacity = layer.evaluate<number>('paint', `${prefix}-opacity`, zoom, feature)
-      const color = layer.evaluateColor(`${prefix}-color`, zoom, feature, opacity)
       const polygons = classifyRings(geometry as never, 500) as unknown as Point[][][]
+      const pattern = patternName(layer, `${prefix}-pattern`, zoom, feature)
+      if (pattern !== null) {
+        // A patterned fill has no outline and no colour (MapLibre); a missing image draws nothing.
+        const rectangle = this.lookUpPattern(pattern, images)
+        if (rectangle === null || opacity <= 0) return
+        shapes.setColor([255, 255, 255, Math.round(opacity * 255)])
+        shapes.setPattern(rectangle, planePatternMapping(rectangle, placement, unitsPerPixel))
+        shapes.addPolygons(polygons)
+        shapes.setPattern(null)
+        return
+      }
+      const color = layer.evaluateColor(`${prefix}-color`, zoom, feature, opacity)
       if (color[3] > 0) {
         shapes.setColor(color)
         shapes.addPolygons(polygons)
@@ -218,12 +332,17 @@ export class MapStyleProcessor {
       // Hairlines: draw one pixel wide and fade, as MapLibre's antialiasing does.
       const fade = widthPixels > 0 && widthPixels < 1 ? widthPixels : 1
       widthPixels = Math.max(widthPixels, widthPixels > 0 ? 1 : 0)
-      const color = layer.evaluateColor('line-color', zoom, feature, opacity * fade)
+      const pattern = patternName(layer, 'line-pattern', zoom, feature)
+      const rectangle = pattern === null ? null : this.lookUpPattern(pattern, images)
+      if (pattern !== null && rectangle === null) return // missing image: nothing, as in MapLibre
+      const color: [number, number, number, number] = rectangle !== null ? [255, 255, 255, Math.round(opacity * fade * 255)] : layer.evaluateColor('line-color', zoom, feature, opacity * fade)
       if (color[3] === 0 || widthPixels <= 0) return
       const width = widthPixels * unitsPerPixel
-      const dashes = layer.has('paint', 'line-dasharray') ? layer.evaluate<number[] | { values: number[] }>('paint', 'line-dasharray', zoom, feature) : undefined
+      // Dashes do not combine with a pattern (MapLibre).
+      const dashes = rectangle === null && layer.has('paint', 'line-dasharray') ? layer.evaluate<number[] | { values: number[] }>('paint', 'line-dasharray', zoom, feature) : undefined
       const dashLengths = dashes === undefined ? undefined : (Array.isArray(dashes) ? dashes : dashes.values).map(length => length * width)
       shapes.setColor(color)
+      shapes.setPattern(rectangle)
       for (const line of geometry) {
         shapes.addLine(line, {
           width,
@@ -235,6 +354,7 @@ export class MapStyleProcessor {
           ...(dashLengths !== undefined ? { dashes: dashLengths } : {}),
         })
       }
+      shapes.setPattern(null)
       return
     }
     if (layer.type === 'circle') {
@@ -442,6 +562,30 @@ export class MapStyleProcessor {
       }
     })
   }
+}
+
+/** The image a `*-pattern` property names, or null when it is not set or empty. */
+function patternName(layer: CompiledStyleLayer, property: string, zoom: number, feature?: StyleFeature): string | null {
+  if (!layer.has('paint', property)) return null
+  const value = layer.evaluate<{ name: string } | string | undefined | null>('paint', property, zoom, feature)
+  const name = typeof value === 'string' ? value : value?.name
+  return name === undefined || name === '' ? null : name
+}
+
+/**
+ * A fill pattern's mapping for one tile: `pixelRatio` image pixels per map pixel, anchored to the world's
+ * top-left corner so patterns continue across tiles. The tile's offset into the repeating image is reduced
+ * here, in 64-bit, so 32-bit vertex coordinates stay small at any zoom.
+ */
+export function planePatternMapping(rectangle: PatternRectangle, placement: TilePlacement, unitsPerPixel: number) {
+  const imagePixelsPerMapPixel = rectangle.pixelRatio
+  const originX = positiveModulo(placement.x * placement.tileSizePixels * imagePixelsPerMapPixel, rectangle.width)
+  const originY = positiveModulo(placement.y * placement.tileSizePixels * imagePixelsPerMapPixel, rectangle.height)
+  return { kind: 'plane' as const, imagePixelsPerUnit: imagePixelsPerMapPixel / unitsPerPixel, originX, originY }
+}
+
+function positiveModulo(value: number, modulus: number): number {
+  return ((value % modulus) + modulus) % modulus
 }
 
 function scaleGeometry(geometry: Point[][], factor: number): Point[][] {

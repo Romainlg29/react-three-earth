@@ -10,7 +10,7 @@ import { bucketKey, MapStyleOverlay } from '../src/vector/MapStyleOverlay.js'
 import { RefCountedCache } from '../src/vector/RefCountedCache.js'
 import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
 import { boundsToMercatorRectangles, tileOverlaps } from '../src/vector/worker/rectangles.js'
-import type { TileBucket, TileRequest } from '../src/vector/worker/types.js'
+import type { ImageChange, TileBucket, TileRequest } from '../src/vector/worker/types.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
 
@@ -61,6 +61,10 @@ class TestOverlay extends MapStyleOverlay {
   readonly serverVersions = new Map<string, number>()
   readonly processed: string[] = []
   readonly invalidations: unknown[] = []
+  /** Image ids each tile's patterns use, by tile key. */
+  readonly tileImages = new Map<string, string[]>()
+  /** What the fake worker answers to the next image change. */
+  nextImageChange: ImageChange = { rebuild: true, backgroundPatternByZoom: [] }
   /** When set, tile loads wait for `releaseHeldTiles`. */
   holdTiles = false
   protected heldTiles: Array<() => void> = []
@@ -68,7 +72,7 @@ class TestOverlay extends MapStyleOverlay {
 
   constructor() {
     super({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
+    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], spriteImageIds: [] }
     this.compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
     const backend: MapStyleBackend = {
       init: async () => this.summary!,
@@ -77,12 +81,15 @@ class TestOverlay extends MapStyleOverlay {
         this.processed.push(key)
         const version = this.serverVersions.get(key) ?? 1 // read when the request is made, as a fetch would
         if (this.holdTiles) await new Promise<void>(resolve => this.heldTiles.push(resolve))
-        return { shapes: null, text: null, atlas: null, byteLength: version } satisfies TileBucket
+        return { shapes: null, text: null, atlas: null, images: this.tileImages.get(key) ?? [], missingImages: [], byteLength: version } satisfies TileBucket
       },
       invalidate: rectangles => void this.invalidations.push(rectangles),
+      setImage: async () => this.nextImageChange,
       dispose: () => {},
     }
     this.backend = backend
+    this.imagesSent = true
+    this.resolveBackendReady()
   }
 
   releaseHeldTiles(): void {
@@ -352,5 +359,89 @@ describe('MapStyleProcessor.invalidate', () => {
     ;(processor as unknown as { rawTiles: Map<string, unknown> }).rawTiles.clear()
     await process(0, 1)
     expect((fetchSpy.mock.calls[4]![1] as RequestInit).cache).toBeUndefined()
+  })
+})
+
+describe('MapStyleOverlay.setImage', () => {
+  async function loadedOverlay() {
+    const overlay = new TestOverlay()
+    overlay.tileImages.set(tile21, ['stripes'])
+    for (const range of [A, B, C, D]) {
+      overlay.lockTexture(range)
+      await overlay.settle()
+    }
+    overlay.draws.length = 0
+    overlay.processed.length = 0
+    return overlay
+  }
+
+  it('rebuilds the tiles that use an image which appeared or changed size, and redraws only their regions', async () => {
+    const overlay = await loadedOverlay()
+    await overlay.setImage('stripes', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
+    await overlay.settle()
+    // A and B draw tile (2, 1)'s shapes. D draws it only for labels, which patterns do not change; C not at all.
+    expect(overlay.drawsOf(A)).toHaveLength(1)
+    expect(overlay.drawsOf(B)).toHaveLength(1)
+    expect(overlay.drawsOf(C)).toHaveLength(0)
+    expect(overlay.drawsOf(D)).toHaveLength(0)
+    expect(overlay.processed).toEqual([tile21])
+  })
+
+  it('only redraws, without rebuilding, when the image was rewritten in place', async () => {
+    const overlay = await loadedOverlay()
+    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [] }
+    await overlay.setImage('stripes', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
+    await overlay.settle()
+    expect(overlay.drawsOf(A)).toHaveLength(1)
+    expect(overlay.drawsOf(B)).toHaveLength(1)
+    expect(overlay.draws).toHaveLength(2)
+    expect(overlay.processed).toEqual([])
+    // An image no tile uses redraws nothing.
+    overlay.draws.length = 0
+    await overlay.setImage('unused', null)
+    await overlay.settle()
+    expect(overlay.draws).toHaveLength(0)
+  })
+
+  it('redraws every region when the background pattern uses the image', async () => {
+    const overlay = await loadedOverlay()
+    const rectangle = { x: 1, y: 1, width: 2, height: 2, pixelRatio: 1 }
+    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [{ imageId: 'paper', rectangle, opacity: 1 }] }
+    await overlay.setImage('paper', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
+    await overlay.settle()
+    expect(overlay.draws).toHaveLength(4)
+    expect(overlay.processed).toEqual([])
+    expect(overlay.summary!.backgroundPatternByZoom[0]!.imageId).toBe('paper')
+  })
+
+  it('reports each missing image once until it is added', async () => {
+    const missing: string[] = []
+    const overlay = new MapStyleOverlay({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null, onStyleImageMissing: id => missing.push(id) })
+    const report = (ids: string[]) => (overlay as unknown as { reportMissingImages(ids: string[]): void }).reportMissingImages(ids)
+    report(['a', 'b'])
+    report(['a'])
+    expect(missing).toEqual(['a', 'b'])
+    await overlay.setImage('a', { width: 1, height: 1, data: new Uint8Array(4), pixelRatio: 1, sdf: false })
+    await overlay.setImage('a', null)
+    report(['a'])
+    expect(missing).toEqual(['a', 'b', 'a'])
+  })
+})
+
+describe('MapStyleSource images', () => {
+  it('hands images to overlays created later, and states the fix for duplicate or unknown ids', () => {
+    const source = new MapStyleSource({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
+    source.addImage('dot', { width: 1, height: 1, data: new Uint8Array([255, 0, 0, 255]) }, { pixelRatio: 2 })
+    expect(source.hasImage('dot')).toBe(true)
+    expect(() => source.addImage('dot', { width: 1, height: 1, data: new Uint8Array(4) })).toThrow(/updateImage\("dot"/)
+    expect(() => source.updateImage('nothing', { width: 1, height: 1, data: new Uint8Array(4) })).toThrow(/addImage\("nothing"/)
+    expect(() => source.addImage('bad', { width: 2, height: 2, data: new Uint8Array(4) })).toThrow(/width × height × 4 = 16/)
+    source.updateImage('dot', { width: 1, height: 1, data: new Uint8Array([0, 255, 0, 255]) })
+    const overlay = source.createOverlay({ opacity: 1 }) as unknown as { images: Map<string, { pixelRatio: number; data: Uint8Array }> }
+    expect(overlay.images.get('dot')!.pixelRatio).toBe(2) // options kept by updateImage
+    expect([...overlay.images.get('dot')!.data]).toEqual([0, 255, 0, 255])
+    source.removeImage('dot')
+    expect(source.hasImage('dot')).toBe(false)
+    expect(overlay.images.has('dot')).toBe(false)
   })
 })
