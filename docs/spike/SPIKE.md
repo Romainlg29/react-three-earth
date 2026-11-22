@@ -144,7 +144,7 @@ Lookup-texture generation was the slowest part of startup and caused long frames
   it). Later page loads copy them back instead of generating. On by default (`<Atmosphere cache={false} />`
   opts out); two sets are kept, 8 MB each with half-float scattering (16 MB with 32-bit). A read-back that
   cannot be right (a WebGL 2 driver that cannot read half floats leaves zeros) is never stored. The
-  playground's dev server never caches, so shader edits always show.
+  playground caches in dev too (`?nocache` turns it off).
 
 `earth.inspect().atmosphere` now also reports `generationFrames` and `loadedFromCache`, and the playground
 shows them in the bottom-left corner. Playground switches: `?nocache`, `?atmosphereBudget=<ms>`.
