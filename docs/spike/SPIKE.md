@@ -82,6 +82,10 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 - **`project` follows the morph exactly**: the tile shader mixes globe and flat positions linearly in the
   Earth's frame, so the projected point is the same mix. Points beyond the ellipsoid's horizon are hidden
   with Cesium's ellipsoidal occluder test; terrain does not hide points yet.
+- **World copies**: on the flat map, `project` and `jumpTo` use the copy of the world around the camera
+  (`view.worldCopyReferenceXMeters`), so a place stays under the camera through a long pan across the
+  antimeridian, and `getBounds` keeps longitudes continuous across copies (a view wider than one world spans
+  every longitude).
 - **Camera placement looks straight down without degenerating**: `placeCameraAround` builds the camera's
   basis from heading and pitch instead of `lookAt`, and `setCameraView` now uses it.
 - **Events need no hooks in the controls**: `Earth.update` compares the camera's world matrix, field of view
