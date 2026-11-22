@@ -1,4 +1,4 @@
-import { use, useMemo } from 'react'
+import { use, useImperativeHandle, useMemo, type Ref } from 'react'
 
 import {
   MapStyleSource as MapStyleSourceImpl,
@@ -34,14 +34,17 @@ export function RasterTileSource({ url, levels, tileDimensionPixels, projection 
   return null
 }
 
-export type MapStyleSourceProps = MapStyleSourceOptions
+export interface MapStyleSourceProps extends MapStyleSourceOptions {
+  /** Receives the vanilla `MapStyleSource`, for `invalidate(bounds)` when tile data changed. */
+  ref?: Ref<MapStyleSourceImpl>
+}
 
 /**
  * A MapLibre style (roads, water, labels…) from vector tiles or PMTiles, drawn on the terrain. Goes inside
  * `<Imagery>`. Changing `url` or `style` reloads it; keep a `style` object or `requestHeaders` stable
- * (memoised) to avoid reloads.
+ * (memoised) to avoid reloads. To redraw after tile data changed, call `invalidate` on its `ref`.
  */
-export function MapStyleSource({ url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker }: MapStyleSourceProps) {
+export function MapStyleSource({ ref, url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker }: MapStyleSourceProps) {
   const source = useMemo(
     () =>
       new MapStyleSourceImpl({
@@ -55,6 +58,7 @@ export function MapStyleSource({ url, style, baseUrl, requestHeaders, localFontF
       }),
     [url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker],
   )
+  useImperativeHandle(ref, () => source, [source])
   useRegisterSource(use(ImagerySourceContext), source, 'MapStyleSource', 'Imagery')
   return null
 }

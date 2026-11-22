@@ -259,7 +259,7 @@ describe('composeRegionsOnGpu', () => {
     composition.prioritize(tokens)
     arrive()
     await settle()
-    expect(enqueue.mock.calls[0]?.[3]).toBe(true)
+    expect(enqueue.mock.calls[0]?.[3]).toBe('waited')
   })
 
   it('falls back to the upstream canvas composition without a compositor', async () => {

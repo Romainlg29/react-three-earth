@@ -54,6 +54,13 @@ export interface CompositeDraw {
  */
 export type CompositionRenderer = (renderer: WebGPURenderer, target: RenderTarget) => void
 
+/**
+ * Where a composition queues. `waited`: a visible terrain tile is waiting for its first texture. `recomposition`:
+ * a texture already shown is redrawn because its content changed (it keeps showing the old content meanwhile).
+ * `preload`: a terrain tile that is loading but not yet shown.
+ */
+export type CompositionPriority = 'waited' | 'recomposition' | 'preload'
+
 /** A queued composition: source tile quads, or a custom render. */
 interface CompositionJob {
   target: RenderTarget
@@ -86,9 +93,11 @@ const sourceColor = sourceTexture.sample(uv().flipY())
  * drawn by `render`, which the terrain calls once per frame with a time budget, so a burst of new tiles
  * spreads over several frames instead of stalling one.
  *
- * Two queues keep latency low: 3DTilesRenderer locks (and so queues) a terrain tile's imagery as soon as the
+ * Queues keep latency low: 3DTilesRenderer locks (and so queues) a terrain tile's imagery as soon as the
  * tile starts downloading, in network order, but only waits for it later, in its own priority order.
  * `prioritize` moves a composition that is being waited for ahead of the ones that are only preloads.
+ * Recompositions (content that changed under a texture already shown) go between the two: a stale texture is
+ * better than a hole, and a preload that becomes visible is prioritised then.
  */
 export class ImageryCompositor {
   /** Main-thread time `render` may spend per frame. At least one composition runs per frame regardless. */
@@ -97,7 +106,9 @@ export class ImageryCompositor {
   onQueued: (() => void) | null = null
 
   protected readonly waitedQueue: CompositionJob[] = []
+  protected readonly recompositionQueue: CompositionJob[] = []
   protected readonly preloadQueue: CompositionJob[] = []
+  protected readonly frameTasks = new Set<() => void>()
   protected readonly textureUseCounts = new Map<Texture, number>()
   protected readonly scene = new Scene()
   protected readonly camera = new OrthographicCamera(0, 1, 1, 0, -1, 1)
@@ -114,7 +125,7 @@ export class ImageryCompositor {
 
   /** Compositions waiting for a `render`. */
   get pendingCount(): number {
-    return this.waitedQueue.length + this.preloadQueue.length
+    return this.waitedQueue.length + this.recompositionQueue.length + this.preloadQueue.length
   }
 
   /**
@@ -157,9 +168,9 @@ export class ImageryCompositor {
 
   /**
    * Queues a composition. Resolves with `target.texture` once drawn. Rejects with the signal's reason if
-   * aborted first; the caller still owns (and disposes) the target. `waited` queues it ahead of preloads.
+   * aborted first; the caller still owns (and disposes) the target.
    */
-  enqueue(target: RenderTarget, draws: readonly CompositeDraw[], signal?: AbortSignal, waited = false): Promise<Texture> {
+  enqueue(target: RenderTarget, draws: readonly CompositeDraw[], signal?: AbortSignal, priority: CompositionPriority = 'preload'): Promise<Texture> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted === true) {
         reject(signal.reason)
@@ -168,7 +179,7 @@ export class ImageryCompositor {
       const job: CompositionJob = { target, draws, render: null, resolve, reject, signal, onAbort: () => this.cancel(job) }
       signal?.addEventListener('abort', job.onAbort, { once: true })
       for (const draw of draws) this.retainTexture(draw.texture)
-      ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
+      this.queueOf(priority).push(job)
       this.onQueued?.()
     })
   }
@@ -177,7 +188,7 @@ export class ImageryCompositor {
    * Queues a custom composition (vector tiles drawn with their own scene, for example), under the same
    * per-frame budget and priorities as source tile compositions. Resolves with `target.texture` once drawn.
    */
-  enqueueRender(target: RenderTarget, render: CompositionRenderer, signal?: AbortSignal, waited = false): Promise<Texture> {
+  enqueueRender(target: RenderTarget, render: CompositionRenderer, signal?: AbortSignal, priority: CompositionPriority = 'preload'): Promise<Texture> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted === true) {
         reject(signal.reason)
@@ -185,7 +196,7 @@ export class ImageryCompositor {
       }
       const job: CompositionJob = { target, draws: [], render, resolve, reject, signal, onAbort: () => this.cancel(job) }
       signal?.addEventListener('abort', job.onAbort, { once: true })
-      ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
+      this.queueOf(priority).push(job)
       this.onQueued?.()
     })
   }
@@ -202,6 +213,16 @@ export class ImageryCompositor {
     } finally {
       for (const mesh of this.meshes) mesh.userData.sourceTexture = null
     }
+  }
+
+  /**
+   * Runs `task` once at the start of the next `render`, before any composition, and asks for that frame.
+   * Adding the same function again before then runs it once: callers coalesce work requested within a frame.
+   */
+  runBeforeNextRender(task: () => void): void {
+    if (this.frameTasks.has(task)) return
+    this.frameTasks.add(task)
+    this.onQueued?.()
   }
 
   /** Moves the composition into `target` ahead of preloads, if it is still queued. */
@@ -232,6 +253,7 @@ export class ImageryCompositor {
    * outside any other render. Returns how many compositions it drew.
    */
   render(renderer: WebGPURenderer): number {
+    this.runFrameTasks()
     if (this.pendingCount === 0) return 0
     const startMilliseconds = performance.now()
     const restore = this.saveRendererState(renderer)
@@ -242,7 +264,7 @@ export class ImageryCompositor {
     let count = 0
     try {
       while (this.pendingCount > 0 && (count === 0 || performance.now() - startMilliseconds < this.budgetMilliseconds)) {
-        this.drawJob(renderer, (this.waitedQueue.shift() ?? this.preloadQueue.shift())!)
+        this.drawJob(renderer, (this.waitedQueue.shift() ?? this.recompositionQueue.shift() ?? this.preloadQueue.shift())!)
         count++
       }
     } finally {
@@ -253,12 +275,31 @@ export class ImageryCompositor {
 
   /** Rejects every queued composition and frees the compositor's own GPU resources. */
   dispose(): void {
-    for (const job of [...this.waitedQueue.splice(0), ...this.preloadQueue.splice(0)]) {
+    this.frameTasks.clear()
+    for (const job of [...this.waitedQueue.splice(0), ...this.recompositionQueue.splice(0), ...this.preloadQueue.splice(0)]) {
       this.settle(job)
       job.reject(new DOMException('ImageryCompositor: disposed', 'AbortError'))
     }
     this.geometry.dispose()
     this.material.dispose()
+  }
+
+  protected queueOf(priority: CompositionPriority): CompositionJob[] {
+    if (priority === 'waited') return this.waitedQueue
+    return priority === 'recomposition' ? this.recompositionQueue : this.preloadQueue
+  }
+
+  protected runFrameTasks(): void {
+    if (this.frameTasks.size === 0) return
+    const tasks = [...this.frameTasks]
+    this.frameTasks.clear()
+    for (const task of tasks) {
+      try {
+        task()
+      } catch (error) {
+        console.error(error)
+      }
+    }
   }
 
   protected drawJob(renderer: WebGPURenderer, job: CompositionJob): void {
@@ -324,7 +365,7 @@ export class ImageryCompositor {
   }
 
   protected cancel(job: CompositionJob): void {
-    for (const queue of [this.waitedQueue, this.preloadQueue]) {
+    for (const queue of [this.waitedQueue, this.recompositionQueue, this.preloadQueue]) {
       const index = queue.indexOf(job)
       if (index !== -1) queue.splice(index, 1)
     }

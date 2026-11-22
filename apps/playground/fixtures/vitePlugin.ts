@@ -9,8 +9,12 @@ import { fixtureStyle, vectorTile } from './vectorTiles.ts'
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
  * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
  * no network.
+ *
+ * `/fixtures/style.json?live` reads /fixtures/vector-live/ instead, whose lakes take the colour set with
+ * `/fixtures/vector-live/water-color?value=%23e0457b` (empty: the style's blue), for the invalidate check.
  */
 export function fixtureTiles(): Plugin {
+  let liveWaterColor: string | undefined
   return {
     name: 'react-three-earth-fixture-tiles',
     configureServer(server) {
@@ -36,8 +40,23 @@ export function fixtureTiles(): Plugin {
           return
         }
         if (url === '/fixtures/style.json') {
+          const live = new URLSearchParams(req.url?.split('?')[1] ?? '').has('live')
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify(fixtureStyle()))
+          res.end(JSON.stringify(fixtureStyle({ live })))
+          return
+        }
+        if (url === '/fixtures/vector-live/water-color') {
+          liveWaterColor = new URLSearchParams(req.url?.split('?')[1] ?? '').get('value') || undefined
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ waterColor: liveWaterColor ?? null }))
+          return
+        }
+        const live = /^\/fixtures\/vector-live\/(\d+)\/(\d+)\/(\d+)\.pbf$/.exec(url)
+        if (live) {
+          const [, z, x, y] = live.map(Number)
+          res.setHeader('Content-Type', 'application/x-protobuf')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end(Buffer.from(vectorTile(z ?? 0, x ?? 0, y ?? 0, liveWaterColor)))
           return
         }
         const vector = /^\/fixtures\/vector\/(\d+)\/(\d+)\/(\d+)\.pbf$/.exec(url)

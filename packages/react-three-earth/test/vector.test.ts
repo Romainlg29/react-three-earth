@@ -326,6 +326,20 @@ describe('MapStyleProcessor', () => {
     expect(await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
   })
 
+  it('reads a replaced PMTiles archive again after invalidate', async () => {
+    const files: Record<string, Uint8Array> = { 'https://maps.test/world.pmtiles': encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6) }
+    const { fetch } = createFakeFetch(files)
+    const processor = await MapStyleProcessor.create(
+      { style: testStyle({ type: 'vector', url: 'pmtiles://https://maps.test/world.pmtiles' }), baseUrl, requestHeaders: {}, localFontFamily: 'x' },
+      { fetch, drawLocalGlyph },
+    )
+    expect(await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
+    files['https://maps.test/world.pmtiles'] = encodePMTiles([{ z: 3, x: 0, y: 0, data: testTile() }], 0, 6)
+    processor.invalidate(null)
+    expect((await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).shapes).not.toBeNull()
+    expect(await processor.processTile({ sourceId: 'base', x: 4, y: 5, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
+  })
+
   it('keeps braces of URL templates when resolving them', () => {
     expect(resolveTemplate('/tiles/{z}/{x}/{y}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/tiles/{z}/{x}/{y}.pbf')
     expect(resolveTemplate('glyphs/{fontstack}/{range}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/a/glyphs/{fontstack}/{range}.pbf')

@@ -30,6 +30,16 @@ const expectations = {
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
     ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
   ],
+  // Redrawn in place: the lakes change colour and never disappear while regions redraw.
+  'vector map style with fixtures, invalidate': r => [
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['invalidate reports pending recompositions', r.pendingAfterCall > 0],
+    ['lakes end pink', r.after.pinkShare > r.before.blueShare * 0.6 && r.after.blueShare < r.before.blueShare * 0.2],
+    ['no frame of missing texture (lakes stay drawn)', r.minimumLakeShareDuringRedraw > r.before.blueShare * 0.6],
+    // The bounds cover the lakes, not the whole view: far regions (the horizon, the globe) stay as they are.
+    ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
+    ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
+  ],
   'camera and events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     return [
