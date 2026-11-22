@@ -65,3 +65,15 @@ export { isOccludedByEllipsoid, type ProjectedPosition, type ScreenPosition } fr
 export * from './core/zoom.js'
 export { MapStyleOverlay, type MapStyleOverlayOptions } from './vector/MapStyleOverlay.js'
 export { createVectorTileWorker } from './vector/MapStyleBackend.js'
+export {
+  MapStyle,
+  type MapStyleEventMap,
+  type MapStyleOptions,
+  type ProtocolLoader,
+  type ProtocolRequest,
+  type TransformRequest,
+} from './vector/MapStyle.js'
+export { StyleLayer, type StyleLayerOptions } from './vector/StyleLayer.js'
+export { featureKey, type FeatureIdentifier } from './vector/worker/featureState.js'
+export type { StyleDocument, StyleDocumentLayer } from './vector/worker/styleDocument.js'
+export type { FeatureState, ResourceKind } from './vector/worker/types.js'

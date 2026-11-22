@@ -8,7 +8,9 @@ export {
   MapStyleSource,
   QuantizedMeshSource,
   RasterTileSource,
+  StyleLayer,
   type MapStyleSourceProps,
+  type StyleLayerProps,
   type QuantizedMeshSourceProps,
   type RasterTileSourceProps,
 } from './sources.js'

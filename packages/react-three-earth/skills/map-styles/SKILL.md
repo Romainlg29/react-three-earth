@@ -3,9 +3,11 @@ name: map-styles
 description: >
   Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
-  fonts, and redrawing after tile data changed on the server with invalidate(bounds).
+  fonts, changing the style at runtime (setPaintProperty, setFilter, addLayer, setStyle diff, StyleLayer),
+  feature-state for hover and selection, global-state, transformRequest and addProtocol, and redrawing after
+  tile data changed on the server with invalidate(bounds).
 metadata:
-  purpose: 'Covers MapStyleSource, what it draws, its options, invalidate and what is not supported yet.'
+  purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, feature-state, invalidate and what is not supported yet.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -13,6 +15,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyleOverlay.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyle.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/camera.ts'
 requires:
@@ -85,6 +90,162 @@ export function OwnStyle({ token }: { token: string }) {
 - `localFontFamily` draws labels when the style has no `glyphs` URL or the server lacks a glyph.
 - `maximumZoom` (default 20): deepest zoom terrain is textured at; past the data's maximum, tiles overzoom.
 
+### Change the style at runtime
+
+The vanilla `MapStyleSource` (the `ref` in React) has MapLibre's style methods. Each change processes only
+the tiles of the sources it touches, from the worker's cached tiles (nothing is fetched again), and redraws
+the textures that show them in place, with no flicker.
+
+```tsx
+import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { useEffect, useRef } from 'react'
+
+export function NightMode({ night }: { night: boolean }) {
+  const source = useRef<MapStyleSourceInstance>(null)
+  useEffect(() => {
+    const style = source.current
+    if (style === null) return
+    style.setPaintProperty('water', 'fill-color', night ? '#0b2a4a' : '#a0c8f0')
+    style.setLayerVisibility('poi-labels', !night)
+    style.setFilter('roads', night ? ['in', ['get', 'class'], ['literal', ['motorway', 'trunk']]] : null)
+  }, [night])
+  return (
+    <Imagery>
+      <MapStyleSource ref={source} url="https://example.com/style.json" />
+    </Imagery>
+  )
+}
+```
+
+- Layers: `setPaintProperty`, `setLayoutProperty`, `setFilter` (`null` removes it), `setLayerZoomRange(id,
+  minimumZoom, maximumZoom)`, `setLayerVisibility(id, visible)`, `addLayer(layer, beforeId?)`,
+  `removeLayer`, `moveLayer(id, beforeId?)`. Sources: `addSource(id, source)`, `removeSource` (remove its
+  layers first). Reading: `getStyle()`, `getLayer`, `getLayerIds`, `getSource`, `getPaintProperty`,
+  `getLayoutProperty`, `getFilter`.
+- A wrong id throws an error that says what to do. An expression that does not compile skips the layer and
+  fires `error`.
+- Calls made before the style loaded are kept and applied once it has. Calls in the same task are sent to the
+  worker as one batch.
+- Events: `source.addEventListener('styledata' | 'sourcedata' | 'error', listener)`.
+
+### Replace the style: `setStyle` (diffed)
+
+`source.setStyle(urlOrDocument)` diffs the new style against the current one (the style specification's
+`diff`, as MapLibre) and applies only the differences. A change no command can express (other `glyphs`, a
+`sprite`, another base URL) reloads the style, still without flicker. In React, a new `url` or `style`
+prop does the same: no reload.
+
+### Layers the app owns: `<StyleLayer>`
+
+```tsx
+import { Imagery, MapStyleSource, StyleLayer } from 'react-three-earth/react'
+
+export function Highlights({ selectedClass }: { selectedClass: string }) {
+  return (
+    <Imagery>
+      <MapStyleSource url="https://example.com/style.json">
+        <StyleLayer
+          id="selected-roads"
+          type="line"
+          source="openmaptiles"
+          sourceLayer="transportation"
+          filter={['==', ['get', 'class'], selectedClass]}
+          paint={{ 'line-color': '#ff6a00', 'line-width': 4 }}
+          beforeId="road-label"
+        />
+      </MapStyleSource>
+    </Imagery>
+  )
+}
+```
+
+- Prop changes send only what changed (`setPaintProperty`, `setFilter`, `moveLayer`…). A new `type`,
+  `source` or `sourceLayer` replaces the layer where it is. Zoom props are `minimumZoom` / `maximumZoom`.
+- `<StyleLayer>` layers survive `setStyle` and a new `style` prop.
+- Vanilla: `new StyleLayer(options).addTo(source)`, then `layer.update(options)` and `layer.remove()`.
+
+### Hover and selection: feature-state
+
+```tsx
+import { Imagery, MapStyleSource, StyleLayer } from 'react-three-earth/react'
+import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { useEffect, useRef } from 'react'
+
+export function HoveredBuilding({ hoveredId }: { hoveredId: number | null }) {
+  const source = useRef<MapStyleSourceInstance>(null)
+  useEffect(() => {
+    const style = source.current
+    if (style === null || hoveredId === null) return
+    const building = { source: 'openmaptiles', sourceLayer: 'building', id: hoveredId }
+    style.setFeatureState(building, { hover: true })
+    return () => style.removeFeatureState(building, 'hover')
+  }, [hoveredId])
+  return (
+    <Imagery>
+      <MapStyleSource ref={source} url="https://example.com/style.json">
+        <StyleLayer
+          id="building-hover"
+          type="fill"
+          source="openmaptiles"
+          sourceLayer="building"
+          paint={{ 'fill-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#ff6a00', 'rgba(0, 0, 0, 0)'] }}
+        />
+      </MapStyleSource>
+    </Imagery>
+  )
+}
+```
+
+- `setFeatureState` merges into the feature's state; `removeFeatureState(feature, key?)` removes a key, the
+  feature's state, or every state of a source layer (no `id`); `getFeatureState(feature)` reads it.
+- Ids: the tile's feature id, compared as strings. Tiles without ids need `promoteId` on the source:
+  `{ type: 'vector', url, promoteId: 'osm_id' }` or per source layer `{ building: 'osm_id' }`.
+- Fast path: colour and opacity of fills, lines and circles (`fill-color`, `line-opacity`,
+  `circle-stroke-color`…) read the state from a colour table on the GPU, so a change only redraws the
+  textures holding the feature. Other state-dependent paint (`line-width`, `circle-radius`, text colours)
+  processes the feature's tiles again: correct, but slower. Prefer colour for hover.
+- A transparent colour that turns visible with state is still drawn (as with MapLibre).
+- Feature-state works in paint properties only, as in MapLibre.
+
+### App state in filters and layout: `global-state`
+
+```ts
+import type { MapStyleSource } from 'react-three-earth'
+
+export function showCategory(source: MapStyleSource, category: string) {
+  // The style reads it with ['global-state', 'category'], defaulting to its root `state`
+  source.setGlobalStateProperty('category', category)
+}
+```
+
+Unlike feature-state, `global-state` works in filters and layout too. Only sources whose layers read the
+changed name are processed again. `undefined` returns it to the style root `state` default.
+
+### Rewrite requests: `transformRequest` and `addProtocol`
+
+```tsx
+import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { useCallback } from 'react'
+
+export function SignedTiles({ token }: { token: string }) {
+  const transformRequest = useCallback((url: string, kind: string) => (kind === 'Tile' ? { headers: { Authorization: `Bearer ${token}` } } : undefined), [token])
+  return (
+    <Imagery>
+      <MapStyleSource url="https://example.com/style.json" transformRequest={transformRequest} />
+    </Imagery>
+  )
+}
+```
+
+- `kind` is `'Style'`, `'Source'` (TileJSON), `'Tile'`, `'Glyphs'`, `'SpriteJSON'` or `'SpriteImage'`. Return
+  `{ url?, headers? }` or nothing. A new function does not reload the source.
+- With `transformRequest`, the worker asks the main thread about each request (a short round trip per tile);
+  for fixed headers, `requestHeaders` costs nothing.
+- `protocols={{ offline: loader }}` or `source.addProtocol('offline', loader)` serves `offline://…` URLs:
+  `loader({ url, kind, headers, signal })` returns the bytes (`ArrayBuffer` or `Uint8Array`), or `null` for
+  a missing tile. `pmtiles://` is built in.
+
 ### Redraw after tile data changed: `invalidate(bounds)`
 
 Textures are drawn once per terrain tile. When the server's tiles change (live data, an edit you saved),
@@ -132,12 +293,23 @@ Vanilla: keep the `MapStyleSource` you passed to `new Imagery` and call `source.
 
 ### HIGH: Expecting `invalidate` to change the style
 
-`invalidate` refetches tiles; the style itself is fixed when the source is created. To change paint
-properties today, give `<MapStyleSource>` a new `style` object: the layer reloads (and flashes).
+`invalidate` refetches tiles. To change the style, use the style methods (`setPaintProperty`…) or
+`setStyle`; they reuse the tiles the worker already has.
 
-### HIGH: A new `style` or `requestHeaders` object every render
+### HIGH: A new `requestHeaders`, `protocols` or `createWorker` every render
 
-Each new object reloads the source, worker included. Memoise them, and keep `createWorker` stable.
+Each new object reloads the source, worker included. Memoise them. A new `style` object is fine but costs a
+diff each render: memoise it too.
+
+### HIGH: Feature-state on tiles without ids
+
+`setFeatureState` silently matches nothing when the tiles carry no feature ids (most MVT tiles). Set
+`promoteId` on the source to a property that identifies features.
+
+### MEDIUM: Feature-state driving widths for hover
+
+`line-width` or `circle-radius` from feature-state processes tiles again on every change. For hover, change a
+colour or opacity instead: it only redraws.
 
 ### HIGH: A CDN caches the changed tiles
 
@@ -159,6 +331,7 @@ warning listing them. `fill-extrusion` draws flat; labels do not collide across 
 
 - `earth.inspect().imageryLayers` counts the `<Imagery>` holding the style; `imageryCompositionsPending`
   returns to 0 once the view is drawn.
-- After `invalidate`, `imageryRecompositionsPending` is above 0, then returns to 0 with the new content
-  shown.
+- After `invalidate` or a style change, `imageryRecompositionsPending` is above 0, then returns to 0 with the
+  new content shown.
+- `source.getStyle()` shows the change; `source.getFeatureState(feature)` returns what was set.
 - The console shows no `MapStyleSource:` error; a warning lists skipped layers, if any.

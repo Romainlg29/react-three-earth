@@ -124,6 +124,7 @@ export class MapStyleProcessor {
     for (const [name, value] of Object.entries(options.globalState ?? {})) this.globalStateOverrides.set(name, value)
     this.refreshGlobalState()
     for (const [key, state] of options.featureStates ?? []) this.featureStates.set(key, state)
+    this.featureStateVersion = options.featureStateVersion ?? 0
     const glyphOptions = {
       glyphsUrl: style.glyphs === undefined ? null : resolveTemplate(style.glyphs, options.baseUrl),
       requestHeaders: options.requestHeaders,

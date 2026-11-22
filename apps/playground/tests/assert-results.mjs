@@ -50,6 +50,16 @@ const expectations = {
     ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
     ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
   ],
+  // The runtime style API: setPaintProperty, setLayerVisibility, addLayer, setFeatureState on fixture lakes.
+  'vector map style with fixtures, runtime style': r => [
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['setPaintProperty recolours the lakes', r.recoloured.pinkShare > r.before.blueShare * 0.6 && r.recoloured.blueShare < r.before.blueShare * 0.2],
+    ['setLayerVisibility hides them', r.hidden.pinkShare < r.before.blueShare * 0.1 && r.hidden.blueShare < r.before.blueShare * 0.1],
+    ['they come back blue', r.restored.blueShare > r.before.blueShare * 0.8 && r.restored.pinkShare < 0.0005],
+    ['setFeatureState highlights one lake of three', r.hovered.pinkShare > r.before.blueShare * 0.05 && r.hovered.blueShare > r.before.blueShare * 0.2],
+    ['feature-state reads back', r.featureState.hover === true],
+    ['a hover redraws regions without processing tiles again', r.tilesProcessedDuringHover === 0 && r.hover.regionsRedrawn > 0],
+  ],
   'camera and events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     return [

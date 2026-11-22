@@ -29,6 +29,8 @@ export interface MapStyleProcessorOptions {
   localFontFamily: string
   /** Feature-state set before the processor started, by feature key (`featureKey`). */
   featureStates?: Array<[string, FeatureState]>
+  /** How many feature-state messages the main thread has sent so far: the processor counts on from there. */
+  featureStateVersion?: number
   /** Values set with `setGlobalStateProperty`, over the style root `state` defaults. */
   globalState?: Record<string, unknown>
   /**
