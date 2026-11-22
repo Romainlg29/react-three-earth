@@ -2,7 +2,7 @@ import { TilesRenderer, type Tile } from '3d-tiles-renderer'
 import { Box3, Frustum, Matrix4, Vector3 } from 'three'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
-import { latitudeToMercatorY, longitudeToMercatorX, mercatorScaleFactor, wrapMercatorXNear } from '../view/webMercator.js'
+import { latitudeToMercatorY, longitudeToMercatorX, mercatorScaleFactor, WEB_MERCATOR_HALF_EXTENT_METERS, wrapMercatorXNear } from '../view/webMercator.js'
 
 /** What `calculateTileViewError` writes (3DTilesRenderer's view error target). */
 export interface TileViewError {
@@ -44,10 +44,10 @@ const groupToAnchor = new Matrix4()
  */
 export function getFlatRegionBox(region: readonly number[], view: ViewMorph, target: Box3): number {
   const [west, south, east, north, minimumHeight, maximumHeight] = region as [number, number, number, number, number, number]
-  // Take the copy of the world nearest the anchor, like the meshes (see FlatMapPlugin).
+  // Take the copy of the world the meshes are drawn on (see FlatMapPlugin), relative to the anchor.
   const unwrappedEast = east < west ? east + 2 * Math.PI : east
   const centerX = longitudeToMercatorX((west + unwrappedEast) / 2)
-  const shift = wrapMercatorXNear(centerX, view.anchorMercatorXMeters) - centerX
+  const shift = wrapMercatorXNear(centerX, view.worldCopyReferenceXMeters) - centerX
   const anchorX = view.anchorMercatorXMeters - shift
   const anchorY = latitudeToMercatorY(view.anchorLatitudeRadians)
   const scale = view.scale
@@ -129,26 +129,34 @@ export class EarthTilesRenderer extends TilesRendererWithInternals {
     let inViewDistance = Infinity
     let maxError = 0
     let minDistance = Infinity
-    this.cameraInfo.forEach((info, index) => {
-      const flat = this.flatCameraInfo[index]
-      if (flat === undefined) return
-      let error: number
-      let distance: number
-      if (info.isOrthographic) {
-        error = geometricError / info.pixelSize
-        distance = Infinity
-      } else {
-        distance = flatBox.distanceToPoint(flat.position)
-        error = distance === 0 ? Infinity : geometricError / (distance * info.sseDenominator)
-      }
-      if (flat.frustum.intersectsBox(flatBox)) {
-        inView = true
-        inViewError = Math.max(inViewError, error)
-        inViewDistance = Math.min(inViewDistance, distance)
-      }
-      maxError = Math.max(maxError, error)
-      minDistance = Math.min(minDistance, distance)
-    })
+    // Every copy of the world on screen counts: the tile is drawn once per copy (see FlatMapPlugin).
+    const worldWidthMeters = 2 * WEB_MERCATOR_HALF_EXTENT_METERS * view.scale
+    const baseMinimumX = flatBox.min.x
+    const baseMaximumX = flatBox.max.x
+    for (let copy = view.firstWorldCopy; copy < view.firstWorldCopy + view.worldCopyCount; copy++) {
+      flatBox.min.x = baseMinimumX + copy * worldWidthMeters
+      flatBox.max.x = baseMaximumX + copy * worldWidthMeters
+      this.cameraInfo.forEach((info, index) => {
+        const flat = this.flatCameraInfo[index]
+        if (flat === undefined) return
+        let error: number
+        let distance: number
+        if (info.isOrthographic) {
+          error = geometricError / info.pixelSize
+          distance = Infinity
+        } else {
+          distance = flatBox.distanceToPoint(flat.position)
+          error = distance === 0 ? Infinity : geometricError / (distance * info.sseDenominator)
+        }
+        if (flat.frustum.intersectsBox(flatBox)) {
+          inView = true
+          inViewError = Math.max(inViewError, error)
+          inViewDistance = Math.min(inViewDistance, distance)
+        }
+        maxError = Math.max(maxError, error)
+        minDistance = Math.min(minDistance, distance)
+      })
+    }
     target.inView = inView
     target.error = inView ? inViewError : maxError
     target.distanceFromCamera = inView ? inViewDistance : minDistance
