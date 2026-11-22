@@ -25,7 +25,7 @@ export interface ImageOverlayPluginOptions {
   /** Overlays to start with. More can be added with `addOverlay`. Default: none. */
   overlays?: object[]
   /** Size of each terrain tile's composed overlay texture, in pixels. Default: 256. */
-  resolution?: number
+  resolutionPixels?: number
   /** Split terrain tiles along imagery tile boundaries when imagery has more detail. Default: true. */
   enableTileSplitting?: boolean
   /** Main-thread time GPU composition may spend per frame, in milliseconds. Default: 2. */
@@ -57,27 +57,39 @@ const upstream = ImageOverlayPluginBase.prototype as unknown as UpstreamInternal
  */
 export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   declare meshParams: WeakMap<Object3D, OverlayParams>
+  declare tiles: { dispatchEvent(event: { type: string }): void } | null
   /** Draws composite overlay textures on the GPU. Shared by every GPU-composed overlay of this plugin. */
   readonly compositor: ImageryCompositor
   /** Main-thread imagery work, per frame and in total. */
   readonly statistics = new ImageryStatistics()
 
-  constructor({ compositionBudgetMilliseconds, ...options }: ImageOverlayPluginOptions = {}) {
-    // The compositor must exist before the base constructor adds the initial overlays.
-    const compositor = new ImageryCompositor({ budgetMilliseconds: compositionBudgetMilliseconds })
-    super({ ...options, overlays: [], renderer: null as never } as ConstructorParameters<typeof ImageOverlayPluginBase>[0])
-    this.compositor = compositor
-    for (const overlay of options.overlays ?? []) this.addOverlay(overlay as never)
+  constructor({ compositionBudgetMilliseconds, resolutionPixels, overlays = [], enableTileSplitting }: ImageOverlayPluginOptions = {}) {
+    const options = { resolution: resolutionPixels, enableTileSplitting, overlays: [], renderer: null as never }
+    super(options as ConstructorParameters<typeof ImageOverlayPluginBase>[0])
+    this.compositor = new ImageryCompositor({ budgetMilliseconds: compositionBudgetMilliseconds })
+    this.compositor.onQueued = () => this.requestUpdate()
+    // Added here, not by the base constructor, so they get the compositor.
+    for (const overlay of overlays) this.addOverlay(overlay as never)
   }
 
   /**
    * Ends the statistics frame, then draws queued compositions within the budget. Call once per frame,
-   * before rendering the scene.
+   * before rendering the scene. While compositions remain, it asks for another frame (`needs-update`).
    */
   composeImagery(renderer: WebGPURenderer): void {
     this.statistics.endFrame()
-    const count = this.statistics.measure('compositionMilliseconds', () => this.compositor.render(renderer))
+    const startMilliseconds = performance.now()
+    const count = this.compositor.render(renderer)
+    if (count === 0) return
+    this.statistics.addTime('compositionMilliseconds', performance.now() - startMilliseconds)
     this.statistics.addTilesComposited(count)
+    this.tiles?.dispatchEvent({ type: 'needs-render' })
+    if (this.compositor.pendingCount > 0) this.requestUpdate()
+  }
+
+  /** Asks the host for another `TilesRenderer.update` (a frame), for hosts that render on demand. */
+  protected requestUpdate(): void {
+    this.tiles?.dispatchEvent({ type: 'needs-update' })
   }
 
   override addOverlay(overlay: Parameters<ImageOverlayPluginBase['addOverlay']>[0], order?: number): void {

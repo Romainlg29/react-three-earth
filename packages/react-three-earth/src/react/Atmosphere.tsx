@@ -13,8 +13,9 @@ export interface AtmosphereProps extends AtmosphereOptions {
 }
 
 /**
- * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline. `parameters` is read once,
- * at mount: the lookup textures are generated from it.
+ * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline and sets AgX tone mapping
+ * (restored on unmount). `parameters` is read once, at mount: the lookup textures are generated from it.
+ * Create the canvas renderer with `reversedDepthBuffer: true` for clean haze at long range.
  */
 export function Atmosphere({ exposure = 10, parameters }: AtmosphereProps) {
   const earth = useEarth()
@@ -32,8 +33,14 @@ export function Atmosphere({ exposure = 10, parameters }: AtmosphereProps) {
   }, [atmosphere, earth, renderer])
 
   useLayoutEffect(() => {
+    const previousToneMapping = renderer.toneMapping
+    const previousExposure = renderer.toneMappingExposure
     renderer.toneMapping = AgXToneMapping
     renderer.toneMappingExposure = exposure
+    return () => {
+      renderer.toneMapping = previousToneMapping
+      renderer.toneMappingExposure = previousExposure
+    }
   }, [renderer, exposure])
 
   useLayoutEffect(() => () => atmosphere.dispose(), [atmosphere])

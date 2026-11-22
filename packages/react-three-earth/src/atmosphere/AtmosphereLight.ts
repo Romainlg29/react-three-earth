@@ -1,10 +1,13 @@
 import { DirectionalLight } from 'three'
-import { cameraViewMatrix, cameraWorldMatrix, normalWorld, positionView, vec4 } from 'three/tsl'
+import { cameraViewMatrix, cameraWorldMatrix, normalWorld, positionView, select, vec4 } from 'three/tsl'
 import { AnalyticLightNode, type Node, type NodeBuilder } from 'three/webgpu'
 import type { DirectLightData } from 'three/src/nodes/lighting/LightsNode.js'
 
 import type { AtmosphereContext } from './AtmosphereContext.js'
 import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
+
+/** Share of the unattenuated sunlight used as ambient light while the lookup textures are not ready. */
+const FALLBACK_AMBIENT_SHARE = 0.15
 
 /**
  * Shades an `AtmosphereLight`, per fragment: sun illuminance attenuated by the transmittance from the
@@ -17,6 +20,8 @@ import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
  * standard lighting model (MeshStandardNodeMaterial, MeshPhysicalNodeMaterial, ...), so terrain tiles need
  * no custom material. three r187 binds light classes to node classes with `Light.registerNode()` (the
  * renderer-wide `renderer.library.addLight()` is deprecated).
+ *
+ * Until the lookup textures are generated it lights with plain, unattenuated sunlight and a little ambient.
  */
 export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
   static get type(): string {
@@ -26,31 +31,33 @@ export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
   /** The light's colour times its intensity (declared by three, missing from its typings). */
   declare colorNode: Node<'color'>
 
-  /** The rendered camera's position in the atmosphere's frame, shared by every material this light shades. */
+  /** The rendered camera's ECEF position in kilometres, shared by every material this light shades. */
   protected cameraPosition: Node<'vec3'> | null = null
-  protected cameraPositionContext: AtmosphereContext | null = null
 
   override setupDirect(builder: NodeBuilder): DirectLightData | undefined {
-    const context = this.light?.atmosphere
-    if (context == null) return undefined
-    if (this.cameraPositionContext !== context) {
-      this.cameraPosition = context.createCameraPositionNode()
-      this.cameraPositionContext = context
-    }
-    const { model, textures, sunDirection } = context
+    const light = this.light
+    if (light == null) return undefined
+    const context = light.atmosphere
+    const { model, textures, sunDirection, texturesReady } = context
+    this.cameraPosition ??= context.createCameraPositionKilometersNode()
 
     // Fragment position relative to the camera, which is exact under `renderer.highPrecision` (computed
-    // from the 64-bit model-view matrix), rotated to world axes and added to the camera's sphere position.
+    // from the 64-bit model-view matrix), rotated to world axes and added to the camera's ECEF position.
     const offsetWorld = cameraWorldMatrix.mul(vec4(positionView, 0)).xyz
-    const position = this.cameraPosition!.add(offsetWorld.div(LENGTH_UNIT_METERS))
+    const position = context.toAtmosphereFrame(this.cameraPosition.add(offsetWorld.div(LENGTH_UNIT_METERS)))
     const { sun, sky } = model.getSunAndSkyIrradiance(textures, position, normalWorld, sunDirection)
 
+    const unattenuated = model.solarIrradianceWattsPerSquareMeterNanometer.mul(context.sunLuminanceFactor)
+    const ready = texturesReady.greaterThan(0.5)
+    const ambient = select(ready, sky.mul(context.skyLuminanceFactor), unattenuated.mul(FALLBACK_AMBIENT_SHARE))
+    const direct = select(ready, sun.mul(context.sunLuminanceFactor), unattenuated)
+
     const lighting = builder.context as unknown as { irradiance: { addAssign(node: unknown): void } }
-    lighting.irradiance.addAssign(sky.mul(context.skyLuminanceFactor).mul(this.colorNode))
+    lighting.irradiance.addAssign(ambient.mul(this.colorNode))
 
     return {
       lightDirection: cameraViewMatrix.mul(vec4(sunDirection, 0)).xyz.normalize(),
-      lightColor: sun.mul(context.sunLuminanceFactor).mul(this.colorNode),
+      lightColor: direct.mul(this.colorNode),
     }
   }
 }
@@ -58,18 +65,25 @@ export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
 /**
  * The sun, as a light that physically based node materials understand. Its colour and intensity scale
  * the physical result (leave them at white and 1). It points itself: `Atmosphere.update` moves it.
+ * It casts no shadows: `castShadow` stays false (setting it warns), since its shading ignores shadow maps.
  */
 export class AtmosphereLight extends DirectionalLight {
   static {
     AtmosphereLight.registerNode(AtmosphereLightNode)
   }
 
-  /** The atmosphere that lights it. Set by `Atmosphere`; the light emits nothing while it is null. */
-  atmosphere: AtmosphereContext | null = null
+  /** The atmosphere that lights it, fixed for the light's life so its shaders never need rebuilding. */
+  readonly atmosphere: AtmosphereContext
 
-  constructor(atmosphere: AtmosphereContext | null = null) {
+  constructor(atmosphere: AtmosphereContext) {
     super(0xffffff, 1)
     this.name = 'AtmosphereLight'
     this.atmosphere = atmosphere
+    Object.defineProperty(this, 'castShadow', {
+      get: () => false,
+      set: (value: boolean) => {
+        if (value) console.warn('AtmosphereLight: shadows are not supported; castShadow stays false.')
+      },
+    })
   }
 }

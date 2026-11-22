@@ -49,10 +49,15 @@ function tileSource(tiling = quadTiling): TiledImageSourceLike & { textures: Map
 function fakeRenderer(renderMilliseconds = 0) {
   let target: RenderTarget | null = null
   const rendered: Array<RenderTarget | null> = []
+  let mrt: object | null = null
   const renderer = {
     autoClear: false,
     getRenderTarget: () => target,
     setRenderTarget: (next: RenderTarget | null) => void (target = next),
+    getActiveCubeFace: () => 0,
+    getActiveMipmapLevel: () => 0,
+    getMRT: () => mrt,
+    setMRT: (next: object | null) => void (mrt = next),
     getClearAlpha: () => 1,
     getClearColor: <T>(color: T) => color,
     setClearColor: vi.fn(),
@@ -155,26 +160,30 @@ describe('composeRegionsOnGpu', () => {
     return { region, upstreamDispose, source }
   }
 
-  it('composes a range covered by several tiles on the GPU and frees the target on dispose', async () => {
+  /** Lets `fetchItem` get past its awaits up to queueing the composition. */
+  const settle = () => new Promise(resolve => setTimeout(resolve))
+
+  it('composes a range covered by several tiles on the GPU and frees the target when the cache drops it', async () => {
     const compositor = new ImageryCompositor()
     const { region, upstreamDispose } = regionSource()
     composeRegionsOnGpu(region, () => compositor)
     const createTarget = vi.spyOn(compositor, 'createTarget')
 
     const tokens = [0.375, 0.375, 0.625, 0.625, 2]
-    const pending = region.fetchItem(tokens)
-    await Promise.resolve()
-    await Promise.resolve()
+    const controller = new AbortController()
+    const pending = region.fetchItem(tokens, controller.signal)
+    await settle()
     expect(compositor.pendingCount).toBe(1)
-    const { renderer } = fakeRenderer()
-    compositor.render(renderer)
+    compositor.render(fakeRenderer().renderer)
     const texture = (await pending)!
     expect(texture.isRenderTargetTexture).toBe(true)
 
     const disposed = vi.fn()
     ;(createTarget.mock.results[0]?.value as RenderTarget).addEventListener('dispose', disposed)
+    // What upstream's DataCache does when it drops an entry: abort its signal, then dispose the item
+    controller.abort(new DOMException('released', 'AbortError'))
     region.disposeItem(texture, tokens)
-    expect(disposed).toHaveBeenCalled()
+    expect(disposed).toHaveBeenCalledOnce()
     // Upstream still unlocks the source tiles, without disposing anything itself
     expect(upstreamDispose).toHaveBeenCalledWith(null, tokens)
   })
@@ -186,8 +195,7 @@ describe('composeRegionsOnGpu', () => {
     const createTarget = vi.spyOn(compositor, 'createTarget')
     const controller = new AbortController()
     const pending = region.fetchItem([0.375, 0.375, 0.625, 0.625, 2], controller.signal)
-    await Promise.resolve()
-    await Promise.resolve()
+    await settle()
     const target = createTarget.mock.results[0]?.value as RenderTarget
     const disposed = vi.fn()
     target.addEventListener('dispose', disposed)
@@ -198,13 +206,60 @@ describe('composeRegionsOnGpu', () => {
     expect(disposed).toHaveBeenCalled()
   })
 
-  it('reuses the source tile when it covers the range exactly', async () => {
+  it('shows the source tile itself when it covers the range exactly, without disposing it', async () => {
     const compositor = new ImageryCompositor()
-    const { region, source } = regionSource()
+    const { region, source, upstreamDispose } = regionSource()
     composeRegionsOnGpu(region, () => compositor)
-    const texture = await region.fetchItem([0.25, 0.5, 0.5, 0.75, 2])
+    const tokens = [0.25, 0.5, 0.5, 0.75, 2]
+    const controller = new AbortController()
+    const texture = await region.fetchItem(tokens, controller.signal)
     expect(compositor.pendingCount).toBe(0)
-    expect(texture?.source).toBe(source.textures.get('1_2_2')?.source)
+    expect(texture).toBe(source.textures.get('1_2_2')) // not a clone: that would be a second GPU copy
+
+    const disposed = vi.fn()
+    texture!.addEventListener('dispose', disposed)
+    controller.abort()
+    region.disposeItem(texture, tokens)
+    expect(upstreamDispose).toHaveBeenCalledWith(null, tokens) // the tiled image source owns the texture
+    expect(disposed).toHaveBeenCalledOnce() // its GPU copy is freed; the image stays with the source
+  })
+
+  it('moves a region ahead of preloads once 3DTilesRenderer waits for it', async () => {
+    const compositor = new ImageryCompositor({ budgetMilliseconds: 0 })
+    const { region } = regionSource()
+    const composition = composeRegionsOnGpu(region, () => compositor)
+    const preload = [0.375, 0.375, 0.625, 0.625, 2]
+    const waited = [0.125, 0.125, 0.375, 0.375, 2]
+    const first = Promise.resolve(region.fetchItem(preload, new AbortController().signal))
+    const second = Promise.resolve(region.fetchItem(waited, new AbortController().signal))
+    await settle()
+    composition.prioritize(waited)
+
+    const order: string[] = []
+    void first.then(() => order.push('preload'))
+    void second.then(() => order.push('waited'))
+    const { renderer } = fakeRenderer()
+    compositor.render(renderer)
+    await settle()
+    expect(order).toEqual(['waited'])
+    compositor.render(renderer)
+    await settle()
+    expect(order).toEqual(['waited', 'preload'])
+  })
+
+  it('queues a region as waited for when it is waited for before its source tiles arrive', async () => {
+    const compositor = new ImageryCompositor()
+    const enqueue = vi.spyOn(compositor, 'enqueue')
+    const { region } = regionSource()
+    let arrive = () => {}
+    region._markImages = () => new Promise<void>(resolve => (arrive = resolve))
+    const composition = composeRegionsOnGpu(region, () => compositor)
+    const tokens = [0.375, 0.375, 0.625, 0.625, 2]
+    void region.fetchItem(tokens, new AbortController().signal)
+    composition.prioritize(tokens)
+    arrive()
+    await settle()
+    expect(enqueue.mock.calls[0]?.[3]).toBe(true)
   })
 
   it('falls back to the upstream canvas composition without a compositor', async () => {
@@ -213,6 +268,32 @@ describe('composeRegionsOnGpu', () => {
     composeRegionsOnGpu(region, () => null)
     await region.fetchItem([0, 0, 1, 1, 0])
     expect(upstreamFetch).toHaveBeenCalled()
+  })
+})
+
+describe('ImageryCompositor source textures', () => {
+  it('frees a source tile’s GPU copy once no queued composition uses it', () => {
+    const compositor = new ImageryCompositor()
+    const shared = new Texture()
+    const disposed = vi.fn()
+    shared.addEventListener('dispose', disposed)
+    const draw = { texture: shared, minimumX: 0, minimumY: 0, maximumX: 1, maximumY: 1 }
+    void compositor.enqueue(compositor.createTarget(4), [draw])
+    void compositor.enqueue(compositor.createTarget(4), [draw])
+    const { renderer } = fakeRenderer()
+    compositor.budgetMilliseconds = 0
+    compositor.render(renderer)
+    expect(disposed).not.toHaveBeenCalled()
+    compositor.render(renderer)
+    expect(disposed).toHaveBeenCalledOnce()
+  })
+
+  it('asks for a frame when a composition is queued', () => {
+    const compositor = new ImageryCompositor()
+    const onQueued = vi.fn()
+    compositor.onQueued = onQueued
+    void compositor.enqueue(compositor.createTarget(4), [])
+    expect(onQueued).toHaveBeenCalledOnce()
   })
 })
 
@@ -274,5 +355,28 @@ describe('Earth.inspect imagery counters', () => {
       imageryTilesCompositedTotal: 0,
       imageryMainThreadMillisecondsTotal: 0,
     })
+  })
+})
+
+describe('Terrain frame requests', () => {
+  it('asks the host for frames while imagery waits to be composed, until the listener is removed', () => {
+    const terrain = new Terrain({ sources: [new QuantizedMeshSource({ url: 'https://example.com/terrain' })] })
+    const listener = vi.fn()
+    const remove = terrain.addFrameRequestListener(listener)
+    const { compositor } = terrain.overlays
+    void compositor.enqueue(compositor.createTarget(4), [])
+    void compositor.enqueue(compositor.createTarget(4), [])
+    expect(listener).toHaveBeenCalledTimes(2)
+
+    // One composition per frame at a zero budget: one left, so it asks for another frame
+    compositor.budgetMilliseconds = 0
+    listener.mockClear()
+    terrain.overlays.composeImagery(fakeRenderer().renderer)
+    expect(listener).toHaveBeenCalled()
+
+    remove()
+    listener.mockClear()
+    terrain.overlays.composeImagery(fakeRenderer().renderer)
+    expect(listener).not.toHaveBeenCalled()
   })
 })

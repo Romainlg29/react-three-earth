@@ -95,6 +95,12 @@ function findExactTile(range: NormalizedRange, level: number, tiling: TilingSche
   return exact
 }
 
+/** Lets the overlay mark a region as waited for, so its composition jumps ahead of preloads. */
+export interface GpuRegionComposition {
+  /** Call when 3DTilesRenderer starts waiting for the region (`getTexture`), with the cache tokens. */
+  prioritize(tokens: readonly number[]): void
+}
+
 /**
  * Makes a `TiledRegionImageSource` compose on the GPU.
  *
@@ -102,21 +108,46 @@ function findExactTile(range: NormalizedRange, level: number, tiling: TilingSche
  * cannot be subclassed. Everything else (ref counting, source-tile locking, `hasContent`) stays upstream.
  * When `getCompositor` returns null (the overlay is used by a plugin without one) it falls back to the
  * upstream canvas composition.
+ *
+ * Lifetime: the region cache (upstream `DataCache`) aborts an entry's signal whenever it drops the entry,
+ * before calling `disposeItem`, whether the entry is queued, has just resolved, or is stored. So the abort
+ * listener is the one place that frees what an entry holds. Removing it on success would leak the target
+ * when the entry is dropped between our promise resolving and the cache storing the result (the cache then
+ * calls `disposeItem(null)`). `disposeItem` only unlocks the source tiles.
  */
-export function composeRegionsOnGpu(regionSource: TiledRegionImageSourceLike, getCompositor: () => ImageryCompositor | null): void {
+export function composeRegionsOnGpu(
+  regionSource: TiledRegionImageSourceLike,
+  getCompositor: () => ImageryCompositor | null,
+): GpuRegionComposition {
   const upstreamFetchItem = regionSource.fetchItem.bind(regionSource)
   const upstreamDisposeItem = regionSource.disposeItem.bind(regionSource)
-  const targets = new Map<Texture, RenderTarget>()
+  // Items this patch produced: the cache must not dispose them (targets are freed on abort, source tiles
+  // belong to the tiled image source).
+  const ownItems = new WeakSet<Texture>()
+  // By cache key: regions being fetched, those of them waited for, and their queued compositions' targets.
+  // Counts, not a set: a dropped entry's fetch can still be settling when the key is fetched again.
+  const fetchingKeys = new Map<string, number>()
+  const waitedKeys = new Set<string>()
+  const queuedTargets = new Map<string, RenderTarget>()
 
-  const releaseTarget = (target: RenderTarget): void => {
-    targets.delete(target.texture)
-    target.dispose() // safe to call twice
-  }
-
-  regionSource.fetchItem = async (tokens, signal) => {
+  const fetchItem = async (tokens: number[], signal?: AbortSignal): Promise<Texture | null> => {
     const compositor = getCompositor()
     if (compositor === null) return upstreamFetchItem(tokens, signal)
+    const key = tokens.join('_')
+    fetchingKeys.set(key, (fetchingKeys.get(key) ?? 0) + 1)
+    try {
+      return await composeRegion(compositor, key, tokens, signal)
+    } finally {
+      const count = (fetchingKeys.get(key) ?? 1) - 1
+      if (count > 0) fetchingKeys.set(key, count)
+      else {
+        fetchingKeys.delete(key)
+        waitedKeys.delete(key)
+      }
+    }
+  }
 
+  const composeRegion = async (compositor: ImageryCompositor, key: string, tokens: number[], signal?: AbortSignal): Promise<Texture | null> => {
     const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0, level = 0] = tokens
     const range: NormalizedRange = [minimumX, minimumY, maximumX, maximumY]
     const { tiledImageSource } = regionSource
@@ -124,28 +155,45 @@ export function composeRegionsOnGpu(regionSource: TiledRegionImageSourceLike, ge
     await regionSource._markImages(range, level, false)
     signal?.throwIfAborted()
 
-    // Fast path: one tile covers the range exactly, so use it as is. Cloning shares its GPU source while
-    // giving the cache entry its own object to dispose.
+    // Fast path: one tile covers the range exactly, so the terrain shows the source tile itself. Not a clone:
+    // on WebGPU three keys GPU textures by Texture object, so a clone would upload a second copy.
     const exact = findExactTile(range, level, tiledImageSource.tiling)
-    if (exact !== null) return tiledImageSource.get(...exact)?.clone() ?? null
+    if (exact !== null) {
+      const texture = tiledImageSource.get(...exact)
+      if (texture === null) return null
+      ownItems.add(texture)
+      compositor.retainTexture(texture)
+      signal?.addEventListener('abort', () => compositor.releaseTexture(texture), { once: true })
+      return texture
+    }
 
     const target = compositor.createTarget(regionSource.resolution)
-    targets.set(target.texture, target)
-    // The cache aborts an entry only when disposing it, so an abort at any point (queued, or between
-    // resolving and the cache storing the result) means the target is no longer wanted.
-    signal?.addEventListener('abort', () => releaseTarget(target), { once: true })
+    ownItems.add(target.texture)
+    signal?.addEventListener('abort', () => target.dispose(), { once: true })
+    queuedTargets.set(key, target)
     try {
-      return await compositor.enqueue(target, getCompositeDraws(range, level, tiledImageSource), signal)
+      return await compositor.enqueue(target, getCompositeDraws(range, level, tiledImageSource), signal, waitedKeys.has(key))
     } catch (error) {
-      releaseTarget(target) // the cache gets no item to dispose
+      target.dispose() // the cache gets no item; safe to call twice
       throw error
+    } finally {
+      if (queuedTargets.get(key) === target) queuedTargets.delete(key)
     }
   }
 
+  regionSource.fetchItem = fetchItem
   regionSource.disposeItem = (item, tokens) => {
-    const target = item === null ? undefined : targets.get(item)
-    if (target !== undefined) releaseTarget(target)
-    // Upstream unlocks the source tiles. Given null, it skips disposing the item.
-    upstreamDisposeItem(target !== undefined ? null : item, tokens)
+    upstreamDisposeItem(item !== null && ownItems.has(item) ? null : item, tokens)
+  }
+
+  return {
+    prioritize(tokens) {
+      const key = tokens.join('_')
+      const target = queuedTargets.get(key)
+      const compositor = getCompositor()
+      if (target !== undefined && compositor !== null) compositor.prioritize(target)
+      // Still downloading its source tiles: queue it as waited for when it gets there.
+      else if (fetchingKeys.has(key)) waitedKeys.add(key)
+    },
   }
 }

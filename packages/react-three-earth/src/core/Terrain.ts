@@ -29,6 +29,14 @@ export interface TerrainOptions {
 
 const MEGABYTE_BYTES = 2 ** 20
 
+/** 3DTilesRenderer events asking for another `update` or render. */
+const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render'] as const
+
+interface FrameRequestDispatcher {
+  addEventListener(type: string, listener: () => void): void
+  removeEventListener(type: string, listener: () => void): void
+}
+
 /** The ground: a terrain tile pyramid with imagery layers draped on it. */
 export class Terrain {
   readonly tiles: TilesRenderer
@@ -77,7 +85,8 @@ export class Terrain {
 
   /**
    * Main-thread imagery work over the last frame: terrain tiles composed and milliseconds spent, with a
-   * breakdown. For on-device profiling; `Earth.inspect()` reports the main figures.
+   * breakdown. For on-device profiling; `Earth.inspect()` reports the main figures. The object is reused
+   * every frame: copy it to keep it.
    */
   get imageryStatistics(): ImageryFrameStatistics {
     return this.overlays.statistics.lastFrame
@@ -86,6 +95,19 @@ export class Terrain {
   /** Imagery compositions waiting for a later frame's budget. */
   get imageryCompositionsPending(): number {
     return this.overlays.compositor.pendingCount
+  }
+
+  /**
+   * Calls `listener` whenever the terrain needs another frame: tiles finished loading, or imagery is still
+   * waiting to be composed. Hosts that render on demand (R3F `frameloop="demand"`) forward it to their
+   * invalidate. Returns a function that removes the listener.
+   */
+  addFrameRequestListener(listener: () => void): () => void {
+    const tiles = this.tiles as unknown as FrameRequestDispatcher
+    for (const type of FRAME_REQUEST_EVENTS) tiles.addEventListener(type, listener)
+    return () => {
+      for (const type of FRAME_REQUEST_EVENTS) tiles.removeEventListener(type, listener)
+    }
   }
 
   /**

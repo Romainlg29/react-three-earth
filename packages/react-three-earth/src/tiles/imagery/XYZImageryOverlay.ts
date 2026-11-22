@@ -1,6 +1,7 @@
 import { XYZTilesOverlay } from '3d-tiles-renderer/three/plugins'
+import type { Texture } from 'three'
 
-import { composeRegionsOnGpu, type TiledRegionImageSourceLike } from './composeRegionsOnGpu.js'
+import { composeRegionsOnGpu, type GpuRegionComposition, type NormalizedRange, type TiledRegionImageSourceLike } from './composeRegionsOnGpu.js'
 import type { ImageryCompositor } from './ImageryCompositor.js'
 
 /** An overlay that composes on the GPU when the plugin it is added to gives it a compositor. */
@@ -26,10 +27,27 @@ export class XYZImageryOverlay extends XYZTilesOverlay implements GpuComposedOve
   compositor: ImageryCompositor | null = null
 
   declare regionImageSource: TiledRegionImageSourceLike | null
+  protected regionComposition: GpuRegionComposition | null = null
 
   // Upstream `TiledImageOverlay._init` creates the region source; it is private API (pinned to 0.5.x).
   async _init(): Promise<void> {
-    await (XYZTilesOverlay.prototype as unknown as { _init(this: XYZImageryOverlay): Promise<void> })._init.call(this)
-    if (this.regionImageSource !== null) composeRegionsOnGpu(this.regionImageSource, () => this.compositor)
+    await upstream._init.call(this)
+    if (this.regionImageSource !== null) this.regionComposition = composeRegionsOnGpu(this.regionImageSource, () => this.compositor)
+  }
+
+  // 3DTilesRenderer calls this when it starts waiting for a terrain tile's texture (in its priority order,
+  // visible tiles first), well after locking it at download start. Pinned to 0.5.x like `_init`.
+  getTexture(range: NormalizedRange, level = upstream.calculateLevel.call(this, range)): Promise<Texture | null> | Texture | null {
+    this.regionComposition?.prioritize([...range, level])
+    return upstream.getTexture.call(this, range, level)
   }
 }
+
+/** Upstream `TiledImageOverlay` methods this class wraps. */
+interface UpstreamInternals {
+  _init(this: XYZImageryOverlay): Promise<void>
+  calculateLevel(this: XYZImageryOverlay, range: NormalizedRange): number
+  getTexture(this: XYZImageryOverlay, range: NormalizedRange, level: number): Promise<Texture | null> | Texture | null
+}
+
+const upstream = XYZTilesOverlay.prototype as unknown as UpstreamInternals

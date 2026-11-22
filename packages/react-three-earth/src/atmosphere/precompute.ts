@@ -30,14 +30,14 @@ function trapezoidWeight(index: Node<'int'>, sampleCount: number): FloatNode {
 }
 
 export function computeTransmittanceTexel(model: AtmosphereModel, fragmentCoordinate: Vec2Node): Vec3Node {
-  const size = model.parameters.textureSizes.transmittance
+  const size = model.parameters.textureSizesTexels.transmittance
   const { radius, viewZenithCosine } = model.radiusAndCosineFromTransmittanceTextureUv(fragmentCoordinate.div(vec2(size.x, size.y)))
   return model.computeTransmittanceToTopAtmosphereBoundary(radius, viewZenithCosine)
 }
 
 /** Sun irradiance on the ground, averaged over the sun disk when it straddles the horizon. */
 export function computeDirectIrradianceTexel(model: AtmosphereModel, transmittance: Texture, fragmentCoordinate: Vec2Node): Vec3Node {
-  const size = model.parameters.textureSizes.irradiance
+  const size = model.parameters.textureSizesTexels.irradiance
   const { radius, sunZenithCosine } = model.radiusAndSunCosineFromIrradianceTextureUv(fragmentCoordinate.div(vec2(size.x, size.y)))
   const alpha = model.parameters.sunAngularRadiusRadians
   const averageCosine = select(
@@ -45,7 +45,7 @@ export function computeDirectIrradianceTexel(model: AtmosphereModel, transmittan
     float(0),
     select(sunZenithCosine.greaterThan(alpha), sunZenithCosine, sunZenithCosine.add(alpha).pow2().div(4 * alpha)),
   )
-  return model.solarIrradiance.mul(model.getTransmittanceToTopAtmosphereBoundary(transmittance, radius, sunZenithCosine)).mul(averageCosine)
+  return model.solarIrradianceWattsPerSquareMeterNanometer.mul(model.getTransmittanceToTopAtmosphereBoundary(transmittance, radius, sunZenithCosine)).mul(averageCosine)
 }
 
 /** Single Rayleigh and Mie scattering along a view ray, without phase functions. */
@@ -67,13 +67,13 @@ export function computeSingleScattering(
       .mul(model.getTransmittanceToSun(transmittance, sampleRadius, sampleSunCosine))
       .mul(trapezoidWeight(i, sampleCount))
       .toConst()
-    const altitude = sampleRadius.sub(model.bottomRadius).toConst()
+    const altitude = sampleRadius.sub(model.bottomRadiusKilometers).toConst()
     rayleighSum.addAssign(pathTransmittance.mul(model.rayleighDensity(altitude)))
     mieSum.addAssign(pathTransmittance.mul(model.mieDensity(altitude)))
   })
   return {
-    rayleigh: rayleighSum.mul(stepLength).mul(model.solarIrradiance).mul(model.rayleighScattering),
-    mie: mieSum.mul(stepLength).mul(model.solarIrradiance).mul(model.mieScattering),
+    rayleigh: rayleighSum.mul(stepLength).mul(model.solarIrradianceWattsPerSquareMeterNanometer).mul(model.rayleighScatteringPerKilometer),
+    mie: mieSum.mul(stepLength).mul(model.solarIrradianceWattsPerSquareMeterNanometer).mul(model.mieScatteringPerKilometer),
   }
 }
 
@@ -116,9 +116,9 @@ export function computeScatteringDensity(
   const sunDirection = vec3(sunX, sunY, sunZenithCosine).toConst()
 
   const angleStep = Math.PI / angularSamples
-  const altitude = radius.sub(model.bottomRadius).toConst()
-  const rayleighScattering = model.rayleighScattering.mul(model.rayleighDensity(altitude)).toConst()
-  const mieScattering = model.mieScattering.mul(model.mieDensity(altitude)).toConst()
+  const altitude = radius.sub(model.bottomRadiusKilometers).toConst()
+  const rayleighScatteringPerKilometer = model.rayleighScatteringPerKilometer.mul(model.rayleighDensity(altitude)).toConst()
+  const mieScatteringPerKilometer = model.mieScatteringPerKilometer.mul(model.mieDensity(altitude)).toConst()
 
   const density = vec3(0).toVar()
   Loop({ start: 0, end: angularSamples, type: 'int' }, ({ i: zenithIndex }) => {
@@ -156,14 +156,14 @@ export function computeScatteringDensity(
 
       If(hitsGround, () => {
         const groundNormal = vec3(0, 0, radius).add(incidentDirection.mul(distanceToGround)).normalize()
-        const irradiance = model.getIrradiance(groundIrradiance, float(model.bottomRadius), groundNormal.dot(sunDirection))
+        const irradiance = model.getIrradiance(groundIrradiance, float(model.bottomRadiusKilometers), groundNormal.dot(sunDirection))
         incidentRadiance.addAssign(groundReflectance.mul(irradiance))
       })
 
       const scatteringCosine = viewDirection.dot(incidentDirection).toConst()
-      const phaseWeighted = rayleighScattering
+      const phaseWeighted = rayleighScatteringPerKilometer
         .mul(model.rayleighPhaseFunction(scatteringCosine))
-        .add(mieScattering.mul(model.miePhaseFunction(scatteringCosine)))
+        .add(mieScatteringPerKilometer.mul(model.miePhaseFunction(scatteringCosine)))
       density.addAssign(incidentRadiance.mul(phaseWeighted).mul(solidAngle))
     })
   })

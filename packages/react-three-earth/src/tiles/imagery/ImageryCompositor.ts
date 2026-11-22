@@ -27,6 +27,12 @@ import { MeshBasicNodeMaterial, type WebGPURenderer } from 'three/webgpu'
  *   overlay's normalised projected space (Web Mercator for EPSG:3857), so in that space the composite is
  *   an axis-aligned blit. Placement is identical to the CPU canvas it replaces.
  *
+ * Source-tile GPU memory: a source tile's GPU copy is only needed while a queued composition (or a terrain
+ * tile that shows that source tile as is) uses it. The compositor reference-counts those uses and disposes
+ * the GPU copy when the count reaches zero, so source tiles do not sit uncounted next to the LRU-counted
+ * composites. `Texture.dispose()` frees only the GPU copy: the decoded ImageBitmap stays with the image
+ * source (three never closes it), and a later use uploads it again.
+ *
  * Orientation: three r187 samples ImageBitmap textures (decoded with `imageOrientation: 'flipY'`) and render
  * targets with v = 0 at the top of the image on both backends. Quads are drawn with north up, so the
  * composite keeps that convention, the same as a single source tile; the terrain shader flips v for both.
@@ -71,12 +77,20 @@ const sourceColor = sourceTexture.sample(uv().flipY())
  * Compositions are queued as source tiles finish decoding (off the main thread, by `createImageBitmap`), and
  * drawn by `render`, which the terrain calls once per frame with a time budget, so a burst of new tiles
  * spreads over several frames instead of stalling one.
+ *
+ * Two queues keep latency low: 3DTilesRenderer locks (and so queues) a terrain tile's imagery as soon as the
+ * tile starts downloading, in network order, but only waits for it later, in its own priority order.
+ * `prioritize` moves a composition that is being waited for ahead of the ones that are only preloads.
  */
 export class ImageryCompositor {
   /** Main-thread time `render` may spend per frame. At least one composition runs per frame regardless. */
   budgetMilliseconds: number
+  /** Called when a composition is queued, so a host that renders on demand can schedule a frame. */
+  onQueued: (() => void) | null = null
 
-  protected readonly queue: CompositionJob[] = []
+  protected readonly waitedQueue: CompositionJob[] = []
+  protected readonly preloadQueue: CompositionJob[] = []
+  protected readonly textureUseCounts = new Map<Texture, number>()
   protected readonly scene = new Scene()
   protected readonly camera = new OrthographicCamera(0, 1, 1, 0, -1, 1)
   protected readonly geometry = new PlaneGeometry(1, 1)
@@ -90,9 +104,9 @@ export class ImageryCompositor {
     this.scene.matrixWorldAutoUpdate = true
   }
 
-  /** Compositions waiting for the next `render`. */
+  /** Compositions waiting for a `render`. */
   get pendingCount(): number {
-    return this.queue.length
+    return this.waitedQueue.length + this.preloadQueue.length
   }
 
   /** Allocates a composite target: sRGB 8-bit, no depth, no mipmaps, like the canvas it replaces. */
@@ -110,9 +124,9 @@ export class ImageryCompositor {
 
   /**
    * Queues a composition. Resolves with `target.texture` once drawn. Rejects with the signal's reason if
-   * aborted first; the caller still owns (and disposes) the target.
+   * aborted first; the caller still owns (and disposes) the target. `waited` queues it ahead of preloads.
    */
-  enqueue(target: RenderTarget, draws: readonly CompositeDraw[], signal?: AbortSignal): Promise<Texture> {
+  enqueue(target: RenderTarget, draws: readonly CompositeDraw[], signal?: AbortSignal, waited = false): Promise<Texture> {
     return new Promise((resolve, reject) => {
       if (signal?.aborted === true) {
         reject(signal.reason)
@@ -120,61 +134,105 @@ export class ImageryCompositor {
       }
       const job: CompositionJob = { target, draws, resolve, reject, signal, onAbort: () => this.cancel(job) }
       signal?.addEventListener('abort', job.onAbort, { once: true })
-      this.queue.push(job)
+      for (const draw of draws) this.retainTexture(draw.texture)
+      ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
+      this.onQueued?.()
     })
   }
 
+  /** Moves the composition into `target` ahead of preloads, if it is still queued. */
+  prioritize(target: RenderTarget): void {
+    const index = this.preloadQueue.findIndex(job => job.target === target)
+    if (index === -1) return
+    this.waitedQueue.push(...this.preloadQueue.splice(index, 1))
+  }
+
+  /** Counts a use of a source texture's GPU copy (a queued draw, or a terrain tile showing it as is). */
+  retainTexture(texture: Texture): void {
+    this.textureUseCounts.set(texture, (this.textureUseCounts.get(texture) ?? 0) + 1)
+  }
+
+  /** Ends a use counted by `retainTexture`. The last one frees the GPU copy; the image stays for re-upload. */
+  releaseTexture(texture: Texture): void {
+    const count = (this.textureUseCounts.get(texture) ?? 0) - 1
+    if (count > 0) {
+      this.textureUseCounts.set(texture, count)
+      return
+    }
+    this.textureUseCounts.delete(texture)
+    texture.dispose()
+  }
+
   /**
-   * Draws queued compositions until the time budget runs out. Call once per frame, outside any other
-   * render. Returns how many compositions it drew.
+   * Draws queued compositions, waited-for ones first, until the time budget runs out. Call once per frame,
+   * outside any other render. Returns how many compositions it drew.
    */
   render(renderer: WebGPURenderer): number {
-    if (this.queue.length === 0) return 0
+    if (this.pendingCount === 0) return 0
     const startMilliseconds = performance.now()
-    const previousTarget = renderer.getRenderTarget()
-    const previousAutoClear = renderer.autoClear
-    const previousClearAlpha = renderer.getClearAlpha()
-    renderer.getClearColor(this.savedClearColor)
+    const restore = this.saveRendererState(renderer)
     renderer.autoClear = true
+    renderer.setMRT(null)
     renderer.setClearColor(0x000000, 0)
 
     let count = 0
     try {
-      while (this.queue.length > 0 && (count === 0 || performance.now() - startMilliseconds < this.budgetMilliseconds)) {
-        const job = this.queue.shift()!
-        job.signal?.removeEventListener('abort', job.onAbort)
+      while (this.pendingCount > 0 && (count === 0 || performance.now() - startMilliseconds < this.budgetMilliseconds)) {
+        this.drawJob(renderer, (this.waitedQueue.shift() ?? this.preloadQueue.shift())!)
         count++
-        try {
-          this.draw(renderer, job)
-          job.resolve(job.target.texture)
-        } catch (error) {
-          job.reject(error) // the tile reports a load error instead of waiting forever
-        }
       }
     } finally {
-      renderer.setRenderTarget(previousTarget)
-      renderer.autoClear = previousAutoClear
-      renderer.setClearColor(this.savedClearColor, previousClearAlpha)
+      restore()
     }
     return count
   }
 
   /** Rejects every queued composition and frees the compositor's own GPU resources. */
   dispose(): void {
-    for (const job of this.queue.splice(0)) {
-      job.signal?.removeEventListener('abort', job.onAbort)
+    for (const job of [...this.waitedQueue.splice(0), ...this.preloadQueue.splice(0)]) {
+      this.settle(job)
       job.reject(new DOMException('ImageryCompositor: disposed', 'AbortError'))
     }
     this.geometry.dispose()
     this.material.dispose()
   }
 
-  protected draw(renderer: WebGPURenderer, { target, draws }: CompositionJob): void {
-    this.prepareMeshes(draws)
-    renderer.setRenderTarget(target)
-    renderer.render(this.scene, this.camera)
-    // Drop texture references so released source tiles are not kept alive by the pool.
-    for (const mesh of this.meshes) mesh.userData.sourceTexture = null
+  protected drawJob(renderer: WebGPURenderer, job: CompositionJob): void {
+    try {
+      this.prepareMeshes(job.draws)
+      renderer.setRenderTarget(job.target)
+      renderer.render(this.scene, this.camera)
+      job.resolve(job.target.texture)
+    } catch (error) {
+      job.reject(error) // the tile reports a load error instead of waiting forever
+    } finally {
+      // Drop texture references so released source tiles are not kept alive by the pool.
+      for (const mesh of this.meshes) mesh.userData.sourceTexture = null
+      this.settle(job)
+    }
+  }
+
+  /** Detaches a job that leaves the queue: stops listening for its abort and ends its texture uses. */
+  protected settle(job: CompositionJob): void {
+    job.signal?.removeEventListener('abort', job.onAbort)
+    for (const draw of job.draws) this.releaseTexture(draw.texture)
+  }
+
+  /** Saves what `render` changes on the renderer and returns a function that restores it. */
+  protected saveRendererState(renderer: WebGPURenderer): () => void {
+    const target = renderer.getRenderTarget()
+    const cubeFace = renderer.getActiveCubeFace()
+    const mipmapLevel = renderer.getActiveMipmapLevel()
+    const mrt = renderer.getMRT()
+    const autoClear = renderer.autoClear
+    const clearAlpha = renderer.getClearAlpha()
+    renderer.getClearColor(this.savedClearColor)
+    return () => {
+      renderer.setRenderTarget(target, cubeFace, mipmapLevel)
+      renderer.setMRT(mrt)
+      renderer.autoClear = autoClear
+      renderer.setClearColor(this.savedClearColor, clearAlpha)
+    }
   }
 
   /** Places one quad per draw; quads are in the composite's 0 to 1 space, which the camera spans. */
@@ -199,8 +257,11 @@ export class ImageryCompositor {
   }
 
   protected cancel(job: CompositionJob): void {
-    const index = this.queue.indexOf(job)
-    if (index !== -1) this.queue.splice(index, 1)
+    for (const queue of [this.waitedQueue, this.preloadQueue]) {
+      const index = queue.indexOf(job)
+      if (index !== -1) queue.splice(index, 1)
+    }
+    this.settle(job)
     job.reject(job.signal?.reason)
   }
 }

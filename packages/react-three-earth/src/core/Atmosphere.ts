@@ -1,5 +1,4 @@
-import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
-import { Vector3, type Camera } from 'three'
+import type { Camera } from 'three'
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { AerialPerspectiveNode } from '../atmosphere/AerialPerspectiveNode.js'
@@ -13,9 +12,7 @@ export interface AtmosphereOptions {
   parameters?: AtmosphereParameters
 }
 
-const cameraPosition = /*#__PURE__*/ new Vector3()
-const surfacePoint = /*#__PURE__*/ new Vector3()
-const surfaceNormal = /*#__PURE__*/ new Vector3()
+let warnedAboutDepthBuffer = false
 
 /**
  * Physically based sky, sun light and aerial perspective: Bruneton's precomputed atmospheric scattering
@@ -24,17 +21,23 @@ const surfaceNormal = /*#__PURE__*/ new Vector3()
  * - `light`: the sun, lighting node materials (terrain tiles) with attenuated sunlight and sky irradiance.
  *   `Earth.setAtmosphere` adds it to the scene.
  * - `createAerialPerspective`: the post-processing node that draws the sky and hazes distant geometry.
- * - `update`: points the sun for a date. Call it every frame with the rendering camera.
+ * - `update`: points the sun for a date. Call it every frame.
  *
  * Luminances are scaled so that sunlight at the top of the atmosphere is about 1.5; an exposure of
- * about 10 suits daylight.
+ * about 10 suits daylight. Create the renderer with `reversedDepthBuffer: true`: with a standard depth
+ * buffer, distances to far terrain (seen from orbit) are too coarse and the haze bands.
  */
 export class Atmosphere {
   readonly context: AtmosphereContext
   readonly light: AtmosphereLight
 
-  /** Resolves once the lookup textures are generated (after `install`). */
-  ready: Promise<void> | null = null
+  /**
+   * Settles once the lookup textures are generated (true), or when generation is cancelled by `dispose`
+   * or fails (false; failures are logged). Null before `install`.
+   */
+  ready: Promise<boolean> | null = null
+
+  protected generation: AbortController | null = null
 
   constructor({ parameters = new AtmosphereParameters() }: AtmosphereOptions = {}) {
     this.context = new AtmosphereContext(parameters)
@@ -46,7 +49,7 @@ export class Atmosphere {
   }
 
   /** Unit vector towards the sun in ECEF, as of the last `update`. Read-only. */
-  get sunDirectionECEF(): Vector3 {
+  get sunDirectionECEF(): ReturnType<typeof getSunDirectionECEF> {
     return this.context.sunDirection.value
   }
 
@@ -56,30 +59,46 @@ export class Atmosphere {
   }
 
   /**
-   * Generates the lookup textures on this renderer, once (see `generationTimeMilliseconds`; `ready`
-   * resolves when done). Nothing else on the renderer changes, so the returned undo function has nothing
-   * to restore; the textures are kept until `dispose`, since generating them again would cost the same.
+   * Starts generating the lookup textures on this renderer, a few passes per frame (see `ready` and
+   * `generationTimeMilliseconds`). Until they are ready the scene renders with neutral sunlight and no sky.
+   * Nothing else on the renderer changes, so the returned undo function has nothing to restore; the
+   * textures are kept until `dispose`, since generating them again would cost the same.
    */
   install(renderer: WebGPURenderer): () => void {
-    this.light.atmosphere = this.context
-    this.ready ??= renderer.init().then(async () => {
-      await this.context.textures.generate(renderer)
-    })
+    this.warnAboutDepthBuffer(renderer)
+    if (this.ready === null) {
+      const generation = new AbortController()
+      this.generation = generation
+      this.ready = this.generate(renderer, generation.signal)
+    }
     return () => {}
   }
 
-  /** Points the sun for this date and centres the model's planet under the camera. Cheap. */
-  update(camera: Camera, date: Date): void {
+  protected async generate(renderer: WebGPURenderer, signal: AbortSignal): Promise<boolean> {
+    try {
+      await renderer.init()
+      if (signal.aborted) return false
+      const milliseconds = await this.context.textures.generate(renderer, signal)
+      if (milliseconds === null) return false
+      this.context.texturesReady.value = 1
+      return true
+    } catch (error) {
+      console.error('Atmosphere: generating the lookup textures failed.', error)
+      return false
+    }
+  }
+
+  protected warnAboutDepthBuffer(renderer: WebGPURenderer): void {
+    if (renderer.reversedDepthBuffer || warnedAboutDepthBuffer) return
+    warnedAboutDepthBuffer = true
+    console.warn('Atmosphere: create the renderer with `reversedDepthBuffer: true`, or the haze bands on distant terrain.')
+  }
+
+  /** Points the sun and its light for this date. Cheap. */
+  update(_camera: Camera, date: Date): void {
     const sunDirection = getSunDirectionECEF(date, this.context.sunDirection.value)
     this.light.position.copy(sunDirection)
     this.light.updateMatrixWorld()
-
-    camera.updateMatrixWorld()
-    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
-    if (cameraPosition.lengthSq() < 1) return // At the Earth's centre: no meaningful surface point.
-    WGS84_ELLIPSOID.getPositionToSurfacePoint(cameraPosition, surfacePoint)
-    WGS84_ELLIPSOID.getPositionToNormal(cameraPosition, surfaceNormal)
-    this.context.setReferencePoint(surfacePoint, surfaceNormal)
   }
 
   /**
@@ -91,9 +110,10 @@ export class Atmosphere {
     return new AerialPerspectiveNode(this.context, colorNode as Node<'vec4'>, depthNode as Node<'vec4'>, camera)
   }
 
-  /** Releases the GPU textures. A later `install` generates them again. */
+  /** Cancels a pending generation and releases the GPU textures. A later `install` generates them again. */
   dispose(): void {
-    this.light.atmosphere = null
+    this.generation?.abort()
+    this.generation = null
     this.ready = null
     this.context.dispose()
   }

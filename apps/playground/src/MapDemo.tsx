@@ -39,7 +39,7 @@ function InitialView() {
 export function MapDemo() {
   return (
     <>
-      <Canvas renderer={{ antialias: true }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={new Date('2026-11-22T07:00:00Z')}>
           <InitialView />
           <Terrain>

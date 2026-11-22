@@ -83,9 +83,11 @@ async function precision(highPrecision) {
 async function map(atmosphere) {
   const { page, errors } = await open(`/?fixtures&atmosphere=${atmosphere ? 1 : 0}`)
   await page.waitForFunction(() => {
-    const t = window.earth?.inspect().terrain
-    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0
-  }, null, { timeout: 120_000, polling: 500 })
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    const atmosphereReady = inspection?.atmosphere === null || inspection?.atmosphere?.ready === true
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && atmosphereReady
+  }, null, { timeout: 240_000, polling: 500 })
   await page.waitForTimeout(3000) // overlays compose and tiles fade in
   const png = await page.screenshot()
   writeFileSync(new URL(`map-atmosphere-${atmosphere ? 'on' : 'off'}.png`, OUT), png)

@@ -27,25 +27,36 @@ function wrapDegrees(degrees: number): number {
   return ((degrees % 360) + 360) % 360
 }
 
-/** The sun's apparent ecliptic longitude and the obliquity of the ecliptic, in radians. */
-export function getSunEclipticCoordinates(date: Date): { eclipticLongitudeRadians: number; obliquityRadians: number; distanceAstronomicalUnits: number } {
+/** The sun's apparent ecliptic longitude, the obliquity of the ecliptic and the Earth-sun distance. */
+export interface SunEclipticCoordinates {
+  eclipticLongitudeRadians: number
+  obliquityRadians: number
+  distanceAstronomicalUnits: number
+}
+
+/** The sun's ecliptic coordinates for a date. Writes into `target` (allocation-free when one is passed). */
+export function getSunEclipticCoordinates(
+  date: Date,
+  target: SunEclipticCoordinates = { eclipticLongitudeRadians: 0, obliquityRadians: 0, distanceAstronomicalUnits: 0 },
+): SunEclipticCoordinates {
   const days = getDaysSinceJ2000(date)
   const meanLongitudeDegrees = 280.46 + 0.9856474 * days
   const meanAnomaly = wrapDegrees(357.528 + 0.9856003 * days) * RADIANS_PER_DEGREE
   const eclipticLongitudeDegrees = meanLongitudeDegrees + 1.915 * Math.sin(meanAnomaly) + 0.02 * Math.sin(2 * meanAnomaly)
-  return {
-    eclipticLongitudeRadians: wrapDegrees(eclipticLongitudeDegrees) * RADIANS_PER_DEGREE,
-    obliquityRadians: (23.439 - 4e-7 * days) * RADIANS_PER_DEGREE,
-    distanceAstronomicalUnits: 1.00014 - 0.01671 * Math.cos(meanAnomaly) - 0.00014 * Math.cos(2 * meanAnomaly),
-  }
+  target.eclipticLongitudeRadians = wrapDegrees(eclipticLongitudeDegrees) * RADIANS_PER_DEGREE
+  target.obliquityRadians = (23.439 - 4e-7 * days) * RADIANS_PER_DEGREE
+  target.distanceAstronomicalUnits = 1.00014 - 0.01671 * Math.cos(meanAnomaly) - 0.00014 * Math.cos(2 * meanAnomaly)
+  return target
 }
+
+const eclipticScratch: SunEclipticCoordinates = { eclipticLongitudeRadians: 0, obliquityRadians: 0, distanceAstronomicalUnits: 0 }
 
 /**
  * Unit vector towards the sun in the Earth-centred inertial frame of date (equator and equinox of date:
  * +X to the vernal equinox, +Z to the north celestial pole).
  */
 export function getSunDirectionECI(date: Date, target = new Vector3()): Vector3 {
-  const { eclipticLongitudeRadians: longitude, obliquityRadians: obliquity } = getSunEclipticCoordinates(date)
+  const { eclipticLongitudeRadians: longitude, obliquityRadians: obliquity } = getSunEclipticCoordinates(date, eclipticScratch)
   return target.set(Math.cos(longitude), Math.cos(obliquity) * Math.sin(longitude), Math.sin(obliquity) * Math.sin(longitude))
 }
 

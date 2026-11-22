@@ -1,7 +1,14 @@
-export { AtmosphereParameters, type AtmosphereTextureSizes } from './AtmosphereParameters.js'
-export { AtmosphereModel, LENGTH_UNIT_METERS, type AtmosphereTextureSet, type ScatteringCoordinates } from './AtmosphereModel.js'
+export { AtmosphereParameters, type AtmosphereParametersOverrides, type AtmosphereTextureSizes } from './AtmosphereParameters.js'
+export {
+  AtmosphereModel,
+  LENGTH_UNIT_METERS,
+  type AtmosphereTextureSet,
+  type RadianceAndTransmittance,
+  type ScatteringCoordinates,
+  type SunAndSkyIrradiance,
+} from './AtmosphereModel.js'
 export { AtmosphereTextures } from './AtmosphereTextures.js'
-export { AtmosphereContext } from './AtmosphereContext.js'
+export { AtmosphereContext, correctPositionForEllipsoid } from './AtmosphereContext.js'
 export { AtmosphereLight, AtmosphereLightNode } from './AtmosphereLight.js'
 export { AerialPerspectiveNode } from './AerialPerspectiveNode.js'
 export {
@@ -12,4 +19,5 @@ export {
   getSunDirectionECI,
   getSunEclipticCoordinates,
   rotateECIToECEF,
+  type SunEclipticCoordinates,
 } from './ephemeris.js'

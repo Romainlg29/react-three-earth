@@ -26,7 +26,7 @@ export type ImageryTiming = 'compositionMilliseconds' | 'layerSetupMilliseconds'
  * counted. Work done between two frames counts towards the frame interval it falls in.
  */
 export class ImageryStatistics {
-  /** The last complete frame interval: from one `endFrame` to the next. */
+  /** The last complete frame interval: from one `endFrame` to the next. Reused: copy it to keep it. */
   lastFrame: ImageryFrameStatistics = emptyFrame()
   /** Since the plugin was created. */
   readonly total: ImageryFrameStatistics = emptyFrame()
@@ -56,9 +56,15 @@ export class ImageryStatistics {
     }
   }
 
-  /** Closes the current frame interval: it becomes `lastFrame`. */
+  /** Closes the current frame interval: it becomes `lastFrame`. Swaps two objects, so it allocates nothing. */
   endFrame(): void {
+    const previous = this.lastFrame
     this.lastFrame = this.current
-    this.current = emptyFrame()
+    this.current = previous
+    this.current.tilesComposited = 0
+    this.current.compositionMilliseconds = 0
+    this.current.layerSetupMilliseconds = 0
+    this.current.tileSplittingMilliseconds = 0
+    this.current.mainThreadMilliseconds = 0
   }
 }

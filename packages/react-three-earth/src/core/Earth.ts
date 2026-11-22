@@ -33,7 +33,12 @@ export interface EarthInspection {
     imageryMainThreadMillisecondsTotal: number
   }
   imageryLayers: number
-  atmosphere: boolean
+  /** Null without an atmosphere. */
+  atmosphere: {
+    /** True once the lookup textures are generated; until then the scene renders without haze or sky. */
+    ready: boolean
+    generationTimeMilliseconds: number | null
+  } | null
 }
 
 function inspectImagery(terrain: Terrain) {
@@ -132,7 +137,13 @@ export class Earth extends Group {
               ...inspectImagery(terrain),
             },
       imageryLayers: this.imagery.size,
-      atmosphere: this.atmosphere !== null,
+      atmosphere:
+        this.atmosphere === null
+          ? null
+          : {
+              ready: this.atmosphere.generationTimeMilliseconds !== null,
+              generationTimeMilliseconds: this.atmosphere.generationTimeMilliseconds,
+            },
     }
   }
 

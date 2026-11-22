@@ -26,7 +26,9 @@ import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
  *
  * It reads the scene camera given to it, never the renderer's: inside a post-processing pass the renderer
  * draws a full-screen quad with its own camera. Perspective cameras only. Works with standard, reversed
- * and logarithmic depth buffers.
+ * and logarithmic depth buffers; use a reversed one, since a standard float depth buffer with a far plane
+ * at 1e8 m resolves distances from orbit only in steps of hundreds of kilometres, and the haze bands.
+ * Until the lookup textures are generated it passes the scene colour through.
  */
 export class AerialPerspectiveNode extends Node {
   static get type(): string {
@@ -34,18 +36,26 @@ export class AerialPerspectiveNode extends Node {
   }
 
   readonly context: AtmosphereContext
-  colorNode: Node<'vec4'>
-  depthNode: Node<'vec4'>
-  camera: Camera
-  /** Draws the sun disk in the sky. */
-  showSun = true
+  readonly colorNode: Node<'vec4'>
+  readonly depthNode: Node<'vec4'>
+  /** The scene camera. Fixed: the shader is built for it. */
+  readonly camera: Camera
+  /** Whether the sky shows the sun disk. Fixed: the shader is built with or without it. */
+  readonly showSun: boolean
 
-  constructor(context: AtmosphereContext, colorNode: Node<'vec4'>, depthNode: Node<'vec4'>, camera: Camera) {
+  constructor(
+    context: AtmosphereContext,
+    colorNode: Node<'vec4'>,
+    depthNode: Node<'vec4'>,
+    camera: Camera,
+    { showSun = true }: { showSun?: boolean } = {},
+  ) {
     super('vec4')
     this.context = context
     this.colorNode = colorNode
     this.depthNode = depthNode
     this.camera = camera
+    this.showSun = showSun
   }
 
   override setup(builder: NodeBuilder): Node<'vec4'> {
@@ -54,12 +64,12 @@ export class AerialPerspectiveNode extends Node {
     const renderer = builder.renderer
     const logarithmicDepth = renderer.logarithmicDepthBuffer && !renderer.reversedDepthBuffer
 
-    const { model, textures, sunDirection } = this.context
+    const { model, textures, sunDirection, texturesReady } = this.context
     const projectionMatrixInverse = uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.projectionMatrixInverse))
     const cameraWorldMatrix = uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.matrixWorld))
     const near = uniform(1).onRenderUpdate(() => camera.near)
     const far = uniform(1).onRenderUpdate(() => camera.far)
-    const cameraPosition = this.context.createCameraPositionNode(camera)
+    const cameraPositionKilometers = this.context.createCameraPositionKilometersNode(camera)
     const skyLuminanceFactor = this.context.skyLuminanceFactor
     const { colorNode, depthNode } = this
 
@@ -70,15 +80,19 @@ export class AerialPerspectiveNode extends Node {
       const worldDirection = cameraWorldMatrix.mul(vec4(viewDirection, 0)).xyz.normalize().toConst()
       const sunDisk = this.showSun ? this.sunDiskMask(worldDirection) : float(0)
 
+      const cameraPosition = this.context.toAtmosphereFrame(cameraPositionKilometers).toConst()
       const luminance = vec3(0).toVar()
-      If(isBackgroundDepth(depth), () => {
+      // Until the lookup textures are generated, show the scene as it is (the sky stays black).
+      If(texturesReady.lessThan(0.5), () => {
+        luminance.assign(colorNode.rgb)
+      }).ElseIf(isBackgroundDepth(depth), () => {
         const sky = model.getSkyRadiance(textures, cameraPosition, worldDirection, sunDirection)
         const sun = sky.transmittance.mul(model.solarRadiance).mul(this.context.sunLuminanceFactor).mul(sunDisk)
         luminance.assign(sky.radiance.mul(skyLuminanceFactor).add(sun))
       }).Else(() => {
         const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
         const distanceMeters = viewZ.div(viewDirection.z)
-        const point = cameraPosition.add(worldDirection.mul(distanceMeters.div(LENGTH_UNIT_METERS)))
+        const point = this.context.toAtmosphereFrame(cameraPositionKilometers.add(worldDirection.mul(distanceMeters.div(LENGTH_UNIT_METERS))))
         const between = model.getSkyRadianceToPoint(textures, cameraPosition, point, sunDirection)
         luminance.assign(colorNode.rgb.mul(between.transmittance).add(between.radiance.mul(skyLuminanceFactor)))
       })
