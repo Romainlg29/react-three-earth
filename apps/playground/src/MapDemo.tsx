@@ -23,9 +23,10 @@ const withAtmosphere = params.get('atmosphere') !== '0'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery.
 const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? '/fixtures/style.json' : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
-// `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device. The
-// dev server never caches them, so that edits to the atmosphere's shaders always show.
-const atmosphereCache = import.meta.env.PROD && !params.has('nocache')
+// The atmosphere's lookup textures are cached between page loads, in dev too: the cache key holds
+// ATMOSPHERE_PRECOMPUTE_VERSION, which a unit test makes you bump when the generating shaders change.
+// `?nocache` always generates them, for timing generation on a device.
+const atmosphereCache = !params.has('nocache')
 // `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
 const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 const showStatistics = params.get('stats') !== '0'
