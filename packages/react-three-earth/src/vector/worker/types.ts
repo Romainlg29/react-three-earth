@@ -43,6 +43,8 @@ export interface MapStyleSummary {
   backgroundByZoom: Array<[number, number, number, number] | null>
   /** Style layers the renderer skipped (unsupported types), for a one-time warning. */
   skippedLayers: string[]
+  /** The `attribution` of the style's drawn sources, from the style, TileJSON or PMTiles metadata, in the style's source order. */
+  attributions: string[]
 }
 
 /** One vector tile to process. */

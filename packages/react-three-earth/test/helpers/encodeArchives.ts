@@ -51,7 +51,7 @@ export function encodeGlyphRange(fontStack: string, range: string, glyphs: TestG
 }
 
 /** An uncompressed PMTiles v3 archive of MVT tiles (one root directory, no leaves). */
-export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; data: Uint8Array }>, minimumZoom: number, maximumZoom: number): Uint8Array {
+export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; data: Uint8Array }>, minimumZoom: number, maximumZoom: number, metadataJson = '{}'): Uint8Array {
   const entries = tiles.map(tile => ({ id: zxyToTileId(tile.z, tile.x, tile.y), data: tile.data })).sort((a, b) => a.id - b.id)
   const directory: number[] = []
   varint(directory, entries.length)
@@ -63,7 +63,7 @@ export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; da
   for (let index = 0; index < entries.length; index++) varint(directory, 1) // run lengths
   for (const entry of entries) varint(directory, entry.data.length)
   entries.forEach((entry, index) => varint(directory, index === 0 ? 1 : 0)) // offset + 1, then contiguous
-  const metadata = [...new TextEncoder().encode('{}')]
+  const metadata = [...new TextEncoder().encode(metadataJson)]
   const headerLength = 127
   const rootOffset = headerLength
   const metadataOffset = rootOffset + directory.length

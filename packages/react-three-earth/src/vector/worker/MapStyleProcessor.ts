@@ -75,7 +75,7 @@ export class MapStyleProcessor {
    */
   protected readonly revalidatedTiles = new Set<string>()
 
-  protected constructor(layers: CompiledStyleLayer[], fetchers: Map<string, VectorTileFetcher>, glyphs: GlyphProvider, skipped: string[]) {
+  protected constructor(layers: CompiledStyleLayer[], fetchers: Map<string, VectorTileFetcher>, glyphs: GlyphProvider, skipped: string[], attributions: string[]) {
     this.layers = layers
     this.fetchers = fetchers
     this.glyphs = glyphs
@@ -83,6 +83,7 @@ export class MapStyleProcessor {
       sources: [...fetchers].map(([id, fetcher]) => ({ id, minimumZoom: fetcher.minimumZoom, maximumZoom: fetcher.maximumZoom })),
       backgroundByZoom: Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => this.backgroundAt(zoom)),
       skippedLayers: skipped,
+      attributions,
     }
   }
 
@@ -118,7 +119,15 @@ export class MapStyleProcessor {
       fetch,
       ...(hooks.drawLocalGlyph !== undefined ? { drawLocalGlyph: hooks.drawLocalGlyph } : {}),
     })
-    return new MapStyleProcessor(drawable, fetchers, glyphs, skipped)
+    // In the style's source order, not in the order the requests finished
+    // and only for sources a drawn layer uses
+    const attributions = Object.entries(style.sources ?? {}).flatMap(([id, source]) => {
+      const fetcher = fetchers.get(id)
+      if (fetcher === undefined || !usedSources.has(id)) return []
+      const attribution = source.attribution ?? fetcher.attribution
+      return typeof attribution === 'string' ? [attribution] : []
+    })
+    return new MapStyleProcessor(drawable, fetchers, glyphs, skipped, attributions)
   }
 
   /** Glyph atlas changes since the last call. Send them with (and before) the next bucket. */

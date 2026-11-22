@@ -2,6 +2,8 @@ import { PMTiles, TileType } from 'pmtiles'
 
 /** Fetches the raw (decompressed) bytes of vector tiles of one style source. */
 export interface VectorTileFetcher {
+  /** The attribution in the source's TileJSON or PMTiles metadata, when it has one. */
+  attribution?: string
   readonly minimumZoom: number
   readonly maximumZoom: number
   /**
@@ -21,6 +23,7 @@ export interface VectorSourceSpecification {
   minzoom?: number
   maxzoom?: number
   scheme?: 'xyz' | 'tms'
+  attribution?: string
 }
 
 export interface FetcherContext {
@@ -32,7 +35,10 @@ export interface FetcherContext {
 /** Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. */
 export async function createVectorTileFetcher(source: VectorSourceSpecification, context: FetcherContext): Promise<VectorTileFetcher> {
   if (source.url?.startsWith('pmtiles://') === true) {
-    return PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context)
+    // The style's own attribution wins, so the archive's metadata is only read when the style has none
+    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context, typeof source.attribution !== 'string')
+    if (typeof source.attribution === 'string') archive.attribution = source.attribution
+    return archive
   }
   let specification = source
   let baseUrl = context.baseUrl
@@ -46,13 +52,17 @@ export async function createVectorTileFetcher(source: VectorSourceSpecification,
   }
   const templates = specification.tiles
   if (templates === undefined || templates.length === 0) throw new Error('MapStyleSource: a vector source needs `tiles`, a TileJSON `url` or a `pmtiles://` url.')
-  return new XYZFetcher(
+  const fetcher = new XYZFetcher(
     templates.map(template => resolveTemplate(template, baseUrl)),
     specification.minzoom ?? 0,
     specification.maxzoom ?? 22,
     specification.scheme === 'tms',
     context,
   )
+  // The style's own `attribution` on the source wins over the TileJSON's
+  const attribution = source.attribution ?? specification.attribution
+  if (typeof attribution === 'string') fetcher.attribution = attribution
+  return fetcher
 }
 
 function withoutUndefined<T extends object>(value: T): Partial<T> {
@@ -72,6 +82,8 @@ export function resolveUrl(url: string, baseUrl: string): string {
 
 /** XYZ (or TMS) URL templates, served in turn across `tiles` entries. */
 export class XYZFetcher implements VectorTileFetcher {
+  attribution?: string
+
   constructor(
     protected readonly templates: string[],
     readonly minimumZoom: number,
@@ -103,38 +115,69 @@ export async function decompressIfGzipped(bytes: Uint8Array): Promise<Uint8Array
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
+/** What a `PMTilesFetcher` shares with its archive's byte reader. */
+interface PMTilesFetcherState {
+  /** Set by `invalidate`: range requests skip the HTTP cache's freshness from then on. */
+  revalidate: boolean
+  /** The first read's bytes (offset 0), which answer later ranges inside them; cleared by `invalidate`. */
+  firstBytes: { data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string } | undefined
+  /** Incremented by `invalidate`: a read started before it must not store its (stale) bytes as `firstBytes`. */
+  generation: number
+}
+
 /** A PMTiles v3 archive read with HTTP range requests. */
 export class PMTilesFetcher implements VectorTileFetcher {
+  attribution?: string
+
   protected constructor(
     protected archive: PMTiles,
     readonly minimumZoom: number,
     readonly maximumZoom: number,
-    protected readonly options: { revalidate: boolean },
+    protected readonly options: PMTilesFetcherState,
   ) {}
 
-  static async create(url: string, context: FetcherContext): Promise<PMTilesFetcher> {
+  static async create(url: string, context: FetcherContext, readAttribution = false): Promise<PMTilesFetcher> {
     // Once invalidated, the archive may have been replaced: range requests skip the HTTP cache's freshness.
-    const options = { revalidate: false }
+    // pmtiles caches the header and directories but not the JSON metadata. The first read (offset 0, 16 KiB) almost
+    // always holds the metadata too, so later ranges inside it are answered from these bytes (`firstBytes`) instead of
+    // the network. `invalidate` forgets them.
+    const options: PMTilesFetcherState = { revalidate: false, firstBytes: undefined, generation: 0 }
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
       getBytes: async (offset: number, length: number, signal?: AbortSignal) => {
+        const firstBytes = options.firstBytes
+        if (firstBytes !== undefined && offset + length <= firstBytes.data.byteLength) {
+          const { data, etag, cacheControl, expires } = firstBytes
+          return { data: data.slice(offset, offset + length), etag, cacheControl, expires }
+        }
+        const generation = options.generation
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
         const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) })
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
           throw new Error(`MapStyleSource: PMTiles ${url} answered ${response.status}; the server must support range requests.`)
         }
-        return {
-          data: await response.arrayBuffer(),
+        const data = await response.arrayBuffer()
+        const result = {
+          data,
           etag: response.headers.get('ETag') ?? undefined,
           cacheControl: response.headers.get('Cache-Control') ?? undefined,
           expires: response.headers.get('Expires') ?? undefined,
         }
+        if (offset === 0 && options.firstBytes === undefined && generation === options.generation) options.firstBytes = { ...result, data: data.slice(0) }
+        return result
       },
     })
-    const header = await archive.getHeader()
+    // The metadata read waits for the header (it needs its offset) and is then served from the first bytes kept above,
+    // so it costs no extra request unless the metadata lies past the first 16 KiB. An unreadable block must not take
+    // the tiles down: attribution is optional.
+    const metadata = readAttribution ? archive.getMetadata().catch(() => null) : Promise.resolve(null)
+    const [header, loaded] = await Promise.all([archive.getHeader(), metadata])
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
-    return new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
+    const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
+    const attribution = (loaded as { attribution?: unknown } | null)?.attribution
+    if (typeof attribution === 'string') fetcher.attribution = attribution
+    return fetcher
   }
 
   /**
@@ -143,6 +186,8 @@ export class PMTilesFetcher implements VectorTileFetcher {
    */
   invalidate(): void {
     this.options.revalidate = true
+    this.options.firstBytes = undefined
+    this.options.generation++
     this.archive = new PMTiles(this.archive.source)
   }
 

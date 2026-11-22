@@ -8,7 +8,7 @@ import { CollisionGrid, layoutLineLabels, shapeText, type ShapingOptions } from 
 import { MapStyleProcessor, resolveTokens } from '../src/vector/worker/MapStyleProcessor.js'
 import { ShapeBuilder, splitIntoDashes } from '../src/vector/worker/ShapeBuilder.js'
 import { compileStyleLayers, toRgba } from '../src/vector/worker/styleLayers.js'
-import { resolveTemplate } from '../src/vector/worker/tileSources.js'
+import { PMTilesFetcher, resolveTemplate } from '../src/vector/worker/tileSources.js'
 import type { TileBucket } from '../src/vector/worker/types.js'
 import { createFakeFetch, encodeGlyphRange, encodePMTiles } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
@@ -326,6 +326,42 @@ describe('MapStyleProcessor', () => {
     expect(await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
   })
 
+  it('reads attribution from the style, TileJSON and PMTiles metadata, in the style\'s source order', async () => {
+    const archive = encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6, JSON.stringify({ attribution: '© Archive' }))
+    const { fetch, requests } = createFakeFetch({
+      'https://maps.test/tiles.json': { tiles: ['https://maps.test/t/{z}/{x}/{y}.pbf'], attribution: '© TileJSON' },
+      'https://maps.test/world.pmtiles': archive,
+    })
+    const style = testStyle({ type: 'vector', url: '/tiles.json' }) as { sources: Record<string, object>; layers: Array<Record<string, unknown>> }
+    style.sources = {
+      first: { type: 'vector', url: 'pmtiles://https://maps.test/world.pmtiles' },
+      second: { type: 'vector', url: '/tiles.json' },
+      third: { type: 'vector', tiles: ['https://maps.test/x/{z}/{x}/{y}.pbf'], attribution: '© Inline' },
+      overridden: { type: 'vector', url: '/tiles.json', attribution: '© Style wins' },
+    }
+    style.layers = ['first', 'second', 'third', 'overridden'].map(source => ({ id: `fill-${source}`, type: 'fill', source, 'source-layer': 'water', paint: {} }))
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
+    expect(processor.summary.attributions).toEqual(['© Archive', '© TileJSON', '© Inline', '© Style wins'])
+    // the metadata block lies inside the first 16 KiB, so it is served from the header read: no extra request
+    expect(requests.filter(request => request.url === 'https://maps.test/world.pmtiles')).toHaveLength(1)
+  })
+
+  it('credits only drawn sources, and skips the PMTiles metadata when the style has attribution', async () => {
+    const archive = encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6, JSON.stringify({ attribution: '© Archive' }))
+    const { fetch, requests } = createFakeFetch({ 'https://maps.test/world.pmtiles': archive })
+    const style = testStyle({ type: 'vector' }) as { sources: Record<string, object>; layers: Array<Record<string, unknown>> }
+    style.sources = {
+      used: { type: 'vector', url: 'pmtiles://https://maps.test/world.pmtiles', attribution: '© Style' },
+      unused: { type: 'vector', tiles: ['https://maps.test/x/{z}/{x}/{y}.pbf'], attribution: '© Unused' },
+      broken: { type: 'vector', url: '/missing.json', attribution: '© Broken' },
+    }
+    style.layers = ['used', 'broken'].map(source => ({ id: `fill-${source}`, type: 'fill', source, 'source-layer': 'water', paint: {} }))
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
+    expect(processor.summary.attributions).toEqual(['© Style'])
+    // one request for the header and root directory, none for the metadata block
+    expect(requests.filter(request => request.url === 'https://maps.test/world.pmtiles')).toHaveLength(1)
+  })
+
   it('reads a replaced PMTiles archive again after invalidate', async () => {
     const files: Record<string, Uint8Array> = { 'https://maps.test/world.pmtiles': encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6) }
     const { fetch } = createFakeFetch(files)
@@ -338,6 +374,38 @@ describe('MapStyleProcessor', () => {
     processor.invalidate(null)
     expect((await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).shapes).not.toBeNull()
     expect(await processor.processTile({ sourceId: 'base', x: 4, y: 5, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
+  })
+
+  it('never serves a PMTiles header read started before the last invalidate from memory', async () => {
+    const url = 'https://maps.test/world.pmtiles'
+    // Over 16 KiB, so a whole header read can be answered from the kept first bytes.
+    const padding = { z: 3, x: 7, y: 7, data: new Uint8Array(20_000).fill(7) }
+    const archive = (x: number, y: number) => encodePMTiles([{ z: 3, x, y, data: testTile() }, padding], 0, 6)
+    const files: Record<string, Uint8Array> = { [url]: archive(4, 5) }
+    const fake = createFakeFetch(files)
+    // Holds back the next offset-0 read until released, to answer after an invalidate.
+    let hold: { release: () => void } | null = null
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      if (hold === null && headers.range?.startsWith('bytes=0-') && fake.requests.length > 0) {
+        const response = await fake.fetch(input, init) // the archive as it is now, answered later
+        await new Promise<void>(resolve => (hold = { release: resolve }))
+        return response
+      }
+      return fake.fetch(input, init)
+    }) as typeof globalThis.fetch
+    const fetcher = await PMTilesFetcher.create(url, { baseUrl: url, requestHeaders: {}, fetch })
+    fetcher.invalidate()
+    files[url] = archive(1, 1)
+    const stale = fetcher.fetchTile(4, 5, 3) // its header read is held back
+    await vi.waitFor(() => expect(hold).not.toBeNull())
+    files[url] = archive(0, 0)
+    fetcher.invalidate()
+    hold!.release()
+    await stale.catch(() => null)
+    const requestsBefore = fake.requests.length
+    expect(await fetcher.fetchTile(0, 0, 3)).not.toBeNull() // read through the newest header
+    expect(fake.requests.length).toBeGreaterThan(requestsBefore)
   })
 
   it('keeps braces of URL templates when resolving them', () => {
@@ -386,7 +454,7 @@ describe('RefCountedCache', () => {
 describe('MapStyleOverlay', () => {
   function overlayWithSource(maximumZoom: number) {
     const overlay = new MapStyleOverlay({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [] }
+    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
     return overlay as unknown as { calculateLevel(range: number[]): number; getRegionTiles(range: number[], level: number): Array<{ key: string; textOnly: boolean; column: number }> }
   }
 

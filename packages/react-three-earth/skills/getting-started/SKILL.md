@@ -12,6 +12,7 @@ metadata:
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/*.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/*.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/controls/AttributionControl.ts'
   - 'Romainlg29/react-three-earth:apps/playground/src/MapDemo.tsx'
 ---
 
@@ -39,7 +40,7 @@ Vanilla three.js only needs `react-three-earth` and `three@0.187.0`.
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
 import { prefersWebGLBackend, setCameraView } from 'react-three-earth'
-import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
 import { useLayoutEffect } from 'react'
 
 function InitialView() {
@@ -57,23 +58,29 @@ export function App() {
       <Earth>
         <InitialView />
         <Terrain>
-          <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
+          <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" attribution="Terrain: Re:Earth Terrain, Mapterhorn" />
         </Terrain>
         <Imagery>
-          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <RasterTileSource
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          />
         </Imagery>
         <Atmosphere />
         <EarthControls />
+        <AttributionControl />
       </Earth>
     </Canvas>
   )
 }
 ```
 
-The canvas needs a sized parent: give `html, body, #root` `height: 100%` and `margin: 0`. The library
-draws no attribution: render the credit your tile providers require next to the canvas, outside
-`<Canvas>`, for example
-`<div style={{ position: 'fixed', right: 4, bottom: 4 }}>© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors</div>`.
+The canvas needs a sized parent: give `html, body, #root` `height: 100%` and `margin: 0`.
+
+Attribution is part of the setup: most tile providers require visible credit. Give every source an
+`attribution` (plain text, or HTML where only `<a href="https://…">` links survive) and add
+`<AttributionControl />`, which shows the credits of all sources, de-duplicated, in the canvas's
+bottom-right corner (see "Show attribution" below).
 
 What each piece does:
 
@@ -87,6 +94,7 @@ What each piece does:
   mapping at `exposure={10}` by default (see `atmosphere-and-sun`). Without it, add
   your own lights (`<ambientLight>`, `<directionalLight>`), or the terrain renders black.
 - `<EarthControls>`: orbit, pan and zoom with mouse or touch.
+- `<AttributionControl>`: the credit line, compact (a "ⓘ" button) on containers narrower than 640 px.
 
 ### Render the same globe in vanilla three.js
 
@@ -94,12 +102,15 @@ What each piece does:
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
 
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(innerWidth, innerHeight)
-document.body.append(renderer.domElement)
+const container = document.createElement('div')
+container.style.cssText = 'position: relative; width: 100vw; height: 100vh'
+document.body.append(container)
+container.append(renderer.domElement)
 await renderer.init()
 
 const scene = new Scene()
@@ -110,9 +121,22 @@ const earth = new Earth()
 earth.connect(renderer)
 scene.add(earth)
 
-const terrain = new Terrain({ sources: [new QuantizedMeshSource({ url: 'https://terrain.reearth.land/cesium-mesh/ellipsoid/' })] })
+const terrain = new Terrain({
+  sources: [new QuantizedMeshSource({ url: 'https://terrain.reearth.land/cesium-mesh/ellipsoid/', attribution: 'Terrain: Re:Earth Terrain, Mapterhorn' })],
+})
 earth.setTerrain(terrain)
-earth.addImagery(new Imagery({ sources: [new RasterTileSource({ url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' })] }))
+earth.addImagery(
+  new Imagery({
+    sources: [
+      new RasterTileSource({
+        url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      }),
+    ],
+  }),
+)
+// The credit line, bottom-right of the canvas's parent; dispose() it on teardown
+const attributionControl = new AttributionControl({ earth, container })
 
 const atmosphere = new Atmosphere()
 atmosphere.install(renderer)
@@ -145,7 +169,31 @@ addEventListener('resize', () => {
 
 The order inside the loop matters: controls, then `earth.update`, then render. Without an atmosphere,
 call `renderer.render(scene, camera)` instead of the pipeline and add lights. Call `earth.dispose()`
-and `controls.dispose()` on teardown.
+`attributionControl.dispose()` and `controls.dispose()` on teardown.
+
+### Show attribution
+
+`attribution` goes on every source (`QuantizedMeshSource`, `RasterTileSource`, `MapStyleSource`). A
+`MapStyleSource` also reads the `attribution` of its style's vector sources and their TileJSON or PMTiles
+metadata once the style has loaded, so a style from a provider usually needs no option. Credits are
+de-duplicated and ordered terrain first, then imagery layers in order.
+
+```tsx
+import { AttributionControl } from 'react-three-earth/react'
+
+// Inside <Earth>. compact: undefined (automatic) | true (always a "ⓘ" button) | false (always the text)
+export const Credits = () => <AttributionControl compact customAttribution="Flights: <a href='https://example.com/data'>Example data</a>" />
+```
+
+Vanilla: `new AttributionControl({ earth, container, compact, customAttribution })`, and `earth.getAttributions()`
+returns the strings. Listen to `earth.addEventListener('attributionchange', …)` to render your own. Only
+text and `<a href>` links with `http` or `https` URLs are kept; any other markup is dropped, so provider
+strings are safe to pass. Restyle with CSS variables on an ancestor:
+`--react-three-earth-attribution-background`, `-color`, `-link-color`, `-font-size`.
+
+The control injects one `<style>` tag, which a strict Content Security Policy blocks unless it allows
+`style-src 'unsafe-inline'`; otherwise write the rules yourself for the class names
+`react-three-earth-attribution`, `-text` and `-toggle`.
 
 ### Expose the Earth to agents and tests
 
@@ -194,6 +242,11 @@ Helpers such as `setCameraView` and `toCartesian` are only in the root entry.
 The library pins `three >=0.187.0 <0.188.0` and R3F v10. Two copies of three in the bundle break
 `instanceof` checks and node materials silently. Check with `pnpm why three`.
 
+### MEDIUM: Shipping without attribution
+
+Tile providers (OpenStreetMap among them) require visible credit. The library fetches nothing itself,
+so it only shows what you give it: set `attribution` on each source and render `<AttributionControl />`.
+
 ### MEDIUM: Leaving out `reversedDepthBuffer: true`
 
 The atmosphere logs `create the renderer with reversedDepthBuffer: true` and distant terrain shows haze
@@ -207,6 +260,7 @@ with `near: 1, far: 1e8`.
 ## Completion
 
 - The page shows terrain with imagery and a blue sky, and the console has no errors.
+- The credit line shows each source's attribution: `earth.getAttributions()` is not empty.
 - `earth.inspect().terrain.tilesVisible` is above 0 and `earth.inspect().atmosphere.ready` turns true
   after a few seconds (the lookup textures are generated on the GPU at startup).
 - If the globe is blank or black, load the `inspect-and-debug` skill.

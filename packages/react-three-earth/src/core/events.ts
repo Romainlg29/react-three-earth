@@ -30,6 +30,11 @@ export interface EarthEventMap extends Object3DEventMap {
    * `<Earth>` does it for you.
    */
   framerequest: object
+  /**
+   * The result of `getAttributions()` may have changed: a source was added or removed, or a style finished
+   * loading its metadata. `AttributionControl` follows it.
+   */
+  attributionchange: object
 }
 
 export type EarthEventType = Exclude<keyof EarthEventMap, keyof Object3DEventMap>

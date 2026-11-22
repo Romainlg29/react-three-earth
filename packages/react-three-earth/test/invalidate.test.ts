@@ -68,7 +68,7 @@ class TestOverlay extends MapStyleOverlay {
 
   constructor() {
     super({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [] }
+    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
     this.compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
     const backend: MapStyleBackend = {
       init: async () => this.summary!,
