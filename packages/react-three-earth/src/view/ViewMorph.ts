@@ -37,6 +37,7 @@ const scratchScale = new Vector3()
 const scratchQuaternion = new Quaternion()
 const scratchMatrix = new Matrix4()
 const scratchMatrix2 = new Matrix4()
+const scratchMatrix3 = new Matrix4()
 const ray = new Ray()
 const plane = new Plane()
 const cartographic = { lat: 0, lon: 0, height: 0 }
@@ -369,8 +370,12 @@ export class ViewMorph {
 
     // Moving the anchor moves the map: carry the camera with it, so the view does not change.
     const previousEarthToFlat = scratchMatrix2.copy(this.earthToFlat)
-    this.setAnchor(MathUtils.euclideanModulo(longitude + Math.PI, 2 * Math.PI) - Math.PI, latitude)
-    const transform = previousEarthToFlat.premultiply(this.flatToEarth)
+    const wrappedLongitude = MathUtils.euclideanModulo(longitude + Math.PI, 2 * Math.PI) - Math.PI
+    this.setAnchor(wrappedLongitude, latitude)
+    // Past ±180° the camera sits on another copy of the world: bring it back by whole world widths too.
+    const worldCopiesCrossed = Math.round((longitude - wrappedLongitude) / (2 * Math.PI))
+    scratchMatrix3.makeTranslation(-worldCopiesCrossed * WORLD_WIDTH_METERS, 0, 0)
+    const transform = previousEarthToFlat.premultiply(scratchMatrix3).premultiply(this.flatToEarth)
     camera.matrix.compose(camera.position, camera.quaternion, camera.scale).premultiply(transform)
     camera.matrix.decompose(camera.position, camera.quaternion, scratchScale)
     transform.decompose(scratchVector, scratchQuaternion, scratchScale)
@@ -453,7 +458,8 @@ export class ViewMorph {
       .applyQuaternion(scratchQuaternion)
       .multiplyScalar(distance)
       .add(transition.pivot)
-      .addScaledVector(transition.endOffset, rise)
+      // Without a rise, the pole slide eases over the whole transition instead of jumping at the start.
+      .addScaledVector(transition.endOffset, riseShare <= 0 ? smootherstep(timeFraction) : rise)
     camera.quaternion.slerpQuaternions(transition.startQuaternion, transition.topDownQuaternion, dive)
     camera.up.copy(this.anchorUp)
     camera.updateMatrixWorld()

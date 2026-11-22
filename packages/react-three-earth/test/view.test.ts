@@ -267,6 +267,29 @@ describe('flat map like MapLibre', () => {
     expect(flat.x - view.anchorMercatorXMeters).toBeCloseTo(0.5 * WEB_MERCATOR_HALF_EXTENT_METERS, 0)
   })
 
+  it('goes back to the globe across ±180° without throwing the camera a world away', () => {
+    const { view, camera } = flatMapCamera(179, 10, 100_000)
+    // Pan 300 km east, past the antimeridian
+    camera.position.add(new Vector3(1, 0, 0).transformDirection(view.anchorFrame).multiplyScalar(300_000))
+    camera.updateMatrixWorld()
+    const before = camera.position.clone()
+    view.setMode('3d')
+    view.update(camera, 0)
+    expect(view.inspect().anchorLongitudeDegrees).toBeLessThan(-177)
+    // The map re-anchors under the camera (a few km as the tangent plane turns), not a world width away
+    expect(camera.position.distanceTo(before)).toBeLessThan(20_000)
+  })
+
+  it('eases the pole clamp in when switching to the map near the ground', () => {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, 2, 1, 1e9)
+    setCameraView(camera, { longitudeDegrees: 0, latitudeDegrees: 84.9, distanceMeters: 150_000, pitchDegrees: -90 })
+    const before = camera.position.clone()
+    view.setMode('2d', { durationSeconds: 1 })
+    view.update(camera, 0)
+    expect(camera.position.distanceTo(before)).toBeLessThan(1)
+  })
+
   it('draws one copy on the globe', () => {
     const view = new ViewMorph()
     view.updateWorldCopies(new PerspectiveCamera())
