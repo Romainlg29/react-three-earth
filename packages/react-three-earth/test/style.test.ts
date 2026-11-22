@@ -388,8 +388,16 @@ describe('MapStyle', () => {
 
   it('says when the first load failed, so a new source can start over', async () => {
     const mapStyle = new MapStyle({ style: 'https://maps.test/missing.json' })
-    await expect(mapStyle.load(async () => new Response('', { status: 404 }))).rejects.toThrow(/404/)
+    const errors: Error[] = []
+    mapStyle.addEventListener('error', ({ error }) => errors.push(error))
+    const loading = mapStyle.load(async () => new Response('', { status: 404 }))
+    const replaced = mapStyle.setStyle(baseStyle())
+    mapStyle.setPaintProperty('roads', 'line-width', 5)
+    await expect(loading).rejects.toThrow(/404/)
+    await expect(replaced).rejects.toThrow(/404/)
     expect(mapStyle.loadFailed).toBe(true)
+    await microtask()
+    expect(errors).toEqual([])
   })
 
   it('updates a StyleLayer by sending only what changed', async () => {

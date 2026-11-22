@@ -157,8 +157,8 @@ export class MapStyleProcessor {
     this.refreshGlobalState()
     for (const [key, state] of options.featureStates ?? []) this.featureStates.set(key, state)
     this.featureStateVersion = options.featureStateVersion ?? 0
+    // The previous processor keeps serving glyphs until this one has loaded (`create`).
     const glyphRoute = previous?.glyphRoute ?? { processor: this as MapStyleProcessor }
-    glyphRoute.processor = this
     this.glyphRoute = glyphRoute
     const glyphOptions = {
       glyphsUrl: style.glyphs === undefined ? null : resolveTemplate(style.glyphs, options.baseUrl),
@@ -177,12 +177,8 @@ export class MapStyleProcessor {
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
     const processor = new MapStyleProcessor(options, hooks, previous)
-    try {
-      await processor.load()
-    } catch (error) {
-      if (previous !== undefined && processor.glyphRoute === previous.glyphRoute) previous.glyphRoute.processor = previous // still drawing
-      throw error
-    }
+    await processor.load()
+    processor.glyphRoute.processor = processor
     return processor
   }
 

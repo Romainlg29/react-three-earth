@@ -354,6 +354,12 @@ export function PatternedMap() {
 `invalidate` refetches tiles. To change the style, use the style methods (`setPaintProperty`…) or
 `setStyle`; they reuse the tiles the worker already has.
 
+### MEDIUM: Waiting for a failed source to come back on its own
+
+A source whose TileJSON or PMTiles header failed to load is skipped (a warning and an `error` event) and is
+not retried on later style changes. Retry it by replacing it: `removeSource` (after its layers) then
+`addSource`, or `setStyle` with the corrected source.
+
 ### HIGH: A new `requestHeaders`, `protocols` or `createWorker` every render
 
 Each new object reloads the source, worker included. Memoise them. A new `style` object is fine but costs a

@@ -302,7 +302,11 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       if (generation !== this.styleGeneration) return // a later call replaced it
       this.replaceStyle(copyStyleDocument(next), baseUrl, diffStyles)
     } finally {
-      if (--this.stylesPending === 0) this.replay(this.held, { skipRemovedLayers: true })
+      if (--this.stylesPending === 0) {
+        // The first style never loaded: the source must be created again, so the held changes have nowhere to go.
+        if (this.document === null) this.held.length = 0
+        else this.replay(this.held, { skipRemovedLayers: true })
+      }
     }
   }
 

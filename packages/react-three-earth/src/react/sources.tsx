@@ -122,6 +122,7 @@ export function MapStyleSource({
       return
     }
     source.setStyle(styleInput).catch((error: unknown) => {
+      if (applied.current?.source !== source) return // a newer source took over meanwhile
       // The first style failed while this one waited for it: start over with this one.
       if (source.getMapStyle().loadFailed) {
         setRetries(count => count + 1)
