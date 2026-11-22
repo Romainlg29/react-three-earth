@@ -5,17 +5,25 @@ import { ViewMorph, type ViewMode, type ViewTransitionOptions } from '../view/Vi
 import { collectAttributions, type AttributionProvider } from './attribution.js'
 import type { Atmosphere } from './Atmosphere.js'
 import type { GeographicPosition } from './camera.js'
-import { EarthCamera, type MapView } from './EarthCamera.js'
-import { CameraMotionDetector, EarthEventTracker, type EarthEventMap } from './events.js'
+import { EarthCamera, type MapView, type MapViewChange } from './EarthCamera.js'
+import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type EarthPointerEvent, type ViewSample } from './events.js'
 import type { Imagery } from './Imagery.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
+
+/** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
+const CLICK_TOLERANCE_PIXELS = 3
 
 export interface EarthOptions {
   /** Drives the sun's position. Default: now. */
   date?: Date
   /** The view to start in: `'3d'` (globe) or `'2d'` (flat Web Mercator map). Default: '3d'. */
   view?: ViewMode
+  /**
+   * Where the camera starts: `earth.camera.jumpTo(initialView)` on the first `update`, once the camera
+   * is known. Default: the camera stays where it is.
+   */
+  initialView?: MapViewChange
 }
 
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
@@ -100,12 +108,78 @@ export class Earth extends Group<EarthEventMap> {
   protected readonly attributionSubscriptions = new Map<AttributionProvider, () => void>()
   /** `performance.now()` at the last `update()`, for the morph's clock. */
   protected lastUpdateTimestamp: number | null = null
+  /** Applied by the first `update`. */
+  protected pendingInitialView: MapViewChange | null
+  /** The element `attachPointerEvents` listens to, and how to stop listening. */
+  protected pointerTarget: { element: HTMLElement; remove: () => void } | null = null
+  protected readonly viewSample: ViewSample = { groundMetersPerPixel: 0, headingDegrees: 0, pitchDegrees: 0 }
 
-  constructor({ date = new Date(), view = '3d' }: EarthOptions = {}) {
+  constructor({ date = new Date(), view = '3d', initialView }: EarthOptions = {}) {
     super()
     this.name = 'Earth'
     this.date = date
+    this.pendingInitialView = initialView ?? null
     if (view === '2d') this.view.setMode('2d', { durationSeconds: 0 })
+  }
+
+  /**
+   * Listens to pointer input on the canvas (or the element that receives its events), for the `click`,
+   * `doubleclick`, `contextmenu` and `pointermove` events. `<Earth>` calls it. Calling it again moves the
+   * listeners to the new element.
+   */
+  attachPointerEvents(element: HTMLElement): void {
+    this.detachPointerEvents()
+    /** Where the primary pointer went down, for telling clicks from drags. */
+    let down: { x: number; y: number } | null = null
+    const dispatch = (type: 'click' | 'doubleclick' | 'contextmenu' | 'pointermove', originalEvent: MouseEvent) => {
+      const rectangle = element.getBoundingClientRect()
+      const screen = { xPixels: originalEvent.clientX - rectangle.left, yPixels: originalEvent.clientY - rectangle.top }
+      const camera = this.camera
+      let geographic: EarthPointerEvent['geographic'] | undefined
+      const event = {
+        type,
+        screen,
+        originalEvent,
+        get geographic() {
+          if (geographic === undefined) geographic = camera.ready ? camera.unproject(screen) : null
+          return geographic
+        },
+      }
+      this.dispatchEvent(event as never)
+    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.isPrimary) down = { x: event.clientX, y: event.clientY }
+    }
+    const onClick = (event: MouseEvent) => {
+      // A drag that ends over the canvas still fires `click`: only a press and release in place counts.
+      const moved = down === null ? 0 : Math.hypot(event.clientX - down.x, event.clientY - down.y)
+      down = null
+      if (moved <= CLICK_TOLERANCE_PIXELS) dispatch('click', event)
+    }
+    const onDoubleClick = (event: MouseEvent) => dispatch('doubleclick', event)
+    const onContextMenu = (event: MouseEvent) => dispatch('contextmenu', event)
+    const onPointerMove = (event: PointerEvent) => dispatch('pointermove', event)
+    element.addEventListener('pointerdown', onPointerDown)
+    element.addEventListener('click', onClick)
+    element.addEventListener('dblclick', onDoubleClick)
+    element.addEventListener('contextmenu', onContextMenu)
+    element.addEventListener('pointermove', onPointerMove)
+    this.pointerTarget = {
+      element,
+      remove: () => {
+        element.removeEventListener('pointerdown', onPointerDown)
+        element.removeEventListener('click', onClick)
+        element.removeEventListener('dblclick', onDoubleClick)
+        element.removeEventListener('contextmenu', onContextMenu)
+        element.removeEventListener('pointermove', onPointerMove)
+      },
+    }
+  }
+
+  /** Stops listening to pointer input. */
+  detachPointerEvents(): void {
+    this.pointerTarget?.remove()
+    this.pointerTarget = null
   }
 
   /**
@@ -194,6 +268,12 @@ export class Earth extends Group<EarthEventMap> {
     renderer.getSize(this.viewportSize)
     this.camera.setCamera(camera)
     this.camera.setViewportSize(this.viewportSize.x, this.viewportSize.y)
+    if (this.pendingInitialView !== null && this.camera.ready && !this.view.transitioning) {
+      this.camera.jumpTo(this.pendingInitialView)
+      this.pendingInitialView = null
+    }
+    // Before the morph and the tiles, so they follow this frame's camera.
+    const animating = this.camera.advanceAnimation(delta)
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.view.updateWorldCopies(camera)
     this.terrain?.update(camera, renderer)
@@ -205,7 +285,7 @@ export class Earth extends Group<EarthEventMap> {
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)
     this.lastUpdateMilliseconds = performance.now() - now
     // After a move, one more frame tells whether the camera stopped (`moveend`).
-    return morphing || this.view.transitioning || cameraMoved
+    return morphing || this.view.transitioning || cameraMoved || animating
   }
 
   /** Fires this frame's `move*`, `load` and `idle` events. Returns true when the camera moved. */
@@ -213,9 +293,19 @@ export class Earth extends Group<EarthEventMap> {
     camera.updateMatrixWorld()
     // A running morph counts as one move, even on frames where the camera itself holds still.
     const cameraMoved = this.cameraMotion.update(camera, this.viewportSize.x, this.viewportSize.y) || morphing
-    const busy = morphing || this.view.transitioning || this.isLoading()
-    for (const type of this.events.update({ cameraMoved, busy })) this.dispatchEvent({ type })
+    const busy = morphing || this.view.transitioning || this.camera.animating || this.isLoading()
+    const view = (cameraMoved || this.events.needsViewSample) && this.camera.ready ? this.sampleView() : undefined
+    for (const type of this.events.update({ cameraMoved, busy, view })) this.dispatchEvent({ type })
     return cameraMoved
+  }
+
+  /** The scale, heading and pitch at the centre, on the ellipsoid (cheap: no terrain raycast). */
+  protected sampleView(): ViewSample {
+    const view = this.camera.readEllipsoidView()
+    this.viewSample.groundMetersPerPixel = this.camera.distanceToGroundMetersPerPixel(view.distanceMeters)
+    this.viewSample.headingDegrees = view.headingDegrees
+    this.viewSample.pitchDegrees = view.pitchDegrees
+    return this.viewSample
   }
 
   /** True while terrain tiles or imagery are loading or waiting to be composed, or the atmosphere is generating. */
@@ -300,6 +390,8 @@ export class Earth extends Group<EarthEventMap> {
   }
 
   override dispose(): void {
+    this.detachPointerEvents()
+    this.camera.stop()
     for (const remove of this.attributionSubscriptions.values()) remove()
     this.attributionSubscriptions.clear()
     this.terrain?.dispose()

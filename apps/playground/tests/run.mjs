@@ -324,6 +324,110 @@ async function cameraAndEvents() {
   })
 }
 
+/**
+ * Camera animations and pointer events on fixture terrain: flyTo Tokyo → Paris in 3D and in 2D ends at the
+ * requested view, user input stops a flight, fitBounds fits, and a click reports the position under it.
+ */
+async function cameraAnimations() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0')
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true, null, { timeout: 240_000, polling: 500 })
+  const PARIS = { longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 11, headingDegrees: 20 }
+  const fly = pitchDegrees => page.evaluate(async ({ target }) => {
+    const earth = window.earth
+    earth.camera.jumpTo({ longitudeDegrees: 139.69, latitudeDegrees: 35.69, zoom: 10, headingDegrees: 0, pitchDegrees: -90 })
+    const events = []
+    const listeners = ['movestart', 'zoomstart', 'zoomend', 'rotatestart', 'rotateend', 'moveend'].map(type => {
+      const listener = () => events.push(type)
+      earth.addEventListener(type, listener)
+      return [type, listener]
+    })
+    let lowestZoom = Infinity
+    const sample = () => (lowestZoom = Math.min(lowestZoom, earth.camera.getView().zoom))
+    earth.addEventListener('move', sample)
+    const startMilliseconds = performance.now()
+    const completed = await earth.camera.flyTo(target, { durationSeconds: 4, essential: true })
+    const seconds = (performance.now() - startMilliseconds) / 1000
+    const endView = earth.camera.getView()
+    const trail = []
+    const follow = () => trail.push(earth.camera.getView().zoom)
+    earth.addEventListener('move', follow)
+    // The frame after the last one, so moveend has fired.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    earth.removeEventListener('move', follow)
+    earth.removeEventListener('move', sample)
+    for (const [type, listener] of listeners) earth.removeEventListener(type, listener)
+    return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), trail, events }
+  }, { target: { ...PARIS, pitchDegrees } })
+  const globe = await fly(-50)
+  writeFileSync(new URL('fly-to-paris-3d.png', OUT), await page.screenshot())
+
+  // User input stops a flight where it is.
+  const interrupted = await page.evaluate(() => {
+    window.flight = window.earth.camera.flyTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3, zoom: 9 }, { durationSeconds: 20, essential: true })
+    return true
+  })
+  await page.waitForTimeout(1500)
+  await page.mouse.move(400, 300)
+  await page.mouse.wheel(0, -200)
+  const flightCompleted = await page.evaluate(() => Promise.race([window.flight, new Promise(resolve => setTimeout(() => resolve('still running'), 3000))]))
+
+  // fitBounds: the box's corners land inside the padding.
+  const fit = await page.evaluate(async () => {
+    const earth = window.earth
+    const bounds = { westDegrees: -91, southDegrees: -0.5, eastDegrees: -88.5, northDegrees: 1.2 }
+    const completed = await earth.camera.fitBounds(bounds, { paddingPixels: 40, pitchDegrees: -90, durationSeconds: 1, essential: true })
+    const corners = [[-91, -0.5], [-88.5, -0.5], [-88.5, 1.2], [-91, 1.2]].map(([longitudeDegrees, latitudeDegrees]) => earth.project({ longitudeDegrees, latitudeDegrees }))
+    return { completed, corners }
+  })
+
+  // A click at the centre after jumping over the fixture's hill reports the hill under it.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3, zoom: 12, headingDegrees: 0, pitchDegrees: -60 }))
+  await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  // Again, now that the terrain under the centre is loaded at full detail.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3 }))
+  await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  await page.evaluate(() => {
+    window.pointerEvents = []
+    for (const type of ['click', 'pointermove']) {
+      window.earth.addEventListener(type, event => window.pointerEvents.push({ type, screen: event.screen, geographic: event.geographic }))
+    }
+  })
+  await page.mouse.move(400, 300)
+  await page.mouse.click(400, 300)
+  // A drag is not a click.
+  await page.mouse.move(200, 200)
+  await page.mouse.down()
+  await page.mouse.move(260, 230, { steps: 5 })
+  await page.mouse.up()
+  const pointer = await page.evaluate(() => ({
+    events: window.pointerEvents,
+    elevation: window.earth.queryTerrainElevation({ longitudeDegrees: -89.6, latitudeDegrees: 0.3 }),
+  }))
+  writeFileSync(new URL('click-on-terrain.png', OUT), await page.screenshot())
+
+  // The same flight on the flat map.
+  await page.evaluate(() => window.setView('2d'))
+  await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && !window.earth.view.transitioning, null, { timeout: 240_000, polling: 500 })
+  const flat = await fly(-90)
+  writeFileSync(new URL('fly-to-paris-2d.png', OUT), await page.screenshot())
+  await page.close()
+
+  const clicks = pointer.events.filter(event => event.type === 'click')
+  results.push({
+    check: 'camera animations and pointer events with fixtures',
+    globe,
+    flat,
+    target: PARIS,
+    interrupted,
+    flightCompleted,
+    fit,
+    clicks,
+    pointerMoves: pointer.events.filter(event => event.type === 'pointermove').length,
+    elevationAtCenter: pointer.elevation,
+    errors,
+  })
+}
+
 async function afterburner(plume) {
   const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
   await page.waitForFunction(() => {
@@ -391,6 +495,7 @@ try {
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
+  if (!only || only === 'camera' || only === 'animations') await cameraAnimations()
 } finally {
   await browser.close()
 }
