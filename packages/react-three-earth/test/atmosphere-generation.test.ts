@@ -113,7 +113,7 @@ describe('ATMOSPHERE_PRECOMPUTE_VERSION', () => {
   // Cached lookup textures are keyed by this version. When these files change, decide whether the
   // generated textures change: if they do, bump ATMOSPHERE_PRECOMPUTE_VERSION; either way, record the new
   // hash and version here.
-  const recorded = { version: 2, sourceHash: '8ec6386f' }
+  const recorded = { version: 2, sourceHash: '80c0c548' }
 
   it('is reviewed whenever the code that generates the lookup textures changes', () => {
     const source = [modelSource, precomputeSource, texturesSource].map(text => text.replace(/\r\n/g, '\n')).join('\n')

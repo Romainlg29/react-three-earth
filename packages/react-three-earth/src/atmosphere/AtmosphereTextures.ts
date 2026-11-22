@@ -323,7 +323,12 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
       // finish it: otherwise the app's frame would queue ahead of the batch and be timed as part of it.
       await nextTask()
       if (!(await this.waitForGpu(timer, signal))) timer = null
-      const finish = timer !== null && pacer.estimateRemaining(weights, next) <= this.maximumStallMilliseconds
+      // Only once every remaining shader has compiled: a first draw compiles synchronously, and the estimate
+      // covers GPU time only.
+      const finish =
+        timer !== null &&
+        pacer.estimateRemaining(weights, next) <= this.maximumStallMilliseconds &&
+        units.slice(next).every(unit => compiled.has(unit.material))
       const count = finish ? units.length - next : timer === null ? 1 : pacer.plan(weights, next)
       const batch = units.slice(next, next + count)
       const compiling = batch.some(unit => !compiled.has(unit.material))
@@ -336,9 +341,14 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
           // On a fast GPU a batch can finish within the waiter's own latency, leaving nothing measurable
           // once that is subtracted. The whole wait is still an upper bound of its GPU time: using it
           // lets batches keep growing instead of staying at one unit per frame for hundreds of frames.
+          // That bound only ever seeds or lowers the estimate: raising it from a tiny batch (a copy) would
+          // shrink the next batches for no reason.
+          const weight = batch.reduce((sum, unit) => sum + unit.weight, 0)
           const waitedMilliseconds = performance.now() - before
           const gpuMilliseconds = waitedMilliseconds - latencyMilliseconds
-          pacer.observe(batch.reduce((sum, unit) => sum + unit.weight, 0), gpuMilliseconds > 0 ? gpuMilliseconds : waitedMilliseconds)
+          const estimate = pacer.millisecondsPerWeight
+          if (gpuMilliseconds > 0) pacer.observe(weight, gpuMilliseconds)
+          else if (estimate === null || waitedMilliseconds / weight < estimate) pacer.observe(weight, waitedMilliseconds)
         }
       }
       next += count

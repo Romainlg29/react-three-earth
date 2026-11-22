@@ -39,7 +39,7 @@ interface ChromiumPerformance {
 /**
  * Frame-rate, frame-time, GPU-time and memory statistics over a sliding window, for a performance overlay or
  * an agent checking a scene. Call `start()` once, `beginFrame()` at the start of each frame and `endFrame()`
- * after the render is submitted (and `markRenderStart()` just before rendering to split the CPU time); read `sample()` as often as you like (it allocates one small object), and
+ * after the render is submitted (and `markRenderStart()` just before rendering to split the CPU time); read `sample()` as often as you like (it allocates a few small objects), and
  * `dispose()` when done. The constructor has no side effects, so it is safe in React state initialisers.
  */
 export class PerformanceMonitor {
@@ -75,6 +75,7 @@ export class PerformanceMonitor {
   /** Marks the start of a frame, before any per-frame work. */
   beginFrame(now = performance.now()): void {
     this.currentFrameStart = now
+    this.currentRenderStart = Number.NaN
     this.frameStarts.push(now)
     this.trim(now)
   }
