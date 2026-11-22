@@ -1,0 +1,36 @@
+import type { ImagerySource } from './sources.js'
+
+export interface ImageryOptions {
+  /** Sources stacked bottom to top. */
+  sources: ImagerySource[]
+  /** 0 to 1. Default: 1. */
+  opacity?: number
+}
+
+interface OverlayLike {
+  opacity: number
+}
+
+/** A raster layer draped on the terrain. Several `Imagery` layers stack in the order they are added. */
+export class Imagery {
+  readonly sources: readonly ImagerySource[]
+  /** The 3DTilesRenderer overlays, one per source. */
+  readonly overlays: readonly OverlayLike[]
+  protected _opacity: number
+
+  constructor({ sources, opacity = 1 }: ImageryOptions) {
+    this.sources = sources
+    this._opacity = opacity
+    this.overlays = sources.map(source => source.createOverlay({ opacity }) as OverlayLike)
+  }
+
+  get opacity(): number {
+    return this._opacity
+  }
+
+  /** Takes effect on the next frame, with no shader rebuild. */
+  set opacity(value: number) {
+    this._opacity = value
+    for (const overlay of this.overlays) overlay.opacity = value
+  }
+}

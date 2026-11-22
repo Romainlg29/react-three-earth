@@ -1,0 +1,13 @@
+{
+  "name": "react-three-earth-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter react-three-earth build",
+    "dev": "pnpm --filter playground dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "engines": { "node": ">=22" },
+  "packageManager": "pnpm@10.28.0"
+}
