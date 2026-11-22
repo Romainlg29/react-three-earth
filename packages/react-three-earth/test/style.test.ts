@@ -141,6 +141,17 @@ describe('style commands in the worker', () => {
     expect(removed.summary.sources.map(source => source.id)).toEqual(['base'])
   })
 
+  it('does not fetch a failed source again on unrelated changes, only once it is replaced', async () => {
+    const style = baseStyle()
+    style.sources.other = { type: 'vector', url: 'https://maps.test/missing.json' } as never
+    const { processor, fetchSpy } = await createProcessor(style)
+    const calls = () => fetchSpy.mock.calls.filter(([url]) => String(url).includes('missing.json')).length
+    expect(calls()).toBe(1)
+    const result = await processor.applyCommands([{ command: 'setPaintProperty', args: ['background', 'background-color', '#000000'] }])
+    expect(result.errors).toEqual([])
+    expect(calls()).toBe(1)
+  })
+
   it('reports an expression that does not compile and skips the layer, as at load', async () => {
     const { processor } = await createProcessor()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -351,6 +362,28 @@ describe('MapStyle', () => {
     expect(mapStyle.getLayoutProperty('parks', 'visibility')).toBe('none')
     expect(mapStyle.getLayerIds()).toContain('late')
     expect(mapStyle.getLayerIds()).not.toContain('gone')
+  })
+
+  it('keeps a change made while setStyle waits for the first load, and removes a StyleLayer quietly', async () => {
+    const mapStyle = new MapStyle({ style: baseStyle(), baseUrl: 'https://maps.test/' })
+    const errors: Error[] = []
+    mapStyle.addEventListener('error', ({ error }) => errors.push(error))
+    const loading = mapStyle.load()
+    const next = baseStyle()
+    next.layers[2]!.paint!['line-color'] = '#222222'
+    const replaced = mapStyle.setStyle(next)
+    mapStyle.setPaintProperty('roads', 'line-width', 5)
+    await Promise.all([loading, replaced])
+    expect(mapStyle.getPaintProperty('roads', 'line-width')).toBe(5)
+    // Added while settled, removed while a setStyle is pending: the diff drops it, the held removal is a no-op.
+    const layer = new StyleLayer({ id: 'hl', type: 'line', source: 'base', sourceLayer: 'roads' })
+    layer.addTo({ getMapStyle: () => mapStyle })
+    const again = mapStyle.setStyle(baseStyle())
+    layer.remove()
+    await again
+    await microtask()
+    expect(mapStyle.getLayerIds()).not.toContain('hl')
+    expect(errors).toEqual([])
   })
 
   it('says when the first load failed, so a new source can start over', async () => {

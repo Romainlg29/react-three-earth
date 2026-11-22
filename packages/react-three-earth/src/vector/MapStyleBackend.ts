@@ -216,7 +216,15 @@ export class InlineMapStyleBackend implements MapStyleBackend {
       const [{ MapStyleProcessor }, old] = await Promise.all([import('./worker/MapStyleProcessor.js'), previous])
       return MapStyleProcessor.create(options, resolveResource === undefined ? {} : { resolveResource }, old)
     })()
-    const processor = await this.processor
+    const next = this.processor
+    let processor: MapStyleProcessor
+    try {
+      processor = await next
+    } catch (error) {
+      // A failed reload leaves the last style drawing: later requests go to it.
+      if (this.processor === next && this.loaded !== undefined) this.processor = Promise.resolve(this.loaded)
+      throw error
+    }
     this.loaded = processor
     this.flushUpdates(processor)
     return processor.summary

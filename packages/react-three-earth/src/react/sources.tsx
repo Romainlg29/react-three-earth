@@ -121,7 +121,14 @@ export function MapStyleSource({
       setRetries(count => count + 1)
       return
     }
-    source.setStyle(styleInput).catch((error: unknown) => console.warn(`MapStyleSource: the new style could not be applied. ${(error as Error).message}`))
+    source.setStyle(styleInput).catch((error: unknown) => {
+      // The first style failed while this one waited for it: start over with this one.
+      if (source.getMapStyle().loadFailed) {
+        setRetries(count => count + 1)
+        return
+      }
+      console.warn(`MapStyleSource: the new style could not be applied. ${(error as Error).message}`)
+    })
   }, [source, styleInput])
   useAttribution(source, attribution)
   useImperativeHandle(ref, () => source, [source])

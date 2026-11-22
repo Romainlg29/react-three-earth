@@ -69,13 +69,18 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
     case 'reload': {
       // A reload keeps the glyph atlas and colour slots of the processor it replaces: buckets still drawn use them.
       const previous = data.type === 'reload' ? (processor?.catch(() => loaded) ?? Promise.resolve(loaded)) : Promise.resolve(undefined)
-      processor = previous.then(old => MapStyleProcessor.create(data.options, hooks, old))
-      processor.then(
+      const next = previous.then(old => MapStyleProcessor.create(data.options, hooks, old))
+      processor = next
+      next.then(
         created => {
           loaded = created
           post(created, { type: 'result', id: data.id, value: created.summary })
         },
-        error => fail(data.id, error),
+        error => {
+          // A failed reload leaves the last style drawing: later requests go to it.
+          if (processor === next && loaded !== undefined) processor = Promise.resolve(loaded)
+          fail(data.id, error)
+        },
       )
       return
     }

@@ -114,6 +114,10 @@ export class MapStyleProcessor {
   /** The worker's own copy of the style: commands edit it in place. */
   protected readonly document: StyleDocument
   protected readonly fetchers = new Map<string, VectorTileFetcher>()
+  /** Sources that failed to load, by their specification: retried only when replaced (`addSource`, a reload). */
+  protected readonly failedSources = new WeakSet<VectorSourceSpecification>()
+  /** Which processor the glyph provider fetches through; shared with the processors that reload this one. */
+  protected glyphRoute!: { processor: MapStyleProcessor }
   /** Sources whose TileJSON or PMTiles header is loading. */
   protected readonly pendingSources = new Map<string, { source: VectorSourceSpecification; load: Promise<void> }>()
   protected glyphs: GlyphProvider
@@ -153,11 +157,15 @@ export class MapStyleProcessor {
     this.refreshGlobalState()
     for (const [key, state] of options.featureStates ?? []) this.featureStates.set(key, state)
     this.featureStateVersion = options.featureStateVersion ?? 0
+    const glyphRoute = previous?.glyphRoute ?? { processor: this as MapStyleProcessor }
+    glyphRoute.processor = this
+    this.glyphRoute = glyphRoute
     const glyphOptions = {
       glyphsUrl: style.glyphs === undefined ? null : resolveTemplate(style.glyphs, options.baseUrl),
       requestHeaders: options.requestHeaders,
       localFontFamily: options.localFontFamily,
-      fetch: ((url: string, init: RequestInit) => this.fetchResource(url, init ?? {}, 'Glyphs')) as typeof fetch,
+      // Through the latest processor: a glyph provider reused by later reloads must not keep this one alive.
+      fetch: ((url: string, init: RequestInit) => glyphRoute.processor.fetchResource(url, init ?? {}, 'Glyphs')) as typeof fetch,
       ...(hooks.drawLocalGlyph !== undefined ? { drawLocalGlyph: hooks.drawLocalGlyph } : {}),
     }
     // After a reload, glyphs and colour slots keep their place: buckets still on screen point at them.
@@ -169,7 +177,12 @@ export class MapStyleProcessor {
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
     const processor = new MapStyleProcessor(options, hooks, previous)
-    await processor.load()
+    try {
+      await processor.load()
+    } catch (error) {
+      if (previous !== undefined && processor.glyphRoute === previous.glyphRoute) previous.glyphRoute.processor = previous // still drawing
+      throw error
+    }
     return processor
   }
 
@@ -211,7 +224,7 @@ export class MapStyleProcessor {
   /** Loads a source's fetcher once: a second style change while it loads waits for the same load. */
   protected loadSource(id: string, errors: string[]): Promise<void> {
     const source = this.document.sources[id] as VectorSourceSpecification | undefined
-    if (source === undefined || source.type !== 'vector' || this.fetchers.has(id)) return Promise.resolve()
+    if (source === undefined || source.type !== 'vector' || this.fetchers.has(id) || this.failedSources.has(source)) return Promise.resolve()
     const pending = this.pendingSources.get(id)
     if (pending?.source === source) return pending.load
     const load = this.fetchSource(id, source, errors).finally(() => {
@@ -226,6 +239,7 @@ export class MapStyleProcessor {
       const fetcher = await createVectorTileFetcher(source, { baseUrl: this.options.baseUrl, requestHeaders: this.options.requestHeaders, fetch: this.fetchResource })
       if (this.document.sources[id] === source) this.fetchers.set(id, fetcher) // not removed or replaced meanwhile
     } catch (error) {
+      this.failedSources.add(source)
       const message = `MapStyleSource: source "${id}" is unavailable, its layers are skipped. ${(error as Error).message}`
       console.warn(message)
       errors.push(message)

@@ -302,7 +302,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       if (generation !== this.styleGeneration) return // a later call replaced it
       this.replaceStyle(copyStyleDocument(next), baseUrl, diffStyles)
     } finally {
-      if (--this.stylesPending === 0) this.replay(this.held)
+      if (--this.stylesPending === 0) this.replay(this.held, { skipRemovedLayers: true })
     }
   }
 
@@ -439,14 +439,17 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   // Internals
 
   protected command(command: StyleCommand): void {
-    if (this.document === null) this.early.push(command)
-    else if (this.stylesPending > 0) this.held.push(command)
+    // A pending setStyle first: a change made while it waits for the first load belongs to the new style.
+    if (this.stylesPending > 0) this.held.push(command)
+    else if (this.document === null) this.early.push(command)
     else this.applyLocally(command)
   }
 
   /** Applies queued commands in order; one that no longer applies is reported, not thrown. */
-  protected replay(commands: StyleCommand[]): void {
+  protected replay(commands: StyleCommand[], { skipRemovedLayers = false } = {}): void {
     for (const command of commands.splice(0)) {
+      // A layer removed while queued may be gone already (setStyle dropped it): nothing left to do.
+      if (skipRemovedLayers && command.command === 'removeLayer' && !this.document!.layers.some(layer => layer.id === command.args[0])) continue
       try {
         this.applyLocally(command)
       } catch (error) {
