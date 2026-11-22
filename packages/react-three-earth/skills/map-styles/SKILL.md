@@ -113,11 +113,12 @@ export function LiveMap({ changes }: { changes: EventTarget }) {
 - No argument redraws everything. Bounds are `GeographicBounds` (`westDegrees`, `southDegrees`,
   `eastDegrees`, `northDegrees`); `westDegrees > eastDegrees` crosses the antimeridian.
 - Cached tiles in the bounds are fetched and processed again; textures that draw them redraw, including
-  neighbours whose labels reach in. Other tiles and textures are untouched. From then on, tiles in
-  invalidated areas are requested with `cache: 'no-cache'`, so the browser's HTTP cache revalidates them
-  (a 304 when unchanged) instead of returning the old copy.
-- PMTiles: any `invalidate` also re-reads the archive's header and directories, so a replaced `.pmtiles`
-  file is read at its new offsets. Call `invalidate()` with no bounds after replacing the whole archive.
+  neighbours whose labels reach in. Other tiles and textures are untouched. Their next request uses
+  `cache: 'no-cache'`, once, so the browser's HTTP cache revalidates them (a 304 when unchanged) instead
+  of returning the old copy.
+- PMTiles: any `invalidate` also reads the archive's header and directories again, so a replaced
+  `.pmtiles` file is read at its new offsets; its range requests revalidate with the server from then on.
+  Call `invalidate()` with no bounds after replacing the whole archive.
 - No flicker: each texture keeps its old content until the new one is drawn over it in one pass. Textures
   still loading when you call it finish, then redraw.
 - Calls within a frame are coalesced. Redraws share the imagery composition budget, after the first

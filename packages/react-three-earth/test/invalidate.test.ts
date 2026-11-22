@@ -347,5 +347,10 @@ describe('MapStyleProcessor.invalidate', () => {
     await process(0, 1)
     expect(fetchSpy).toHaveBeenCalledTimes(4)
     expect((fetchSpy.mock.calls[3]![1] as RequestInit).cache).toBe('no-cache')
+    // Once: a later refetch of the same tile (after the raw cache forgets it) uses the HTTP cache again.
+    processor.invalidate(boundsToMercatorRectangles({ westDegrees: 170, southDegrees: -80, eastDegrees: 179, northDegrees: -70 }))
+    ;(processor as unknown as { rawTiles: Map<string, unknown> }).rawTiles.clear()
+    await process(0, 1)
+    expect((fetchSpy.mock.calls[4]![1] as RequestInit).cache).toBeUndefined()
   })
 })

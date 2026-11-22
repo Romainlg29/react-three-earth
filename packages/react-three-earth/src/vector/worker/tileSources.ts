@@ -105,11 +105,8 @@ export async function decompressIfGzipped(bytes: Uint8Array): Promise<Uint8Array
 
 /** A PMTiles v3 archive read with HTTP range requests. */
 export class PMTilesFetcher implements VectorTileFetcher {
-  /** Pending re-read of the header after `invalidate`; tiles wait for it. */
-  protected invalidation: Promise<void> | null = null
-
   protected constructor(
-    protected readonly archive: PMTiles,
+    protected archive: PMTiles,
     readonly minimumZoom: number,
     readonly maximumZoom: number,
     protected readonly options: { revalidate: boolean },
@@ -140,19 +137,16 @@ export class PMTilesFetcher implements VectorTileFetcher {
     return new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
   }
 
-  /** The archive file may have been replaced: its header and directories are read again. */
+  /**
+   * The archive file may have been replaced: a fresh reader (and cache) reads its header and every directory
+   * again. From then on, range requests revalidate with the server (`cache: 'no-cache'`).
+   */
   invalidate(): void {
     this.options.revalidate = true
-    const previous = this.invalidation ?? Promise.resolve()
-    const invalidation = previous.then(() => this.archive.cache.invalidate(this.archive.source)).catch(() => {})
-    this.invalidation = invalidation
-    void invalidation.finally(() => {
-      if (this.invalidation === invalidation) this.invalidation = null
-    })
+    this.archive = new PMTiles(this.archive.source)
   }
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {
-    if (this.invalidation !== null) await this.invalidation
     const response = await this.archive.getZxy(z, x, y, signal)
     if (response === undefined || response.data.byteLength === 0) return null
     return new Uint8Array(response.data)

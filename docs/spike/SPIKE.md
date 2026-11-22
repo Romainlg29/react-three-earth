@@ -126,9 +126,10 @@ the foundation GeoJSON `setData`, style edits, feature-state and runtime images 
   visible tiles) and `preload`, under the same per-frame budget. Invalidations mark regions synchronously and start
   their redraws from `runBeforeNextRender`, a once-per-frame task, so calls within a frame coalesce into one redraw
   per region.
-- Refetches cannot come back stale from the browser: tiles in areas invalidated so far are fetched with
-  `cache: 'no-cache'` (a conditional request, 304 when unchanged; past 64 areas, every tile). A PMTiles source
-  re-reads its header and directories on any invalidate, and its range requests revalidate from then on.
+- Refetches cannot come back stale from the browser: the worker remembers the last 4096 tiles it fetched, and
+  those in the bounds are fetched once with `cache: 'no-cache'` (a conditional request, 304 when unchanged). A
+  PMTiles source gets a fresh reader on any invalidate (header and every directory read again: pmtiles' own
+  cache invalidation keeps leaf directories), and its range requests revalidate from then on.
 - A cache disposed while leases are out ignores their later release, so a disposed overlay keeps nothing.
 - `earth.inspect().terrain.imageryRecompositionsPending` counts regions waiting or redrawing; redraws also count
   in `imageryTilesComposited`.
