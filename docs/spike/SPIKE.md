@@ -118,9 +118,10 @@ Every source can carry a credit, and a control shows them all (`src/core/attribu
   fires on `setTerrain`, `addImagery`, `removeImagery`, when a source changes its attribution, and when a `MapStyleSource`
   finishes loading.
 - **Style metadata.** `MapStyleProcessor` puts `summary.attributions` together in the style's source order: a style
-  source's own `attribution` wins over its TileJSON's; a PMTiles archive's metadata `attribution` is read only when the style gives none. That is one extra range request to
-  the archive URL the app gave (pmtiles does not cache the JSON block), started together with the header read so it adds no
-  round trip; a failure is ignored. Only sources a drawn layer uses, with a working fetcher, are credited. `MapStyleOverlay` reports it through its new `onLoad(summary)` option,
+  source's own `attribution` wins over its TileJSON's; a PMTiles archive's metadata `attribution` is read only when the style gives none. pmtiles does not cache that
+  JSON block, so the fetcher keeps the bytes of its first read (offset 0, 16 KiB) and answers later ranges inside them from
+  memory: the metadata costs no extra request unless it lies past the first 16 KiB, in which case it is one range request
+  after the header. A failure is ignored. Only sources a drawn layer uses, with a working fetcher, are credited. `MapStyleOverlay` reports it through its new `onLoad(summary)` option,
   and the source's `attribution` option is added to it. 
 - **Sanitising.** `parseAttribution(html)` is a small tokenizer that returns `{ text, href? }` segments and needs no DOM,
   so it is unit-tested in Node. Only `<a href>` with an absolute `http(s)` URL (after decoding entities and removing the

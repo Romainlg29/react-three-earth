@@ -328,7 +328,7 @@ describe('MapStyleProcessor', () => {
 
   it('reads attribution from the style, TileJSON and PMTiles metadata, in the style\'s source order', async () => {
     const archive = encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6, JSON.stringify({ attribution: '© Archive' }))
-    const { fetch } = createFakeFetch({
+    const { fetch, requests } = createFakeFetch({
       'https://maps.test/tiles.json': { tiles: ['https://maps.test/t/{z}/{x}/{y}.pbf'], attribution: '© TileJSON' },
       'https://maps.test/world.pmtiles': archive,
     })
@@ -342,6 +342,8 @@ describe('MapStyleProcessor', () => {
     style.layers = ['first', 'second', 'third', 'overridden'].map(source => ({ id: `fill-${source}`, type: 'fill', source, 'source-layer': 'water', paint: {} }))
     const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
     expect(processor.summary.attributions).toEqual(['© Archive', '© TileJSON', '© Inline', '© Style wins'])
+    // the metadata block lies inside the first 16 KiB, so it is served from the header read: no extra request
+    expect(requests.filter(request => request.url === 'https://maps.test/world.pmtiles')).toHaveLength(1)
   })
 
   it('credits only drawn sources, and skips the PMTiles metadata when the style has attribution', async () => {

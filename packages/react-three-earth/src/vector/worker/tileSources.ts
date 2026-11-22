@@ -120,25 +120,36 @@ export class PMTilesFetcher implements VectorTileFetcher {
   ) {}
 
   static async create(url: string, context: FetcherContext, readAttribution = false): Promise<PMTilesFetcher> {
+    // pmtiles caches the header and directories but not the JSON metadata. The first read (offset 0, 16 KiB) almost
+    // always holds the metadata too, so later ranges inside it are answered from these bytes instead of the network.
+    let firstBytes: { offset: 0; data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string } | undefined
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
       getBytes: async (offset: number, length: number, signal?: AbortSignal) => {
+        if (firstBytes !== undefined && offset + length <= firstBytes.data.byteLength) {
+          const { data, etag, cacheControl, expires } = firstBytes
+          return { data: data.slice(offset, offset + length), etag, cacheControl, expires }
+        }
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
         const response = await context.fetch(url, { headers, signal })
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
           throw new Error(`MapStyleSource: PMTiles ${url} answered ${response.status}; the server must support range requests.`)
         }
-        return {
-          data: await response.arrayBuffer(),
+        const data = await response.arrayBuffer()
+        const result = {
+          data,
           etag: response.headers.get('ETag') ?? undefined,
           cacheControl: response.headers.get('Cache-Control') ?? undefined,
           expires: response.headers.get('Expires') ?? undefined,
         }
+        if (offset === 0 && firstBytes === undefined) firstBytes = { offset: 0, ...result, data: data.slice(0) }
+        return result
       },
     })
-    // The metadata is a separate range request (pmtiles does not cache it): start it alongside the header, so it
-    // adds no round trip. An unreadable block must not take the tiles down: attribution is optional.
+    // The metadata read waits for the header (it needs its offset) and is then served from the first bytes kept above,
+    // so it costs no extra request unless the metadata lies past the first 16 KiB. An unreadable block must not take
+    // the tiles down: attribution is optional.
     const metadata = readAttribution ? archive.getMetadata().catch(() => null) : Promise.resolve(null)
     const [header, loaded] = await Promise.all([archive.getHeader(), metadata])
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
