@@ -21,6 +21,15 @@ const expectations = {
     ['sky and haze render (over 50 % blue pixels)', r.blueSkyShare > 0.5],
     ['no black frame (under 5 % black pixels)', r.blackShare < 0.05],
   ],
+  // The flat map: the atmosphere fades out, so imagery shows unlit with or without it.
+  'map with fixtures, 2d, atmosphere off': r => [
+    ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
+    ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
+  ],
+  'map with fixtures, 2d, atmosphere on': r => [
+    ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
+    ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
+  ],
 }
 
 let failures = 0

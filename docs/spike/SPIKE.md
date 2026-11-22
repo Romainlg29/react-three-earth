@@ -1,5 +1,65 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
+## The flat map (2D) and the globe-to-map morph
+
+```tsx
+<Earth view={view /* '3d' | '2d' */} viewTransitionSeconds={1.5}>…</Earth>
+// vanilla: earth.setView('2d', { durationSeconds: 1.5 }); earth.view.morph goes 0 → 1
+```
+
+How it works (`src/view/`, `src/tiles/FlatMapPlugin.ts`, `src/tiles/EarthTilesRenderer.ts`):
+
+- **Where the map lies.** The flat map is spherical Web Mercator (what XYZ raster servers use), laid on the plane
+  tangent to WGS84 at an anchor: the point the camera looks at when the morph starts. It is scaled by
+  cos(anchor latitude), so around the anchor the map and the globe coincide at true size, and the camera never
+  jumps. Heights are scaled by Mercator's local factor too, so relief keeps its shape. Going back to 3D
+  re-anchors under the screen centre first (the camera is carried along), so the globe rolls up around the
+  place you are looking at.
+- **Morph in the vertex shader.** Each terrain mesh gets a `positionFlat` attribute at load: every vertex
+  converted to Mercator on the CPU in double precision (Bowring's closed form, about 0.2 ms per tile), relative
+  to the mesh's own flat centre. The tile material's `positionNode` mixes globe and flat positions. On the globe
+  it returns the original position bit for bit (identity matrix, weight 0), so 3D is unchanged.
+- **Precision on the map.** For each draw on the map, the mesh's `matrixWorld` is swapped for its flat frame
+  (the anchor plane offset to the mesh's flat centre) and restored right after the draw, so
+  `renderer.highPrecision` keeps centimetres in 2D as in 3D, and raycasts between frames see the globe.
+- **Imagery stays aligned** by construction: the overlay UVs are vertex attributes, so they move with the
+  vertices. The 2D check shows the same checker as 3D (97 % of pixels).
+- **Tile selection on the map.** `EarthTilesRenderer` projects each tile's region onto the map plane and scales
+  its geometric error by Mercator's enlargement there. During the morph a tile loads if either view needs it.
+  Tiles without a region volume (boxes, spheres) are selected as on the globe.
+- **Atmosphere and light.** Sky, haze and the sun fade out with the morph (`atmosphere.opacity`). On the map,
+  standard tile materials emit their imagery colour, so night and slopes don't darken the map;
+  `<Atmosphere>` scales it to undo its exposure. Lights of your own are not faded for you: scale them by
+  `1 - earth.view.morph`.
+- **Controls.** `EarthViewControls` (vanilla, used by `<EarthControls>`) gives input to `GlobeControls` on the
+  globe and to `FlatMapControls` (3DTilesRenderer's `EnvironmentControls` on the map plane) on the map: pan,
+  zoom to cursor and rotate, top-down by default (`maximumFlatMapTiltDegrees` allows tilt). Input is ignored
+  while morphing. The camera is kept above the highest loaded terrain under it.
+- **No seam at ±180°.** Each mesh and tile is placed on the copy of the world nearest the anchor.
+
+| Check (SwiftShader, fixtures) | Result |
+| --- | --- |
+| 2D, atmosphere off and on | 97 % checker pixels, no errors |
+| 3D map checks after the change | unchanged (78 % checker; 92 % sky or haze) |
+| Precision, highPrecision on | unchanged: 1 cm = 128.7 px, worst error 0.7 px |
+| Unit tests | 76 pass |
+
+![2D map](map-2d.png)
+
+Morph from 12,000 km, with the atmosphere: globe, halfway, flat map.
+
+![globe](morph-0-globe.png) ![halfway](morph-1-middle.png) ![flat map](morph-2-map.png)
+
+Not done yet:
+
+- 2.5D "columbus" view, and copies of the world side by side when zoomed out in 2D.
+- Normals on the map are the globe's turned into the map plane (right near the anchor, tilted far from it).
+  It only shows with your own lights on the map, since the atmosphere's sun is faded out there.
+- Halfway through the morph, the blended geometry can sit outside both views' frusta, so a tile at the edge
+  may drop out for a frame or two. Not seen in testing.
+- The camera's lower limit in 2D uses the tile regions' maximum height, not the terrain itself.
+- The `Earth` must stay at the scene origin (as `setCameraView` and the controls already assume).
+
 ## Vector map styles (`src/vector/`)
 
 `<Imagery><MapStyleSource url="https://…/style.json" /></Imagery>` drapes a MapLibre style (version 8) on the

@@ -1,6 +1,7 @@
 import { Group, type Camera } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import { ViewMorph, type ViewMode, type ViewTransitionOptions } from '../view/ViewMorph.js'
 import type { Atmosphere } from './Atmosphere.js'
 import type { Imagery } from './Imagery.js'
 import type { Terrain } from './Terrain.js'
@@ -8,6 +9,8 @@ import type { Terrain } from './Terrain.js'
 export interface EarthOptions {
   /** Drives the sun's position. Default: now. */
   date?: Date
+  /** The view to start in: `'3d'` (globe) or `'2d'` (flat Web Mercator map). Default: '3d'. */
+  view?: ViewMode
 }
 
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
@@ -35,6 +38,8 @@ export interface EarthInspection {
     imageryMainThreadMillisecondsTotal: number
   }
   imageryLayers: number
+  /** The globe-to-map morph: `morph` is 0 on the globe and 1 on the flat map. */
+  view: { mode: ViewMode; morph: number; anchorLongitudeDegrees: number; anchorLatitudeDegrees: number }
   /** Null without an atmosphere. */
   atmosphere: {
     /** True once the lookup textures are generated; until then the scene renders without haze or sky. */
@@ -68,14 +73,28 @@ export class Earth extends Group {
   date: Date
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
+  /** The globe-to-map morph, shared with the terrain, atmosphere and controls. Change it with `setView`. */
+  readonly view = new ViewMorph()
   /** Main-thread time of the last `update()`, in milliseconds. */
   lastUpdateMilliseconds = 0
   protected readonly imagery = new Set<Imagery>()
+  /** `performance.now()` at the last `update()`, for the morph's clock. */
+  protected lastUpdateTimestamp: number | null = null
 
-  constructor({ date = new Date() }: EarthOptions = {}) {
+  constructor({ date = new Date(), view = '3d' }: EarthOptions = {}) {
     super()
     this.name = 'Earth'
     this.date = date
+    if (view === '2d') this.view.setMode('2d', { durationSeconds: 0 })
+  }
+
+  /**
+   * Morphs to the globe (`'3d'`) or the flat Web Mercator map (`'2d'`), over `durationSeconds` (default
+   * 1.5, 0 switches at once). The map is anchored where the camera looks, and on the way to 2D the camera
+   * turns to look straight down. The morph runs in `update`; `view.transitioning` tells when it is done.
+   */
+  setView(mode: ViewMode, options?: ViewTransitionOptions): void {
+    this.view.setMode(mode, options)
   }
 
   /**
@@ -89,11 +108,13 @@ export class Earth extends Group {
   setTerrain(terrain: Terrain | null): void {
     if (this.terrain === terrain) return
     if (this.terrain !== null) {
+      this.terrain.setView(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
     }
     this.terrain = terrain
     if (terrain !== null) {
+      terrain.setView(this.view)
       this.add(terrain.object)
       for (const imagery of this.imagery) terrain.addImagery(imagery)
     }
@@ -115,12 +136,24 @@ export class Earth extends Group {
     if (atmosphere !== null) this.add(atmosphere.light)
   }
 
-  /** Loads tiles for the camera and moves the sun. Call once per frame, before rendering. */
-  update(camera: Camera, renderer: WebGPURenderer): void {
-    const start = performance.now()
+  /**
+   * Advances the view morph, loads tiles for the camera and moves the sun. Call once per frame, before
+   * rendering. `deltaSeconds` (time since the last frame) drives the morph; without it the clock is used.
+   * Returns true while the view is morphing, so hosts that render on demand can ask for another frame.
+   */
+  update(camera: Camera, renderer: WebGPURenderer, deltaSeconds?: number): boolean {
+    const now = performance.now()
+    const delta = deltaSeconds ?? (this.lastUpdateTimestamp === null ? 0 : (now - this.lastUpdateTimestamp) / 1000)
+    this.lastUpdateTimestamp = now
+    const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.terrain?.update(camera, renderer)
-    this.atmosphere?.update(camera, this.date)
-    this.lastUpdateMilliseconds = performance.now() - start
+    if (this.atmosphere !== null) {
+      // The sky, haze and sunlight belong to the globe: they fade out on the flat map.
+      this.atmosphere.opacity = 1 - this.view.morph
+      this.atmosphere.update(camera, this.date)
+    }
+    this.lastUpdateMilliseconds = performance.now() - now
+    return morphing || this.view.transitioning
   }
 
   inspect(): EarthInspection {
@@ -150,6 +183,7 @@ export class Earth extends Group {
               ...inspectImagery(terrain),
             },
       imageryLayers: this.imagery.size,
+      view: this.view.inspect(),
       atmosphere:
         this.atmosphere === null
           ? null
