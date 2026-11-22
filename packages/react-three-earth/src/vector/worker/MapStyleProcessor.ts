@@ -124,7 +124,7 @@ export class MapStyleProcessor {
       backgroundByZoom: Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => this.backgroundAt(zoom)),
       skippedLayers: skipped,
       attributions,
-      backgroundPatternByZoom: this.backgroundPatterns(),
+      ...this.backgroundPatterns(),
       spriteImageIds: images.spriteImageIds(),
     }
   }
@@ -197,8 +197,8 @@ export class MapStyleProcessor {
    */
   setImage(id: string, image: StyleImage | null): ImageChange {
     const rebuild = this.images.set(id, image)
-    this.summary.backgroundPatternByZoom = this.backgroundPatterns()
-    return { rebuild, backgroundPatternByZoom: this.summary.backgroundPatternByZoom }
+    Object.assign(this.summary, this.backgroundPatterns())
+    return { rebuild, backgroundPatternByZoom: this.summary.backgroundPatternByZoom, missingBackgroundImages: this.summary.missingBackgroundImages }
   }
 
   /** Tessellates one tile. The bucket's `atlas` is left null: the caller attaches `takeAtlasUpdate()`. */
@@ -239,13 +239,16 @@ export class MapStyleProcessor {
     return { shapes: shapeMesh, text, atlas: null, images: [...images.used], missingImages: [...images.missing], byteLength }
   }
 
-  /** The colour of the top-most background layer that draws at this zoom with a colour (not a pattern). */
+  /**
+   * The colour of the top-most background layer that draws at this zoom with a colour. Patterned layers draw
+   * over it (`backgroundPatterns`).
+   */
   protected backgroundAt(zoom: number): [number, number, number, number] | null {
     let color: [number, number, number, number] | null = null
     for (const layer of this.layers) {
       if (layer.type !== 'background' || !layer.isVisibleAtZoom(zoom)) continue
-      const opacity = layer.evaluate<number>('paint', 'background-opacity', zoom)
       if (patternName(layer, 'background-pattern', zoom) !== null) continue
+      const opacity = layer.evaluate<number>('paint', 'background-opacity', zoom)
       const next = layer.evaluateColor('background-color', zoom, undefined, opacity)
       if (next[3] > 0) color = next
     }
@@ -253,25 +256,34 @@ export class MapStyleProcessor {
   }
 
   /**
-   * `background-pattern` per zoom: the top-most background layer's pattern, when that layer is patterned (a
-   * colour layer above it wins, as it covers it). A missing image draws nothing, as in MapLibre.
+   * `background-pattern` per zoom: the top-most patterned background layer that draws, unless an opaque
+   * colour layer above it covers it. Transparent layers and missing images are skipped (a missing image draws
+   * nothing, as in MapLibre, and is listed). A translucent colour layer above a pattern draws under it: one
+   * colour and one pattern per zoom is the limit.
    */
-  protected backgroundPatterns(): Array<BackgroundPattern | null> {
-    return Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => {
+  protected backgroundPatterns(): Pick<MapStyleSummary, 'backgroundPatternByZoom' | 'missingBackgroundImages'> {
+    const missing = new Set<string>()
+    const backgroundPatternByZoom = Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => {
       let pattern: BackgroundPattern | null = null
       for (const layer of this.layers) {
         if (layer.type !== 'background' || !layer.isVisibleAtZoom(zoom)) continue
         const opacity = layer.evaluate<number>('paint', 'background-opacity', zoom)
         const name = patternName(layer, 'background-pattern', zoom)
         if (name === null) {
-          if (layer.evaluateColor('background-color', zoom, undefined, opacity)[3] > 0) pattern = null
+          if (layer.evaluateColor('background-color', zoom, undefined, opacity)[3] === 255) pattern = null
           continue
         }
+        if (opacity <= 0) continue
         const rectangle = this.images.getPattern(name)
-        pattern = rectangle === null || opacity <= 0 ? null : { imageId: name, rectangle, opacity }
+        if (rectangle === null) {
+          if (this.images.isMissing(name)) missing.add(name)
+          continue
+        }
+        pattern = { imageId: name, rectangle, opacity }
       }
       return pattern
     })
+    return { backgroundPatternByZoom, missingBackgroundImages: [...missing] }
   }
 
   /** The pattern's place in the atlas, recording the lookup for the tile's image lists. */

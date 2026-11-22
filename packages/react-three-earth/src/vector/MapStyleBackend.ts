@@ -157,7 +157,7 @@ export class InlineMapStyleBackend implements MapStyleBackend {
   }
 
   async setImage(id: string, image: StyleImage | null): Promise<ImageChange> {
-    if (this.processor === null) throw new Error('MapStyleSource: image changed before init')
+    if (this.processor === null) throw new Error('MapStyleSource: image changed before the style loaded; wait for onLoad, or pass images when creating the overlay')
     const change = this.processor.setImage(id, image === null ? null : { ...image, data: image.data.slice() })
     this.flushImageAtlas(this.processor)
     return change

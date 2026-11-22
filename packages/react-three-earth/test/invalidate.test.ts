@@ -64,7 +64,7 @@ class TestOverlay extends MapStyleOverlay {
   /** Image ids each tile's patterns use, by tile key. */
   readonly tileImages = new Map<string, string[]>()
   /** What the fake worker answers to the next image change. */
-  nextImageChange: ImageChange = { rebuild: true, backgroundPatternByZoom: [] }
+  nextImageChange: ImageChange = { rebuild: true, backgroundPatternByZoom: [], missingBackgroundImages: [] }
   /** When set, tile loads wait for `releaseHeldTiles`. */
   holdTiles = false
   protected heldTiles: Array<() => void> = []
@@ -72,7 +72,7 @@ class TestOverlay extends MapStyleOverlay {
 
   constructor() {
     super({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], spriteImageIds: [] }
+    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [] }
     this.compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
     const backend: MapStyleBackend = {
       init: async () => this.summary!,
@@ -389,7 +389,7 @@ describe('MapStyleOverlay.setImage', () => {
 
   it('only redraws, without rebuilding, when the image was rewritten in place', async () => {
     const overlay = await loadedOverlay()
-    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [] }
+    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [], missingBackgroundImages: [] }
     await overlay.setImage('stripes', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
     await overlay.settle()
     expect(overlay.drawsOf(A)).toHaveLength(1)
@@ -403,10 +403,22 @@ describe('MapStyleOverlay.setImage', () => {
     expect(overlay.draws).toHaveLength(0)
   })
 
+  it('still finds regions whose buckets left the cache', async () => {
+    const overlay = await loadedOverlay()
+    const buckets = (overlay as unknown as { buckets: RefCountedCache<unknown> }).buckets
+    for (const key of [...buckets.keys()]) buckets.discard(key) // evicted: unlocked, so freed now
+    expect(buckets.size).toBe(0)
+    await overlay.setImage('stripes', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
+    await overlay.settle()
+    expect(overlay.drawsOf(A)).toHaveLength(1)
+    expect(overlay.drawsOf(B)).toHaveLength(1)
+    expect(overlay.drawsOf(D)).toHaveLength(0)
+  })
+
   it('redraws every region when the background pattern uses the image', async () => {
     const overlay = await loadedOverlay()
     const rectangle = { x: 1, y: 1, width: 2, height: 2, pixelRatio: 1 }
-    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [{ imageId: 'paper', rectangle, opacity: 1 }] }
+    overlay.nextImageChange = { rebuild: false, backgroundPatternByZoom: [{ imageId: 'paper', rectangle, opacity: 1 }], missingBackgroundImages: [] }
     await overlay.setImage('paper', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
     await overlay.settle()
     expect(overlay.draws).toHaveLength(4)

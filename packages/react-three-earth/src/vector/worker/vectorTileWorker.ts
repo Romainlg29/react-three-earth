@@ -38,7 +38,7 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
   }
   if (data.type === 'image') {
     const { id, imageId, image } = data
-    ;(processor ?? Promise.reject(new Error('MapStyleSource worker: image changed before init')))
+    ;(processor ?? Promise.reject(new Error('MapStyleSource worker: image changed before init; send it after the init message')))
       .then(created => answer(created, id, created.setImage(imageId, image)))
       .catch(error => fail(id, error))
     return

@@ -175,7 +175,8 @@ export function PatternedMap() {
 - `updateImage(id, image)` at the same size only rewrites the atlas pixels and redraws the textures that
   use it (no re-tessellation), so it is cheap enough to animate a few times a second. Another size
   re-tessellates those tiles.
-- Only textures whose tiles use the image redraw; a background pattern redraws everything.
+- Only textures whose tiles use the image redraw; a background pattern redraws everything. A
+  `background-pattern` draws over the `background-color` layer below it.
 - Patterns follow MapLibre: `pixelRatio` image pixels per map pixel, aligned across tiles; a line pattern
   is scaled so its height spans the line's width and repeats along the line; a patterned fill has no
   outline; dashes do not combine with `line-pattern`; a missing image draws nothing (and calls

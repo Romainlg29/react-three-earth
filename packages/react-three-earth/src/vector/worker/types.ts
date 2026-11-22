@@ -85,10 +85,12 @@ export interface MapStyleSummary {
   /** The `attribution` of the style's drawn sources, from the style, TileJSON or PMTiles metadata, in the style's source order. */
   attributions: string[]
   /**
-   * `background-pattern` per integer zoom 0 to 24: when set it is drawn instead of `backgroundByZoom`.
-   * Coordinates are in the image atlas.
+   * `background-pattern` per integer zoom 0 to 24, drawn over `backgroundByZoom`. Coordinates are in the
+   * image atlas.
    */
   backgroundPatternByZoom: Array<BackgroundPattern | null>
+  /** `background-pattern` images that neither the sprite nor `addImage` provide (`styleimagemissing`). */
+  missingBackgroundImages: string[]
   /** Image ids the style's sprites provide (`sprite-id:name` for sprites other than `default`). */
   spriteImageIds: string[]
 }
@@ -206,6 +208,8 @@ export interface ImageChange {
   rebuild: boolean
   /** The style's background patterns after the change. */
   backgroundPatternByZoom: Array<BackgroundPattern | null>
+  /** Background pattern images missing after the change. */
+  missingBackgroundImages: string[]
 }
 
 export type WorkerResponse =

@@ -110,6 +110,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   /** Settles when the backend is ready (or failed): image changes queue behind it, in order. */
   protected imageQueue: Promise<unknown>
   protected resolveBackendReady: () => void = () => {}
+  /**
+   * Bucket keys that used each image id, recorded when buckets load and kept after they leave the cache, so
+   * an image change still finds regions whose buckets were evicted. Pruned to tiles of held regions.
+   */
+  protected readonly imageUsers = new Map<string, Set<string>>()
   /** Missing image ids already reported, so each is reported once until it is added. */
   protected readonly reportedMissingImages = new Set<string>()
   /** The main thread copy of the worker's image atlas (patterns now, icons later), for custom layers that sample style images. */
@@ -173,13 +178,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.backgroundColor = background.color
     this.background = new Mesh(new PlaneGeometry(1, 1), this.backgroundMaterial)
     this.background.position.set(0.5, 0.5, 0)
-    this.background.renderOrder = -1
+    this.background.renderOrder = -2
     this.background.frustumCulled = false
     this.scene.matrixWorldAutoUpdate = true
 
     this.buckets = new RefCountedCache<LoadedBucket>({
       load: async (key, signal) => {
         const bucket = await this.requireBackend().processTile(parseBucketKey(key), signal)
+        this.recordImageUsers(key, bucket.images)
         this.reportMissingImages(bucket.missingImages)
         return { bucket, meshes: null }
       },
@@ -209,6 +215,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       this.resolveBackendReady()
     }
     await this.imageSource.init()
+    this.reportMissingImages(this.summary!.missingBackgroundImages)
     this.onLoad?.(this.summary!)
   }
 
@@ -342,21 +349,46 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   }
 
   protected applyImageChange(id: string, change: ImageChange, backgroundBefore: ReadonlyArray<BackgroundPattern | null>): void {
-    if (this.summary !== null) this.summary.backgroundPatternByZoom = change.backgroundPatternByZoom
+    if (this.summary !== null) {
+      this.summary.backgroundPatternByZoom = change.backgroundPatternByZoom
+      this.summary.missingBackgroundImages = change.missingBackgroundImages
+    }
+    this.reportMissingImages(change.missingBackgroundImages)
     const usesId = (patterns: ReadonlyArray<BackgroundPattern | null>) => patterns.some(pattern => pattern?.imageId === id)
     if (usesId(backgroundBefore) || usesId(change.backgroundPatternByZoom)) {
       this.markRegionsStale(() => true)
       if (!change.rebuild) return
     }
-    // Buckets still processing may have read the image before the change: rebuild them too.
-    const affected = new Set<string>()
-    for (const key of this.buckets.keys()) {
-      const loaded = this.buckets.getLoaded(key)
-      if (loaded === null ? this.buckets.isPending(key) : loaded.bucket.images.includes(id)) affected.add(key)
-    }
+    this.pruneImageUsers()
+    // Every bucket that used the image, cached or evicted, and buckets still processing: they may have read
+    // the image before the change.
+    const affected = new Set(this.imageUsers.get(id))
+    for (const key of this.buckets.keys()) if (this.buckets.isPending(key)) affected.add(key)
+    if (change.rebuild) for (const key of affected) this.buckets.discard(key)
     // Patterns are shapes: regions that draw these tiles for their labels only are unaffected.
-    if (change.rebuild) this.rebuildTiles(request => affected.has(bucketKey(request)), true)
-    else this.redrawRegions(affected, true)
+    this.redrawRegions(affected, true)
+  }
+
+  protected recordImageUsers(bucketKey: string, images: readonly string[]): void {
+    for (const users of this.imageUsers.values()) users.delete(bucketKey)
+    for (const id of images) {
+      let users = this.imageUsers.get(id)
+      if (users === undefined) this.imageUsers.set(id, (users = new Set()))
+      users.add(bucketKey)
+    }
+  }
+
+  /** Forgets users that no held region draws any more, so the record stays the size of the view. */
+  protected pruneImageUsers(): void {
+    const drawn = new Set<string>()
+    for (const key of this.regions.keys()) {
+      const { range, level } = parseRegionKey(key)
+      for (const tile of this.getRegionTiles(range, level)) drawn.add(tile.key)
+    }
+    for (const [id, users] of this.imageUsers) {
+      for (const key of users) if (!drawn.has(key)) users.delete(key)
+      if (users.size === 0) this.imageUsers.delete(id)
+    }
   }
 
   /**
@@ -633,12 +665,13 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const background = backgrounds[Math.min(level, backgrounds.length - 1)] ?? null
     const patterns = this.summary?.backgroundPatternByZoom ?? []
     const pattern = patterns[Math.min(level, patterns.length - 1)] ?? null
+    if (background !== null) {
+      this.backgroundColor.set(background[0] / 255, background[1] / 255, background[2] / 255, background[3] / 255)
+      scene.add(this.background)
+    }
     if (pattern !== null) {
       this.setBackgroundPattern(pattern, range, level)
       scene.add(this.backgroundPatternMesh)
-    } else if (background !== null) {
-      this.backgroundColor.set(background[0] / 255, background[1] / 255, background[2] / 255, background[3] / 255)
-      scene.add(this.background)
     }
     const placements = new Map<LoadedBucket, number>()
     tiles.forEach((tile, order) => {

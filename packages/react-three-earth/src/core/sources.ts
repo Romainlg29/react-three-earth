@@ -263,7 +263,7 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
     if (!this.images.delete(id)) return
     this.reportedMissingImages.delete(id)
     this.pruneDisposedOverlays()
-    for (const overlay of this.overlays) void overlay.setImage(id, null)
+    for (const overlay of this.overlays) overlay.setImage(id, null).catch(warnUnlessAborted)
   }
 
   /** Whether an image of this id exists: added with `addImage`, or in the style's sprite once it has loaded. */
@@ -276,7 +276,7 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
     this.images.set(id, image)
     this.reportedMissingImages.delete(id)
     this.pruneDisposedOverlays()
-    for (const overlay of this.overlays) void overlay.setImage(id, image)
+    for (const overlay of this.overlays) overlay.setImage(id, image).catch(warnUnlessAborted)
   }
 
   protected reportMissingImage(imageId: string): void {
@@ -295,4 +295,10 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   protected pruneDisposedOverlays(): void {
     for (const overlay of this.overlays) if (overlay.isDisposed) this.overlays.delete(overlay)
   }
+}
+
+/** Image changes cut short by `dispose` are expected; anything else is worth a warning. */
+function warnUnlessAborted(error: unknown): void {
+  if ((error as Error | undefined)?.name === 'AbortError') return
+  console.warn(`MapStyleSource: an image change failed; call updateImage again to retry. ${(error as Error).message}`)
 }

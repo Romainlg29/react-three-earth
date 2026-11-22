@@ -221,8 +221,11 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
   20 and patterns continue across tiles and regions. Line coordinates run along the line (cumulative distance)
   and across its width, with the image scaled so its height spans the width (MapLibre); mitre vertices use the
   mean direction, stretched by the mitre, so the across coordinate stays on the edges. The background pattern is
-  a uniform-driven quad with the same world anchoring, offset reduced on the CPU.
-- **Image changes redraw only what uses them.** Buckets list the image ids they asked for (and which were missing).
+  a uniform-driven quad with the same world anchoring, offset reduced on the CPU, drawn over the background
+  colour (one colour and one pattern per zoom: a translucent colour layer above a pattern draws under it).
+- **Image changes redraw only what uses them.** Buckets list the image ids they asked for (and which were missing);
+  the overlay keeps an image id → bucket keys record that outlives cache eviction (pruned to tiles of held regions
+  on each change), so regions whose buckets left the 32 MB cache still redraw.
   The worker answers an image change with `rebuild`: false when the image was rewritten in place (same size and
   pixel ratio), so regions drawing those buckets are only redrawn through F1's in-place redraw; true when it
   appeared, disappeared or moved, so those buckets are re-tessellated from the worker's raw-tile cache (no
@@ -236,7 +239,7 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 | --- | --- |
 | WebGPU and WebGL2 | green checks (background) on 83 % of the view, blue stripes on the lakes, red and white dashes along primary roads; the lake using `hatch` (not in the sprite) draws nothing and is reported once |
 | `addImage('hatch')`, then `updateImage` (same size) | the lake turns magenta, then yellow; the update redrew 46 of 50 regions (the fixture lake's zoom 10 tile covers most of the view) with no re-tessellation |
-| Unit tests | 15 new: sprite URLs and index, atlas padding, premultiplication, in-place rewrite and slot reuse, fill and line pattern coordinates, cross-tile continuity, processor sprites (@2x, array sprites, fallback, failures, runtime images), redraw scope, missing-image reports, `MapStyleSource` image API |
+| Unit tests | 17 new: sprite URLs and index, atlas padding, premultiplication, in-place rewrite and slot reuse, fill and line pattern coordinates, cross-tile continuity, processor sprites (@2x, array sprites, fallback, failures, runtime images), redraw scope, missing-image reports (background included), evicted buckets, background stacking, `MapStyleSource` image API |
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 

@@ -209,6 +209,23 @@ describe('MapStyleProcessor sprites and patterns', () => {
     expect(processor.setImage('roads:dots', null).rebuild).toBe(true)
   })
 
+  it('draws a background pattern over the colour below it, and lists a missing background image', async () => {
+    const { fetch } = createFakeFetch({ 'https://maps.test/sprite.json': spriteIndex, 'https://maps.test/sprite.png': new Uint8Array([1]) })
+    const layers = (pattern: string) => [
+      { id: 'ground', type: 'background', paint: { 'background-color': '#336699' } },
+      { id: 'paper', type: 'background', paint: { 'background-pattern': pattern } },
+      { id: 'hidden', type: 'background', paint: { 'background-pattern': 'stripes', 'background-opacity': 0 } },
+    ]
+    const create = (pattern: string) => MapStyleProcessor.create({ style: { version: 8, sprite: '/sprite', sources: {}, layers: layers(pattern) }, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, decodeImage })
+    const found = await create('dots')
+    expect(found.summary.backgroundByZoom[3]).toEqual([51, 102, 153, 255])
+    expect(found.summary.backgroundPatternByZoom[3]!.imageId).toBe('dots') // the transparent layer above is skipped
+    const missing = await create('paper-texture')
+    expect(missing.summary.backgroundPatternByZoom[3]).toBeNull()
+    expect(missing.summary.missingBackgroundImages).toEqual(['paper-texture'])
+    expect(missing.setImage('paper-texture', solid(2, 2, [0, 0, 0, 255])).missingBackgroundImages).toEqual([])
+  })
+
   it('skips a sprite that fails to load, with a warning', async () => {
     const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': tile })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})

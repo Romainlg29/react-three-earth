@@ -94,7 +94,7 @@ export const decodeImageInBrowser: ImageDecoder = async bytes => {
   try {
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
     const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (context === null) throw new Error('no 2D context to decode sprite images')
+    if (context === null) throw new Error('no OffscreenCanvas 2D context to decode sprite images; this browser cannot load sprites in a worker, pass createWorker: null to decode on the main thread')
     context.drawImage(bitmap, 0, 0)
     const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height)
     return { width: bitmap.width, height: bitmap.height, data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength) }

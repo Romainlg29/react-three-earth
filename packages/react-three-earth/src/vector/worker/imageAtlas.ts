@@ -64,8 +64,12 @@ export class ImageAtlas {
     if (slot === undefined) {
       const allocated = this.takeFreeSlot(width, height) ?? this.allocate(width, height)
       if (allocated === null) {
-        if (!this.warnedFull) console.warn(`MapStyleSource: the image atlas is full (${ATLAS_WIDTH} × ${ATLAS_MAXIMUM_HEIGHT}); image "${id}" is skipped. Use smaller pattern images.`)
-        this.warnedFull = true
+        if (width > ATLAS_WIDTH || height > ATLAS_MAXIMUM_HEIGHT) {
+          console.warn(`MapStyleSource: image "${id}" (${image.width} × ${image.height}) is larger than the image atlas allows (${ATLAS_WIDTH - 2} × ${ATLAS_MAXIMUM_HEIGHT - 2}) and is skipped; use a smaller image.`)
+        } else if (!this.warnedFull) {
+          console.warn(`MapStyleSource: the image atlas is full (${ATLAS_WIDTH} × ${ATLAS_MAXIMUM_HEIGHT}); image "${id}" is skipped. Use fewer or smaller pattern images.`)
+          this.warnedFull = true
+        }
         return null
       }
       slot = allocated
