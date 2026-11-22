@@ -20,7 +20,9 @@ const terrainUrl = useFixtures ? '/fixtures/terrain/' : (import.meta.env.VITE_TE
 const imageryUrl = useFixtures ? '/fixtures/imagery/{z}/{x}/{y}.png' : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
 const showStatistics = params.get('stats') !== '0'
-const date = new Date(params.get('date') ?? '2026-11-22T07:00:00Z')
+const defaultDate = new Date('2026-11-22T07:00:00Z')
+const requestedDate = new Date(params.get('date') ?? Number.NaN)
+const date = Number.isNaN(requestedDate.getTime()) ? defaultDate : requestedDate
 
 /**
  * Mount Fuji from the south-east, late afternoon. Override with
@@ -28,8 +30,13 @@ const date = new Date(params.get('date') ?? '2026-11-22T07:00:00Z')
  * `?camera=138.7,35.4,0,8000000,0,-20`.
  */
 function readCameraView(): CameraView {
-  const values = params.get('camera')?.split(',').map(Number) ?? []
-  const [longitudeDegrees = 138.7274, latitudeDegrees = 35.3606, heightMeters = 2000, distanceMeters = 60_000, headingDegrees = -40, pitchDegrees = -25] = values
+  const defaults = [138.7274, 35.3606, 2000, 60_000, -40, -25] as const
+  const given = params.get('camera')?.split(',') ?? []
+  // Empty or non-numeric fields keep their default
+  const [longitudeDegrees, latitudeDegrees, heightMeters, distanceMeters, headingDegrees, pitchDegrees] = defaults.map((fallback, index) => {
+    const value = Number.parseFloat(given[index] ?? '')
+    return Number.isFinite(value) ? value : fallback
+  }) as [number, number, number, number, number, number]
   return { longitudeDegrees, latitudeDegrees, heightMeters, distanceMeters, headingDegrees, pitchDegrees }
 }
 

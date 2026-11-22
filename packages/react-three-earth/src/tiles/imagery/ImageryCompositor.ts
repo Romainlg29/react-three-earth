@@ -113,8 +113,22 @@ export class ImageryCompositor {
   /**
    * Anisotropic filtering applied to composite textures, capped by the device. Terrain near the horizon is
    * seen at grazing angles, where plain trilinear filtering blurs and anisotropic filtering keeps detail.
+   * Applies to targets created, and source textures configured, after it is set.
    */
   anisotropy = 8
+
+  /**
+   * Gives a source tile shown directly on a terrain tile (the exact-cover fast path) the same mipmapped,
+   * anisotropic sampling as composites, so it doesn't shimmer next to composed neighbours. Mipmaps are built
+   * when the texture uploads; the tile cache counted it before, so its third of extra memory goes uncounted.
+   */
+  configureSampling(texture: Texture): void {
+    if (texture.generateMipmaps && texture.minFilter === LinearMipmapLinearFilter && texture.anisotropy === this.anisotropy) return
+    texture.generateMipmaps = true
+    texture.minFilter = LinearMipmapLinearFilter
+    texture.anisotropy = this.anisotropy
+    texture.needsUpdate = true
+  }
 
   /**
    * Allocates a composite target: sRGB 8-bit, no depth, with mipmaps (three regenerates them after each

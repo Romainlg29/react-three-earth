@@ -1,9 +1,9 @@
 import { useThree } from '@react-three/fiber/extension'
 import { useRenderPipeline } from '@react-three/tsl'
 import { useLayoutEffect, useRef, useState } from 'react'
-import { AgXToneMapping } from 'three'
+import { AgXToneMapping, UnsignedByteType } from 'three'
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js'
-import { renderOutput } from 'three/tsl'
+import { renderOutput, rtt } from 'three/tsl'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { Atmosphere as AtmosphereImpl, type AtmosphereOptions } from '../core/Atmosphere.js'
@@ -15,7 +15,7 @@ export interface AtmosphereProps extends AtmosphereOptions {
   /**
    * Edge antialiasing after the atmosphere pass. The pass decides sky or ground per pixel from one depth
    * sample, which undoes the canvas's multisampling along silhouettes such as the planet's limb. `'fxaa'` is a
-   * single cheap pass that smooths them again. Default: `'fxaa'`.
+   * single cheap pass that smooths them again; it also softens fine text in imagery slightly. Default: `'fxaa'`.
    */
   antialiasing?: 'fxaa' | 'none'
 }
@@ -74,7 +74,9 @@ export function Atmosphere({ exposure = 10, parameters, antialiasing = 'fxaa' }:
     if (antialiasing === 'fxaa') {
       // FXAA works on display-referred (tone-mapped, sRGB) colour, so the output transform runs first, here.
       renderPipeline.outputColorTransform = false
-      renderPipeline.outputNode = fxaa(renderOutput(color as never)) as never
+      // 8 bits are enough for display-referred colour, a quarter of the default half-float target's memory.
+      const displayColor = rtt(renderOutput(color as never), null, null, { type: UnsignedByteType })
+      renderPipeline.outputNode = fxaa(displayColor) as never
     } else {
       renderPipeline.outputColorTransform = true
       renderPipeline.outputNode = color as never

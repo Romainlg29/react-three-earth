@@ -81,7 +81,7 @@ async function precision(highPrecision) {
 }
 
 async function map(atmosphere) {
-  const { page, errors } = await open(`/?fixtures&atmosphere=${atmosphere ? 1 : 0}`)
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=${atmosphere ? 1 : 0}`)
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain

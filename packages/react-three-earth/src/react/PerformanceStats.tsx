@@ -7,7 +7,7 @@ import { PerformanceMonitor, type PerformanceSample } from '../core/PerformanceM
 import { useEarth } from './context.js'
 
 export interface PerformanceStatsProps {
-  /** Overlay refreshes per second. Default: 4. */
+  /** Overlay refreshes per second, clamped to 0.5–30. Default: 4. */
   refreshesPerSecond?: number
   /** Corner of the canvas to sit in. Default: `'top-left'`. */
   corner?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
@@ -23,17 +23,22 @@ export function PerformanceStats({ refreshesPerSecond = 4, corner = 'top-left' }
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const [monitor] = useState(() => new PerformanceMonitor(renderer))
 
-  useLayoutEffect(() => () => monitor.dispose(), [monitor])
+  useLayoutEffect(() => {
+    monitor.start()
+    return () => monitor.dispose()
+  }, [monitor])
 
-  useFrame(() => monitor.beginFrame(), { id: 'earth:performance-begin', phase: 'start' })
-  useFrame(() => monitor.endFrame(), { id: 'earth:performance-end', phase: 'finish' })
+  // No ids: the scheduler generates unique ones, so several overlays can coexist.
+  useFrame(() => monitor.beginFrame(), { phase: 'start' })
+  useFrame(() => monitor.endFrame(), { phase: 'finish' })
 
   useLayoutEffect(() => {
     const element = createOverlay(renderer.domElement, corner)
     const refresh = () => {
       element.textContent = formatStatistics(monitor.sample(), earth.inspect())
     }
-    const interval = setInterval(refresh, 1000 / refreshesPerSecond)
+    refresh()
+    const interval = setInterval(refresh, 1000 / Math.min(Math.max(refreshesPerSecond, 0.5), 30))
     return () => {
       clearInterval(interval)
       element.remove()
@@ -44,8 +49,8 @@ export function PerformanceStats({ refreshesPerSecond = 4, corner = 'top-left' }
 }
 
 function createOverlay(canvas: HTMLCanvasElement, corner: NonNullable<PerformanceStatsProps['corner']>): HTMLElement {
-  const container = canvas.parentElement ?? document.body
-  if (getComputedStyle(container).position === 'static') container.style.position = 'relative'
+  // R3F wraps the canvas in two divs; the outer one is already position: relative, so nothing is restyled.
+  const container = canvas.parentElement?.parentElement ?? canvas.parentElement ?? document.body
   const element = document.createElement('pre')
   const [vertical, horizontal] = corner.split('-') as ['top' | 'bottom', 'left' | 'right']
   Object.assign(element.style, {

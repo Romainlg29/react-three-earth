@@ -62,6 +62,8 @@ export class Earth extends Group {
   date: Date
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
+  /** Main-thread time of the last `update()`, in milliseconds. */
+  lastUpdateMilliseconds = 0
   protected readonly imagery = new Set<Imagery>()
 
   constructor({ date = new Date() }: EarthOptions = {}) {
@@ -106,9 +108,6 @@ export class Earth extends Group {
     this.atmosphere = atmosphere
     if (atmosphere !== null) this.add(atmosphere.light)
   }
-
-  /** Main-thread time of the last `update()`, in milliseconds. */
-  lastUpdateMilliseconds = 0
 
   /** Loads tiles for the camera and moves the sun. Call once per frame, before rendering. */
   update(camera: Camera, renderer: WebGPURenderer): void {

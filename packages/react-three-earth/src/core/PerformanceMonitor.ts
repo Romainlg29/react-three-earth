@@ -9,6 +9,7 @@ export interface PerformanceSample {
   frameIntervalMillisecondsWorst: number
   /** Main-thread time from the start of a frame's callbacks to the end of its render submission. */
   cpuFrameMillisecondsAverage: number
+  /** The slowest frame's main-thread time in the window. */
   cpuFrameMillisecondsWorst: number
   /** GPU time of the last resolved frame. Null unless the renderer was created with `trackTimestamp: true` on a device with timestamp queries. */
   gpuFrameMilliseconds: number | null
@@ -30,8 +31,9 @@ interface ChromiumPerformance {
 
 /**
  * Frame-rate, frame-time, GPU-time and memory statistics over a sliding window, for a performance overlay or
- * an agent checking a scene. Call `beginFrame()` at the start of each frame and `endFrame()` after the render
- * is submitted; read `sample()` as often as you like (it allocates one small object).
+ * an agent checking a scene. Call `start()` once, `beginFrame()` at the start of each frame and `endFrame()`
+ * after the render is submitted; read `sample()` as often as you like (it allocates one small object), and
+ * `dispose()` when done. The constructor has no side effects, so it is safe in React state initialisers.
  */
 export class PerformanceMonitor {
   /** How far back `sample()` looks, in milliseconds. */
@@ -43,7 +45,8 @@ export class PerformanceMonitor {
   protected readonly frameStarts: number[] = []
   protected readonly cpuFrameMilliseconds: number[] = []
   protected readonly longTaskEnds: number[] = []
-  protected currentFrameStart = 0
+  /** Start of the open frame, or NaN between frames. */
+  protected currentFrameStart = Number.NaN
   protected framesSinceGpuResolve = 0
   protected gpuFrameMilliseconds: number | null = null
   protected gpuResolvePending = false
@@ -51,20 +54,29 @@ export class PerformanceMonitor {
 
   constructor(renderer: WebGPURenderer) {
     this.renderer = renderer
-    this.observeLongTasks()
   }
 
+  /** Starts watching for long main-thread tasks. Pair with `dispose()`; calling it twice is harmless. */
+  start(): void {
+    if (this.longTaskObserver === null) this.observeLongTasks()
+  }
+
+  /** Marks the start of a frame, before any per-frame work. */
   beginFrame(now = performance.now()): void {
     this.currentFrameStart = now
     this.frameStarts.push(now)
     this.trim(now)
   }
 
+  /** Marks the end of a frame, after the render is submitted. Ignored when no frame is open. */
   endFrame(now = performance.now()): void {
+    if (Number.isNaN(this.currentFrameStart)) return
     this.cpuFrameMilliseconds.push(now - this.currentFrameStart)
+    this.currentFrameStart = Number.NaN
     this.resolveGpuTimeEveryFewFrames()
   }
 
+  /** The statistics over the last `windowMilliseconds`. */
   sample(now = performance.now()): PerformanceSample {
     this.trim(now)
     const intervals = this.frameIntervals()
@@ -86,9 +98,11 @@ export class PerformanceMonitor {
     }
   }
 
+  /** Stops watching for long tasks and forgets them. `start()` can be called again afterwards. */
   dispose(): void {
     this.longTaskObserver?.disconnect()
     this.longTaskObserver = null
+    this.longTaskEnds.length = 0
   }
 
   protected frameIntervals(): number[] {
@@ -107,7 +121,15 @@ export class PerformanceMonitor {
     while (this.longTaskEnds.length > 0 && this.longTaskEnds[0]! < oldest) this.longTaskEnds.shift()
   }
 
+  /** True when the renderer records GPU timestamps (`trackTimestamp: true` and a device that supports them). */
+  protected get tracksTimestamps(): boolean {
+    const backend = (this.renderer as unknown as { backend?: { trackTimestamp?: boolean } }).backend
+    return backend?.trackTimestamp === true
+  }
+
   protected resolveGpuTimeEveryFewFrames(): void {
+    // Asking three without timestamp tracking logs a warning, so only ask when it records them.
+    if (!this.tracksTimestamps) return
     if (this.gpuResolvePending || ++this.framesSinceGpuResolve < this.gpuResolveIntervalFrames) return
     this.framesSinceGpuResolve = 0
     this.gpuResolvePending = true
