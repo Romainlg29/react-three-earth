@@ -227,7 +227,9 @@ export class EarthCamera {
     const camera = this.requireCamera()
     const { width, height } = this.requireViewport()
     const onFlatMap = this.onFlatMap
-    const center = this.unprojectOnSurface(width / 2, height / 2) ?? this.getView()
+    const centerHit = this.unprojectOnSurface(width / 2, height / 2)
+    // The reference for unwrapping longitudes; only a real hit bounds the box.
+    const center = centerHit ?? this.getView()
     let west = Infinity
     let east = -Infinity
     let south = Infinity
@@ -269,7 +271,7 @@ export class EarthCamera {
         previous = current
       }
     }
-    if (center !== null) include(center)
+    if (centerHit !== null) include(centerHit)
 
     if (!onFlatMap) {
       cameraPosition.setFromMatrixPosition(camera.matrixWorld)
