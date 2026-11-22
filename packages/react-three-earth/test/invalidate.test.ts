@@ -415,6 +415,21 @@ describe('MapStyleOverlay.setImage', () => {
     expect(overlay.drawsOf(D)).toHaveLength(0)
   })
 
+  it('keeps the record of a cached bucket whose regions were released, for when a region takes it back', async () => {
+    const overlay = new TestOverlay()
+    overlay.tileImages.set(tile21, ['stripes'])
+    overlay.lockTexture(A)
+    await overlay.settle()
+    overlay.releaseTexture(A) // the bucket stays in the reuse cache
+    await overlay.setImage('unrelated', null) // prunes the record
+    overlay.lockTexture(A) // from the cached bucket: no new load
+    await overlay.settle()
+    overlay.draws.length = 0
+    await overlay.setImage('stripes', { width: 2, height: 2, data: new Uint8Array(16), pixelRatio: 1, sdf: false })
+    await overlay.settle()
+    expect(overlay.drawsOf(A)).toHaveLength(1)
+  })
+
   it('redraws every region when the background pattern uses the image', async () => {
     const overlay = await loadedOverlay()
     const rectangle = { x: 1, y: 1, width: 2, height: 2, pixelRatio: 1 }

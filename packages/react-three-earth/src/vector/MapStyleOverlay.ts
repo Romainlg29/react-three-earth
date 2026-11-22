@@ -378,9 +378,12 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     }
   }
 
-  /** Forgets users that no held region draws any more, so the record stays the size of the view. */
+  /**
+   * Forgets users that no held region draws and the bucket cache no longer holds, so the record stays the size
+   * of the view. Cached buckets stay: a region can take one back without loading it (and recording it) again.
+   */
   protected pruneImageUsers(): void {
-    const drawn = new Set<string>()
+    const drawn = new Set<string>(this.buckets.keys())
     for (const key of this.regions.keys()) {
       const { range, level } = parseRegionKey(key)
       for (const tile of this.getRegionTiles(range, level)) drawn.add(tile.key)
