@@ -10,7 +10,7 @@ import {
   Terrain,
   useEarth,
 } from 'react-three-earth/react'
-import { useLayoutEffect } from 'react'
+import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
 
 const params = new URLSearchParams(location.search)
@@ -18,6 +18,8 @@ const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? '/fixtures/terrain/' : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? '/fixtures/imagery/{z}/{x}/{y}.png' : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
+// `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device.
+const atmosphereCache = !params.has('nocache')
 
 declare global {
   interface Window {
@@ -36,6 +38,23 @@ function InitialView() {
   return null
 }
 
+/** How the atmosphere's lookup textures were made, for reading timings off a phone. */
+function AtmosphereStatus() {
+  const [text, setText] = useState('')
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const atmosphere = window.earth?.inspect().atmosphere
+      if (atmosphere == null) return setText('')
+      if (!atmosphere.ready) return setText('Atmosphere: generating…')
+      const seconds = ((atmosphere.generationTimeMilliseconds ?? 0) / 1000).toFixed(2)
+      setText(`Atmosphere: ${atmosphere.loadedFromCache ? 'loaded from cache' : 'generated'} in ${seconds} s, ${atmosphere.generationFrames} frames`)
+      clearInterval(interval)
+    }, 250)
+    return () => clearInterval(interval)
+  }, [])
+  return text === '' ? null : <div style={{ position: 'absolute', top: 8, left: 8, opacity: 0.8 }}>{text}</div>
+}
+
 export function MapDemo() {
   return (
     <>
@@ -49,7 +68,7 @@ export function MapDemo() {
             <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />
           </Imagery>
           {withAtmosphere ? (
-            <Atmosphere />
+            <Atmosphere cache={atmosphereCache} />
           ) : (
             <>
               <ambientLight intensity={0.6} />
@@ -59,6 +78,7 @@ export function MapDemo() {
           <EarthControls />
         </Earth>
       </Canvas>
+      {withAtmosphere && <AtmosphereStatus />}
       <div style={{ position: 'absolute', bottom: 8, right: 8, opacity: 0.7 }}>
         {useFixtures ? 'Synthetic test tiles' : 'Terrain: Re:Earth Terrain, Mapterhorn. Imagery: © OpenStreetMap contributors'}
       </div>
