@@ -1,4 +1,4 @@
-import { use, useImperativeHandle, useLayoutEffect, useMemo, type Ref } from 'react'
+import { use, useImperativeHandle, useLayoutEffect, useMemo, useRef, type Ref } from 'react'
 
 import {
   MapStyleSource as MapStyleSourceImpl,
@@ -48,7 +48,7 @@ export function RasterTileSource({ url, levels, tileDimensionPixels, projection,
 }
 
 export interface MapStyleSourceProps extends MapStyleSourceOptions {
-  /** Receives the vanilla `MapStyleSource`, for `invalidate(bounds)` when tile data changed. */
+  /** Receives the vanilla `MapStyleSource`: `invalidate(bounds)` when tile data changed, `addImage` for patterns. */
   ref?: Ref<MapStyleSourceImpl>
 }
 
@@ -57,7 +57,22 @@ export interface MapStyleSourceProps extends MapStyleSourceOptions {
  * `<Imagery>`. Changing `url` or `style` reloads it; keep a `style` object or `requestHeaders` stable
  * (memoised) to avoid reloads. To redraw after tile data changed, call `invalidate` on its `ref`.
  */
-export function MapStyleSource({ ref, url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, attribution }: MapStyleSourceProps) {
+export function MapStyleSource({
+  ref,
+  url,
+  style,
+  baseUrl,
+  requestHeaders,
+  localFontFamily,
+  maximumZoom,
+  createWorker,
+  attribution,
+  spritePixelRatio,
+  onStyleImageMissing,
+}: MapStyleSourceProps) {
+  // The latest handler, without reloading the source when an inline arrow changes.
+  const onStyleImageMissingRef = useRef(onStyleImageMissing)
+  useLayoutEffect(() => void (onStyleImageMissingRef.current = onStyleImageMissing))
   const source = useMemo(
     () =>
       new MapStyleSourceImpl({
@@ -69,9 +84,11 @@ export function MapStyleSource({ ref, url, style, baseUrl, requestHeaders, local
         ...(maximumZoom !== undefined ? { maximumZoom } : {}),
         ...(createWorker !== undefined ? { createWorker } : {}),
         ...(attribution !== undefined ? { attribution } : {}),
+        ...(spritePixelRatio !== undefined ? { spritePixelRatio } : {}),
+        onStyleImageMissing: imageId => onStyleImageMissingRef.current?.(imageId),
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker],
+    [url, style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, spritePixelRatio],
   )
   useAttribution(source, attribution)
   useImperativeHandle(ref, () => source, [source])

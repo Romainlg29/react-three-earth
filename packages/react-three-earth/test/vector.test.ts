@@ -454,7 +454,7 @@ describe('RefCountedCache', () => {
 describe('MapStyleOverlay', () => {
   function overlayWithSource(maximumZoom: number) {
     const overlay = new MapStyleOverlay({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
+    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [] }
     return overlay as unknown as { calculateLevel(range: number[]): number; getRegionTiles(range: number[], level: number): Array<{ key: string; textOnly: boolean; column: number }> }
   }
 

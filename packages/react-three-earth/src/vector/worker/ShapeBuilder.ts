@@ -1,7 +1,7 @@
 import earcut from 'earcut'
 
 import type { Rgba } from './styleLayers.js'
-import type { DrawGroup, ShapeMesh } from './types.js'
+import type { DrawGroup, PatternRectangle, ShapeMesh } from './types.js'
 
 export interface Point {
   x: number
@@ -26,11 +26,20 @@ export interface LineStyle {
   dashes?: readonly number[]
 }
 
+/**
+ * How shapes added after `setPattern` map onto the repeated image, in image pixels. `plane`: fills, at a fixed
+ * scale in tile space, with the image pixel at the tile's top-left corner given (for seamless tiles). `line`:
+ * along the line and across its width, the image stretched so its height spans the line's width.
+ */
+export type PatternMapping =
+  | { kind: 'plane'; imagePixelsPerUnit: number; originX: number; originY: number }
+  | { kind: 'line' }
+
 /** Segments per half turn for round caps, joins and circles. */
 const ROUND_SEGMENTS = 8
 
 /** A growable typed array. */
-class Growable<T extends Float32Array | Uint8Array | Uint32Array> {
+class Growable<T extends Float32Array | Uint8Array | Uint16Array | Uint32Array> {
   array: T
   length = 0
   constructor(protected readonly create: (size: number) => T) {
@@ -75,6 +84,12 @@ export class ShapeBuilder {
   protected readonly indices = new Growable(size => new Uint32Array(size))
   protected readonly groups: DrawGroup[] = []
   protected color: Rgba = [0, 0, 0, 0]
+  /** Created on the first pattern, then filled for every vertex (zero rectangle: coloured, not patterned). */
+  protected patternRectangles: Growable<Uint16Array> | null = null
+  protected patternCoordinates: Growable<Float32Array> | null = null
+  protected pattern: { rectangle: PatternRectangle; mapping: PatternMapping } | null = null
+  /** The local frame of the line being stroked with a pattern: image coordinates follow it. */
+  protected lineFrame = { originX: 0, originY: 0, directionX: 1, directionY: 0, distance: 0, left: 0, right: 1, acrossScale: 1 }
 
   get vertexCount(): number {
     return this.positions.length / 2
@@ -90,6 +105,27 @@ export class ShapeBuilder {
 
   setColor(color: Rgba): void {
     this.color = color
+  }
+
+  /**
+   * Draws the shapes added next with a pattern image (null: with the colour again). The colour's alpha stays
+   * the pattern's opacity.
+   */
+  setPattern(rectangle: PatternRectangle | null, mapping: PatternMapping = { kind: 'line' }): void {
+    if (rectangle === null) {
+      this.pattern = null
+      return
+    }
+    if (this.patternRectangles === null) {
+      const count = this.vertexCount
+      this.patternRectangles = new Growable(size => new Uint16Array(size))
+      this.patternCoordinates = new Growable(size => new Float32Array(size))
+      this.patternRectangles.reserve(count * 4)
+      this.patternCoordinates!.reserve(count * 2)
+      this.patternRectangles.length = count * 4 // zero-filled: coloured
+      this.patternCoordinates!.length = count * 2
+    }
+    this.pattern = { rectangle, mapping }
   }
 
   /** Adds polygons: each is an outer ring followed by its holes. */
@@ -153,6 +189,8 @@ export class ShapeBuilder {
       colors: this.colors.toArray(),
       indices: this.indices.toArray(),
       groups: this.groups.filter(group => group.count > 0),
+      patterns: this.patternRectangles?.toArray() ?? null,
+      patternCoordinates: this.patternCoordinates?.toArray() ?? null,
     }
   }
 
@@ -160,7 +198,43 @@ export class ShapeBuilder {
     const [r, g, b, a] = this.color
     this.positions.push2(x, y)
     this.colors.push4(r, g, b, a)
+    if (this.patternRectangles !== null) this.addPatternVertex(x, y)
     return this.vertexCount - 1
+  }
+
+  protected addPatternVertex(x: number, y: number): void {
+    const pattern = this.pattern
+    if (pattern === null) {
+      this.patternRectangles!.push4(0, 0, 0, 0)
+      this.patternCoordinates!.push2(0, 0)
+      return
+    }
+    const { rectangle, mapping } = pattern
+    this.patternRectangles!.push4(rectangle.x, rectangle.y, rectangle.width, rectangle.height)
+    if (mapping.kind === 'plane') {
+      this.patternCoordinates!.push2(mapping.originX + x * mapping.imagePixelsPerUnit, mapping.originY + y * mapping.imagePixelsPerUnit)
+      return
+    }
+    // Along the line from its start, and across from its left edge, in image pixels (height = line width).
+    const frame = this.lineFrame
+    const dx = x - frame.originX
+    const dy = y - frame.originY
+    const along = frame.distance + dx * frame.directionX + dy * frame.directionY
+    const across = (dx * -frame.directionY + dy * frame.directionX) / frame.acrossScale
+    const imagePixelsPerUnit = rectangle.height / (frame.right - frame.left)
+    this.patternCoordinates!.push2(along * imagePixelsPerUnit, (across - frame.left) * imagePixelsPerUnit)
+  }
+
+  /** Sets the frame line vertices added next map through: an origin on the line, its direction, distance so far. */
+  protected setLineFrame(originX: number, originY: number, normal: Point, distance: number, acrossScale = 1): void {
+    const frame = this.lineFrame
+    frame.originX = originX
+    frame.originY = originY
+    // Normals point right of the direction in y-down space: direction = (normal.y, -normal.x).
+    frame.directionX = normal.y
+    frame.directionY = -normal.x
+    frame.distance = distance
+    frame.acrossScale = acrossScale
   }
 
   /**
@@ -178,6 +252,13 @@ export class ShapeBuilder {
     // Unit normals (to the right in y-down tile space) of each segment.
     const normals: Point[] = []
     for (let index = 0; index < count - 1; index++) normals.push(segmentNormal(line[index]!, line[index + 1]!))
+    // Distance along the line at each point, for patterns.
+    const patterned = this.pattern?.mapping.kind === 'line'
+    const distances = patterned ? cumulativeDistances(line) : null
+    if (patterned) {
+      this.lineFrame.left = left
+      this.lineFrame.right = right
+    }
 
     let previousLeft = -1
     let previousRight = -1
@@ -189,6 +270,7 @@ export class ShapeBuilder {
 
       if (isEndpoint) {
         const normal = (incoming ?? outgoing)!
+        if (distances !== null) this.setLineFrame(point.x, point.y, normal, distances[index]!)
         const leftVertex = this.addVertex(point.x + normal.x * left, point.y + normal.y * left)
         const rightVertex = this.addVertex(point.x + normal.x * right, point.y + normal.y * right)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
@@ -205,6 +287,8 @@ export class ShapeBuilder {
       const miterScale = bisectorLength > 1e-6 ? 1 / cosine : Infinity
       if (join === 'miter' ? miterScale <= miterLimit : miterScale <= 1.05) {
         const miter = { x: (bisector.x / bisectorLength) * miterScale, y: (bisector.y / bisectorLength) * miterScale }
+        // The mitre points along the normals' bisector: the frame of the mean direction, stretched by the mitre.
+        if (distances !== null) this.setLineFrame(point.x, point.y, { x: bisector.x / bisectorLength, y: bisector.y / bisectorLength }, distances[index]!, miterScale)
         const leftVertex = this.addVertex(point.x + miter.x * left, point.y + miter.y * left)
         const rightVertex = this.addVertex(point.x + miter.x * right, point.y + miter.y * right)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
@@ -215,9 +299,11 @@ export class ShapeBuilder {
 
       // Bevel or round: end the incoming segment, start the outgoing one, and fill the wedge between them on
       // the outer side only (the inner side is covered by both segments), around the line's own vertex.
+      if (distances !== null) this.setLineFrame(point.x, point.y, incoming, distances[index]!)
       const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left)
       const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right)
       if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, endLeft, endRight)
+      if (distances !== null) this.setLineFrame(point.x, point.y, outgoing, distances[index]!)
       const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left)
       const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right)
       this.addJoinWedge(point, left, right, incoming, outgoing, join === 'round')
@@ -286,6 +372,14 @@ export class ShapeBuilder {
       previousOuter = outer
     }
   }
+}
+
+function cumulativeDistances(line: readonly Point[]): number[] {
+  const distances = [0]
+  for (let index = 1; index < line.length; index++) {
+    distances.push(distances[index - 1]! + Math.hypot(line[index]!.x - line[index - 1]!.x, line[index]!.y - line[index - 1]!.y))
+  }
+  return distances
 }
 
 function segmentNormal(from: Point, to: Point): Point {

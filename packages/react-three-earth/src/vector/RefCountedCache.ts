@@ -134,6 +134,18 @@ export class RefCountedCache<Value> {
     return entry !== undefined && entry.resolved && entry.count > 0 ? entry.value! : null
   }
 
+  /** The loaded value of a key, locked or kept for reuse; null when absent, loading or failed. */
+  getLoaded(key: string): Value | null {
+    const entry = this.entries.get(key)
+    return entry !== undefined && entry.resolved ? entry.value! : null
+  }
+
+  /** Whether this key's value is still loading, locked or not. */
+  isPending(key: string): boolean {
+    const entry = this.entries.get(key)
+    return entry !== undefined && !entry.resolved && !entry.failed
+  }
+
   release(key: string): void {
     const entry = this.entries.get(key)
     if (entry !== undefined) this.releaseEntry(key, entry)
