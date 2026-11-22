@@ -382,6 +382,153 @@ async function cameraAndEvents() {
   })
 }
 
+/** Markers and popups on the fixture terrain's highest hill: alignment while moving, horizon, terrain, popup, drag. */
+async function markers() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&markers&camera=-90,0,3900,40000,-40,-30')
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
+  // Terrain heights are read a few times a second: let the finest tiles' height arrive.
+  await page.waitForTimeout(1500)
+  const initial = await page.evaluate(() => {
+    const { peak, buried } = window.markers
+    return {
+      peakHeightMeters: peak.getPosition().heightMeters,
+      peakVisibility: peak.visibility,
+      buriedVisibility: buried.visibility,
+      buriedOpacity: getComputedStyle(buried.element).opacity,
+      buriedText: buried.element.textContent,
+      peakRole: peak.element.getAttribute('role'),
+      peakTabIndex: peak.element.tabIndex,
+      peakLabel: peak.element.getAttribute('aria-label'),
+    }
+  })
+  writeFileSync(new URL('markers.png', OUT), await page.screenshot())
+
+  // Turn the camera every frame; at the end of each earth.update (after the markers place themselves, in the
+  // frame that draws), compare the pin's tip with where earth.project puts its position.
+  const moving = await page.evaluate(async () => {
+    const earth = window.earth
+    const peak = window.markers.peak
+    const errorsPixels = []
+    const domErrorsPixels = []
+    const xs = []
+    const ys = []
+    const check = () => {
+      if (peak.visibility === 'hidden') return
+      const projected = earth.project(peak.getPosition())
+      const [x, y] = peak.element.style.transform.match(/-?[\d.]+/g).map(Number)
+      errorsPixels.push(Math.hypot(x - projected.xPixels, y - projected.yPixels))
+      xs.push(x)
+      ys.push(y)
+      const box = peak.element.getBoundingClientRect()
+      const canvas = document.querySelector('canvas').getBoundingClientRect()
+      domErrorsPixels.push(Math.hypot(box.left + box.width / 2 - canvas.left - projected.xPixels, box.bottom - canvas.top - projected.yPixels))
+    }
+    earth.addEventListener('update', check)
+    const start = earth.camera.getView()
+    // Around a point beside the peak, so the pin travels across the screen.
+    for (let frame = 0; frame < 40; frame++) {
+      earth.camera.jumpTo({ longitudeDegrees: -89.98 + frame * 0.0012, latitudeDegrees: 0.02, headingDegrees: start.headingDegrees + frame * 2, pitchDegrees: -30 - frame * 0.5 })
+      await new Promise(resolve => requestAnimationFrame(resolve))
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve))
+    earth.removeEventListener('update', check)
+    return { frames: errorsPixels.length, travelPixels: Math.hypot(xs.at(-1) - xs[0], ys.at(-1) - ys[0]), maximumTransformErrorPixels: Math.max(...errorsPixels), maximumElementErrorPixels: Math.max(...domErrorsPixels) }
+  })
+
+  // From the far side of the globe the peak is behind the horizon.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: 90, latitudeDegrees: 0, zoom: 1, pitchDegrees: -90, headingDegrees: 0 }))
+  await page.waitForFunction(() => window.markers.peak.visibility === 'hidden', null, { timeout: 30_000 })
+  const behindHorizon = await page.evaluate(() => ({ visibility: window.markers.peak.visibility, cssVisibility: getComputedStyle(window.markers.peak.element).visibility }))
+
+  // Back over the hill: click the pin, the popup opens beside it; Escape closes it and focus returns.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, zoom: 10, pitchDegrees: -60, headingDegrees: -40 }))
+  await page.waitForFunction(() => window.markers.peak.visibility === 'visible', null, { timeout: 30_000 })
+  await page.waitForTimeout(500)
+  await page.click('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  await page.waitForTimeout(300)
+  const popup = await page.evaluate(() => {
+    const element = document.querySelector('.react-three-earth-popup')
+    const box = element.getBoundingClientRect()
+    const pin = window.markers.peak.element.getBoundingClientRect()
+    return {
+      text: element.textContent,
+      anchor: element.dataset.anchor,
+      focusInside: element.contains(document.activeElement),
+      // Above the pin, centred on it.
+      gapAbovePinPixels: pin.top - box.bottom,
+      centreOffsetPixels: Math.abs(box.left + box.width / 2 - (pin.left + pin.width / 2)),
+    }
+  })
+  writeFileSync(new URL('markers-popup.png', OUT), await page.screenshot())
+  await page.keyboard.press('Escape')
+  const afterEscape = await page.evaluate(() => ({
+    open: document.querySelector('.react-three-earth-popup') !== null,
+    focusOnMarker: document.activeElement === window.markers.peak.element,
+  }))
+
+  // Controlled popups, one selected at a time: clicking the other marker moves the selection, not clears it.
+  const openPopups = () => page.evaluate(() => [...document.querySelectorAll('.react-three-earth-popup')].map(element => element.textContent.replace('×', '').trim()))
+  await page.click('.react-three-earth-marker[aria-label="Place east"]')
+  await page.waitForFunction(() => window.selectedPlace === 'east' && document.querySelectorAll('.react-three-earth-popup').length === 1, null, { timeout: 10_000 })
+  const afterFirst = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.waitForTimeout(300)
+  const afterSecond = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.waitForTimeout(300)
+  const afterThird = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  const selection = { afterFirst, afterSecond, afterThird }
+
+  // Drag the orange pin 80 pixels to the right: it moves, the map does not.
+  const viewBefore = await page.evaluate(() => window.earth.camera.getView())
+  const handle = await page.$('.react-three-earth-marker[aria-label="Draggable marker"]')
+  const start = await handle.boundingBox()
+  await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
+  await page.mouse.down()
+  for (let step = 1; step <= 8; step++) await page.mouse.move(start.x + start.width / 2 + step * 10, start.y + start.height / 2)
+  await page.mouse.up()
+  await page.waitForTimeout(300)
+  const drag = await page.evaluate(before => {
+    const after = window.earth.camera.getView()
+    const dragged = window.markers.draggable
+    return {
+      dragEnds: window.dragEnds?.length ?? 0,
+      cameraMovedMeters: Math.hypot(after.longitudeDegrees - before.longitudeDegrees, after.latitudeDegrees - before.latitudeDegrees) * 111_000,
+      position: dragged.getPosition(),
+      endPosition: window.dragEnds?.at(-1) ?? null,
+    }
+  }, viewBefore)
+  const end = await handle.boundingBox()
+  await page.close()
+
+  // Under StrictMode (every effect twice): one root per marker, content and pins in place, no React errors.
+  const strict = await open('/?fixtures&stats=0&atmosphere=0&markers&strict&camera=-90,0,3900,40000,-40,-30')
+  await strict.page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
+  await strict.page.waitForTimeout(500)
+  await strict.page.click('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await strict.page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  const strictMode = await strict.page.evaluate(() => ({
+    markerElements: document.querySelectorAll('.react-three-earth-marker').length,
+    pinsShown: [...document.querySelectorAll('.react-three-earth-marker-fallback-pin')].filter(pin => getComputedStyle(pin).display !== 'none').length,
+    buriedText: window.markers.buried.element.textContent,
+    popupText: document.querySelector('.react-three-earth-popup')?.textContent ?? '',
+  }))
+  await strict.page.close()
+  results.push({
+    check: 'markers and popups with fixtures',
+    ...initial,
+    ...moving,
+    behindHorizon,
+    popup,
+    afterEscape,
+    drag: { ...drag, movedPixels: end.x - start.x },
+    strictMode: { ...strictMode, errors: strict.errors },
+    selection,
+    errors,
+  })
+}
+
 /**
  * Camera animations and pointer events on fixture terrain: flyTo Tokyo → Paris in 3D and in 2D ends at the
  * requested view, user input stops a flight, fitBounds fits, and a click reports the position under it.
@@ -568,6 +715,7 @@ try {
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
+  if (!only || only === 'markers') await markers()
   if (!only || only === 'camera' || only === 'animations') await cameraAnimations()
 } finally {
   await browser.close()
