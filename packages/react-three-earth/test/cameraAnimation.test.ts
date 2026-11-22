@@ -310,6 +310,13 @@ describe('fitBounds', () => {
     expect(points.every(point => point.visible)).toBe(true)
   })
 
+  it('keeps the map\'s fit for a box no single view of the globe shows whole', () => {
+    const { earth } = createEarth()
+    const world = { westDegrees: -180, southDegrees: -80, eastDegrees: 180, northDegrees: 80 }
+    const mapFit = fitBoundsOnMap(world, { widthPixels: WIDTH_PIXELS, heightPixels: HEIGHT_PIXELS, padding: toViewPadding(0), viewPadding: toViewPadding(0), headingDegrees: 0 })!
+    expect(earth.camera.cameraForBounds(world, { headingDegrees: 0, pitchDegrees: -90 })!.zoom).toBeCloseTo(mapFit.zoom, 9)
+  })
+
   it('stops at maximumZoom, and refuses padding that leaves no room', async () => {
     const { earth } = createEarth()
     const tiny = { westDegrees: 2.35, southDegrees: 48.86, eastDegrees: 2.3501, northDegrees: 48.8601 }

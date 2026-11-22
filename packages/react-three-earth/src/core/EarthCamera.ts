@@ -472,7 +472,10 @@ export class EarthCamera {
     const targetX = padding.leftPixels + availableWidth / 2
     const targetY = padding.topPixels + availableHeight / 2
     const { rightPixels, downPixels } = this.paddingOffset()
+    // Only a measured step counts; without one, the map's fit stands.
     let best = change
+    const longitudeSpan = (bounds.eastDegrees < bounds.westDegrees ? bounds.eastDegrees + 360 : bounds.eastDegrees) - bounds.westDegrees
+    const canShowWhole = this.onFlatMap || (longitudeSpan < 180 && bounds.northDegrees - bounds.southDegrees < 180)
     this.camera = scratch
     try {
       let current = change
@@ -482,10 +485,10 @@ export class EarthCamera {
         const extent = this.measureBoundsOnScreen(bounds)
         if (extent === null) {
           // Part of the box is past the horizon or behind the camera: before any good step, zoom out
-          // until all of it shows, then refine from there. After one, keep it.
-          if (measured || step >= FIT_ZOOM_OUT_STEPS) break
+          // until all of it shows, then refine from there. After one, keep it. A box wider than a
+          // hemisphere never shows whole on the globe: it keeps the map's fit.
+          if (measured || step >= FIT_ZOOM_OUT_STEPS || !canShowWhole) break
           current = { ...current, zoom: current.zoom - 1 }
-          best = current
           continue
         }
         measured = true

@@ -417,7 +417,8 @@ async function cameraAnimations() {
 
   // The same flight on the flat map.
   await page.evaluate(() => window.setView('2d'))
-  await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && !window.earth.view.transitioning, null, { timeout: 240_000, polling: 500 })
+  // Settled, so the flight's first frame is a fresh movestart.
+  await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
   const flat = await fly(-90)
   writeFileSync(new URL('fly-to-paris-2d.png', OUT), await page.screenshot())
   await page.close()
