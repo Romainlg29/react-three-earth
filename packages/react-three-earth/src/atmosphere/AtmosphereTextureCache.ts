@@ -5,7 +5,7 @@ import type { AtmosphereParameters } from './AtmosphereParameters.js'
  * (AtmosphereModel.ts, precompute.ts, AtmosphereTextures.ts), so that cached textures from an older version
  * are never used. A unit test fails when those files change, as a reminder.
  */
-export const ATMOSPHERE_PRECOMPUTE_VERSION = 1
+export const ATMOSPHERE_PRECOMPUTE_VERSION = 2
 
 /** The contents of the three lookup textures, as read back from the GPU (RGBA, rows bottom-up). */
 export interface AtmosphereTextureData {

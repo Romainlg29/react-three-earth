@@ -1,8 +1,16 @@
-import type { Camera } from 'three'
+import { Matrix4, type Camera, type Vector3 } from 'three'
+import { cameraProjectionMatrixInverse, cameraWorldMatrix, float, getViewPosition, screenUV, uniform, vec4 } from 'three/tsl'
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { AerialPerspectiveNode } from '../atmosphere/AerialPerspectiveNode.js'
-import { AtmosphereContext } from '../atmosphere/AtmosphereContext.js'
+import {
+  AtmosphereContext,
+  type AerialPerspectiveNodes,
+  type AtmosphereCameraNodes,
+  type SunAndSkyIlluminanceNodes,
+} from '../atmosphere/AtmosphereContext.js'
+import { AtmosphereIlluminance, type SunAndSkyIlluminance } from '../atmosphere/AtmosphereIlluminance.js'
+import { LENGTH_UNIT_METERS } from '../atmosphere/AtmosphereModel.js'
 import { AtmosphereLight } from '../atmosphere/AtmosphereLight.js'
 import { AtmosphereParameters } from '../atmosphere/AtmosphereParameters.js'
 import { AtmosphereTextureCache } from '../atmosphere/AtmosphereTextureCache.js'
@@ -33,6 +41,21 @@ export interface AerialPerspectiveOptions {
   showSun?: boolean
 }
 
+/**
+ * The opaque scene drawn in a pass of its own: its colour and depth textures. The shape of
+ * @aeronautic/core's `SceneBackdrop`, which its `volume_pass` hands to a `backdropNode`.
+ */
+export interface SceneBackdrop {
+  color: Node
+  depth: Node
+}
+
+/**
+ * The air between the camera and points along the rendered pixel's ray (see
+ * `Atmosphere.createAerialPerspectiveAlongRay`). Call it inside a material's shader.
+ */
+export type AerialPerspectiveAlongRay = (distanceMeters: Node<'float'>, worldDirection?: Node<'vec3'>) => AerialPerspectiveNodes
+
 let warnedAboutDepthBuffer = false
 
 /**
@@ -51,6 +74,8 @@ let warnedAboutDepthBuffer = false
 export class Atmosphere {
   readonly context: AtmosphereContext
   readonly light: AtmosphereLight
+  /** Sunlight and skylight at any point, on the CPU (see `getSunAndSkyIlluminance`). */
+  readonly illuminance: AtmosphereIlluminance
 
   /**
    * Settles once the lookup textures are generated (true), or when generation is cancelled by `dispose`
@@ -69,6 +94,7 @@ export class Atmosphere {
       this.context.textures.budgetMillisecondsPerFrame = generationBudgetMillisecondsPerFrame
     }
     this.light = new AtmosphereLight(this.context)
+    this.illuminance = new AtmosphereIlluminance(parameters)
     this.cache = cache === false ? null : cache === true ? (sharedCache ??= new AtmosphereTextureCache()) : cache
   }
 
@@ -121,7 +147,15 @@ export class Atmosphere {
       const milliseconds = await this.context.textures.generate(renderer, signal, { cache: this.cache })
       if (milliseconds === null) return false
       this.context.texturesReady.value = 1
-      return true
+      // The skylight's CPU copy (4 KB). Sunlight on the CPU needs no texture. A failure here leaves the
+      // rendering intact: only `getSunAndSkyIlluminance` goes without skylight.
+      if (signal.aborted) return false
+      try {
+        await this.illuminance.readBack(renderer, this.context, signal)
+      } catch (error) {
+        console.warn('Atmosphere: reading the skylight back to the CPU failed; getSunAndSkyIlluminance has no skylight.', error)
+      }
+      return !signal.aborted
     } catch (error) {
       console.error('Atmosphere: generating the lookup textures failed.', error)
       return false
@@ -151,11 +185,80 @@ export class Atmosphere {
     return new AerialPerspectiveNode(this.context, colorNode as Node<'vec4'>, depthNode as Node<'vec4'>, camera, options)
   }
 
+  /**
+   * A `backdropNode` for a render pipeline someone else owns, such as @aeronautic/core's `volume_pass`:
+   * given the opaque scene's colour and depth, it returns them with aerial perspective and the sky
+   * (`createAerialPerspective`). Effects drawn over it see the hazed scene through them, and are hazed
+   * themselves with `createAerialPerspectiveAlongRay`.
+   *
+   * @example
+   * const split = volume_pass(scene, camera, { backdropNode: atmosphere.createBackdropNode(camera) })
+   * renderPipeline.outputNode = split.output
+   */
+  createBackdropNode(camera: Camera, options: AerialPerspectiveOptions = {}): (scene: SceneBackdrop) => Node<'vec4'> {
+    return ({ color, depth }) => this.createAerialPerspective(color, depth, camera, options) as Node<'vec4'>
+  }
+
+  /**
+   * Aerial perspective for transparent and volumetric effects, which the opaque scene's
+   * `createAerialPerspective` cannot see: a function to call in the effect's shader with the distance from
+   * the camera to the light along the pixel's ray. Light from that far reaches the camera multiplied by
+   * `transmittance`, plus `radiance` scattered in between. For premultiplied colour (`rgb`, coverage `a`):
+   * `rgb * transmittance + radiance * a`.
+   *
+   * The ray defaults to the rendered pixel's (`screenUV`). Pass `worldDirection` (unit, ECEF axes) when the
+   * effect knows its own ray, for example per sample of a march over kilometres; it may be called inside
+   * loops.
+   *
+   * @param camera The camera the effect is seen from. Default: the camera being rendered (right for any
+   *   pass drawn with the scene camera, such as @aeronautic's volume pass).
+   */
+  createAerialPerspectiveAlongRay(camera?: Camera): AerialPerspectiveAlongRay {
+    let cameraNodes: AtmosphereCameraNodes | null = null
+    // With a given camera, the pixel's ray comes from that camera too, not from whichever is being rendered.
+    const projectionMatrixInverse =
+      camera === undefined ? cameraProjectionMatrixInverse : uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.projectionMatrixInverse))
+    const worldMatrix = camera === undefined ? cameraWorldMatrix : uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.matrixWorld))
+    return (distanceMeters, worldDirection) => {
+      cameraNodes ??= this.context.createCameraNodes(camera)
+      const direction =
+        worldDirection ?? worldMatrix.mul(vec4(getViewPosition(screenUV, float(0.5), projectionMatrixInverse).normalize(), 0)).xyz.normalize()
+      return this.context.getAerialPerspective(cameraNodes, direction, distanceMeters.div(LENGTH_UNIT_METERS))
+    }
+  }
+
+  /**
+   * Sunlight and skylight at an ECEF point, on the CPU, with the sun of the last `update`: in the scene's
+   * scaled units (divide by `parameters.getLuminanceScale()` for lux). Sunlight is available at once;
+   * skylight once `ready` has settled (`skyAvailable`). Cheap: a few thousand flops.
+   *
+   * Before the lookup textures are ready the shaders light with unattenuated sunlight and a fallback
+   * skylight (`FALLBACK_SKY_SHARE`), while this already gives the attenuated sunlight and no skylight: an
+   * effect lit from here matches the terrain once `ready` has settled.
+   *
+   * @param positionMeters ECEF position.
+   */
+  getSunAndSkyIlluminance(positionMeters: Vector3, target?: SunAndSkyIlluminance): SunAndSkyIlluminance {
+    return this.illuminance.getSunAndSkyIlluminance(positionMeters, this.context.sunDirection.value, target)
+  }
+
+  /**
+   * Sunlight and skylight at an ECEF point, in a shader (`AtmosphereContext.getSunAndSkyIlluminance`): the
+   * same values as `getSunAndSkyIlluminance`, at every fragment.
+   *
+   * @param positionKilometers ECEF position in kilometres.
+   * @param normal World normal of the lit surface. Default: facing up.
+   */
+  getSunAndSkyIlluminanceNode(positionKilometers: Node<'vec3'>, normal?: Node<'vec3'>): SunAndSkyIlluminanceNodes {
+    return this.context.getSunAndSkyIlluminance(positionKilometers, normal)
+  }
+
   /** Cancels a pending generation and releases the GPU textures. A later `install` generates them again. */
   dispose(): void {
     this.generation?.abort()
     this.generation = null
     this.ready = null
     this.context.dispose()
+    this.illuminance.reset()
   }
 }

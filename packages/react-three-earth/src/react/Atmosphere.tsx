@@ -1,6 +1,6 @@
 import { useThree } from '@react-three/fiber/extension'
 import { useRenderPipeline } from '@react-three/tsl'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { createContext, use, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { AgXToneMapping, UnsignedByteType } from 'three'
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js'
 import { renderOutput, rtt } from 'three/tsl'
@@ -15,21 +15,51 @@ export interface AtmosphereProps extends AtmosphereOptions {
   /**
    * Edge antialiasing after the atmosphere pass. The pass decides sky or ground per pixel from one depth
    * sample, which undoes the canvas's multisampling along silhouettes such as the planet's limb. `'fxaa'` is a
-   * single cheap pass that smooths them again; it also softens fine text in imagery slightly. Default: `'fxaa'`.
+   * single cheap pass that smooths them again; it also softens fine text in imagery slightly. Ignored when
+   * `renderPipeline` is false. Default: `'fxaa'`.
    */
   antialiasing?: 'fxaa' | 'none'
+  /**
+   * Whether the atmosphere sets the canvas's render pipeline output (the scene with aerial perspective and
+   * the sky). False leaves the pipeline to the children, which build it from `useAtmosphere()`: for
+   * example with `createBackdropNode` as the `backdropNode` of @aeronautic/core's `volume_pass`.
+   * Default: true.
+   */
+  renderPipeline?: boolean
+  /** Rendered inside the atmosphere: `useAtmosphere()` returns it there. */
+  children?: ReactNode
+}
+
+const AtmosphereContext = createContext<AtmosphereImpl | null>(null)
+
+/**
+ * The vanilla `Atmosphere` of the nearest `<Atmosphere>`, for children that build their own render pipeline
+ * or light effects with it. Reading it never causes a React render.
+ */
+export function useAtmosphere(): AtmosphereImpl {
+  const atmosphere = use(AtmosphereContext)
+  if (atmosphere === null) throw new Error('useAtmosphere: call it inside <Atmosphere>.')
+  return atmosphere
 }
 
 /**
- * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline and sets AgX tone mapping
- * (restored on unmount). `parameters`, `cache` and `generationBudgetMillisecondsPerFrame` are read once, at mount: the lookup textures are generated
- * from the parameters (or loaded from the cache).
- * Create the canvas renderer with `reversedDepthBuffer: true` for clean haze at long range.
+ * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline (unless `renderPipeline` is
+ * false) and sets AgX tone mapping (restored on unmount). `parameters`, `cache` and
+ * `generationBudgetMillisecondsPerFrame` are read once, at mount: the lookup textures are generated from the
+ * parameters (or loaded from the cache). Create the canvas renderer with `reversedDepthBuffer: true` for clean
+ * haze at long range.
  */
-export function Atmosphere({ exposure = 10, parameters, cache, generationBudgetMillisecondsPerFrame, antialiasing = 'fxaa' }: AtmosphereProps) {
+export function Atmosphere({
+  exposure = 10,
+  parameters,
+  cache,
+  generationBudgetMillisecondsPerFrame,
+  antialiasing = 'fxaa',
+  renderPipeline = true,
+  children,
+}: AtmosphereProps) {
   const earth = useEarth()
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
-  const camera = useThree(state => state.camera)
   const [atmosphere] = useState(() => new AtmosphereImpl({ parameters, cache, generationBudgetMillisecondsPerFrame }))
 
   const invalidate = useThree(state => state.invalidate)
@@ -65,6 +95,17 @@ export function Atmosphere({ exposure = 10, parameters, cache, generationBudgetM
 
   useLayoutEffect(() => () => atmosphere.dispose(), [atmosphere])
 
+  return (
+    <AtmosphereContext value={atmosphere}>
+      {renderPipeline ? <AtmosphereRenderPipeline atmosphere={atmosphere} antialiasing={antialiasing} /> : null}
+      {children}
+    </AtmosphereContext>
+  )
+}
+
+/** Sets the render pipeline's output to the scene with aerial perspective and the sky. */
+function AtmosphereRenderPipeline({ atmosphere, antialiasing }: { atmosphere: AtmosphereImpl; antialiasing: 'fxaa' | 'none' }) {
+  const camera = useThree(state => state.camera)
   const { rebuild } = useRenderPipeline(({ renderPipeline, passes }) => {
     const scenePass = passes.scenePass as unknown as { getTextureNode(name: string): never }
     const color = atmosphere.createAerialPerspective(
