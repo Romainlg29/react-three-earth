@@ -40,6 +40,17 @@ const expectations = {
     ['the button expands the credits', r.expanded.buttonVisible && r.expanded.textVisible && r.expanded.text.includes('OpenStreetMap')],
     ['a style\'s source attribution shows once it loads', r.vector.text === 'Synthetic test terrain | © Fixture map data' && r.vector.links[0]?.href === 'https://example.com/fixture-map'],
   ],
+  'camera and events with fixtures': r => {
+    const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
+    return [
+      ['unproject then project lands within 1 px', r.worstProjectErrorPixels < 1],
+      ['unproject lands on the terrain queryTerrainElevation reports (within 1 m)', r.worstElevationErrorMeters < 1],
+      ['a terrain point round-trips through the screen within 1 m', r.worstRoundTripMeters < 1],
+      ['the flat map round-trips within 1 px', r.worstFlatProjectErrorPixels < 1],
+      ['getView keeps centre, zoom and heading through the morph', Math.abs(r.flatView.longitudeDegrees - r.topDownView.longitudeDegrees) < 1e-4 && Math.abs(r.flatView.latitudeDegrees - r.topDownView.latitudeDegrees) < 1e-4 && Math.abs(r.flatView.zoom - r.topDownView.zoom) < 0.01 && angle(r.flatView.headingDegrees, r.topDownView.headingDegrees) < 0.1],
+      ['the morph fires movestart, moveend, then idle', r.morphEvents.join() === 'movestart,moveend,idle'],
+    ]
+  },
 }
 
 let failures = 0

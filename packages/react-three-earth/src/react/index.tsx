@@ -14,4 +14,4 @@ export {
 } from './sources.js'
 export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
 export { useEarth } from './context.js'
-export { useEarthFrame, useEarthState } from './hooks.js'
+export { useEarthCamera, useEarthEvent, useEarthFrame, useEarthState } from './hooks.js'

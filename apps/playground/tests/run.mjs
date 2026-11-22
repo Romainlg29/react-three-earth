@@ -191,6 +191,70 @@ async function attribution() {
   })
 }
 
+/** earth.camera on fixture terrain: unproject / project / queryTerrainElevation, events, and getView through the morph. */
+async function cameraAndEvents() {
+  // Over the fixture's highest hill (3.9 km), so terrain and ellipsoid differ.
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&camera=-89.6,0.3,3800,40000,-40,-30')
+  // The `load` event: the first view is loaded and composed.
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true, null, { timeout: 240_000, polling: 500 })
+  const globe = await page.evaluate(() => {
+    const earth = window.earth
+    const camera = earth.camera
+    const samples = []
+    for (const [xPixels, yPixels] of [[400, 300], [200, 450], [650, 500], [400, 150]]) {
+      const position = earth.unproject({ xPixels, yPixels })
+      if (position === null) { samples.push({ xPixels, yPixels, position }); continue }
+      const back = earth.project(position)
+      const elevation = earth.queryTerrainElevation(position)
+      // Reverse trip: a point on the terrain, to the screen and back.
+      const onTerrain = { ...position, heightMeters: elevation }
+      const screen = earth.project(onTerrain)
+      const again = earth.unproject(screen)
+      const distance = again === null ? Infinity : camera.toScenePosition(onTerrain).distanceTo(camera.toScenePosition(again))
+      samples.push({ xPixels, yPixels, position, projectErrorPixels: Math.hypot(back.xPixels - xPixels, back.yPixels - yPixels), elevationErrorMeters: elevation === null ? Infinity : Math.abs(elevation - position.heightMeters), roundTripMeters: distance })
+    }
+    return { view: camera.getView(), bounds: camera.getBounds(), samples }
+  })
+  writeFileSync(new URL('camera-3d.png', OUT), await page.screenshot())
+  // Look straight down before the morph: the morph anchors on the ellipsoid, so with relief under a
+  // pitched camera the screen centre would move by the relief's parallax.
+  await page.evaluate(() => window.earth.camera.jumpTo({ pitchDegrees: -90 }))
+  await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  const topDownView = await page.evaluate(() => window.earth.camera.getView())
+  await page.evaluate(() => {
+    window.cameraEvents = []
+    for (const type of ['movestart', 'moveend', 'idle']) window.earth.addEventListener(type, () => window.cameraEvents.push(type))
+    window.setView('2d')
+  })
+  await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && window.cameraEvents.includes('idle'), null, { timeout: 240_000, polling: 500 })
+  const flat = await page.evaluate(() => {
+    const earth = window.earth
+    const samples = []
+    for (const [xPixels, yPixels] of [[400, 300], [100, 500], [700, 100]]) {
+      const position = earth.unproject({ xPixels, yPixels })
+      const back = position === null ? null : earth.project(position)
+      samples.push({ position, projectErrorPixels: back === null ? Infinity : Math.hypot(back.xPixels - xPixels, back.yPixels - yPixels) })
+    }
+    return { view: earth.camera.getView(), events: window.cameraEvents, samples }
+  })
+  writeFileSync(new URL('camera-2d.png', OUT), await page.screenshot())
+  await page.close()
+  const worst = (samples, key) => Math.max(...samples.map(sample => sample[key] ?? Infinity))
+  results.push({
+    check: 'camera and events with fixtures',
+    globeView: globe.view,
+    topDownView,
+    globeBounds: globe.bounds,
+    worstProjectErrorPixels: worst(globe.samples, 'projectErrorPixels'),
+    worstElevationErrorMeters: worst(globe.samples, 'elevationErrorMeters'),
+    worstRoundTripMeters: worst(globe.samples, 'roundTripMeters'),
+    flatView: flat.view,
+    worstFlatProjectErrorPixels: worst(flat.samples, 'projectErrorPixels'),
+    morphEvents: flat.events,
+    errors,
+  })
+}
+
 async function afterburner(plume) {
   const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
   await page.waitForFunction(() => {
@@ -256,6 +320,7 @@ try {
   }
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'afterburner') await afterburnerChecks()
+  if (!only || only === 'camera') await cameraAndEvents()
 } finally {
   await browser.close()
 }

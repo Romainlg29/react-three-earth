@@ -31,9 +31,12 @@ export interface TerrainOptions {
 }
 
 const MEGABYTE_BYTES = 2 ** 20
+/** 3DTilesRenderer's `rootLoadingState` values (its `UNLOADED` and `LOADING` constants). */
+const ROOT_UNLOADED = 0
+const ROOT_LOADING = 2
 
 /** 3DTilesRenderer events asking for another `update` or render. */
-const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render'] as const
+const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render', 'load-error'] as const
 
 interface FrameRequestDispatcher {
   addEventListener(type: string, listener: () => void): void
@@ -48,6 +51,8 @@ export class Terrain implements AttributionProvider {
   readonly flatMap: FlatMapPlugin
   protected readonly imagery = new Set<Imagery>()
   protected readonly source: TerrainSource
+  /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
+  protected updateRequested = false
 
   constructor({
     sources,
@@ -70,6 +75,13 @@ export class Terrain implements AttributionProvider {
     if (fade) this.tiles.registerPlugin(new TilesFadePlugin())
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
+
+    // A failed load needs an update too, to see that nothing is loading any more.
+    for (const type of ['needs-update', 'load-error']) {
+      ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener(type, () => {
+        this.updateRequested = true
+      })
+    }
 
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
@@ -123,6 +135,22 @@ export class Terrain implements AttributionProvider {
   }
 
   /**
+   * True while the tileset's root or terrain tiles are queued, downloading or parsing, a loaded tile still waits for the next
+   * `update` to be shown, or imagery waits to be composed. `Earth` reads it for the `idle` event.
+   */
+  get loading(): boolean {
+    const { stats, rootLoadingState, isLoading } = this.tiles as unknown as {
+      stats: { queued: number; downloading: number; parsing: number }
+      rootLoadingState: number
+      /** Download, parse or child-preparation tasks still running (3DTilesRenderer's own `tiles-load-end` test). */
+      isLoading: boolean
+    }
+    if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
+    const { queued, downloading, parsing } = stats
+    return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0
+  }
+
+  /**
    * Calls `listener` whenever the terrain needs another frame: tiles finished loading, or imagery is still
    * waiting to be composed. Hosts that render on demand (R3F `frameloop="demand"`) forward it to their
    * invalidate. Returns a function that removes the listener.
@@ -140,6 +168,7 @@ export class Terrain implements AttributionProvider {
    * frame before rendering.
    */
   update(camera: Camera, renderer: WebGPURenderer): void {
+    this.updateRequested = false
     this.tiles.setCamera(camera)
     this.tiles.setResolutionFromRenderer(camera, renderer as never)
     this.tiles.update()

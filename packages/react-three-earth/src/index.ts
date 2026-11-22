@@ -1,4 +1,4 @@
-export { Earth, type EarthOptions, type EarthInspection, type EarthEventMap } from './core/Earth.js'
+export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
 export {
   AttributionTracker,
   attributionText,
@@ -45,6 +45,23 @@ export { ImageryCompositor, type CompositeDraw } from './tiles/imagery/ImageryCo
 export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/ImageryStatistics.js'
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'
-export { setCameraView, toCartesian, type CameraView } from './core/camera.js'
+export {
+  placeCameraAround,
+  setCameraView,
+  toCartesian,
+  type CameraView,
+  type GeographicBounds,
+  type GeographicPosition,
+} from './core/camera.js'
+export { EarthCamera, type MapView, type MapViewChange } from './core/EarthCamera.js'
+export {
+  CameraMotionDetector,
+  EarthEventTracker,
+  type EarthEventMap,
+  type EarthEventType,
+  type EarthFrameState,
+} from './core/events.js'
+export { isOccludedByEllipsoid, type ProjectedPosition, type ScreenPosition } from './core/projection.js'
+export * from './core/zoom.js'
 export { MapStyleOverlay, type MapStyleOverlayOptions } from './vector/MapStyleOverlay.js'
 export { createVectorTileWorker } from './vector/MapStyleBackend.js'

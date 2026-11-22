@@ -1,5 +1,5 @@
 import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
-import { MathUtils, Vector3, type Camera } from 'three'
+import { MathUtils, Matrix4, Vector3, type Camera } from 'three'
 
 export interface CameraView {
   /** The point looked at. */
@@ -22,11 +22,23 @@ export interface GeographicPosition {
   heightMeters?: number
 }
 
+/** A longitude-latitude box. It crosses the antimeridian when `westDegrees` is greater than `eastDegrees`. */
+export interface GeographicBounds {
+  westDegrees: number
+  southDegrees: number
+  eastDegrees: number
+  northDegrees: number
+}
+
 const target = new Vector3()
 const east = new Vector3()
 const north = new Vector3()
 const up = new Vector3()
-const viewDirection = new Vector3()
+const forward = new Vector3()
+const right = new Vector3()
+const cameraUp = new Vector3()
+const backward = new Vector3()
+const basis = new Matrix4()
 
 /** Places a camera looking at a point on Earth, in ECEF meters. */
 export function setCameraView(
@@ -40,18 +52,34 @@ export function setCameraView(
 
   WGS84_ELLIPSOID.getCartographicToPosition(latitude, longitude, heightMeters, target)
   WGS84_ELLIPSOID.getEastNorthUpAxes(latitude, longitude, east, north, up)
+  placeCameraAround(camera, target, east, north, up, heading, pitch, distanceMeters)
+}
 
-  // Direction from the camera to the target, in the target's east-north-up frame
-  viewDirection
-    .copy(north)
-    .multiplyScalar(Math.cos(heading))
-    .addScaledVector(east, Math.sin(heading))
-    .multiplyScalar(Math.cos(pitch))
-    .addScaledVector(up, Math.sin(pitch))
-
-  camera.position.copy(target).addScaledVector(viewDirection, -distanceMeters)
+/**
+ * Places a camera `distanceMeters` from `target`, facing it from `headingRadians` (clockwise from `north`)
+ * and `pitchRadians` (below the horizon, negative looks down), in the frame `east`, `north`, `up` (unit,
+ * orthogonal). Unlike `lookAt`, it stays well defined looking straight down: screen-up then points along
+ * the heading. Sets `camera.up` to `up`.
+ */
+export function placeCameraAround(
+  camera: Camera,
+  target: Vector3,
+  east: Vector3,
+  north: Vector3,
+  up: Vector3,
+  headingRadians: number,
+  pitchRadians: number,
+  distanceMeters: number,
+): void {
+  // The heading on the ground, then tipped down by the pitch.
+  const horizontal = right.copy(north).multiplyScalar(Math.cos(headingRadians)).addScaledVector(east, Math.sin(headingRadians))
+  forward.copy(horizontal).multiplyScalar(Math.cos(pitchRadians)).addScaledVector(up, Math.sin(pitchRadians))
+  cameraUp.copy(horizontal).multiplyScalar(-Math.sin(pitchRadians)).addScaledVector(up, Math.cos(pitchRadians))
+  right.crossVectors(forward, cameraUp)
+  backward.copy(forward).negate()
+  camera.quaternion.setFromRotationMatrix(basis.makeBasis(right, cameraUp, backward))
+  camera.position.copy(target).addScaledVector(forward, -distanceMeters)
   camera.up.copy(up)
-  camera.lookAt(target)
   camera.updateMatrixWorld()
 }
 
