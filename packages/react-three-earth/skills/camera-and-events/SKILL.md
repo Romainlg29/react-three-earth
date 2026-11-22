@@ -46,15 +46,22 @@ geography (planned next).
 ### Read the view and jump
 
 ```tsx
-import { useEarthCamera, useEarthEvent } from 'react-three-earth/react'
+import { useEarth, useEarthCamera, useEarthEvent } from 'react-three-earth/react'
+import { useEffect } from 'react'
 
 export function GoToParis({ onView }: { onView: (text: string) => void }) {
+  const earth = useEarth()
   const camera = useEarthCamera() // the vanilla EarthCamera; never re-renders
   useEarthEvent('moveend', () => {
     const { longitudeDegrees, latitudeDegrees, zoom } = camera.getView()
     onView(`${zoom.toFixed(2)}/${latitudeDegrees.toFixed(4)}/${longitudeDegrees.toFixed(4)}`)
   })
-  useEarthEvent('load', () => camera.jumpTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12, pitchDegrees: -60 }))
+  const goToParis = () => camera.jumpTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12, pitchDegrees: -60 })
+  useEarthEvent('load', goToParis)
+  // `load` fires once: a component mounted later checks `earth.loaded` instead.
+  useEffect(() => {
+    if (earth.loaded) goToParis()
+  }, [earth])
   return null
 }
 ```
@@ -115,6 +122,8 @@ export function LogClicks() {
 }
 ```
 
+- `getBounds()` follows the screen's edges on the ellipsoid (the map's plane in 2D), reaches the horizon
+  where an edge shows sky, and spans every longitude when a pole is in view; it ignores terrain.
 - `unproject` hits the loaded terrain, or the ellipsoid where none is loaded; on the flat map it lands on
   the map's relief. Null on sky.
 - `project(position)` returns `{ xPixels, yPixels, visible }`. `visible` is false behind the camera,
@@ -134,7 +143,9 @@ All fire from `earth.update`, at most once per frame each, in this order:
 | `move` | every frame it moves |
 | `moveend` | the first frame it holds still |
 | `load` | once, the first time the Earth is idle |
-| `idle` | camera still, no morph, no terrain or imagery loading or waiting, atmosphere ready |
+| `idle` | camera still, no morph, no terrain or imagery loading or waiting, atmosphere generated (or failed) |
+
+`earth.loaded` and `earth.idle` tell the current state, for code that mounts after `load` fired.
 
 `useEarthEvent(type, handler)` subscribes for the component's lifetime and may take a new handler every
 render. Movement is detected by comparing the camera between frames, so nothing has to report it.

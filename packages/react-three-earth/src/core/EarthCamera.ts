@@ -5,6 +5,7 @@ import { mercatorScaleFactor, WEB_MERCATOR_HALF_EXTENT_METERS, wrapMercatorXNear
 import { placeCameraAround, toCartesian, type GeographicBounds, type GeographicPosition } from './camera.js'
 import type { Earth } from './Earth.js'
 import {
+  ellipsoidHorizonPoint,
   headingAndPitch,
   intersectEllipsoidOrHorizon,
   isOccludedByEllipsoid,
@@ -49,6 +50,10 @@ const TERRAIN_RAY_START_HEIGHT_METERS = 100_000
 const FLAT_MAP_RELIEF_ITERATIONS = 4
 /** Screen-edge samples per side for `getBounds`. */
 const BOUNDS_SAMPLES_PER_EDGE = 8
+/** Halvings that place the horizon on a screen edge: 1/4096 of the edge between two samples. */
+const HORIZON_BISECTION_STEPS = 12
+/** Points along the globe's outline for `getBounds`. */
+const HORIZON_SAMPLES = 32
 
 const ray = new Ray()
 const flatRay = new Ray()
@@ -67,6 +72,7 @@ const flatPoint = new Vector3()
 const scenePoint = new Vector3()
 const flatScenePoint = new Vector3()
 const viewPoint = new Vector3()
+const screenPoint = { xPixels: 0, yPixels: 0 }
 const cartographic = { lat: 0, lon: 0, height: 0 }
 
 /**
@@ -94,6 +100,11 @@ export class EarthCamera {
   setViewportSize(widthPixels: number, heightPixels: number): void {
     this.viewportWidthPixels = widthPixels
     this.viewportHeightPixels = heightPixels
+  }
+
+  /** True once there is a perspective camera and a viewport size, so every method can run. */
+  get ready(): boolean {
+    return (this.camera as { isPerspectiveCamera?: boolean } | null)?.isPerspectiveCamera === true && this.viewportWidthPixels > 0 && this.viewportHeightPixels > 0
   }
 
   /** True when positions are read on the flat map rather than the globe. */
@@ -161,17 +172,19 @@ export class EarthCamera {
   /**
    * Moves the camera at once. Fields left out keep their current value. Without `heightMeters`, a new
    * centre sits on the loaded terrain (0 where none is loaded). During a morph to the flat map the morph
-   * flies the camera itself: jump once `earth.view.transitioning` is false.
+   * flies the camera itself: jump once `earth.view.transitioning` is false. When the screen centre shows
+   * sky, `getView` stands in the horizon point (or the point under the camera), so changing only zoom,
+   * heading or pitch re-aims the camera at that point.
    */
   jumpTo(change: MapViewChange): void {
     const camera = this.requireCamera()
     const focalLength = focalLengthPixels(camera, this.requireViewport().height)
     const current = this.getView()
-    const centreMoved = change.longitudeDegrees !== undefined || change.latitudeDegrees !== undefined
+    const centerMoved = change.longitudeDegrees !== undefined || change.latitudeDegrees !== undefined
     const longitudeDegrees = change.longitudeDegrees ?? current.longitudeDegrees
     const latitudeDegrees = change.latitudeDegrees ?? current.latitudeDegrees
     const position = { longitudeDegrees, latitudeDegrees }
-    const heightMeters = change.heightMeters ?? (centreMoved ? (this.queryTerrainElevation(position) ?? 0) : current.heightMeters)
+    const heightMeters = change.heightMeters ?? (centerMoved ? (this.queryTerrainElevation(position) ?? 0) : current.heightMeters)
     const zoom = change.zoom ?? (change.distanceMeters === undefined ? current.zoom : undefined)
     const heading = MathUtils.degToRad(change.headingDegrees ?? current.headingDegrees)
     const pitch = MathUtils.degToRad(change.pitchDegrees ?? current.pitchDegrees)
@@ -205,39 +218,68 @@ export class EarthCamera {
   }
 
   /**
-   * The longitude-latitude box around what the screen shows, from points along its edges on the ellipsoid
-   * (or the flat map's plane). Where the screen shows sky, the horizon bounds it. It crosses the
-   * antimeridian when `westDegrees > eastDegrees`, and spans every longitude when a pole is in view.
+   * The longitude-latitude box around what the screen shows, on the ellipsoid (the map's plane in 2D),
+   * from points along the screen's edges. Where an edge goes from ground to sky, the box reaches the
+   * horizon, and on the globe the horizon's visible part bounds it too. It crosses the antimeridian when
+   * `westDegrees > eastDegrees`, and spans every longitude when a pole is in view.
    */
   getBounds(): GeographicBounds {
     const camera = this.requireCamera()
     const { width, height } = this.requireViewport()
-    const centre = this.unprojectOnSurface(width / 2, height / 2) ?? this.getView()
+    const onFlatMap = this.onFlatMap
+    const center = this.unprojectOnSurface(width / 2, height / 2) ?? this.getView()
     let west = Infinity
     let east = -Infinity
     let south = Infinity
     let north = -Infinity
-    const include = (xPixels: number, yPixels: number) => {
-      const position = this.unprojectOnSurface(xPixels, yPixels)
-      if (position === null) return
-      // Unwrapped around the centre, so a box across the antimeridian stays one box.
-      const longitude = centre.longitudeDegrees + wrapLongitudeDegrees(position.longitudeDegrees - centre.longitudeDegrees)
+    const include = (position: GeographicPosition) => {
+      // On the globe, unwrapped around the centre so a box across the antimeridian stays one box. Flat-map
+      // longitudes are already continuous across the map.
+      const longitude = onFlatMap
+        ? position.longitudeDegrees
+        : center.longitudeDegrees + wrapLongitudeDegrees(position.longitudeDegrees - center.longitudeDegrees)
       west = Math.min(west, longitude)
       east = Math.max(east, longitude)
       south = Math.min(south, position.latitudeDegrees)
       north = Math.max(north, position.latitudeDegrees)
     }
-    for (let index = 0; index <= BOUNDS_SAMPLES_PER_EDGE; index++) {
-      const amount = index / BOUNDS_SAMPLES_PER_EDGE
-      include(amount * width, 0)
-      include(amount * width, height)
-      include(0, amount * height)
-      include(width, amount * height)
-    }
-    include(width / 2, height / 2)
 
-    if (!this.onFlatMap) {
+    // Walk each edge; where it crosses the horizon, bisect to the last point on the ground.
+    const corners = [[0, 0], [width, 0], [width, height], [0, height]] as const
+    for (let side = 0; side < 4; side++) {
+      const [startX, startY] = corners[side]!
+      const [endX, endY] = corners[(side + 1) % 4]!
+      const at = (amount: number) => this.unprojectOnSurface(startX + (endX - startX) * amount, startY + (endY - startY) * amount)
+      let previous = at(0)
+      for (let index = 1; index <= BOUNDS_SAMPLES_PER_EDGE; index++) {
+        const amount = index / BOUNDS_SAMPLES_PER_EDGE
+        const current = at(amount)
+        if (current !== null) include(current)
+        if ((previous === null) !== (current === null)) {
+          let ground = previous === null ? amount : amount - 1 / BOUNDS_SAMPLES_PER_EDGE
+          let sky = previous === null ? amount - 1 / BOUNDS_SAMPLES_PER_EDGE : amount
+          for (let step = 0; step < HORIZON_BISECTION_STEPS; step++) {
+            const middle = (ground + sky) / 2
+            if (at(middle) === null) sky = middle
+            else ground = middle
+          }
+          const horizon = at(ground)
+          if (horizon !== null) include(horizon)
+        }
+        previous = current
+      }
+    }
+    if (center !== null) include(center)
+
+    if (!onFlatMap) {
       cameraPosition.setFromMatrixPosition(camera.matrixWorld)
+      // The globe's outline, where it is on screen (the whole globe may sit inside the screen).
+      for (let index = 0; index < HORIZON_SAMPLES; index++) {
+        const point = ellipsoidHorizonPoint(cameraPosition, (index / HORIZON_SAMPLES) * 2 * Math.PI, surfacePoint)
+        if (point === null || !this.toScreen(point, screenPoint).inViewport) continue
+        WGS84_ELLIPSOID.getPositionToCartographic(point, cartographic)
+        include({ longitudeDegrees: MathUtils.radToDeg(cartographic.lon), latitudeDegrees: MathUtils.radToDeg(cartographic.lat) })
+      }
       for (const latitudeDegrees of [90, -90]) {
         if (this.project({ longitudeDegrees: 0, latitudeDegrees }).visible) {
           if (latitudeDegrees > 0) north = 90
@@ -260,18 +302,24 @@ export class EarthCamera {
    */
   project(position: GeographicPosition, target: ProjectedPosition = { xPixels: 0, yPixels: 0, visible: false }): ProjectedPosition {
     const camera = this.requireCamera()
-    const { width, height } = this.requireViewport()
     const point = this.toScenePosition(position, scenePoint)
-    camera.updateMatrixWorld()
+    const { inFront, inViewport } = this.toScreen(point, target)
+    const behindHorizon = !this.onFlatMap && isOccludedByEllipsoid(cameraPosition.setFromMatrixPosition(camera.matrixWorld), point)
+    target.visible = inFront && inViewport && !behindHorizon
+    return target
+  }
+
+  /** Screen position of a scene point, in CSS pixels, written to `target`. */
+  protected toScreen(point: Vector3, target: ScreenPosition): { inFront: boolean; inViewport: boolean } {
+    const camera = this.requireCamera()
+    const { width, height } = this.requireViewport()
     viewPoint.copy(point).applyMatrix4(camera.matrixWorldInverse)
     const inFront = viewPoint.z < 0
     viewPoint.applyMatrix4(camera.projectionMatrix)
     target.xPixels = ((viewPoint.x + 1) / 2) * width
     target.yPixels = ((1 - viewPoint.y) / 2) * height
-    const inViewport = target.xPixels >= 0 && target.xPixels <= width && target.yPixels >= 0 && target.yPixels <= height
-    const behindHorizon = !this.onFlatMap && isOccludedByEllipsoid(cameraPosition.setFromMatrixPosition(camera.matrixWorld), point)
-    target.visible = inFront && inViewport && !behindHorizon
-    return target
+    const inViewport = inFront && target.xPixels >= 0 && target.xPixels <= width && target.yPixels >= 0 && target.yPixels <= height
+    return { inFront, inViewport }
   }
 
   /**
@@ -345,20 +393,25 @@ export class EarthCamera {
     return target.copy(raycaster.ray)
   }
 
-  /** The surface position under a screen point, ignoring terrain; on the globe, the horizon where it shows sky. */
+  /**
+   * The surface position under a screen point, ignoring terrain: the ellipsoid, or the map's plane in 2D
+   * (held inside the one world around the anchor, longitudes not wrapped). Null on sky.
+   */
   protected unprojectOnSurface(xPixels: number, yPixels: number): GeographicPosition | null {
     this.setScreenRay(xPixels, yPixels, ray)
     if (this.onFlatMap) {
       this.toFlatRay(ray, flatRay)
       if (flatRay.direction.z >= 0) return null
       const point = flatRay.at(-flatRay.origin.z / flatRay.direction.z, flatPoint)
-      // The map ends at the edge of the Web Mercator square.
+      // The map ends at the edges of the Web Mercator square: one world wide, around the anchor.
+      const anchorX = this.earth.view.anchorMercatorXMeters
+      point.x = Math.max(anchorX - WEB_MERCATOR_HALF_EXTENT_METERS, Math.min(anchorX + WEB_MERCATOR_HALF_EXTENT_METERS, point.x))
       point.y = Math.max(-WEB_MERCATOR_HALF_EXTENT_METERS, Math.min(WEB_MERCATOR_HALF_EXTENT_METERS, point.y))
-      return this.flatToPosition(point)
+      const { longitudeRadians, latitudeRadians } = this.earth.view.flatToGeodetic(point)
+      return { longitudeDegrees: MathUtils.radToDeg(longitudeRadians), latitudeDegrees: MathUtils.radToDeg(latitudeRadians) }
     }
-    const surface = intersectEllipsoidOrHorizon(ray, surfacePoint)
-    if (surface === null) return null
-    WGS84_ELLIPSOID.getPositionToCartographic(surface.point, cartographic)
+    if (WGS84_ELLIPSOID.intersectRay(ray, surfacePoint) === null) return null
+    WGS84_ELLIPSOID.getPositionToCartographic(surfacePoint, cartographic)
     return { longitudeDegrees: MathUtils.radToDeg(cartographic.lon), latitudeDegrees: MathUtils.radToDeg(cartographic.lat) }
   }
 

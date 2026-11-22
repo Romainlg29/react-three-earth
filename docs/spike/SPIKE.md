@@ -87,8 +87,12 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 - **Events need no hooks in the controls**: `Earth.update` compares the camera's world matrix, field of view
   and canvas size with the last frame, so controls, `jumpTo`, the morph and app code all produce
   `movestart` / `move` / `moveend` (a running morph counts as one move). `idle` waits for the tileset root,
-  queued, downloading and parsing tiles, a pending `needs-update` from 3DTilesRenderer (a loaded tile not
-  yet shown), queued imagery compositions and the atmosphere's textures; `load` is the first `idle`.
+  3DTilesRenderer's running tasks (download, parse, child preparation), a pending `needs-update` (a loaded
+  tile not yet shown) or `load-error`, queued imagery compositions and a running atmosphere generation (a
+  failed one does not hold it back); `load` is the first `idle`.
+- **Bounds** walk the screen's edges on the ellipsoid (the map's plane in 2D), bisect to the horizon where
+  an edge goes from ground to sky, add the globe's outline where it is on screen (exact: the ellipsoid's
+  outline is a circle in the frame where it is the unit sphere), and open to every longitude over a pole.
   `Earth.update` asks for one more frame after a move so `moveend` fires with `frameloop="demand"`, and
   `jumpTo` dispatches `framerequest`, which `<Earth>` turns into `invalidate()`.
 - Changed from the brief: no edits to `EarthControls.ts` (motion is detected, not reported), and zoom
@@ -105,7 +109,8 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 Not done yet (W1b): `easeTo` / `flyTo` / `fitBounds`, zoom / rotate / pitch events, pointer events with
 geography, `<Earth initialView>`. With relief under a pitched camera, the morph anchors on the ellipsoid
 point under the screen centre rather than the terrain point, so the centre shifts by the relief's parallax
-during a 3D→2D morph. `getBounds` samples the screen edges on the ellipsoid (or the map plane), not the terrain.
+during a 3D→2D morph. `getBounds` ignores terrain. `idle` does not wait for imagery added after tiles loaded
+(those textures download outside 3DTilesRenderer's counters).
 
 ## Vector map styles (`src/vector/`)
 

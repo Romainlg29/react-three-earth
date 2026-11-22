@@ -131,6 +131,43 @@ describe('EarthCamera on the globe', () => {
   })
 })
 
+describe('EarthCamera bounds and edge cases', () => {
+  it('reaches the horizon when the screen shows sky', () => {
+    const { earth, camera } = createEarth()
+    // About 2 km up, looking north just below the horizon: the horizon is about 160 km (1.44°) away.
+    setCameraView(camera, { longitudeDegrees: 0, latitudeDegrees: 0, distanceMeters: 2000 / Math.sin((10 * Math.PI) / 180), headingDegrees: 0, pitchDegrees: -10 })
+    const bounds = earth.camera.getBounds()
+    expect(bounds.northDegrees).toBeGreaterThan(1.3)
+    expect(bounds.northDegrees).toBeLessThan(1.6)
+  })
+
+  it('bounds the whole globe when it sits inside the screen', () => {
+    const { earth } = createEarth()
+    earth.camera.jumpTo({ longitudeDegrees: 20, latitudeDegrees: 0, distanceMeters: 60_000_000, headingDegrees: 0, pitchDegrees: -90 })
+    const bounds = earth.camera.getBounds()
+    expect(bounds.westDegrees).toBeLessThan(20 - 75)
+    expect(bounds.eastDegrees).toBeGreaterThan(20 + 75)
+    // From 60,000 km over the equator the outline reaches acos(R / d) ≈ 84° from the centre.
+    expect(bounds.northDegrees).toBeGreaterThan(83)
+    expect(bounds.southDegrees).toBeLessThan(-83)
+  })
+
+  it('keeps zoom finite at the poles', () => {
+    const { earth } = createEarth()
+    earth.camera.jumpTo({ longitudeDegrees: 0, latitudeDegrees: 90, distanceMeters: 10_000, pitchDegrees: -90 })
+    expect(Number.isFinite(earth.camera.getView().zoom)).toBe(true)
+    expect(earth.camera.getView().zoom).toBeGreaterThan(5)
+  })
+
+  it('reports no camera in inspect() for an orthographic camera instead of throwing', async () => {
+    const { OrthographicCamera } = await import('three')
+    const earth = new Earth()
+    earth.camera.setCamera(new OrthographicCamera())
+    earth.camera.setViewportSize(WIDTH_PIXELS, HEIGHT_PIXELS)
+    expect(earth.inspect().camera).toBeNull()
+  })
+})
+
 describe('EarthCamera on the flat map', () => {
   it('keeps centre, zoom and heading through the morph to 2D', () => {
     const { earth, camera } = createEarth()
@@ -178,6 +215,15 @@ describe('EarthCamera on the flat map', () => {
     expect(earth.camera.getView().longitudeDegrees).toBeCloseTo(-178, 6)
     const bounds = earth.camera.getBounds()
     expect(bounds.westDegrees).toBeLessThan(bounds.eastDegrees)
+  })
+
+  it('bounds the whole world when the map is narrower than the screen', () => {
+    const { earth, camera } = createEarth()
+    earth.camera.jumpTo({ longitudeDegrees: 30, latitudeDegrees: 0, zoom: 4, pitchDegrees: -90 })
+    earth.setView('2d', { durationSeconds: 0 })
+    earth.view.update(camera, 0)
+    earth.camera.jumpTo({ zoom: -0.5 })
+    expect(earth.camera.getBounds()).toMatchObject({ westDegrees: -180, eastDegrees: 180 })
   })
 })
 

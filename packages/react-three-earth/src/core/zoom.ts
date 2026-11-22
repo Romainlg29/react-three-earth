@@ -1,6 +1,6 @@
 import type { Camera, PerspectiveCamera } from 'three'
 
-import { WEB_MERCATOR_RADIUS_METERS } from '../view/webMercator.js'
+import { clampLatitudeToWebMercator, WEB_MERCATOR_RADIUS_METERS } from '../view/webMercator.js'
 
 /**
  * Zoom levels as MapLibre GL JS counts them: at zoom `z` the Web Mercator world is `512 × 2^z` pixels
@@ -21,14 +21,22 @@ export function mercatorMetersPerPixelToZoom(metersPerPixel: number): number {
   return Math.log2(EQUATOR_LENGTH_METERS / (MAP_TILE_SIZE_PIXELS * metersPerPixel))
 }
 
-/** Ground metres per pixel at a zoom level and latitude. */
-export function zoomToGroundMetersPerPixel(zoom: number, latitudeDegrees: number): number {
-  return zoomToMercatorMetersPerPixel(zoom) * Math.cos((latitudeDegrees * Math.PI) / 180)
+/**
+ * `cos(latitude)`, with the latitude clamped to the edge of the Web Mercator square (about ±85.05°) as
+ * MapLibre does, so zoom stays finite at the poles.
+ */
+function groundScale(latitudeDegrees: number): number {
+  return Math.cos(clampLatitudeToWebMercator((latitudeDegrees * Math.PI) / 180))
 }
 
-/** The zoom level at which a pixel spans this many ground metres at this latitude. */
+/** Ground metres per pixel at a zoom level and latitude (clamped to about ±85.05°). */
+export function zoomToGroundMetersPerPixel(zoom: number, latitudeDegrees: number): number {
+  return zoomToMercatorMetersPerPixel(zoom) * groundScale(latitudeDegrees)
+}
+
+/** The zoom level at which a pixel spans this many ground metres at this latitude (clamped to about ±85.05°). */
 export function groundMetersPerPixelToZoom(metersPerPixel: number, latitudeDegrees: number): number {
-  return mercatorMetersPerPixelToZoom(metersPerPixel / Math.cos((latitudeDegrees * Math.PI) / 180))
+  return mercatorMetersPerPixelToZoom(metersPerPixel / groundScale(latitudeDegrees))
 }
 
 /**

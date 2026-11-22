@@ -35,7 +35,7 @@ const ROOT_UNLOADED = 0
 const ROOT_LOADING = 2
 
 /** 3DTilesRenderer events asking for another `update` or render. */
-const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render'] as const
+const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render', 'load-error'] as const
 
 interface FrameRequestDispatcher {
   addEventListener(type: string, listener: () => void): void
@@ -73,9 +73,12 @@ export class Terrain {
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
 
-    ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('needs-update', () => {
-      this.updateRequested = true
-    })
+    // A failed load needs an update too, to see that nothing is loading any more.
+    for (const type of ['needs-update', 'load-error']) {
+      ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener(type, () => {
+        this.updateRequested = true
+      })
+    }
 
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
@@ -123,11 +126,13 @@ export class Terrain {
    * `update` to be shown, or imagery waits to be composed. `Earth` reads it for the `idle` event.
    */
   get loading(): boolean {
-    const { stats, rootLoadingState } = this.tiles as unknown as {
+    const { stats, rootLoadingState, isLoading } = this.tiles as unknown as {
       stats: { queued: number; downloading: number; parsing: number }
       rootLoadingState: number
+      /** Download, parse or child-preparation tasks still running (3DTilesRenderer's own `tiles-load-end` test). */
+      isLoading: boolean
     }
-    if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING) return true
+    if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
     const { queued, downloading, parsing } = stats
     return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0
   }

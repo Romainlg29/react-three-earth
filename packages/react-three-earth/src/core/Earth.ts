@@ -186,10 +186,21 @@ export class Earth extends Group<EarthEventMap> {
     return cameraMoved
   }
 
-  /** True while terrain tiles or imagery are loading or waiting to be composed, or the atmosphere is not ready. */
+  /** True while terrain tiles or imagery are loading or waiting to be composed, or the atmosphere is generating. */
   protected isLoading(): boolean {
     if (this.terrain?.loading === true) return true
-    return this.atmosphere !== null && this.atmosphere.context.texturesReady.value !== 1
+    // A failed generation leaves the atmosphere off for good: it must not hold `idle` back.
+    return this.atmosphere !== null && this.atmosphere.generating && this.atmosphere.context.texturesReady.value !== 1
+  }
+
+  /** True once the first view finished loading (the `load` event fired). */
+  get loaded(): boolean {
+    return this.events.loaded
+  }
+
+  /** True while nothing is moving, loading or composing (since the last `idle` event). */
+  get idle(): boolean {
+    return this.events.idle
   }
 
   /** Asks the host for a frame (the `framerequest` event), for changes made between frames. */
@@ -239,7 +250,7 @@ export class Earth extends Group<EarthEventMap> {
               ...inspectImagery(terrain),
             },
       imageryLayers: this.imagery.size,
-      camera: this.camera.camera === null || this.camera.viewportHeightPixels <= 0 ? null : this.camera.getView(),
+      camera: this.camera.ready ? this.camera.getView() : null,
       loaded: this.events.loaded,
       idle: this.events.idle,
       view: this.view.inspect(),

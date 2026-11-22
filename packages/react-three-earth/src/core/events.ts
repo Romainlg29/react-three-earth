@@ -4,8 +4,8 @@ import type { Camera, Object3DEventMap } from 'three'
  * Events an `Earth` dispatches, on top of three's `Object3D` events. Listen with
  * `earth.addEventListener('moveend', listener)`, or `useEarthEvent('moveend', listener)` in React.
  *
- * Every event fires from `earth.update`, once per frame at most, in this order: `movestart`, `move`,
- * `moveend`, `load`, `idle`.
+ * Every event but `framerequest` fires from `earth.update`, once per frame at most, in this order:
+ * `movestart`, `move`, `moveend`, `load`, `idle`. `framerequest` fires at once, from `earth.requestFrame`.
  */
 export interface EarthEventMap extends Object3DEventMap {
   /**
@@ -51,9 +51,12 @@ export class EarthEventTracker {
   idle = false
   loaded = false
 
-  /** The events to dispatch for this frame, in order. */
-  update({ cameraMoved, busy }: EarthFrameState): EarthEventType[] {
-    const events: EarthEventType[] = []
+  protected readonly events: EarthEventType[] = []
+
+  /** The events to dispatch for this frame, in order. The array is reused by the next call. */
+  update({ cameraMoved, busy }: EarthFrameState): readonly EarthEventType[] {
+    const events = this.events
+    events.length = 0
     if (cameraMoved) {
       if (!this.moving) events.push('movestart')
       this.moving = true

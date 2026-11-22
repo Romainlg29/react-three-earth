@@ -48,6 +48,34 @@ export function intersectEllipsoidOrHorizon(ray: Ray, target: Vector3): { point:
   return { point: target, hit: false }
 }
 
+const horizonCenter = new Vector3()
+const horizonAxisU = new Vector3()
+const horizonAxisV = new Vector3()
+
+/**
+ * A point of the WGS84 ellipsoid's outline as seen from `cameraPosition` (the horizon of a smooth Earth),
+ * at `angleRadians` around it. Null when the camera is inside the ellipsoid. Exact: tangency survives the
+ * scaling that turns the ellipsoid into the unit sphere, where the outline is a circle.
+ */
+export function ellipsoidHorizonPoint(cameraPosition: Vector3, angleRadians: number, target: Vector3): Vector3 | null {
+  const radius = WGS84_ELLIPSOID.radius
+  scaledCamera.copy(cameraPosition).divide(radius)
+  const distanceSquared = scaledCamera.lengthSq()
+  if (distanceSquared <= 1) return null
+  horizonCenter.copy(scaledCamera).divideScalar(distanceSquared)
+  const circleRadius = Math.sqrt(1 - 1 / distanceSquared)
+  // Two axes across the camera direction.
+  horizonAxisU.set(0, 0, 1).cross(scaledCamera)
+  if (horizonAxisU.lengthSq() < 1e-12) horizonAxisU.set(1, 0, 0).cross(scaledCamera)
+  horizonAxisU.normalize()
+  horizonAxisV.crossVectors(scaledCamera, horizonAxisU).normalize()
+  return target
+    .copy(horizonCenter)
+    .addScaledVector(horizonAxisU, circleRadius * Math.cos(angleRadians))
+    .addScaledVector(horizonAxisV, circleRadius * Math.sin(angleRadians))
+    .multiply(radius)
+}
+
 /**
  * Heading (clockwise from north) and pitch (below the horizon, negative looks down) of a camera, in
  * radians, in a local frame. Looking steeply down or up, the heading comes from screen-up, so it stays
