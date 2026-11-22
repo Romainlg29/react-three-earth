@@ -102,6 +102,20 @@ export class Atmosphere {
     return this.context.parameters
   }
 
+  /**
+   * 0 to 1: how much sky, haze and sunlight there is. `Earth` fades it out on the flat map. At 0 the scene
+   * shows unlit and unhazed, over the canvas's clear colour. Also sets the sun light's intensity, so set
+   * this rather than `light.intensity`. Costs nothing to change.
+   */
+  get opacity(): number {
+    return this.context.opacity.value
+  }
+
+  set opacity(value: number) {
+    this.context.opacity.value = value
+    this.light.intensity = value
+  }
+
   /** Unit vector towards the sun in ECEF, as of the last `update`. Read-only. */
   get sunDirectionECEF(): ReturnType<typeof getSunDirectionECEF> {
     return this.context.sunDirection.value

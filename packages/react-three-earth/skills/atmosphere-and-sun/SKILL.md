@@ -165,7 +165,7 @@ Haze bands on distant terrain seen from orbit, and a one-time warning. Create th
 
 ### MEDIUM: Screenshots taken before `ready`
 
-The first frames have no sky. On a CPU rasteriser (SwiftShader in CI) paced generation takes minutes, so
+The first frames have no sky. On a CPU rasteriser (SwiftShader in automated browser tests) paced generation takes minutes, so
 tests pass `generationBudgetMillisecondsPerFrame={Infinity}`; on a real GPU it is much shorter. Wait for `ready`.
 
 ## Completion

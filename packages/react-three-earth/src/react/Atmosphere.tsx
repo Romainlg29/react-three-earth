@@ -9,6 +9,9 @@ import type { WebGPURenderer } from 'three/webgpu'
 import { Atmosphere as AtmosphereImpl, type AtmosphereOptions } from '../core/Atmosphere.js'
 import { useEarth } from './context.js'
 
+/** AgX compresses highlights: imagery emitted at about 1.6 comes out close to its own colours. */
+const FLAT_MAP_LUMINANCE_UNDER_AGX = 1.6
+
 export interface AtmosphereProps extends AtmosphereOptions {
   /** Camera exposure applied before AgX tone mapping. Default: 10. */
   exposure?: number
@@ -85,13 +88,17 @@ export function Atmosphere({
   useLayoutEffect(() => {
     const previousToneMapping = renderer.toneMapping
     const previousExposure = renderer.toneMappingExposure
+    const previousFlatMapLuminance = earth.view.flatMapLuminance
     renderer.toneMapping = AgXToneMapping
     renderer.toneMappingExposure = exposure
+    // The flat map shows imagery unlit: undo the exposure so it keeps its colours.
+    earth.view.flatMapLuminance = FLAT_MAP_LUMINANCE_UNDER_AGX / exposure
     return () => {
       renderer.toneMapping = previousToneMapping
       renderer.toneMappingExposure = previousExposure
+      earth.view.flatMapLuminance = previousFlatMapLuminance
     }
-  }, [renderer, exposure])
+  }, [renderer, exposure, earth])
 
   useLayoutEffect(() => () => atmosphere.dispose(), [atmosphere])
 

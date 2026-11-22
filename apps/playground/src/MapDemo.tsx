@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { setCameraView, type CameraView, type Earth as EarthImpl } from 'react-three-earth'
+import { setCameraView, type CameraView, type Earth as EarthImpl, type ViewMode } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
@@ -11,6 +11,7 @@ import {
   RasterTileSource,
   Terrain,
   useEarth,
+  useEarthFrame,
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
@@ -20,6 +21,7 @@ const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
+const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery.
 const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? '/fixtures/style.json' : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
@@ -53,6 +55,7 @@ function readCameraView(): CameraView {
 declare global {
   interface Window {
     earth?: EarthImpl
+    setView?: (view: ViewMode) => void
   }
 }
 
@@ -64,6 +67,22 @@ function InitialView() {
     window.earth = earth // agents and tests read earth.inspect()
   }, [camera, earth])
   return null
+}
+
+/** Plain lights for the atmosphere-off check, faded out on the flat map like the atmosphere's sun. */
+function PlainLights() {
+  const [lights] = useState(() => ({ ambient: { current: null as { intensity: number } | null }, sun: { current: null as { intensity: number } | null } }))
+  useEarthFrame(earth => {
+    const lit = 1 - earth.view.morph
+    if (lights.ambient.current) lights.ambient.current.intensity = 0.6 * lit
+    if (lights.sun.current) lights.sun.current.intensity = 2 * lit
+  })
+  return (
+    <>
+      <ambientLight ref={lights.ambient as never} intensity={0.6} />
+      <directionalLight ref={lights.sun as never} position={[1e7, 0, 1e7]} intensity={2} />
+    </>
+  )
 }
 
 /** How the atmosphere's lookup textures were made, for reading timings off a phone. */
@@ -85,10 +104,12 @@ function AtmosphereStatus() {
 }
 
 export function MapDemo() {
+  const [view, setView] = useState<ViewMode>(initialView)
+  window.setView = setView // tests switch the view like the button does
   return (
     <>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: params.has('webgl'), trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth date={date}>
+        <Earth date={date} view={view}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
@@ -100,14 +121,18 @@ export function MapDemo() {
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />
           ) : (
-            <>
-              <ambientLight intensity={0.6} />
-              <directionalLight position={[1e7, 0, 1e7]} intensity={2} />
-            </>
+            <PlainLights />
           )}
           <EarthControls />
         </Earth>
       </Canvas>
+      <button
+        type="button"
+        onClick={() => setView(view === '3d' ? '2d' : '3d')}
+        style={{ position: 'absolute', top: 8, right: 8, padding: '6px 12px', font: 'inherit', cursor: 'pointer' }}
+      >
+        {view === '3d' ? 'Flat map (2D)' : 'Globe (3D)'}
+      </button>
       {withAtmosphere && <AtmosphereStatus />}
       <div style={{ position: 'absolute', bottom: 8, right: 8, opacity: 0.7 }}>
         {useFixtures

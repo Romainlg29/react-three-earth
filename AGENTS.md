@@ -35,7 +35,8 @@ instead.
 
 ## Checks
 
-Run before pushing; CI runs the same on every pull request.
+Run before pushing. CI runs the first four on every pull request; the browser checks are local only, so
+run them yourself when you change rendering.
 
 ```sh
 pnpm typecheck
@@ -47,7 +48,7 @@ xvfb-run -a node apps/playground/tests/run.mjs && node apps/playground/tests/ass
 ```
 
 Outside the dev sandbox, install Playwright once with `npm i -g playwright@1.63.0 && npx playwright@1.63.0 install chromium`
-and run the checks with `NODE_PATH="$(npm root -g)"` in front, as CI does. The browser checks need a headed Chromium (headless drops the WebGPU device) and take about 1.5 minutes
+and run the checks with `NODE_PATH="$(npm root -g)"` in front. The browser checks need a headed Chromium (headless drops the WebGPU device) and take about 1.5 minutes
 locally; the sandbox cannot reach tile hosts, so they use `?fixtures`. They run on SwiftShader, a CPU
 rasteriser: they prove correctness, never frame times. Screenshots land in `apps/playground/test-results/`.
 

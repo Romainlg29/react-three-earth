@@ -7,6 +7,7 @@ import {
   If,
   isBackgroundDepth,
   logarithmicDepthToViewZ,
+  mix,
   perspectiveDepthToViewZ,
   smoothstep,
   uniform,
@@ -64,7 +65,7 @@ export class AerialPerspectiveNode extends Node {
     const renderer = builder.renderer
     const logarithmicDepth = renderer.logarithmicDepthBuffer && !renderer.reversedDepthBuffer
 
-    const { model, textures, sunDirection, texturesReady } = this.context
+    const { model, textures, sunDirection, texturesReady, opacity } = this.context
     const projectionMatrixInverse = uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.projectionMatrixInverse))
     const cameraWorldMatrix = uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.matrixWorld))
     const near = uniform(1).onRenderUpdate(() => camera.near)
@@ -87,8 +88,8 @@ export class AerialPerspectiveNode extends Node {
       const viewDirectionModel = directionRotation.mul(worldDirection).toConst()
       const sunDirectionModel = directionRotation.mul(sunDirection).toConst()
       const luminance = vec3(0).toVar()
-      // Until the lookup textures are generated, show the scene as it is (the sky stays black).
-      If(texturesReady.lessThan(0.5), () => {
+      // Until the lookup textures are generated, and on the flat map, show the scene as it is (no sky).
+      If(texturesReady.lessThan(0.5).or(opacity.lessThanEqual(0)), () => {
         luminance.assign(colorNode.rgb)
       }).ElseIf(isBackgroundDepth(depth), () => {
         const sky = model.getSkyRadiance(textures, cameraPosition, viewDirectionModel, sunDirectionModel)
@@ -102,7 +103,7 @@ export class AerialPerspectiveNode extends Node {
       })
       // The sky covers every pixel the scene left empty, so the result is opaque. Keeping the scene's cleared
       // alpha (0) would show the page behind the canvas where the sky should be.
-      return vec4(luminance, 1)
+      return vec4(mix(colorNode.rgb, luminance, opacity), 1)
     })()
   }
 
