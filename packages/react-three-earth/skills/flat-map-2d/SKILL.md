@@ -5,7 +5,7 @@ description: >
   switching between globe and flat map with a transition, tuning that transition, limiting zoom on the
   flat map, or lighting terrain on the flat map.
 metadata:
-  purpose: 'Explains the 2D view, the dive-swap-rise transition, repeated worlds and the zoom limit on the flat map, and the lighting rules in 2D.'
+  purpose: 'Explains the 2D view, the unroll transition, repeated worlds and the zoom limit on the flat map, and the lighting rules in 2D.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -31,11 +31,12 @@ servers use. On the flat map:
 
 Changing `view` plays a transition:
 
-1. The camera dives to `transitionAltitudeMeters` (200 km) while turning to look straight down.
-2. The projection swaps there, where the Earth's curvature is too small to see.
-3. The camera rises back to its starting distance, capped at the flat map's height limit.
+- **Towards the map:** the camera keeps its place and turns to look straight down. The map unrolls off
+  the globe from the point looked at outwards, with a thin glowing seam on the front. From high up, the
+  camera eases down to the flat map's height limit.
+- **Towards the globe:** the map rolls back up from its edges inwards.
 
-Near the ground there is no dive, only the turn and the swap.
+The default length is 1.8 s.
 
 ## Setup
 
@@ -82,8 +83,7 @@ const earth = new Earth({ view: '3d' })
 const controls = new EarthViewControls(earth)
 // each frame, before rendering:
 // controls.update(deltaSeconds); earth.update(camera, renderer, deltaSeconds)
-earth.setView('2d', { durationSeconds: 2.4 })
-earth.view.transitionAltitudeMeters = 100_000 // swap lower, for a longer dive
+earth.setView('2d', { durationSeconds: 2.4 }) // a slower unroll
 ```
 
 `earth.update` returns true while a transition runs. Hosts that render on demand use it to ask for another frame.
@@ -110,6 +110,6 @@ function describe(earth: Earth) {
 
 ## Completion
 
-- Toggling `view` dives, swaps and rises without a jump, and imagery stays aligned.
+- Toggling `view` unrolls or rolls up the map without a camera jump, and imagery stays aligned.
 - On the flat map, zooming out stops when the map's height fills the screen, and the world repeats
   sideways when the screen is wider than the map.
