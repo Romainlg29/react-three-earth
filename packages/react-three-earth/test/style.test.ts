@@ -329,6 +329,36 @@ describe('MapStyle', () => {
     expect(mapStyle.getLayerIds()).toContain('highlight')
   })
 
+  it('applies changes made during setStyle to the new style, and lets the last of overlapping calls win', async () => {
+    const { mapStyle } = await loadedStyle()
+    const first = baseStyle()
+    first.layers[2]!.paint!['line-color'] = '#111111'
+    const second = baseStyle()
+    second.layers[2]!.paint!['line-color'] = '#222222'
+    const replaced = mapStyle.setStyle(first)
+    const latest = mapStyle.setStyle(second)
+    // Made while both are pending: applied after the new style, not undone by its diff.
+    mapStyle.setLayerVisibility('parks', false)
+    const layer = new StyleLayer({ id: 'late', type: 'line', source: 'base', sourceLayer: 'roads' })
+    layer.addTo({ getMapStyle: () => mapStyle })
+    const removed = new StyleLayer({ id: 'gone', type: 'line', source: 'base', sourceLayer: 'roads' })
+    removed.addTo({ getMapStyle: () => mapStyle })
+    removed.remove()
+    expect(mapStyle.isSettled).toBe(false)
+    await Promise.all([replaced, latest])
+    expect(mapStyle.isSettled).toBe(true)
+    expect(mapStyle.getPaintProperty('roads', 'line-color')).toBe('#222222')
+    expect(mapStyle.getLayoutProperty('parks', 'visibility')).toBe('none')
+    expect(mapStyle.getLayerIds()).toContain('late')
+    expect(mapStyle.getLayerIds()).not.toContain('gone')
+  })
+
+  it('says when the first load failed, so a new source can start over', async () => {
+    const mapStyle = new MapStyle({ style: 'https://maps.test/missing.json' })
+    await expect(mapStyle.load(async () => new Response('', { status: 404 }))).rejects.toThrow(/404/)
+    expect(mapStyle.loadFailed).toBe(true)
+  })
+
   it('updates a StyleLayer by sending only what changed', async () => {
     const { mapStyle, changes, commands } = await loadedStyle()
     const layer = new StyleLayer({ id: 'extra', type: 'line', source: 'base', sourceLayer: 'roads', paint: { 'line-color': '#ff00ff', 'line-width': 2 } })
@@ -498,6 +528,13 @@ describe('MapStyleOverlay style changes', () => {
     await overlay.settle()
     expect(overlay.processed).toEqual([bucketKey({ sourceId: 'base', x: 0, y: 3, z: 2, zoom: 2 })])
     expect(overlay.drawnRegions).toEqual([C.join('_')])
+  })
+
+  it('forgets feature-state changes that no tile in flight can have missed', async () => {
+    const { mapStyle, overlay } = await setUp()
+    for (let id = 0; id < 50; id++) (mapStyle as unknown as { emit(change: object): void }).emit({ type: 'featureState', key: `feature ${id}`, state: { hover: true } })
+    await overlay.settle()
+    expect((overlay as unknown as { featureStateChangedAt: Map<string, number> }).featureStateChangedAt.size).toBe(0)
   })
 
   it('sends a burst of style changes as one message and processes again only the rebuilt source', async () => {

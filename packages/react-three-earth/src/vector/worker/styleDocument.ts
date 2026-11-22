@@ -37,7 +37,7 @@ export function copyStyleDocument(style: unknown): StyleDocument {
 function findLayer(document: StyleDocument, layerId: string, command: string): number {
   const position = document.layers.findIndex(layer => layer.id === layerId)
   if (position === -1) {
-    throw new Error(`MapStyleSource.${command}: there is no layer "${layerId}". Add it first with addLayer, or check the id against getLayers().`)
+    throw new Error(`MapStyleSource.${command}: there is no layer "${layerId}". Add it first with addLayer, or check the id against getLayerIds().`)
   }
   return position
 }
@@ -124,7 +124,7 @@ export function applyStyleCommand(document: StyleDocument, command: StyleCommand
     }
     case 'removeSource': {
       const [sourceId] = command.args
-      if (document.sources[sourceId] === undefined) throw new Error(`MapStyleSource.removeSource: there is no source "${sourceId}".`)
+      if (document.sources[sourceId] === undefined) throw new Error(`MapStyleSource.removeSource: there is no source "${sourceId}"; check the id against getStyle().sources.`)
       const users = layers.filter(layer => layer.source === sourceId).map(layer => layer.id)
       if (users.length > 0) throw new Error(`MapStyleSource.removeSource: layers ${users.map(id => `"${id}"`).join(', ')} still read source "${sourceId}"; removeLayer them first.`)
       delete document.sources[sourceId]

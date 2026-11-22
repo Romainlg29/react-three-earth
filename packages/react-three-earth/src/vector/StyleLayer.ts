@@ -86,7 +86,7 @@ export class StyleLayer {
     if (style === null) return
     this.style = null
     style.unmanageLayer(this)
-    if (style.isLoaded && !style.getLayerIds().includes(this.id)) return
+    if (style.isSettled && !style.getLayerIds().includes(this.id)) return // already removed (by setStyle, say)
     style.removeLayer(this.id)
   }
 

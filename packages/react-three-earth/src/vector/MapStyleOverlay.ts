@@ -153,6 +153,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   /** Feature-state messages sent to the backend so far, and when each feature last changed (in that count). */
   protected featureStateVersion = 0
   protected readonly featureStateChangedAt = new Map<string, number>()
+  /** Tile requests in flight, by the feature-state version they were sent at (to prune `featureStateChangedAt`). */
+  protected readonly inFlightVersions = new Map<number, number>()
   /** The style change sequence the backend's snapshot covers: later changes are sent; −1 before the first. */
   protected snapshotSequence = -1
   /** Backend answers to style changes, applied in the order the changes were sent. */
@@ -228,10 +230,20 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.buckets = new RefCountedCache<LoadedBucket>({
       load: async (key, signal) => {
         for (let attempt = 1; ; attempt++) {
-          const bucket = await this.requireBackend().processTile(parseBucketKey(key), signal)
+          const sentVersion = this.featureStateVersion
+          this.countInFlight(sentVersion, 1)
+          let bucket: TileBucket
+          try {
+            bucket = await this.requireBackend().processTile(parseBucketKey(key), signal)
+          } finally {
+            this.countInFlight(sentVersion, -1)
+          }
           // Started before a state change of a feature it bakes: process it again (the request now follows the change).
           const stale = bucket.rebuildFeatureKeys.some(feature => (this.featureStateChangedAt.get(feature) ?? 0) > bucket.featureStateVersion)
           if (stale && attempt < 3) continue
+          // Still stale after three tries (states change faster than the tile processes): keep it, and process it
+          // once more after the current changes settle.
+          if (stale) queueMicrotask(() => this.rebuildTiles(request => bucketKey(request) === key))
           const loaded: LoadedBucket = { key, bucket, meshes: null }
           this.indexFeatures(loaded, true)
           this.recordImageUsers(key, bucket.images)
@@ -348,20 +360,25 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   }
 
   /** Runs `apply` with the backend's answer once the answers to earlier changes were applied. */
-  protected enqueueStyleWork<T>(answer: Promise<T>, apply: (value: T) => void): void {
+  protected enqueueStyleWork<T>(send: (backend: MapStyleBackend) => Promise<T>, apply: (value: T) => void): void {
+    const backend = this.requireBackend()
+    const answer = send(backend)
     answer.catch(() => {}) // a rejection is handled below, in order
+    // A backend replaced meanwhile (the worker failed during init, and the main thread took over from a fresh
+    // snapshot that holds this change) answers nothing that matters.
+    const current = () => !this.disposed && this.backend === backend
     this.styleWork = this.styleWork
       .then(async () => {
         const value = await answer
-        if (!this.disposed) apply(value)
+        if (current()) apply(value)
       })
       .catch((error: unknown) => {
-        if (!this.disposed && (error as Error)?.name !== 'AbortError') this.mapStyle.reportError(error as Error)
+        if (current() && (error as Error)?.name !== 'AbortError') this.mapStyle.reportError(error as Error)
       })
   }
 
   protected sendStyleCommands(commands: StyleCommand[]): void {
-    this.enqueueStyleWork(this.requireBackend().updateStyle(commands), result => this.applyStyleResult(result))
+    this.enqueueStyleWork(backend => backend.updateStyle(commands), result => this.applyStyleResult(result))
   }
 
   /** Redraws what a style change touched: tiles of the rebuilt sources, every region when the background or sources changed. */
@@ -380,8 +397,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected sendFeatureStates(states: Map<string, FeatureState | null>): void {
     const version = ++this.featureStateVersion
     for (const key of states.keys()) this.featureStateChangedAt.set(key, version)
+    this.pruneFeatureStateChanges()
     const changes = [...states].map(([key, state]) => ({ key, state }))
-    this.enqueueStyleWork(this.requireBackend().updateFeatureStates(changes), () => {
+    this.enqueueStyleWork(backend => backend.updateFeatureStates(changes), () => {
       // The slot colours arrived with the answer: redraw the regions using them. Baked features process their tiles again.
       const redraw = new Set<string>()
       const rebuild = new Set<string>()
@@ -396,12 +414,29 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
 
   /** Starts the backend again from a snapshot (a style change no command expresses), then redraws everything. */
   protected reloadStyle(): void {
-    this.enqueueStyleWork(this.requireBackend().reload(this.takeSnapshot()), summary => {
+    const snapshot = this.takeSnapshot()
+    this.enqueueStyleWork(backend => backend.reload(snapshot), summary => {
       this.summary = summary
       this.rebuildTiles(() => true)
       this.markRegionsStale(() => true)
       this.onSummaryChange?.(summary)
     })
+  }
+
+  protected countInFlight(version: number, change: 1 | -1): void {
+    const count = (this.inFlightVersions.get(version) ?? 0) + change
+    if (count === 0) this.inFlightVersions.delete(version)
+    else this.inFlightVersions.set(version, count)
+  }
+
+  /**
+   * Forgets changes no tile in flight can have missed: a bucket is stale only for changes made after its request
+   * was sent, and later requests reach the backend after the change.
+   */
+  protected pruneFeatureStateChanges(): void {
+    let oldest = this.featureStateVersion
+    for (const version of this.inFlightVersions.keys()) oldest = Math.min(oldest, version)
+    for (const [key, version] of this.featureStateChangedAt) if (version <= oldest) this.featureStateChangedAt.delete(key)
   }
 
   protected indexFeatures(loaded: LoadedBucket, add: boolean): void {

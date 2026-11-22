@@ -341,6 +341,7 @@ async function vectorStyleRuntime() {
     tilesProcessedDuringHover,
     errors,
   })
+}
 
 const PATTERN_COLOURS = `
   // By hue, since the terrain is lit: the sprite's green checks (background), dark and light blue stripes

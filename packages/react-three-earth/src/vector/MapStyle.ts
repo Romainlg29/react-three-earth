@@ -96,6 +96,14 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   protected baseUrl: string | null = null
   protected source: string | object
   protected loading: Promise<void> | null = null
+  protected loadError: unknown = null
+  /** The fetch the style loaded with (the overlay's, through `preprocessURL`); `setStyle` fetches with it too. */
+  protected fetchFunction: typeof fetch | undefined = globalThis.fetch?.bind(globalThis)
+  /** Counts `setStyle` calls: a call whose style resolves after a later call started is dropped. */
+  protected styleGeneration = 0
+  /** `setStyle` calls in progress; commands made meanwhile wait in `held`, then apply to the new style. */
+  protected stylesPending = 0
+  protected readonly held: StyleCommand[] = []
   protected readonly options: MapStyleOptions
   protected readonly protocols = new Map<string, ProtocolLoader>()
   /** Commands made before the style loaded, applied in order once it has. */
@@ -125,18 +133,28 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     return this.document !== null
   }
 
+  /** Loaded, with no `setStyle` in progress: the document reflects every change made so far. */
+  get isSettled(): boolean {
+    return this.document !== null && this.stylesPending === 0
+  }
+
+  /** Whether loading the style failed (a wrong URL, for example): `MapStyleSource` must be created again. */
+  get loadFailed(): boolean {
+    return this.loadError !== null
+  }
+
   /** Loads the style once (fetching its URL through `transformRequest` and protocols); later calls share it. */
   load(fetchFunction: typeof fetch = globalThis.fetch?.bind(globalThis)): Promise<void> {
     this.loading ??= (async () => {
-      const { style, baseUrl } = await this.resolve(this.source, fetchFunction)
-      this.adopt(copyStyleDocument(style), baseUrl)
-      for (const command of this.early.splice(0)) {
-        try {
-          this.applyLocally(command)
-        } catch (error) {
-          this.reportError(error as Error)
-        }
+      this.fetchFunction = fetchFunction
+      try {
+        const { style, baseUrl } = await this.resolve(this.source, fetchFunction)
+        this.adopt(copyStyleDocument(style), baseUrl)
+      } catch (error) {
+        this.loadError = error
+        throw error
       }
+      this.replay(this.early)
       this.queueEvent('styledata', {})
     })()
     return this.loading
@@ -263,22 +281,37 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
    * Replaces the style. With `diff` (the default), only what differs is applied (the style specification's
    * `diff`, as MapLibre does), so unchanged tiles are not processed again; a change no command expresses (glyphs,
    * sprite, another base URL) reloads it. Layers added with `StyleLayer` are kept.
+   *
+   * The new style applies asynchronously (a URL is fetched, the diff is loaded on first use). Changes made
+   * meanwhile (`setPaintProperty`, `addLayer`…) apply after it, to the new style; when calls overlap, the last
+   * one wins.
    */
   async setStyle(style: string | object, { diff = true }: { diff?: boolean } = {}): Promise<void> {
-    if (this.document === null) {
-      // Not loaded yet: load this one instead (or after the current load, then diff).
-      if (this.loading === null) {
-        this.source = style
-        return
-      }
-      await this.loading
+    const generation = ++this.styleGeneration
+    if (this.document === null && this.loading === null) {
+      this.source = style // not loading yet: load this one instead
+      return
     }
-    const { style: next, baseUrl } = await this.resolve(style, globalThis.fetch?.bind(globalThis))
+    this.stylesPending++
+    try {
+      if (this.document === null) await this.loading
+      const [{ style: next, baseUrl }, diffStyles] = await Promise.all([
+        this.resolve(style, this.fetchFunction),
+        diff ? import('@maplibre/maplibre-gl-style-spec').then(module => module.diff) : null,
+      ])
+      if (generation !== this.styleGeneration) return // a later call replaced it
+      this.replaceStyle(copyStyleDocument(next), baseUrl, diffStyles)
+    } finally {
+      if (--this.stylesPending === 0) this.replay(this.held)
+    }
+  }
+
+  /** Applies a resolved style: the diff's commands when they express it, a reload otherwise. Synchronous. */
+  protected replaceStyle(next: StyleDocument, baseUrl: string, diffStyles: ((before: never, after: never) => unknown[]) | null): void {
     const current = this.document!
-    const target = this.withManagedLayers(copyStyleDocument(next), current)
+    const target = this.withManagedLayers(next, current)
     let commands: StyleCommand[] | null = null
-    if (diff && baseUrl === this.baseUrl) {
-      const { diff: diffStyles } = await import('@maplibre/maplibre-gl-style-spec')
+    if (diffStyles !== null && baseUrl === this.baseUrl) {
       const all = diffStyles(current as never, target as never) as Array<{ command: string; args: unknown[] }>
       const relevant = all.filter(command => !IGNORED_COMMANDS.has(command.command))
       if (relevant.every(command => APPLICABLE_COMMANDS.has(command.command))) commands = relevant as StyleCommand[]
@@ -295,7 +328,9 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     if (commands === null) {
       this.adopt(target, baseUrl)
       this.emit({ type: 'reload' })
-    } else for (const command of commands) this.command(command)
+      for (const id of Object.keys(current.sources)) if (target.sources[id] === undefined) this.queueEvent('sourcedata', { sourceId: id, change: 'remove' })
+      for (const id of Object.keys(target.sources)) if (current.sources[id] === undefined) this.queueEvent('sourcedata', { sourceId: id, change: 'add' })
+    } else for (const command of commands) this.applyLocally(command)
     this.queueEvent('styledata', {})
   }
 
@@ -404,11 +439,20 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   // Internals
 
   protected command(command: StyleCommand): void {
-    if (this.document === null) {
-      this.early.push(command)
-      return
+    if (this.document === null) this.early.push(command)
+    else if (this.stylesPending > 0) this.held.push(command)
+    else this.applyLocally(command)
+  }
+
+  /** Applies queued commands in order; one that no longer applies is reported, not thrown. */
+  protected replay(commands: StyleCommand[]): void {
+    for (const command of commands.splice(0)) {
+      try {
+        this.applyLocally(command)
+      } catch (error) {
+        this.reportError(error as Error)
+      }
     }
-    this.applyLocally(command)
   }
 
   protected applyLocally(command: StyleCommand): void {
@@ -464,7 +508,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     }
     if (this.document === null) return
     const source = this.document.sources[feature.source]
-    if (source === undefined) throw new Error(`MapStyleSource.${method}: there is no source "${feature.source}" in the style.`)
+    if (source === undefined) throw new Error(`MapStyleSource.${method}: there is no source "${feature.source}" in the style; use a source id from getStyle().sources.`)
     if (source.type === 'vector' && feature.sourceLayer === undefined) {
       throw new Error(`MapStyleSource.${method}: source "${feature.source}" is a vector source; pass \`sourceLayer\` too.`)
     }

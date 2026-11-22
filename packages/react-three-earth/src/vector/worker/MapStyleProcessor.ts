@@ -413,10 +413,11 @@ export class MapStyleProcessor {
   /** Tessellates one tile. The bucket's `atlas` is left null: the caller attaches `takeAtlasUpdate()`. */
   async processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket> {
     const { sourceId, x, y, z, zoom } = request
-    const featureStateVersion = this.featureStateVersion
     signal?.throwIfAborted()
     const tile = await this.getRawTile(sourceId, x, y, z, signal)
     signal?.throwIfAborted()
+    // From here to the end of the feature loop nothing awaits: states read there are those of this version.
+    const featureStateVersion = this.featureStateVersion
     const empty: TileBucket = { shapes: null, text: null, atlas: null, images: [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion, byteLength: 0 }
     if (tile === null) return empty
 

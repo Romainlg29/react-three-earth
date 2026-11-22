@@ -137,7 +137,11 @@ export function NightMode({ night }: { night: boolean }) {
 `source.setStyle(urlOrDocument)` diffs the new style against the current one (the style specification's
 `diff`, as MapLibre) and applies only the differences. A change no command can express (other `glyphs`, a
 `sprite`, another base URL) reloads the style, still without flicker. In React, a new `url` or `style`
-prop does the same: no reload.
+prop does the same: no reload. When the first style failed to load (a wrong URL), a new prop starts over.
+
+It is asynchronous, even for an object (the diff code loads on first use): changes made before it resolves
+(`setPaintProperty`, `addLayer`…) apply after it, to the new style, and getters show them once it has. When
+calls overlap, the last one wins. `await source.setStyle(next)` before reading the new style back.
 
 ### Layers the app owns: `<StyleLayer>`
 

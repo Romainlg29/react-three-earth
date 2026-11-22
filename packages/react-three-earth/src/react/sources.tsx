@@ -1,4 +1,4 @@
-import { use, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
+import { use, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 
 import {
   MapStyleSource as MapStyleSourceImpl,
@@ -79,6 +79,7 @@ export function MapStyleSource({
   children,
 }: MapStyleSourceProps) {
   const styleInput = url ?? style
+  const [retries, setRetries] = useState(0)
   // The latest transformRequest, read when a request is made: a new function does not reload the source.
   const latestTransform = useRef(transformRequest)
   useLayoutEffect(() => {
@@ -108,13 +109,18 @@ export function MapStyleSource({
     },
     // url and style are applied below with setStyle; attribution by useAttribution
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio],
+    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio, retries],
   )
   const applied = useRef<{ source: MapStyleSourceImpl; style: unknown } | null>(null)
   useEffect(() => {
     const previous = applied.current
     applied.current = { source, style: styleInput }
     if (previous === null || previous.source !== source || previous.style === styleInput || styleInput === undefined) return
+    // The first style never loaded (a wrong URL, say): start over with the new one.
+    if (source.getMapStyle().loadFailed) {
+      setRetries(count => count + 1)
+      return
+    }
     source.setStyle(styleInput).catch((error: unknown) => console.warn(`MapStyleSource: the new style could not be applied. ${(error as Error).message}`))
   }, [source, styleInput])
   useAttribution(source, attribution)
@@ -135,12 +141,24 @@ export function StyleLayer(props: StyleLayerProps) {
   if (source === null) throw new Error('<StyleLayer> must sit inside <MapStyleSource>.')
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const layer = useMemo(() => new StyleLayerImpl(props), [props.id])
+  // A change that does not apply (a `beforeId` naming no layer, for example) is reported as an `error` event
+  // on the source rather than thrown, so it cannot take the React tree down.
+  const report = (error: unknown) => source.getMapStyle().reportError(error as Error)
   useLayoutEffect(() => {
-    layer.addTo(source)
+    try {
+      layer.addTo(source)
+    } catch (error) {
+      report(error)
+    }
     return () => layer.remove()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layer, source])
   useLayoutEffect(() => {
-    layer.update(props)
+    try {
+      layer.update(props)
+    } catch (error) {
+      report(error)
+    }
   })
   return null
 }

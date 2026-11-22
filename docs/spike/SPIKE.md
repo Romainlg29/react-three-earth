@@ -254,6 +254,11 @@ How it works:
 | `setLayerVisibility('water', false)`, then back | lakes gone, then back blue |
 | `addLayer` (hover layer) + `setFeatureState` on one lake of three | one lake pink, 0 tiles processed, 50 regions redrawn, 2.1 s to settle on the CPU rasteriser |
 
+`setStyle` is asynchronous even for an object (the style specification's `diff` loads on first use, to keep it
+out of the main bundle): changes made while it resolves are held and applied to the new style, and the last of
+overlapping calls wins. Feature colour slots and W5's patterns share one set of shape materials (plain, slotted,
+patterned, both); a patterned fill or line bakes its opacity, so a state-dependent opacity there re-tessellates.
+
 Hover recomposition on a device still needs measuring (SwiftShader rasterises on the CPU; the 2.1 s above is
 50 region redraws there). Not done: `zoom` in expressions is still evaluated at each region's integer level,
 so zoom-interpolated paint steps per level (W6 brings a camera zoom); `setSprite` and `setGlyphs` reload the
