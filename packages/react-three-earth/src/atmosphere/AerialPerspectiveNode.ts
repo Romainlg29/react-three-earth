@@ -7,6 +7,7 @@ import {
   If,
   isBackgroundDepth,
   logarithmicDepthToViewZ,
+  mix,
   perspectiveDepthToViewZ,
   smoothstep,
   uniform,
@@ -69,7 +70,8 @@ export class AerialPerspectiveNode extends Node {
     const cameraWorldMatrix = uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.matrixWorld))
     const near = uniform(1).onRenderUpdate(() => camera.near)
     const far = uniform(1).onRenderUpdate(() => camera.far)
-    const cameraPositionKilometers = this.context.createCameraPositionKilometersNode(camera)
+    this.context.prepare(renderer)
+    const cameraNodes = this.context.createCameraNodes(camera)
     const skyLuminanceFactor = this.context.skyLuminanceFactor
     const { colorNode, depthNode } = this
 
@@ -80,20 +82,28 @@ export class AerialPerspectiveNode extends Node {
       const worldDirection = cameraWorldMatrix.mul(vec4(viewDirection, 0)).xyz.normalize().toConst()
       const sunDisk = this.showSun ? this.sunDiskMask(worldDirection) : float(0)
 
-      const cameraPosition = this.context.toAtmosphereFrame(cameraPositionKilometers).toConst()
+      // The model's frame tilts the vertical by up to 0.19° (see correctPositionForEllipsoid): directions are
+      // rotated to match at the camera, so the sky's horizon meets the terrain's and the sun sets on time.
+      const { positionKilometers: cameraPositionKilometers, atmospherePosition: cameraPosition, directionRotation } = cameraNodes
+      const viewDirectionModel = directionRotation.mul(worldDirection).toConst()
+      const sunDirectionModel = directionRotation.mul(sunDirection).toConst()
       const luminance = vec3(0).toVar()
       // Until the lookup textures are generated, show the scene as it is (the sky stays black).
       If(texturesReady.lessThan(0.5), () => {
         luminance.assign(colorNode.rgb)
       }).ElseIf(isBackgroundDepth(depth), () => {
-        const sky = model.getSkyRadiance(textures, cameraPosition, worldDirection, sunDirection)
+        const sky = model.getSkyRadiance(textures, cameraPosition, viewDirectionModel, sunDirectionModel)
         const sun = sky.transmittance.mul(model.solarRadiance).mul(this.context.sunLuminanceFactor).mul(sunDisk)
         luminance.assign(sky.radiance.mul(skyLuminanceFactor).add(sun))
       }).Else(() => {
         const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
-        const distanceMeters = viewZ.div(viewDirection.z)
-        const point = this.context.toAtmosphereFrame(cameraPositionKilometers.add(worldDirection.mul(distanceMeters.div(LENGTH_UNIT_METERS))))
-        const between = model.getSkyRadianceToPoint(textures, cameraPosition, point, sunDirection)
+        const distanceKilometers = viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS).toConst()
+        // Near the camera, the mapping is the camera's position plus the rotation, which is exact in double
+        // precision; far away, map the point itself (float32 rounding, under a metre, no longer matters).
+        const nearPoint = cameraPosition.add(viewDirectionModel.mul(distanceKilometers))
+        const farPoint = this.context.toAtmosphereFrame(cameraPositionKilometers.add(worldDirection.mul(distanceKilometers)))
+        const point = mix(nearPoint, farPoint, smoothstep(10, 20, distanceKilometers))
+        const between = model.getSkyRadianceToPoint(textures, cameraPosition, point, sunDirectionModel)
         luminance.assign(colorNode.rgb.mul(between.transmittance).add(between.radiance.mul(skyLuminanceFactor)))
       })
       // The sky covers every pixel the scene left empty, so the result is opaque. Keeping the scene's cleared

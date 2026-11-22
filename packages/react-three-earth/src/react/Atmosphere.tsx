@@ -1,6 +1,6 @@
 import { useThree } from '@react-three/fiber/extension'
 import { useRenderPipeline } from '@react-three/tsl'
-import { useLayoutEffect, useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { AgXToneMapping } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
@@ -23,8 +23,19 @@ export function Atmosphere({ exposure = 10, parameters }: AtmosphereProps) {
   const camera = useThree(state => state.camera)
   const [atmosphere] = useState(() => new AtmosphereImpl({ parameters }))
 
+  const invalidate = useThree(state => state.invalidate)
+  // Read through a ref, so a new invalidate function never reinstalls the atmosphere
+  const invalidateRef = useRef(invalidate)
+  useLayoutEffect(() => {
+    invalidateRef.current = invalidate
+  }, [invalidate])
+
   useLayoutEffect(() => {
     const uninstall = atmosphere.install(renderer)
+    // With frameloop="demand", nothing else would redraw once the lookup textures are ready.
+    void atmosphere.ready?.then(ready => {
+      if (ready) invalidateRef.current()
+    })
     earth.setAtmosphere(atmosphere)
     return () => {
       earth.setAtmosphere(null)

@@ -19,7 +19,7 @@
 // `LENGTH_UNIT_METERS`) so that float32 keeps sub-metre resolution at planetary radii.
 
 import type { Data3DTexture, Texture } from 'three'
-import { abs, clamp, exp, float, floor, If, int, ivec2, Loop, max, min, mix, mod, select, smoothstep, sqrt, texture3D, textureLoad, vec2, vec3, vec4 } from 'three/tsl'
+import { abs, clamp, exp, float, floor, If, int, ivec2, Loop, max, min, mix, mod, select, smoothstep, sqrt, texture, texture3D, textureLoad, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
@@ -247,12 +247,18 @@ export class AtmosphereModel {
   }
 
   /**
-   * Bilinear sample of a 32-bit float 2D texture with four texel loads. Transmittance and irradiance must be
-   * 32-bit (in half floats, transmittances of grazing rays flush to zero and their ratios become 0 / 0),
-   * and most phones cannot filter 32-bit floats. Loading by hand costs four fetches instead of one at the
-   * few places that read these small textures, and works the same on every device and backend.
+   * Whether 32-bit float textures are filtered by the GPU (`float32-filterable`). Set by
+   * `AtmosphereContext.prepare` before any shader using the model is built.
+   */
+  hardwareFiltering = false
+
+  /**
+   * Bilinear sample of a 32-bit float 2D texture (transmittance and irradiance must be 32-bit: in half
+   * floats, transmittances of grazing rays flush to zero and their ratios become 0 / 0). One filtered fetch
+   * where the GPU can filter 32-bit floats; otherwise four texel loads, mixed by hand (most phones).
    */
   sampleBilinear(source: Texture, uv: Vec2Node, size: { x: number; y: number }): Vec4Node {
+    if (this.hardwareFiltering) return texture(source, uv).level(float(0))
     const texel = uv.mul(vec2(size.x, size.y)).sub(0.5).toConst()
     const base = floor(texel).toConst()
     const fraction = texel.sub(base).toConst()
@@ -615,12 +621,23 @@ export class AtmosphereModel {
     return { radiance: this.applyPhaseFunctions(rayleigh, mie, viewSunCosine), transmittance }
   }
 
-  /** Sun irradiance (attenuated, on a surface facing the sun times the cosine) and sky irradiance on a surface. */
-  getSunAndSkyIrradiance(textures: AtmosphereTextureSet, pointPosition: Vec3Node, normal: Vec3Node, sunDirection: Vec3Node): SunAndSkyIrradiance {
+  /**
+   * Sun irradiance (attenuated; multiply by the cosine to the sun) and sky irradiance on a surface. `up` is
+   * the local vertical to measure the sun and the surface against; by default the point's direction from
+   * the model's centre. Pass the true (ellipsoid) vertical when directions are in the world frame.
+   */
+  getSunAndSkyIrradiance(
+    textures: AtmosphereTextureSet,
+    pointPosition: Vec3Node,
+    normal: Vec3Node,
+    sunDirection: Vec3Node,
+    up?: Vec3Node,
+  ): SunAndSkyIrradiance {
     const point = this.clampToGround(pointPosition).toConst()
     const radius = point.length().toConst()
-    const sunZenithCosine = point.dot(sunDirection).div(radius).toConst()
-    const skyFactor = normal.dot(point).div(radius).add(1).mul(0.5)
+    const vertical = (up ?? point.div(radius)).toConst()
+    const sunZenithCosine = vertical.dot(sunDirection).toConst()
+    const skyFactor = normal.dot(vertical).add(1).mul(0.5)
     return {
       sun: this.solarIrradianceWattsPerSquareMeterNanometer.mul(this.getTransmittanceToSun(textures.transmittance, radius, sunZenithCosine)),
       sky: this.getIrradiance(textures.irradiance, radius, sunZenithCosine).mul(skyFactor),

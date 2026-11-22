@@ -42,6 +42,13 @@ export class AtmosphereParameters {
     return Object.assign(new this(), overrides)
   }
 
+  /** Takes no arguments: use `AtmosphereParameters.create(overrides)` (or assign fields after construction). */
+  constructor(...unexpected: never[]) {
+    if (unexpected.length > 0) {
+      throw new TypeError('AtmosphereParameters: the constructor takes no overrides; use AtmosphereParameters.create({ ... }).')
+    }
+  }
+
   /** Distance from the planet centre to the ground, where the atmosphere starts. */
   bottomRadiusMeters = 6_360_000
   /** Distance from the planet centre to the top of the atmosphere. */

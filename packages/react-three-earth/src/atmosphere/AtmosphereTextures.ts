@@ -32,16 +32,14 @@ import {
   type PreviousOrderTextures,
 } from './precompute.js'
 
-/** 3D textures are rendered this many slices per frame, so generation never stalls a frame for long. */
-const SLICES_PER_STEP = 8
-
 /**
- * Transmittance and irradiance: always 32-bit floats, read with texel loads (see
- * `AtmosphereModel.sampleBilinear`), never blended. Bruneton: 16-bit "gives artifacts" there.
+ * Transmittance and irradiance: always 32-bit floats (Bruneton: 16-bit "gives artifacts" there), never
+ * blended, filtered by the GPU where it can filter 32-bit floats and by hand otherwise (see
+ * `AtmosphereModel.sampleBilinear`).
  */
-function createPreciseTarget(name: string, width: number, height: number): RenderTarget {
+function createPreciseTarget(name: string, width: number, height: number, hardwareFiltering: boolean): RenderTarget {
   const target = new RenderTarget(width, height, { depthBuffer: false, format: RGBAFormat, type: FloatType })
-  configureTexture(target.texture, name, NearestFilter)
+  configureTexture(target.texture, name, hardwareFiltering ? LinearFilter : NearestFilter)
   return target
 }
 
@@ -99,6 +97,16 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
   protected readonly scatteringTarget: RenderTarget3D
   protected readonly irradianceTarget: RenderTarget
 
+  /**
+   * Slices of a 3D texture rendered per animation frame during generation. Each slice of the costliest pass
+   * (scattering density, 256 × 128 texels × 128 directions, about 5 fetches each) is roughly 21 million
+   * texture fetches: well under a millisecond on a desktop GPU, a few milliseconds on a recent phone. The
+   * default, 8, trades a total of about 60 frames against steps of up to a few tens of milliseconds on a
+   * phone; lower it for smoother frames during startup, raise it for a faster startup. Not adapted at
+   * runtime: the CPU cannot see GPU time without timestamp queries.
+   */
+  slicesPerStep = 8
+
   /** Wall time of the last generation, from the first pass to the GPU finishing, in milliseconds. */
   generationTimeMilliseconds: number | null = null
 
@@ -109,10 +117,19 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     this.model = model
     const sizes = model.parameters.textureSizesTexels
     const scatteringSize = model.parameters.getScatteringTextureSizeTexels()
-    this.transmittanceTarget = createPreciseTarget('atmosphereTransmittance', sizes.transmittance.x, sizes.transmittance.y)
+    this.transmittanceTarget = createPreciseTarget('atmosphereTransmittance', sizes.transmittance.x, sizes.transmittance.y, false)
     this.scatteringTarget = createScatteringTarget('atmosphereScattering', scatteringSize.x, scatteringSize.y, scatteringSize.z)
-    this.irradianceTarget = createPreciseTarget('atmosphereIrradiance', sizes.irradiance.x, sizes.irradiance.y)
+    this.irradianceTarget = createPreciseTarget('atmosphereIrradiance', sizes.irradiance.x, sizes.irradiance.y, false)
     this.quad.name = 'AtmosphereTextures'
+  }
+
+  /** Matches the 32-bit textures' filters to how the model reads them. Call before their first use. */
+  setHardwareFiltering(enabled: boolean): void {
+    const filter = enabled ? LinearFilter : NearestFilter
+    for (const target of [this.transmittanceTarget, this.irradianceTarget]) {
+      target.texture.minFilter = filter
+      target.texture.magFilter = filter
+    }
   }
 
   get transmittance(): Texture {
@@ -144,7 +161,7 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
   async generate(renderer: Renderer, signal?: AbortSignal): Promise<number | null> {
     const start = performance.now()
     this.scatteringTarget.texture.type = this.selectScatteringType(renderer)
-    const transient = new TransientTargets(this.model, this.scatteringTarget.texture.type)
+    const transient = new TransientTargets(this.model, this.scatteringTarget.texture.type, this.model.hardwareFiltering)
     const materials: NodeMaterial[] = []
     const createMaterial: MaterialFactory = (fragment, additive = false) => {
       const material = new NodeMaterial()
@@ -168,7 +185,8 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
       await renderer.readRenderTargetPixelsAsync(this.irradianceTarget, 0, 0, 1, 1)
       throwIfAborted()
     } catch (error) {
-      if (error instanceof GenerationAborted) return null
+      // A readback interrupted by disposal is a cancellation too, not a failure.
+      if (error instanceof GenerationAborted || signal?.aborted === true) return null
       throw error
     } finally {
       for (const material of materials) material.dispose()
@@ -295,10 +313,11 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
   protected passSteps(target: RenderTarget, material: NodeMaterial): Step[] {
     const depth = target instanceof RenderTarget3D ? target.depth : 1
     const steps: Step[] = []
-    for (let first = 0; first < depth; first += SLICES_PER_STEP) {
+    const slicesPerStep = Math.max(1, Math.floor(this.slicesPerStep))
+    for (let first = 0; first < depth; first += slicesPerStep) {
       steps.push(renderer => {
         this.quad.material = material
-        for (let slice = first; slice < Math.min(first + SLICES_PER_STEP, depth); slice++) {
+        for (let slice = first; slice < Math.min(first + slicesPerStep, depth); slice++) {
           this.slice.value = slice
           renderer.setRenderTarget(target, slice)
           this.quad.render(renderer)
@@ -325,11 +344,11 @@ class TransientTargets {
   readonly deltaMie: RenderTarget3D
   readonly deltaScatteringDensity: RenderTarget3D
 
-  constructor(model: AtmosphereModel, scatteringType: TextureDataType) {
+  constructor(model: AtmosphereModel, scatteringType: TextureDataType, hardwareFiltering: boolean) {
     const irradianceSize = model.parameters.textureSizesTexels.irradiance
     const { x, y, z } = model.parameters.getScatteringTextureSizeTexels()
-    this.deltaIrradiance = createPreciseTarget('atmosphereDeltaIrradiance', irradianceSize.x, irradianceSize.y)
-    this.irradianceSum = createPreciseTarget('atmosphereIrradianceSum', irradianceSize.x, irradianceSize.y)
+    this.deltaIrradiance = createPreciseTarget('atmosphereDeltaIrradiance', irradianceSize.x, irradianceSize.y, hardwareFiltering)
+    this.irradianceSum = createPreciseTarget('atmosphereIrradianceSum', irradianceSize.x, irradianceSize.y, hardwareFiltering)
     this.deltaRayleigh = createScatteringTarget('atmosphereDeltaRayleigh', x, y, z)
     this.deltaMie = createScatteringTarget('atmosphereDeltaMie', x, y, z)
     this.deltaScatteringDensity = createScatteringTarget('atmosphereDeltaScatteringDensity', x, y, z)

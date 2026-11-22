@@ -12,6 +12,12 @@ export interface AtmosphereOptions {
   parameters?: AtmosphereParameters
 }
 
+/** Options of `Atmosphere.createAerialPerspective`. */
+export interface AerialPerspectiveOptions {
+  /** Whether the sky shows the sun disk. Default: true. */
+  showSun?: boolean
+}
+
 let warnedAboutDepthBuffer = false
 
 /**
@@ -78,6 +84,7 @@ export class Atmosphere {
     try {
       await renderer.init()
       if (signal.aborted) return false
+      this.context.prepare(renderer)
       const milliseconds = await this.context.textures.generate(renderer, signal)
       if (milliseconds === null) return false
       this.context.texturesReady.value = 1
@@ -89,12 +96,13 @@ export class Atmosphere {
   }
 
   protected warnAboutDepthBuffer(renderer: WebGPURenderer): void {
-    if (renderer.reversedDepthBuffer || warnedAboutDepthBuffer) return
+    // A logarithmic depth buffer resolves long ranges well too.
+    if (renderer.reversedDepthBuffer || renderer.logarithmicDepthBuffer || warnedAboutDepthBuffer) return
     warnedAboutDepthBuffer = true
     console.warn('Atmosphere: create the renderer with `reversedDepthBuffer: true`, or the haze bands on distant terrain.')
   }
 
-  /** Points the sun and its light for this date. Cheap. */
+  /** Points the sun and its light for this date. Cheap. The camera is not needed (kept for API stability). */
   update(_camera: Camera, date: Date): void {
     const sunDirection = getSunDirectionECEF(date, this.context.sunDirection.value)
     this.light.position.copy(sunDirection)
@@ -106,8 +114,8 @@ export class Atmosphere {
    * background, and returns an opaque color. Pass the scene camera: in a post-processing pass the
    * renderer's own camera is the full-screen quad's, which would point every sky ray the wrong way.
    */
-  createAerialPerspective(colorNode: Node, depthNode: Node, camera: Camera): Node {
-    return new AerialPerspectiveNode(this.context, colorNode as Node<'vec4'>, depthNode as Node<'vec4'>, camera)
+  createAerialPerspective(colorNode: Node, depthNode: Node, camera: Camera, options: AerialPerspectiveOptions = {}): Node {
+    return new AerialPerspectiveNode(this.context, colorNode as Node<'vec4'>, depthNode as Node<'vec4'>, camera, options)
   }
 
   /** Cancels a pending generation and releases the GPU textures. A later `install` generates them again. */

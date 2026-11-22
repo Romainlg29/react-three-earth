@@ -8,7 +8,12 @@ export {
   type SunAndSkyIrradiance,
 } from './AtmosphereModel.js'
 export { AtmosphereTextures } from './AtmosphereTextures.js'
-export { AtmosphereContext, correctPositionForEllipsoid } from './AtmosphereContext.js'
+export {
+  AtmosphereContext,
+  correctPositionForEllipsoid,
+  getEllipsoidToAtmosphereRotation,
+  type AtmosphereCameraNodes,
+} from './AtmosphereContext.js'
 export { AtmosphereLight, AtmosphereLightNode } from './AtmosphereLight.js'
 export { AerialPerspectiveNode } from './AerialPerspectiveNode.js'
 export {

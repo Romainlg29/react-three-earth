@@ -3,7 +3,7 @@ import { cameraViewMatrix, cameraWorldMatrix, normalWorld, positionView, select,
 import { AnalyticLightNode, type Node, type NodeBuilder } from 'three/webgpu'
 import type { DirectLightData } from 'three/src/nodes/lighting/LightsNode.js'
 
-import type { AtmosphereContext } from './AtmosphereContext.js'
+import type { AtmosphereCameraNodes, AtmosphereContext } from './AtmosphereContext.js'
 import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
 
 /** Share of the unattenuated sunlight used as ambient light while the lookup textures are not ready. */
@@ -31,21 +31,26 @@ export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
   /** The light's colour times its intensity (declared by three, missing from its typings). */
   declare colorNode: Node<'color'>
 
-  /** The rendered camera's ECEF position in kilometres, shared by every material this light shades. */
-  protected cameraPosition: Node<'vec3'> | null = null
+  /** The rendered camera, shared by every material this light shades. */
+  protected camera: AtmosphereCameraNodes | null = null
 
   override setupDirect(builder: NodeBuilder): DirectLightData | undefined {
     const light = this.light
     if (light == null) return undefined
     const context = light.atmosphere
     const { model, textures, sunDirection, texturesReady } = context
-    this.cameraPosition ??= context.createCameraPositionKilometersNode()
+    context.prepare(builder.renderer)
+    this.camera ??= context.createCameraNodes()
 
     // Fragment position relative to the camera, which is exact under `renderer.highPrecision` (computed
     // from the 64-bit model-view matrix), rotated to world axes and added to the camera's ECEF position.
     const offsetWorld = cameraWorldMatrix.mul(vec4(positionView, 0)).xyz
-    const position = context.toAtmosphereFrame(this.cameraPosition.add(offsetWorld.div(LENGTH_UNIT_METERS)))
-    const { sun, sky } = model.getSunAndSkyIrradiance(textures, position, normalWorld, sunDirection)
+    const positionKilometers = this.camera.positionKilometers.add(offsetWorld.div(LENGTH_UNIT_METERS)).toConst()
+    const position = context.toAtmosphereFrame(positionKilometers)
+    // Sun elevation and sky factor against the fragment's true (ellipsoid) vertical: normal and sun are
+    // world directions, untouched by the model's radial mapping.
+    const up = context.ellipsoidNormal(positionKilometers)
+    const { sun, sky } = model.getSunAndSkyIrradiance(textures, position, normalWorld, sunDirection, up)
 
     const unattenuated = model.solarIrradianceWattsPerSquareMeterNanometer.mul(context.sunLuminanceFactor)
     const ready = texturesReady.greaterThan(0.5)
@@ -80,10 +85,18 @@ export class AtmosphereLight extends DirectionalLight {
     this.name = 'AtmosphereLight'
     this.atmosphere = atmosphere
     Object.defineProperty(this, 'castShadow', {
+      configurable: true,
       get: () => false,
       set: (value: boolean) => {
         if (value) console.warn('AtmosphereLight: shadows are not supported; castShadow stays false.')
       },
     })
+  }
+
+  /** A copy lit by the same atmosphere (three's default clone calls the constructor without arguments). */
+  override clone(): this {
+    const Constructor = this.constructor as new (atmosphere: AtmosphereContext) => this
+    // DirectionalLight.copy always copies children (it takes no `recursive` flag).
+    return new Constructor(this.atmosphere).copy(this)
   }
 }

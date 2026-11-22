@@ -1,4 +1,7 @@
 import { PerspectiveCamera, Vector3 } from 'three'
+
+import { AtmosphereContext, correctPositionForEllipsoid, getEllipsoidToAtmosphereRotation } from '../src/atmosphere/AtmosphereContext.js'
+import { AtmosphereLight } from '../src/atmosphere/AtmosphereLight.js'
 import { describe, expect, it } from 'vitest'
 
 import { AtmosphereParameters } from '../src/atmosphere/AtmosphereParameters.js'
@@ -31,6 +34,11 @@ describe('AtmosphereParameters', () => {
     const parameters = Thin.create({ topRadiusMeters: 6_410_000 })
     expect(parameters).toBeInstanceOf(Thin)
     expect(parameters.topRadiusMeters).toBe(6_410_000)
+  })
+
+  it('rejects constructor overrides, which plain JavaScript would otherwise silently drop', () => {
+    const Construct = AtmosphereParameters as unknown as new (overrides: object) => AtmosphereParameters
+    expect(() => new Construct({ scatteringOrders: 2 })).toThrow(/create/)
   })
 
   it('takes overrides', () => {
@@ -89,5 +97,66 @@ describe('Atmosphere', () => {
       camera: unknown
     }
     expect(node.camera).toBe(camera)
+  })
+})
+
+/** Elevation (radians) where `isBelowHorizon` flips, by bisection over [-0.3, 0.01]. */
+function findHorizonElevation(isBelowHorizon: (elevation: number) => boolean): number {
+  let low = -0.3
+  let high = 0.01
+  for (let iteration = 0; iteration < 60; iteration++) {
+    const middle = (low + high) / 2
+    if (isBelowHorizon(middle)) low = middle
+    else high = middle
+  }
+  return (low + high) / 2
+}
+
+describe('model horizon', () => {
+  const parameters = new AtmosphereParameters()
+  const radii = parameters.ellipsoidRadiiMeters
+  const bottom = parameters.bottomRadiusMeters
+
+  // The model's horizon (where its view rays start hitting its spherical ground, after positions and
+  // directions are mapped to its frame) must match the ellipsoid's, or sky shows below the terrain's edge.
+  it.each([10, 100, 1000, 10_000])('matches the ellipsoid horizon within 0.01° at 45° N, from %f m', heightMeters => {
+    const latitude = (45 * Math.PI) / 180
+    const camera = toCartesian({ longitudeDegrees: 0, latitudeDegrees: 45, heightMeters })
+    const up = new Vector3(Math.cos(latitude), 0, Math.sin(latitude)) // geodetic normal at longitude 0
+    const north = new Vector3(-Math.sin(latitude), 0, Math.cos(latitude))
+    const east = new Vector3(0, 1, 0)
+    const cameraModel = correctPositionForEllipsoid(camera, radii, bottom)
+    const rotation = getEllipsoidToAtmosphereRotation(camera, radii)
+    const cameraModelRadius = cameraModel.length()
+    const horizonCosine = -Math.sqrt(1 - (bottom / cameraModelRadius) ** 2)
+
+    for (const azimuth of [north, east, north.clone().negate()]) {
+      const direction = (elevation: number) => azimuth.clone().multiplyScalar(Math.cos(elevation)).addScaledVector(up, Math.sin(elevation))
+      const hitsEllipsoid = (elevation: number) => {
+        // In coordinates scaled by the radii the ellipsoid is the unit sphere.
+        const origin = new Vector3(camera.x / radii.x, camera.y / radii.y, camera.z / radii.z)
+        const ray = direction(elevation)
+        const scaled = new Vector3(ray.x / radii.x, ray.y / radii.y, ray.z / radii.z)
+        const b = origin.dot(scaled)
+        return b < 0 && b * b - scaled.lengthSq() * (origin.lengthSq() - 1) >= 0
+      }
+      const hitsModelGround = (elevation: number) => {
+        const cosine = direction(elevation).applyQuaternion(rotation).dot(cameraModel) / cameraModelRadius
+        return cosine <= horizonCosine
+      }
+      const differenceDegrees = (Math.abs(findHorizonElevation(hitsEllipsoid) - findHorizonElevation(hitsModelGround)) * 180) / Math.PI
+      expect(differenceDegrees).toBeLessThan(0.01)
+    }
+  })
+})
+
+describe('AtmosphereLight', () => {
+  it('clones with its atmosphere', () => {
+    const context = new AtmosphereContext(new AtmosphereParameters())
+    const light = new AtmosphereLight(context)
+    const copy = light.clone()
+    expect(copy).toBeInstanceOf(AtmosphereLight)
+    expect(copy.atmosphere).toBe(context)
+    expect(copy.castShadow).toBe(false)
   })
 })
