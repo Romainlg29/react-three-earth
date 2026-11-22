@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["vite/client", "node"],
+    "paths": {
+      "react-three-earth": ["../../packages/react-three-earth/src/index.ts"],
+      "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"]
+    }
+  },
+  "include": ["src", "fixtures", "vite.config.ts"]
+}

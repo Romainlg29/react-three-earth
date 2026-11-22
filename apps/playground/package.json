@@ -1,0 +1,28 @@
+{
+  "name": "playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test:browser": "node tests/run.mjs"
+  },
+  "dependencies": {
+    "@react-three/fiber": "10.0.0-alpha.6",
+    "@react-three/tsl": "10.0.0-alpha.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-three-earth": "workspace:*",
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "0.187.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.8"
+  }
+}
