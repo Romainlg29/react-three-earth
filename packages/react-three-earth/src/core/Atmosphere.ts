@@ -1,84 +1,100 @@
-import {
-  getECIToECEFRotationMatrix,
-  getMoonDirectionECI,
-  getSunDirectionECI,
-} from '@takram/three-atmosphere'
-import { Vector3, type Camera, type Matrix4 } from 'three'
-import { context, vec4 } from 'three/tsl'
+import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
+import { Vector3, type Camera } from 'three'
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
-import { atmosphere as takram, geospatial } from '../compat/takram.js'
-
-const { aerialPerspective, AtmosphereContext, AtmosphereLight, AtmosphereLightNode, StarsNode } = takram
+import { AerialPerspectiveNode } from '../atmosphere/AerialPerspectiveNode.js'
+import { AtmosphereContext } from '../atmosphere/AtmosphereContext.js'
+import { AtmosphereLight } from '../atmosphere/AtmosphereLight.js'
+import { AtmosphereParameters } from '../atmosphere/AtmosphereParameters.js'
+import { getSunDirectionECEF } from '../atmosphere/ephemeris.js'
 
 export interface AtmosphereOptions {
-  /**
-   * Star catalogue (takram's `stars.bin`, shipped in `@takram/three-atmosphere/assets`). Default: fetched
-   * from takram's GitHub LFS. Self-host it in production.
-   */
-  starsUrl?: string
-  /**
-   * Spatiotemporal blue noise used to dither ray marching (takram's `stbn.bin`, 128 x 128 x 64 bytes).
-   * Default: fetched from takram's GitHub LFS. Self-host it in production. Global: the last value set wins.
-   */
-  blueNoiseUrl?: string
+  /** The physical atmosphere and lookup texture sizes. Default: Earth's (`new AtmosphereParameters()`). */
+  parameters?: AtmosphereParameters
 }
 
+const cameraPosition = /*#__PURE__*/ new Vector3()
+const surfacePoint = /*#__PURE__*/ new Vector3()
+const surfaceNormal = /*#__PURE__*/ new Vector3()
+
 /**
- * Physically based sky, sun light and aerial perspective (Bruneton precomputed scattering with
- * Hillaire multiple scattering), powered by takram's `@takram/three-atmosphere/webgpu`.
+ * Physically based sky, sun light and aerial perspective: Bruneton's precomputed atmospheric scattering
+ * (2017), with lookup textures generated on the GPU at startup and no network fetches.
+ *
+ * - `light`: the sun, lighting node materials (terrain tiles) with attenuated sunlight and sky irradiance.
+ *   `Earth.setAtmosphere` adds it to the scene.
+ * - `createAerialPerspective`: the post-processing node that draws the sky and hazes distant geometry.
+ * - `update`: points the sun for a date. Call it every frame with the rendering camera.
+ *
+ * Luminances are scaled so that sunlight at the top of the atmosphere is about 1.5; an exposure of
+ * about 10 suits daylight.
  */
 export class Atmosphere {
-  readonly context: InstanceType<typeof AtmosphereContext>
-  readonly light: InstanceType<typeof AtmosphereLight>
+  readonly context: AtmosphereContext
+  readonly light: AtmosphereLight
 
-  protected readonly observerECEF = new Vector3()
+  /** Resolves once the lookup textures are generated (after `install`). */
+  ready: Promise<void> | null = null
 
-  readonly starsUrl: string | undefined
-
-  constructor({ starsUrl, blueNoiseUrl }: AtmosphereOptions = {}) {
-    this.starsUrl = starsUrl
-    if (blueNoiseUrl !== undefined) geospatial.stbnTexture.url = blueNoiseUrl
-    this.context = new AtmosphereContext()
-    this.light = new AtmosphereLight()
+  constructor({ parameters = new AtmosphereParameters() }: AtmosphereOptions = {}) {
+    this.context = new AtmosphereContext(parameters)
+    this.light = new AtmosphereLight(this.context)
   }
 
-  /** Registers the atmosphere on the renderer. Returns a function that undoes it. */
-  install(renderer: WebGPURenderer): () => void {
-    const previous = renderer.contextNode
-    renderer.contextNode = context({ ...(previous.value as object), getAtmosphere: () => this.context })
-    renderer.library.addLight(AtmosphereLightNode as never, AtmosphereLight)
-    return () => {
-      renderer.contextNode = previous
-    }
+  get parameters(): AtmosphereParameters {
+    return this.context.parameters
   }
 
-  /** Points the sun and moon for this date, seen from the camera. Cheap: a few matrix products. */
-  update(camera: Camera, date: Date): void {
-    this.context.camera = camera
-    camera.updateMatrixWorld()
-    this.observerECEF.setFromMatrixPosition(camera.matrixWorld)
-    const eciToEcef = getECIToECEFRotationMatrix(date, this.context.matrixECIToECEF.value as Matrix4)
-    getSunDirectionECI(date, this.context.sunDirectionECEF.value as Vector3, this.observerECEF).applyMatrix4(eciToEcef)
-    getMoonDirectionECI(date, this.context.moonDirectionECEF.value as Vector3, this.observerECEF).applyMatrix4(eciToEcef)
+  /** Unit vector towards the sun in ECEF, as of the last `update`. Read-only. */
+  get sunDirectionECEF(): Vector3 {
+    return this.context.sunDirection.value
+  }
+
+  /** Time the lookup textures took to generate, in milliseconds, or null before they are ready. */
+  get generationTimeMilliseconds(): number | null {
+    return this.context.textures.generationTimeMilliseconds
   }
 
   /**
-   * Wraps a scene pass: adds atmospheric transmittance and in-scattering, and draws the sky where depth is 1.
-   * Pass the scene camera: the sky reads it when the node compiles, and in a post-processing pass the
-   * renderer's own camera is the full-screen quad's, which would point every sky ray into the ground.
+   * Generates the lookup textures on this renderer, once (see `generationTimeMilliseconds`; `ready`
+   * resolves when done). Nothing else on the renderer changes, so the returned undo function has nothing
+   * to restore; the textures are kept until `dispose`, since generating them again would cost the same.
    */
-  createAerialPerspective(colorNode: Node, depthNode: Node, camera: Camera): Node {
-    this.context.camera = camera
-    const node = aerialPerspective(colorNode as never, depthNode as never)
-    const sky = node.skyNode as InstanceType<typeof takram.SkyNode> | null | undefined
-    if (sky != null && this.starsUrl !== undefined) sky.starsNode = new StarsNode(this.starsUrl)
-    // The sky fills every pixel the scene left empty, so the result is opaque. Without this the cleared
-    // alpha (0) survives and the canvas shows the page behind it where the sky should be.
-    return vec4((node as unknown as { rgb: never }).rgb, 1) as unknown as Node
+  install(renderer: WebGPURenderer): () => void {
+    this.light.atmosphere = this.context
+    this.ready ??= renderer.init().then(async () => {
+      await this.context.textures.generate(renderer)
+    })
+    return () => {}
   }
 
+  /** Points the sun for this date and centres the model's planet under the camera. Cheap. */
+  update(camera: Camera, date: Date): void {
+    const sunDirection = getSunDirectionECEF(date, this.context.sunDirection.value)
+    this.light.position.copy(sunDirection)
+    this.light.updateMatrixWorld()
+
+    camera.updateMatrixWorld()
+    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
+    if (cameraPosition.lengthSq() < 1) return // At the Earth's centre: no meaningful surface point.
+    WGS84_ELLIPSOID.getPositionToSurfacePoint(cameraPosition, surfacePoint)
+    WGS84_ELLIPSOID.getPositionToNormal(cameraPosition, surfaceNormal)
+    this.context.setReferencePoint(surfacePoint, surfaceNormal)
+  }
+
+  /**
+   * Wraps a scene pass: attenuates and hazes geometry, draws the sky and sun where depth is the
+   * background, and returns an opaque color. Pass the scene camera: in a post-processing pass the
+   * renderer's own camera is the full-screen quad's, which would point every sky ray the wrong way.
+   */
+  createAerialPerspective(colorNode: Node, depthNode: Node, camera: Camera): Node {
+    return new AerialPerspectiveNode(this.context, colorNode as Node<'vec4'>, depthNode as Node<'vec4'>, camera)
+  }
+
+  /** Releases the GPU textures. A later `install` generates them again. */
   dispose(): void {
+    this.light.atmosphere = null
+    this.ready = null
     this.context.dispose()
   }
 }

@@ -49,7 +49,7 @@ export function MapDemo() {
             <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />
           </Imagery>
           {withAtmosphere ? (
-            <Atmosphere {...(useFixtures ? { starsUrl: '/fixtures/stars.bin', blueNoiseUrl: '/fixtures/blue-noise.bin' } : {})} />
+            <Atmosphere />
           ) : (
             <>
               <ambientLight intensity={0.6} />

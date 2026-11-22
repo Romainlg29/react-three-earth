@@ -1,5 +1,7 @@
-import { XYZTilesOverlay } from '3d-tiles-renderer/three/plugins'
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
+
+import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
+import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
 
 /** Anything that can feed a `Terrain`: a root URL plus the 3DTilesRenderer plugins that read it. */
 export interface TerrainSource {
@@ -55,6 +57,7 @@ export class QuantizedMeshSource implements TerrainSource {
         smoothSkirtNormals: this.smoothSkirtNormals,
         ...(this.skirtLengthMeters !== undefined ? { skirtLength: this.skirtLengthMeters } : {}),
       }),
+      new QuantizedMeshVersionPlugin(),
     ]
   }
 }
@@ -73,7 +76,11 @@ export interface RasterTileSourceOptions {
   projection?: 'EPSG:3857' | 'EPSG:4326'
 }
 
-/** Raster tiles from an XYZ URL template (OpenStreetMap, MapTiler raster, your own server). */
+/**
+ * Raster tiles from an XYZ URL template (OpenStreetMap, MapTiler raster, your own server).
+ *
+ * Tiles decode off the main thread and are composed onto terrain tiles on the GPU.
+ */
 export class RasterTileSource implements ImagerySource {
   readonly kind = 'imagery'
   readonly url: string
@@ -94,8 +101,8 @@ export class RasterTileSource implements ImagerySource {
     this.projection = projection
   }
 
-  createOverlay({ opacity }: { opacity: number }): XYZTilesOverlay {
-    return new XYZTilesOverlay({
+  createOverlay({ opacity }: { opacity: number }): XYZImageryOverlay {
+    return new XYZImageryOverlay({
       url: this.url,
       levels: this.levels,
       tileDimension: this.tileDimensionPixels,

@@ -5,6 +5,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
+import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { Imagery } from './Imagery.js'
 import type { TerrainSource } from './sources.js'
 
@@ -19,6 +20,11 @@ export interface TerrainOptions {
   fade?: boolean
   /** Builds each tile's material. Default: an untextured `MeshStandardNodeMaterial`. */
   createMaterial?: MaterialFactory
+  /**
+   * Main-thread time per frame for composing imagery onto terrain tiles on the GPU, in milliseconds. At
+   * least one terrain tile is composed per frame regardless. Default: 2.
+   */
+  imageryCompositionBudgetMilliseconds?: number
 }
 
 const MEGABYTE_BYTES = 2 ** 20
@@ -29,7 +35,14 @@ export class Terrain {
   readonly overlays: ImageOverlayPlugin
   protected readonly imagery = new Set<Imagery>()
 
-  constructor({ sources, errorTargetPixels, memoryBudgetBytes = 300 * MEGABYTE_BYTES, fade = true, createMaterial }: TerrainOptions) {
+  constructor({
+    sources,
+    errorTargetPixels,
+    memoryBudgetBytes = 300 * MEGABYTE_BYTES,
+    fade = true,
+    createMaterial,
+    imageryCompositionBudgetMilliseconds,
+  }: TerrainOptions) {
     const [source, ...ignored] = sources
     if (source === undefined) throw new Error('Terrain: needs one source, for example new QuantizedMeshSource({ url }).')
     if (ignored.length > 0) console.warn('Terrain: only the first source is used for now; stacking terrain sources is planned.')
@@ -37,7 +50,7 @@ export class Terrain {
     this.tiles = new TilesRenderer(source.url)
     for (const plugin of source.createPlugins()) this.tiles.registerPlugin(plugin)
     this.tiles.registerPlugin(new TileMaterialReplacementPlugin(createMaterial))
-    this.overlays = new ImageOverlayPlugin({ overlays: [], renderer: null as never })
+    this.overlays = new ImageOverlayPlugin({ compositionBudgetMilliseconds: imageryCompositionBudgetMilliseconds })
     this.tiles.registerPlugin(this.overlays)
     if (fade) this.tiles.registerPlugin(new TilesFadePlugin())
 
@@ -62,11 +75,28 @@ export class Terrain {
     for (const overlay of imagery.overlays) this.overlays.deleteOverlay(overlay as never)
   }
 
-  /** Selects and loads tiles for this camera. Call once per frame before rendering. */
+  /**
+   * Main-thread imagery work over the last frame: terrain tiles composed and milliseconds spent, with a
+   * breakdown. For on-device profiling; `Earth.inspect()` reports the main figures.
+   */
+  get imageryStatistics(): ImageryFrameStatistics {
+    return this.overlays.statistics.lastFrame
+  }
+
+  /** Imagery compositions waiting for a later frame's budget. */
+  get imageryCompositionsPending(): number {
+    return this.overlays.compositor.pendingCount
+  }
+
+  /**
+   * Selects and loads tiles for this camera, and composes imagery that finished loading. Call once per
+   * frame before rendering.
+   */
   update(camera: Camera, renderer: WebGPURenderer): void {
     this.tiles.setCamera(camera)
     this.tiles.setResolutionFromRenderer(camera, renderer as never)
     this.tiles.update()
+    this.overlays.composeImagery(renderer)
   }
 
   dispose(): void {

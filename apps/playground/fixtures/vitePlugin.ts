@@ -1,15 +1,12 @@
-import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
 
 import type { Plugin } from 'vite'
 
-import { imageryTile } from './png'
-import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh'
+import { imageryTile } from './png.ts'
+import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
 
 /**
- * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and the
- * atmosphere's star catalogue and blue noise, so the playground runs with no network.
+ * Serves synthetic terrain at /fixtures/terrain/ and imagery at /fixtures/imagery/{z}/{x}/{y}.png, so the
+ * playground runs with no network.
  */
 export function fixtureTiles(): Plugin {
   return {
@@ -34,21 +31,6 @@ export function fixtureTiles(): Plugin {
           const [, z, x, y] = imagery.map(Number)
           res.setHeader('Content-Type', 'image/png')
           res.end(Buffer.from(imageryTile(z ?? 0, x ?? 0, y ?? 0)))
-          return
-        }
-        if (url === '/fixtures/stars.bin') {
-          // Shipped inside the npm package, so no network is needed
-          const require = createRequire(join(process.cwd(), '../../packages/react-three-earth/package.json'))
-          const root = join(dirname(require.resolve('@takram/three-atmosphere')), '..')
-          res.end(readFileSync(join(root, 'assets/stars.bin')))
-          return
-        }
-        if (url === '/fixtures/blue-noise.bin') {
-          // Stand-in for takram's stbn.bin (not in its npm package): deterministic white noise, same size
-          const bytes = new Uint8Array(128 * 128 * 64)
-          let seed = 1
-          for (let i = 0; i < bytes.length; i++) bytes[i] = (seed = (seed * 1103515245 + 12345) >>> 0) >>> 24
-          res.end(Buffer.from(bytes))
           return
         }
         next()

@@ -10,20 +10,20 @@ export interface TerrainProps extends Omit<TerrainOptions, 'sources'> {
 }
 
 /** The ground. Put one terrain source component inside it. */
-export function Terrain({ children, errorTargetPixels, memoryBudgetBytes, fade, createMaterial }: TerrainProps) {
+export function Terrain({ children, errorTargetPixels, memoryBudgetBytes, fade, createMaterial, imageryCompositionBudgetMilliseconds }: TerrainProps) {
   const earth = useEarth()
   const [sources, setSources] = useState<TerrainSource[]>([])
   const registry = useSourceRegistry(setSources)
 
   useLayoutEffect(() => {
     if (sources.length === 0) return
-    const terrain = new TerrainImpl({ sources, errorTargetPixels, memoryBudgetBytes, fade, createMaterial })
+    const terrain = new TerrainImpl({ sources, errorTargetPixels, memoryBudgetBytes, fade, createMaterial, imageryCompositionBudgetMilliseconds })
     earth.setTerrain(terrain)
     return () => {
       earth.setTerrain(null)
       terrain.dispose()
     }
-  }, [earth, sources, errorTargetPixels, memoryBudgetBytes, fade, createMaterial])
+  }, [earth, sources, errorTargetPixels, memoryBudgetBytes, fade, createMaterial, imageryCompositionBudgetMilliseconds])
 
   return <TerrainSourceContext value={registry}>{children}</TerrainSourceContext>
 }

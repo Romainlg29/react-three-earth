@@ -6,7 +6,7 @@ import type { Imagery } from './Imagery.js'
 import type { Terrain } from './Terrain.js'
 
 export interface EarthOptions {
-  /** Drives the sun, moon and stars. Default: now. */
+  /** Drives the sun's position. Default: now. */
   date?: Date
 }
 
@@ -21,9 +21,30 @@ export interface EarthInspection {
     tilesParsing: number
     memoryUsedBytes: number
     memoryBudgetBytes: number
+    /** Terrain-tile imagery textures composed on the GPU over the last frame. */
+    imageryTilesComposited: number
+    /** Main-thread milliseconds spent on imagery over the last frame (composition, layer setup, tile splitting). */
+    imageryMainThreadMilliseconds: number
+    /** Imagery compositions waiting for a later frame's budget. */
+    imageryCompositionsPending: number
+    /** Terrain-tile imagery textures composed since the terrain was created. */
+    imageryTilesCompositedTotal: number
+    /** Main-thread milliseconds spent on imagery since the terrain was created. */
+    imageryMainThreadMillisecondsTotal: number
   }
   imageryLayers: number
   atmosphere: boolean
+}
+
+function inspectImagery(terrain: Terrain) {
+  const { lastFrame, total } = terrain.overlays.statistics
+  return {
+    imageryTilesComposited: lastFrame.tilesComposited,
+    imageryMainThreadMilliseconds: lastFrame.mainThreadMilliseconds,
+    imageryCompositionsPending: terrain.imageryCompositionsPending,
+    imageryTilesCompositedTotal: total.tilesComposited,
+    imageryMainThreadMillisecondsTotal: total.mainThreadMilliseconds,
+  }
 }
 
 /**
@@ -87,7 +108,8 @@ export class Earth extends Group {
 
   inspect(): EarthInspection {
     // Runtime fields 3DTilesRenderer's typings leave out:
-    const tiles = this.terrain?.tiles as
+    const terrain = this.terrain
+    const tiles = terrain?.tiles as
       | (Terrain['tiles'] & {
           rootURL: string
           stats: { loaded: number; downloading: number; parsing: number }
@@ -97,7 +119,7 @@ export class Earth extends Group {
     return {
       date: this.date.toISOString(),
       terrain:
-        tiles === undefined
+        tiles === undefined || terrain === null
           ? null
           : {
               url: tiles.rootURL ?? '',
@@ -107,6 +129,7 @@ export class Earth extends Group {
               tilesParsing: tiles.stats.parsing,
               memoryUsedBytes: tiles.lruCache.cachedBytes,
               memoryBudgetBytes: tiles.lruCache.maxBytesSize,
+              ...inspectImagery(terrain),
             },
       imageryLayers: this.imagery.size,
       atmosphere: this.atmosphere !== null,

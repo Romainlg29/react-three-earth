@@ -41,12 +41,15 @@ const layerMap = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   })
 )
 
-// WORKAROUND: ImageBitmap with imageOrientation='flipY' flips the UV in WebGPU
-// renderer.
+// Layer UVs have v = 0 at the south edge. three r187 samples two kinds of layer texture with v = 0 at the
+// image top (north) on both backends, so flip v for them: an ImageBitmap tile decoded with
+// imageOrientation 'flipY' (a terrain tile covered exactly by one imagery tile), and a render target (a
+// tile composed on the GPU by ImageryCompositor). Canvas textures (upstream CPU composition) need no flip.
 const layerMapFlipY = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   uniform('bool').onObjectUpdate(({ material }, self) => {
     const { [OVERLAY_PARAMS]: params } = material as OverlayNodeMaterial
-    self.value = params?.layerMaps.value[index]?.image instanceof ImageBitmap
+    const map = params?.layerMaps.value[index]
+    self.value = map?.image instanceof ImageBitmap || map?.isRenderTargetTexture === true
   })
 )
 

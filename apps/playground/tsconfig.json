@@ -2,6 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "types": ["vite/client", "node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "paths": {
       "react-three-earth": ["../../packages/react-three-earth/src/index.ts"],
       "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"]

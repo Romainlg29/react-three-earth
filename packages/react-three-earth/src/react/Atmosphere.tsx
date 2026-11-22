@@ -12,13 +12,15 @@ export interface AtmosphereProps extends AtmosphereOptions {
   exposure?: number
 }
 
-/** Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline. */
-export function Atmosphere({ exposure = 10, starsUrl, blueNoiseUrl }: AtmosphereProps) {
+/**
+ * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline. `parameters` is read once,
+ * at mount: the lookup textures are generated from it.
+ */
+export function Atmosphere({ exposure = 10, parameters }: AtmosphereProps) {
   const earth = useEarth()
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const camera = useThree(state => state.camera)
-  // Asset URLs are read once, at mount
-  const [atmosphere] = useState(() => new AtmosphereImpl({ starsUrl, blueNoiseUrl }))
+  const [atmosphere] = useState(() => new AtmosphereImpl({ parameters }))
 
   useLayoutEffect(() => {
     const uninstall = atmosphere.install(renderer)

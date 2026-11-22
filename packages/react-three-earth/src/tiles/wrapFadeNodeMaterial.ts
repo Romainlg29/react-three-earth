@@ -7,10 +7,6 @@
 import { Discard, Fn, If, output, screenCoordinate, uniform } from 'three/tsl'
 import type { NodeFrame, NodeMaterial } from 'three/webgpu'
 
-import { geospatial } from '../compat/takram.js'
-
-const { FnLayout } = geospatial
-
 import type { FadeParams } from './FadeMaterialManager.js'
 
 const FADE_PARAMS = Symbol('FADE_PARAMS')
@@ -24,22 +20,22 @@ function getFadeParams({ material }: NodeFrame): FadeParams | undefined {
   return (material as FadeParamsHost)[FADE_PARAMS]
 }
 
-const bayerDither2x2 = FnLayout({
+const bayerDither2x2 = Fn(([v]) => {
+  return v.y.mul(3).add(v.x.mul(2)).mod(4)
+}).setLayout({
   name: 'bayerDither2x2',
   type: 'float',
   inputs: [{ name: 'v', type: 'vec2' }]
-})(([v]) => {
-  return v.y.mul(3).add(v.x.mul(2)).mod(4)
 })
 
-const bayerDither4x4 = FnLayout({
-  name: 'bayerDither4x4',
-  type: 'float',
-  inputs: [{ name: 'v', type: 'vec2' }]
-})(([v]) => {
+const bayerDither4x4 = Fn(([v]) => {
   const P1 = v.mod(2)
   const P2 = v.mod(4).mul(0.5).floor()
   return bayerDither2x2(P1).mul(4).add(bayerDither2x2(P2))
+}).setLayout({
+  name: 'bayerDither4x4',
+  type: 'float',
+  inputs: [{ name: 'v', type: 'vec2' }]
 })
 
 const fadeIn = uniform(0).onObjectUpdate((frame, self) => {
