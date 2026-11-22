@@ -107,6 +107,50 @@ async function map(atmosphere) {
   results.push({ check: `map with fixtures, atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
 }
 
+async function afterburner(plume) {
+  const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && inspection?.atmosphere?.ready === true
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000) // overlays compose, tiles fade in, the burner lights
+  const png = await page.screenshot()
+  writeFileSync(new URL(`afterburner-${plume ? 'on' : 'off'}.png`, OUT), png)
+  const illuminance = await page.evaluate(() => window.afterburnerDemo.compareIlluminance())
+  const lighting = await page.evaluate(() => window.afterburnerDemo.lighting)
+  const stats = await analyse(page, png, `
+    let sky = 0, black = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (r + g + b < 15) black++
+      if (b > r + 15 && b > g) sky++
+    }
+    const n = px.length / 4
+    return { blueSkyShare: +(sky / n).toFixed(3), blackShare: +(black / n).toFixed(3), png: Array.from(px) }
+  `)
+  await page.close()
+  const relative = illuminance.cpu.map((value, index) => Math.abs(value - illuminance.gpu[index]) / Math.max(Math.abs(illuminance.gpu[index]), 1e-9))
+  return { stats, result: { check: `afterburner over terrain, plume ${plume ? 'on' : 'off'}`, blueSkyShare: stats.blueSkyShare, blackShare: stats.blackShare, illuminanceCpuVsGpuMaxRelativeError: +Math.max(...relative).toFixed(4), illuminance, lighting, errors } }
+}
+
+async function afterburnerChecks() {
+  const off = await afterburner(false)
+  const on = await afterburner(true)
+  // Pixels the plume changed, and how much it brightened them
+  let changed = 0, brighter = 0
+  for (let i = 0; i < on.stats.png.length; i += 4) {
+    const a = on.stats.png[i] + on.stats.png[i + 1] + on.stats.png[i + 2]
+    const b = off.stats.png[i] + off.stats.png[i + 1] + off.stats.png[i + 2]
+    if (Math.abs(a - b) > 30) changed++
+    if (a - b > 90) brighter++
+  }
+  const n = on.stats.png.length / 4
+  on.result.plumeChangedShare = +(changed / n).toFixed(4)
+  on.result.plumeBrightenedShare = +(brighter / n).toFixed(4)
+  results.push(off.result, on.result)
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -117,6 +161,7 @@ try {
     await map(false)
     await map(true)
   }
+  if (!only || only === 'afterburner') await afterburnerChecks()
 } finally {
   await browser.close()
 }
