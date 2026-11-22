@@ -13,7 +13,7 @@ import {
   Vector4,
 } from 'three'
 import { attribute, Discard, float, Fn, fwidth, If, max, positionGeometry, smoothstep, sRGBTransferEOTF, texture, uniform, vec4 } from 'three/tsl'
-import { MeshBasicNodeMaterial } from 'three/webgpu'
+import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
 import { GLYPH_EDGE } from './worker/glyphs.js'
 import { TILE_EXTENT, type AtlasUpdate, type TileBucket } from './worker/types.js'
@@ -24,7 +24,7 @@ import { TILE_EXTENT, type AtlasUpdate, type TileBucket } from './worker/types.j
  */
 function linearColor(name: string) {
   const color = attribute<'vec4'>(name, 'vec4')
-  return vec4(sRGBTransferEOTF(color.rgb), color.a)
+  return vec4(sRGBTransferEOTF(color.rgb) as unknown as Node<'vec3'>, color.a)
 }
 
 function createMaterial(): MeshBasicNodeMaterial {
@@ -47,11 +47,13 @@ export function createShapeMaterial(): MeshBasicNodeMaterial {
   return material
 }
 
-/** A single-colour quad over the whole composite. */
-export function createBackgroundMaterial(color: ReturnType<typeof uniform<Vector4>>): MeshBasicNodeMaterial {
+/** A single-colour quad over the whole composite; set `color` (straight-alpha sRGB, 0 to 1) before drawing. */
+export function createBackgroundMaterial(): { material: MeshBasicNodeMaterial; color: Vector4 } {
+  const color = new Vector4()
+  const node = uniform(color)
   const material = createMaterial()
-  material.colorNode = vec4(sRGBTransferEOTF(color.xyz), color.w)
-  return material
+  material.colorNode = vec4(sRGBTransferEOTF(node.xyz) as unknown as Node<'vec3'>, node.w)
+  return { material, color }
 }
 
 /** The main thread's copy of the worker's glyph atlas: one channel of signed distance, 1024 wide. */
@@ -116,7 +118,7 @@ export class GlyphAtlasTexture {
 export function createTextMaterial(atlas: GlyphAtlasTexture): MeshBasicNodeMaterial {
   const material = createMaterial()
   material.colorNode = Fn(() => {
-    const distance = atlas.node.sample(attribute<'vec2'>('atlasUv', 'vec2').div(atlas.size)).r
+    const distance = (atlas.node.sample(attribute<'vec2'>('atlasUv', 'vec2').div(atlas.size)) as unknown as Node<'vec4'>).r
     const width = max(fwidth(distance).mul(0.7), float(1 / 255))
     const edge = float(GLYPH_EDGE)
     const haloEdge = attribute<'float'>('haloEdge', 'float')

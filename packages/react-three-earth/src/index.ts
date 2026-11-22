@@ -5,8 +5,10 @@ export { Atmosphere, type AtmosphereOptions, type AerialPerspectiveOptions } fro
 export * from './atmosphere/index.js'
 export { EarthControls } from './core/EarthControls.js'
 export {
+  MapStyleSource,
   QuantizedMeshSource,
   RasterTileSource,
+  type MapStyleSourceOptions,
   type QuantizedMeshSourceOptions,
   type RasterTileSourceOptions,
   type TerrainSource,
@@ -20,3 +22,5 @@ export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'
 export { setCameraView, toCartesian, type CameraView } from './core/camera.js'
+export { MapStyleOverlay, type MapStyleOverlayOptions } from './vector/MapStyleOverlay.js'
+export { createVectorTileWorker } from './vector/MapStyleBackend.js'

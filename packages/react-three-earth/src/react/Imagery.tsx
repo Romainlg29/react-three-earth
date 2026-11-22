@@ -25,6 +25,7 @@ export function Imagery({ opacity = 1, children }: ImageryProps) {
     setImagery(next)
     return () => {
       earth.removeImagery(next)
+      next.dispose()
       setImagery(null)
     }
     // opacity is applied below without rebuilding the layer

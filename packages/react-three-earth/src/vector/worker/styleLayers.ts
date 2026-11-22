@@ -90,6 +90,11 @@ export class CompiledStyleLayer {
     return toRgba(this.evaluate<Color | undefined>('paint', name, zoom, feature), opacity)
   }
 
+  /** The property's value as written in the style, before compilation. */
+  raw(kind: PropertyKind, name: string): unknown {
+    return this.specification[kind]?.[name]
+  }
+
   /** Whether the style sets this property (as opposed to relying on the default). */
   has(kind: PropertyKind, name: string): boolean {
     return this.specification[kind]?.[name] !== undefined

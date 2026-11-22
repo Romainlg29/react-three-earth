@@ -20,6 +20,10 @@
       "types": "./dist/react.d.ts",
       "default": "./dist/react.js"
     },
+    "./vector-worker": {
+      "types": "./dist/vector-worker.d.ts",
+      "default": "./dist/vector-worker.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

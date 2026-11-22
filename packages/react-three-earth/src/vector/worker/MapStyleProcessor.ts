@@ -250,7 +250,10 @@ export class MapStyleProcessor {
   ): SymbolCandidate | null {
     const field = layer.evaluate<Formatted | string | undefined>('layout', 'text-field', zoom, feature)
     if (field === undefined || field === null) return null
+    // Legacy `{token}` strings (not expressions) substitute feature properties, as in MapLibre.
+    const tokens = typeof layer.raw('layout', 'text-field') === 'string'
     const formatted = field instanceof Formatted ? field : Formatted.fromString(String(field))
+    if (tokens) for (const section of formatted.sections) section.text = resolveTokens(section.text, feature.properties)
     if (formatted.isEmpty()) return null
     const fonts = layer.evaluate<string[]>('layout', 'text-font', zoom, feature)
     const fontStack = fonts.join(',')
@@ -435,4 +438,12 @@ function firstAnchor(layer: CompiledStyleLayer, zoom: number, feature: StyleFeat
     if (anchors !== undefined && anchors.length > 0) return anchors[0]!
   }
   return layer.evaluate<TextAnchor>('layout', 'text-anchor', zoom, feature)
+}
+
+/** Replaces `{name}` with the feature's `name` property (empty when missing). */
+export function resolveTokens(text: string, properties: Record<string, unknown>): string {
+  return text.replace(/{([^{}]+)}/g, (_, key: string) => {
+    const value = properties[key]
+    return value === undefined || value === null ? '' : String(value)
+  })
 }

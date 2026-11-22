@@ -3,6 +3,13 @@ export { Terrain, type TerrainProps } from './Terrain.js'
 export { Imagery, type ImageryProps } from './Imagery.js'
 export { Atmosphere, type AtmosphereProps } from './Atmosphere.js'
 export { EarthControls, type EarthControlsProps } from './EarthControls.js'
-export { QuantizedMeshSource, RasterTileSource, type QuantizedMeshSourceProps, type RasterTileSourceProps } from './sources.js'
+export {
+  MapStyleSource,
+  QuantizedMeshSource,
+  RasterTileSource,
+  type MapStyleSourceProps,
+  type QuantizedMeshSourceProps,
+  type RasterTileSourceProps,
+} from './sources.js'
 export { useEarth } from './context.js'
 export { useEarthFrame, useEarthState } from './hooks.js'

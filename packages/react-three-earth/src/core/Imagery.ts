@@ -9,6 +9,7 @@ export interface ImageryOptions {
 
 interface OverlayLike {
   opacity: number
+  dispose?(): void
 }
 
 /** A raster layer draped on the terrain. Several `Imagery` layers stack in the order they are added. */
@@ -32,5 +33,10 @@ export class Imagery {
   set opacity(value: number) {
     this._opacity = value
     for (const overlay of this.overlays) overlay.opacity = value
+  }
+
+  /** Frees what the sources hold (workers, caches). Call after removing the layer from the earth. */
+  dispose(): void {
+    for (const overlay of this.overlays) overlay.dispose?.()
   }
 }
