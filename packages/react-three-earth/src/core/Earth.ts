@@ -16,6 +16,8 @@ export interface EarthOptions {
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
 export interface EarthInspection {
   date: string
+  /** Main-thread time of the last `update()`: tile traversal, imagery composition and the sun. */
+  updateMilliseconds: number
   terrain: null | {
     url: string
     tilesLoaded: number
@@ -42,7 +44,13 @@ export interface EarthInspection {
   atmosphere: {
     /** True once the lookup textures are generated; until then the scene renders without haze or sky. */
     ready: boolean
+    /** True once the skylight is copied to the CPU too (`Atmosphere.getSunAndSkyIlluminance`), shortly after `ready`. */
+    skylightOnCpu: boolean
+    /** Time the lookup textures took to generate, or to load from the cache. */
     generationTimeMilliseconds: number | null
+    /** Animation frames they took. */
+    generationFrames: number | null
+    loadedFromCache: boolean
   } | null
 }
 
@@ -67,8 +75,11 @@ export class Earth extends Group {
   atmosphere: Atmosphere | null = null
   /** The globe-to-map morph, shared with the terrain, atmosphere and controls. Change it with `setView`. */
   readonly view = new ViewMorph()
+  /** Main-thread time of the last `update()`, in milliseconds. */
+  lastUpdateMilliseconds = 0
   protected readonly imagery = new Set<Imagery>()
-  protected lastUpdateMilliseconds: number | null = null
+  /** `performance.now()` at the last `update()`, for the morph's clock. */
+  protected lastUpdateTimestamp: number | null = null
 
   constructor({ date = new Date(), view = '3d' }: EarthOptions = {}) {
     super()
@@ -132,8 +143,8 @@ export class Earth extends Group {
    */
   update(camera: Camera, renderer: WebGPURenderer, deltaSeconds?: number): boolean {
     const now = performance.now()
-    const delta = deltaSeconds ?? (this.lastUpdateMilliseconds === null ? 0 : (now - this.lastUpdateMilliseconds) / 1000)
-    this.lastUpdateMilliseconds = now
+    const delta = deltaSeconds ?? (this.lastUpdateTimestamp === null ? 0 : (now - this.lastUpdateTimestamp) / 1000)
+    this.lastUpdateTimestamp = now
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
@@ -141,6 +152,7 @@ export class Earth extends Group {
       this.atmosphere.opacity = 1 - this.view.morph
       this.atmosphere.update(camera, this.date)
     }
+    this.lastUpdateMilliseconds = performance.now() - now
     return morphing || this.view.transitioning
   }
 
@@ -156,6 +168,7 @@ export class Earth extends Group {
       | undefined
     return {
       date: this.date.toISOString(),
+      updateMilliseconds: this.lastUpdateMilliseconds,
       terrain:
         tiles === undefined || terrain === null
           ? null
@@ -176,7 +189,10 @@ export class Earth extends Group {
           ? null
           : {
               ready: this.atmosphere.context.texturesReady.value === 1,
+              skylightOnCpu: this.atmosphere.illuminance.skyAvailable,
               generationTimeMilliseconds: this.atmosphere.generationTimeMilliseconds,
+              generationFrames: this.atmosphere.generationFrames,
+              loadedFromCache: this.atmosphere.loadedFromCache,
             },
     }
   }

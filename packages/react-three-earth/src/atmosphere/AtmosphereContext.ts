@@ -1,5 +1,5 @@
 import { Matrix3, Matrix4, Quaternion, Vector3, type Camera } from 'three'
-import { inverseSqrt, uniform, vec3 } from 'three/tsl'
+import { inverseSqrt, mix, select, smoothstep, uniform, vec3 } from 'three/tsl'
 import type { Node, NodeFrame, Renderer, UniformNode } from 'three/webgpu'
 
 import { AtmosphereModel, LENGTH_UNIT_METERS } from './AtmosphereModel.js'
@@ -64,6 +64,25 @@ export interface AtmosphereCameraNodes {
   /** Rotation of world directions into the model's frame at the camera (`getEllipsoidToAtmosphereRotation`). */
   directionRotation: Node<'mat3'>
 }
+
+/** Sunlight and skylight illuminance at a point, as shader nodes (scaled luminance units). */
+export interface SunAndSkyIlluminanceNodes {
+  /** Sunlight on a surface facing the sun, after the air above the point. */
+  sun: Node<'vec3'>
+  /** Skylight on a surface with the given normal (by default facing up), without the sun. */
+  sky: Node<'vec3'>
+}
+
+/** What the air between the camera and a point does to the light from it, as shader nodes. */
+export interface AerialPerspectiveNodes {
+  /** Share of the point's light that reaches the camera. */
+  transmittance: Node<'vec3'>
+  /** Light scattered towards the camera in between, in scaled luminance units. */
+  radiance: Node<'vec3'>
+}
+
+/** Share of the unattenuated sunlight used as skylight while the lookup textures are not ready. */
+export const FALLBACK_SKY_SHARE = 0.15
 
 const cameraPositionScratch = /*#__PURE__*/ new Vector3()
 const rotationScratch = /*#__PURE__*/ new Quaternion()
@@ -169,6 +188,56 @@ export class AtmosphereContext {
     const direction = positionKilometers.div(radius).toConst()
     const ellipsoidRadius = inverseSqrt(direction.mul(direction).dot(inverseSquaredRadii))
     return direction.mul(radius.sub(ellipsoidRadius).add(this.model.bottomRadiusKilometers))
+  }
+
+  /**
+   * Sunlight and skylight at an ECEF point, in shaders (the CPU counterpart is
+   * `AtmosphereIlluminance.getSunAndSkyIlluminance`). Until the lookup textures are ready: plain sunlight,
+   * and a skylight of `FALLBACK_SKY_SHARE` of it.
+   *
+   * @param positionKilometers ECEF position in kilometres. For a fragment, add its camera-relative offset to
+   *   `createCameraNodes().positionKilometers`, which keeps float32 precision.
+   * @param normal World normal of the lit surface. Default: the ellipsoid's normal (a surface facing up).
+   */
+  getSunAndSkyIlluminance(positionKilometers: Node<'vec3'>, normal?: Node<'vec3'>): SunAndSkyIlluminanceNodes {
+    const position = this.toAtmosphereFrame(positionKilometers)
+    // Sun elevation and sky factor against the true (ellipsoid) vertical: normal and sun are world
+    // directions, untouched by the model's radial mapping.
+    const up = this.ellipsoidNormal(positionKilometers).toConst()
+    const { sun, sky } = this.model.getSunAndSkyIrradiance(this.textures, position, normal ?? up, this.sunDirection, up)
+    const unattenuated = this.model.solarIrradianceWattsPerSquareMeterNanometer.mul(this.sunLuminanceFactor)
+    const ready = this.texturesReady.greaterThan(0.5)
+    return {
+      sun: select(ready, sun.mul(this.sunLuminanceFactor), unattenuated),
+      sky: select(ready, sky.mul(this.skyLuminanceFactor), unattenuated.mul(FALLBACK_SKY_SHARE)),
+    }
+  }
+
+  /**
+   * The air between a camera and a point along a world direction: the transmittance, and the light
+   * scattered in between (scaled luminance). The point need not be on any surface: use it for transparent
+   * and volumetric effects (an @aeronautic plume) as `AerialPerspectiveNode` does for the opaque scene.
+   * Until the lookup textures are ready: a transmittance of 1 and no light.
+   *
+   * @param camera From `createCameraNodes` (for the camera the effect is drawn with).
+   * @param worldDirection Unit direction from the camera to the point, world (ECEF) axes.
+   * @param distanceKilometers Distance from the camera to the point.
+   */
+  getAerialPerspective(camera: AtmosphereCameraNodes, worldDirection: Node<'vec3'>, distanceKilometers: Node<'float'>): AerialPerspectiveNodes {
+    const { positionKilometers, atmospherePosition, directionRotation } = camera
+    const distance = distanceKilometers.toConst()
+    const viewDirectionModel = directionRotation.mul(worldDirection)
+    // Near the camera, the mapping is the camera's position plus the rotation, which is exact in double
+    // precision; far away, map the point itself (float32 rounding, under a metre, no longer matters).
+    const nearPoint = atmospherePosition.add(viewDirectionModel.mul(distance))
+    const farPoint = this.toAtmosphereFrame(positionKilometers.add(worldDirection.mul(distance)))
+    const point = mix(nearPoint, farPoint, smoothstep(10, 20, distance))
+    const between = this.model.getSkyRadianceToPoint(this.textures, atmospherePosition, point, directionRotation.mul(this.sunDirection))
+    const ready = this.texturesReady.greaterThan(0.5)
+    return {
+      transmittance: select(ready, between.transmittance, vec3(1)),
+      radiance: select(ready, between.radiance.mul(this.skyLuminanceFactor), vec3(0)),
+    }
   }
 
   /** Factor from sky radiance to scaled luminance. */

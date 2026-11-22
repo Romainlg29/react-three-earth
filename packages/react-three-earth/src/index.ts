@@ -1,7 +1,14 @@
 export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
+export { PerformanceMonitor, type PerformanceSample } from './core/PerformanceMonitor.js'
 export { Terrain, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'
-export { Atmosphere, type AtmosphereOptions, type AerialPerspectiveOptions } from './core/Atmosphere.js'
+export {
+  Atmosphere,
+  type AtmosphereOptions,
+  type AerialPerspectiveOptions,
+  type AerialPerspectiveAlongRay,
+  type SceneBackdrop,
+} from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls, EarthViewControls, FlatMapControls } from './core/EarthControls.js'
 export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
@@ -9,8 +16,10 @@ export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
 export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE } from './tiles/FlatMapPlugin.js'
 export {
+  MapStyleSource,
   QuantizedMeshSource,
   RasterTileSource,
+  type MapStyleSourceOptions,
   type QuantizedMeshSourceOptions,
   type RasterTileSourceOptions,
   type TerrainSource,
@@ -24,3 +33,5 @@ export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'
 export { setCameraView, toCartesian, type CameraView } from './core/camera.js'
+export { MapStyleOverlay, type MapStyleOverlayOptions } from './vector/MapStyleOverlay.js'
+export { createVectorTileWorker } from './vector/MapStyleBackend.js'

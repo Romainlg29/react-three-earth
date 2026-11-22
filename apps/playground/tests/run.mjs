@@ -81,7 +81,8 @@ async function precision(highPrecision) {
 }
 
 async function map(atmosphere, view = '3d') {
-  const { page, errors } = await open(`/?fixtures&atmosphere=${atmosphere ? 1 : 0}&view=${view}`)
+  // SwiftShader rasterises on the CPU, so paced generation would take minutes: generate in one go.
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=${atmosphere ? 1 : 0}&atmosphereBudget=Infinity&view=${view}`)
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain
@@ -106,7 +107,81 @@ async function map(atmosphere, view = '3d') {
     return { greenShare: +(green / n).toFixed(3), blackShare: +(black / n).toFixed(3), blueSkyShare: +(sky / n).toFixed(3) }
   `)
   await page.close()
-  results.push({ check: `map with fixtures, ${view}, atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
+  results.push({ check: `map with fixtures, ${view === '3d' ? '' : `${view}, `}atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
+}
+
+/** A MapLibre style (synthetic vector tiles: water, roads, places) draped through the GPU compositor. */
+async function vectorMap(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector${query}`)
+  const warnings = []
+  page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-vector-${name}.png`, OUT), png)
+  const inspection = await page.evaluate(() => window.earth.inspect())
+  const stats = await analyse(page, png, `
+    // By hue, since the terrain is lit: water is blue, primary roads orange, land a warm grey.
+    let water = 0, road = 0, land = 0, dark = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (b > r * 1.5 && b > g * 1.1 && b > 60) water++
+      else if (r > b * 1.6 && r > g * 1.15 && r > 60) road++
+      else if (r >= g && g >= b && r - b < 30 && r > 50) land++
+      if (r + g + b < 60) dark++
+    }
+    const n = px.length / 4
+    return { waterShare: +(water / n).toFixed(3), primaryRoadShare: +(road / n).toFixed(4), landShare: +(land / n).toFixed(3), darkShare: +(dark / n).toFixed(4) }
+  `)
+  await page.close()
+  results.push({ check: `vector map style with fixtures, ${name}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, imageryTilesCompositedTotal: inspection.terrain.imageryTilesCompositedTotal, errors, warnings })
+}
+
+async function afterburner(plume) {
+  const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && inspection?.atmosphere?.skylightOnCpu === true
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000) // overlays compose, tiles fade in, the burner lights
+  const png = await page.screenshot()
+  writeFileSync(new URL(`afterburner-${plume ? 'on' : 'off'}.png`, OUT), png)
+  const illuminance = await page.evaluate(() => window.afterburnerDemo.compareIlluminance())
+  const lighting = await page.evaluate(() => window.afterburnerDemo.lighting)
+  const stats = await analyse(page, png, `
+    let sky = 0, black = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (r + g + b < 15) black++
+      if (b > r + 15 && b > g) sky++
+    }
+    const n = px.length / 4
+    return { blueSkyShare: +(sky / n).toFixed(3), blackShare: +(black / n).toFixed(3), png: Array.from(px) }
+  `)
+  await page.close()
+  const relative = illuminance.cpu.map((value, index) => Math.abs(value - illuminance.gpu[index]) / Math.max(Math.abs(illuminance.gpu[index]), 1e-9))
+  return { stats, result: { check: `afterburner over terrain, plume ${plume ? 'on' : 'off'}`, blueSkyShare: stats.blueSkyShare, blackShare: stats.blackShare, illuminanceCpuVsGpuMaxRelativeError: +Math.max(...relative).toFixed(4), illuminance, lighting, errors } }
+}
+
+async function afterburnerChecks() {
+  const off = await afterburner(false)
+  const on = await afterburner(true)
+  // Pixels the plume changed, and how much it brightened them
+  let changed = 0, brighter = 0
+  for (let i = 0; i < on.stats.png.length; i += 4) {
+    const a = on.stats.png[i] + on.stats.png[i + 1] + on.stats.png[i + 2]
+    const b = off.stats.png[i] + off.stats.png[i + 1] + off.stats.png[i + 2]
+    if (Math.abs(a - b) > 30) changed++
+    if (a - b > 90) brighter++
+  }
+  const n = on.stats.png.length / 4
+  on.result.plumeChangedShare = +(changed / n).toFixed(4)
+  on.result.plumeBrightenedShare = +(brighter / n).toFixed(4)
+  results.push(off.result, on.result)
 }
 
 const only = process.argv[2]
@@ -123,6 +198,12 @@ try {
     await map(false, '2d')
     await map(true, '2d')
   }
+  if (!only || only === 'vector') {
+    await vectorMap('overview', '')
+    await vectorMap('close', '&camera=,,,9000,,-50')
+    await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
+  }
+  if (!only || only === 'afterburner') await afterburnerChecks()
 } finally {
   await browser.close()
 }

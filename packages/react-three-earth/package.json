@@ -2,11 +2,30 @@
   "name": "react-three-earth",
   "version": "0.0.0",
   "description": "WebGPU map engine for three.js and React Three Fiber: 2D and 3D, physically based, agent-first",
+  "keywords": [
+    "three",
+    "threejs",
+    "react-three-fiber",
+    "webgpu",
+    "map",
+    "globe",
+    "terrain",
+    "3d-tiles",
+    "geospatial",
+    "atmosphere",
+    "tanstack-intent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Romainlg29/react-three-earth.git",
+    "directory": "packages/react-three-earth"
+  },
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md"
@@ -20,16 +39,22 @@
       "types": "./dist/react.d.ts",
       "default": "./dist/react.js"
     },
+    "./vector-worker": {
+      "types": "./dist/vector-worker.d.ts",
+      "default": "./dist/vector-worker.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "validate:skills": "intent validate skills"
   },
   "devDependencies": {
     "@react-three/fiber": "10.0.0-alpha.6",
     "@react-three/tsl": "10.0.0-alpha.6",
+    "@tanstack/intent": "0.5.6",
     "@types/react": "^19.3.0",
     "@types/three": "^0.187.0",
     "react": "~19.3.1",
@@ -39,13 +64,19 @@
     "vitest": "^5.1.1"
   },
   "dependencies": {
-    "3d-tiles-renderer": "0.5.4"
+    "3d-tiles-renderer": "0.5.4",
+    "@mapbox/tiny-sdf": "^2.3.0",
+    "@mapbox/vector-tile": "^2.0.5",
+    "@maplibre/maplibre-gl-style-spec": "^26.9.0",
+    "earcut": "^3.2.4",
+    "pbf": "^4.0.2",
+    "pmtiles": "^4.5.0"
   },
   "peerDependencies": {
-    "three": ">=0.187.0 <0.188.0",
-    "react": ">=19.0 <19.4",
     "@react-three/fiber": "^10.0.0-alpha.6",
-    "@react-three/tsl": "^10.0.0-alpha.6"
+    "@react-three/tsl": "^10.0.0-alpha.6",
+    "react": ">=19.0 <19.4",
+    "three": ">=0.187.0 <0.188.0"
   },
   "peerDependenciesMeta": {
     "react": {

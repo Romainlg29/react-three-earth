@@ -1,6 +1,6 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
-## Round 3: the flat map (2D) and the globe-to-map morph
+## The flat map (2D) and the globe-to-map morph
 
 ```tsx
 <Earth view={view /* '3d' | '2d' */} viewTransitionSeconds={1.5}>…</Earth>
@@ -59,6 +59,128 @@ Not done yet:
   may drop out for a frame or two. Not seen in testing.
 - The camera's lower limit in 2D uses the tile regions' maximum height, not the terrain itself.
 - The `Earth` must stay at the scene origin (as `setCameraView` and the controls already assume).
+
+## Vector map styles (`src/vector/`)
+
+`<Imagery><MapStyleSource url="https://…/style.json" /></Imagery>` drapes a MapLibre style (version 8) on the
+terrain. Vector sources can be XYZ `tiles`, a TileJSON `url`, or a PMTiles archive (`pmtiles://https://…`).
+Vanilla: `new Imagery({ sources: [new MapStyleSource({ url })] })`, and `imagery.dispose()` after removing it.
+
+How it works:
+
+- A module worker (`vector-worker.js` in the build) fetches tiles, decodes MVT, evaluates the style's filters and
+  properties with `@maplibre/maplibre-gl-style-spec` (the same expression engine as MapLibre), tessellates
+  fills, lines (joins, caps, dashes, gap width, offset) and circles, and lays out text labels: SDF glyphs from the
+  style's `glyphs` server, or drawn locally with TinySDF when there is none; point and line placement, wrapping,
+  anchors, halos, per-tile collision with `symbol-sort-key` and top layers first. It returns typed arrays,
+  transferred, not copied. If the worker cannot start, tiles are processed on the main thread with a warning.
+- The main thread never rasterises tiles. For each terrain tile's region, the covering vector tiles are drawn
+  straight into the region's texture at its own resolution, with 4× MSAA in a shared scratch target, through the
+  existing `ImageryCompositor` (same 2 ms budget and priorities as raster). One draw per tile and layer group;
+  fragments outside the tile square are dropped so buffers never overdraw neighbours. A ring of neighbour tiles
+  adds only their labels (when within label reach of the region), so labels crossing a tile edge are not cut.
+- The style is evaluated at the region's zoom (512-pixel tiles, as MapLibre). Past the data's maximum zoom,
+  tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
+- Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
+
+Not supported yet: icons and fill patterns (sprites), raster, hillshade and heatmap layers (skipped with one
+warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
+tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
+through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
+does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
+has a fixed size on the ground.
+
+| Check (fixtures: synthetic water, roads, places; SwiftShader) | Result |
+| --- | --- |
+| Overview, atmosphere off | water, roads and place labels drape on terrain; 106 regions composed, no errors |
+| Close-up, 9 km, 50° pitch | road names follow the roads upright, labels sharp at region resolution |
+| WebGL2 fallback | same image as WebGPU |
+| Raster map checks | unchanged |
+| Unit tests | 32 new, 98 total (style evaluation, tessellation areas, glyph PBF and atlas, shaping and placement, TileJSON, TMS, PMTiles range requests, caches, region tiles, ring reach) |
+
+![vector map](map-vector-overview.png) ![close-up](map-vector-close.png) ![with atmosphere](map-vector-atmosphere.png)
+
+## Atmosphere and @aeronautic effects
+
+@aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one
+sun, one air and one haze. Playground: `/?test=afterburner&fixtures`.
+
+- **Pipeline.** `<Atmosphere renderPipeline={false}>` leaves the render pipeline to its children (`useAtmosphere()`).
+  `atmosphere.createBackdropNode(camera)` is the `backdropNode` of @aeronautic/core's `volume_pass`: the opaque
+  scene gets aerial perspective and the sky, and the plumes are composited over it at half resolution.
+- **Haze on effects.** `atmosphere.createAerialPerspectiveAlongRay()` gives transmittance and in-scattered light
+  for any distance (and optionally direction) in a shader; the playground's afterburner `radiance` hook applies
+  it premultiplied.
+- **Light.** `atmosphere.getSunAndSkyIlluminance(ecef)` (CPU) and `getSunAndSkyIlluminanceNode(ecefKm)` (TSL)
+  give sunlight and skylight anywhere. They agree to 0.02 % in the browser check. The bridge
+  (`apps/playground/src/aeronautic/atmosphereBridge.ts`) converts them to @aeronautic's units: its radiance unit
+  is a 2000 K blackbody's luminance, 4.65 × 10⁵ cd/m².
+- **Air.** Air molecules now follow the International Standard Atmosphere by default (as @aeronautic's
+  `standard_atmosphere`), with `temperatureOffsetKelvin`. `AtmosphereParameters.fromVisibility(m)` sets the
+  haze the way @aeronautic's `extinction()` does, and `parameters.getAirExtinction(altitude)` hands effects the
+  sky's own air in @aeronautic's `Extinction` shape. This changes every sky slightly: the Rayleigh column goes
+  from 8.0 to 8.43 km of sea-level air. `rayleighDensityProfile: 'exponential'` restores Bruneton's profile.
+- **three 0.187.** @aeronautic 0.x pins three 0.186.x. A pnpm `peerDependencyRules` entry lets the playground
+  run it on 0.187, and it works in the browser check. The proper fix is an @aeronautic release for 0.187.
+
+![afterburner over terrain](afterburner-on.png)
+
+## Round 3: faster atmosphere startup
+
+Lookup-texture generation was the slowest part of startup and caused long frames while it ran. Three changes:
+
+- **One single-scattering pass instead of three.** Rayleigh and Mie single scattering are integrated once and
+  written to two textures by a multiple-render-target pass, then copied texel for texel into the scattering
+  texture. The generated textures are bit-identical to before on WebGPU and on the WebGL 2 fallback.
+- **Batches timed on the GPU.** Each animation frame runs a batch of passes (or slices of 3D passes) sized so
+  that it takes about `generationBudgetMillisecondsPerFrame` (default 4 ms) of GPU time. The cost is measured
+  after each batch (WebGPU `onSubmittedWorkDone`, a WebGL 2 fence), after the app has submitted its own
+  frame, so the same code adapts to a desktop GPU and a phone. Batches grow at most twice as heavy as the
+  last measured one, a shader's first compile is not counted, cheap copy passes run all slices at once, and
+  a GPU that stops answering falls back to a fixed number of passes per frame. `Infinity` generates
+  everything in one frame (a loading screen).
+- **IndexedDB cache.** Generated textures are stored keyed by every parameter, the storage type and
+  `ATMOSPHERE_PRECOMPUTE_VERSION` (a unit test fails when the generating code changes, as a reminder to bump
+  it). Later page loads copy them back instead of generating. On by default (`<Atmosphere cache={false} />`
+  opts out); two sets are kept, 8 MB each with half-float scattering (16 MB with 32-bit). A read-back that
+  cannot be right (a WebGL 2 driver that cannot read half floats leaves zeros) is never stored. The
+  playground's dev server never caches, so shader edits always show.
+
+`earth.inspect().atmosphere` now also reports `generationFrames` and `loadedFromCache`, and the playground
+shows them in the bottom-left corner. Playground switches: `?nocache`, `?atmosphereBudget=<ms>`.
+
+### Results in SwiftShader (CPU rasteriser: compare the two columns, not the absolute numbers)
+
+Textures alone (`tests/atmosphere.mjs`), output bit-identical before and after on both backends, from
+generation and from the cache:
+
+| Run | Before | After |
+| --- | --- | --- |
+| WebGPU, total generation | 30.2 s | 18.7 s |
+| WebGPU, longest frame during generation | 2033 ms (p95 633 ms) | 16.8 ms (p95 16.8 ms) |
+| WebGL 2, total generation | 51.2 s | 42.4 s |
+| WebGL 2, longest frame during generation | 1400 ms | 83 ms (p95 16.7 ms) |
+| Second page load (cache hit) | same as first | 0.20 s WebGPU, 0.15 s WebGL 2, about 10 frames |
+
+Inside the full map scene, SwiftShader frames take over a second each, so paced generation runs one pass per
+frame and takes minutes (237 frames); the browser checks pass `?atmosphereBudget=Infinity`. A pass is never
+split, so on a real device generation needs at least about 240 frames (4 s at 60 fps) the first time. If a
+phone shows long frames or a slow first start, the next steps are splitting density slices into row bands
+and a larger budget when the app has headroom.
+
+`node apps/playground/tests/atmosphere.mjs [webgl] [cache]` (with `pnpm dev` running, under xvfb) prints these
+numbers and fingerprints of the textures.
+
+### On devices
+
+The playground is published to GitHub Pages by `.github/workflows/playground-pages.yml` once Pages is enabled
+(Settings → Pages → Source: GitHub Actions). Open it once to warm the cache, then with `?nocache` to time
+generation; the bottom-left line gives the time and frame count.
+
+| Device | Browser | Generation | Frames | Cache load |
+| --- | --- | --- | --- | --- |
+| Pixel | Chrome | to measure | | |
+| iPhone | Safari | to measure | | |
 
 ## Round 2: our own atmosphere, GPU imagery, takram removed
 

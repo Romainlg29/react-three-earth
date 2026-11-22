@@ -1,6 +1,7 @@
 import {
   Color,
   LinearFilter,
+  LinearMipmapLinearFilter,
   Mesh,
   NoBlending,
   OrthographicCamera,
@@ -47,10 +48,17 @@ export interface CompositeDraw {
   maximumY: number
 }
 
-/** A queued composition. */
+/**
+ * Draws a composition into its target with any scene. Called inside `ImageryCompositor.render`, with the
+ * renderer's state saved (and restored after), its clear colour transparent black and its MRT off.
+ */
+export type CompositionRenderer = (renderer: WebGPURenderer, target: RenderTarget) => void
+
+/** A queued composition: source tile quads, or a custom render. */
 interface CompositionJob {
   target: RenderTarget
   draws: readonly CompositeDraw[]
+  render: CompositionRenderer | null
   resolve: (texture: Texture) => void
   reject: (reason: unknown) => void
   signal: AbortSignal | undefined
@@ -109,14 +117,39 @@ export class ImageryCompositor {
     return this.waitedQueue.length + this.preloadQueue.length
   }
 
-  /** Allocates a composite target: sRGB 8-bit, no depth, no mipmaps, like the canvas it replaces. */
+  /**
+   * Anisotropic filtering applied to composite textures, capped by the device. Terrain near the horizon is
+   * seen at grazing angles, where plain trilinear filtering blurs and anisotropic filtering keeps detail.
+   * Applies to targets created, and source textures configured, after it is set.
+   */
+  anisotropy = 8
+
+  /**
+   * Gives a source tile shown directly on a terrain tile (the exact-cover fast path) the same mipmapped,
+   * anisotropic sampling as composites, so it doesn't shimmer next to composed neighbours. Mipmaps are built
+   * when the texture uploads; the tile cache counted it before, so its third of extra memory goes uncounted.
+   */
+  configureSampling(texture: Texture): void {
+    if (texture.generateMipmaps && texture.minFilter === LinearMipmapLinearFilter && texture.anisotropy === this.anisotropy) return
+    texture.generateMipmaps = true
+    texture.minFilter = LinearMipmapLinearFilter
+    texture.anisotropy = this.anisotropy
+    texture.needsUpdate = true
+  }
+
+  /**
+   * Allocates a composite target: sRGB 8-bit, no depth, with mipmaps (three regenerates them after each
+   * composition). Without mipmaps, imagery near the horizon or the planet's limb shimmers as the camera moves.
+   * Mipmaps add a third to the memory, which the tile cache counts.
+   */
   createTarget(resolutionPixels: number): RenderTarget {
     const target = new RenderTarget(resolutionPixels, resolutionPixels, {
       colorSpace: SRGBColorSpace,
       depthBuffer: false,
-      generateMipmaps: false,
-      minFilter: LinearFilter,
+      generateMipmaps: true,
+      minFilter: LinearMipmapLinearFilter,
       magFilter: LinearFilter,
+      anisotropy: this.anisotropy,
     })
     target.texture.name = 'ImageryComposite'
     return target
@@ -132,12 +165,43 @@ export class ImageryCompositor {
         reject(signal.reason)
         return
       }
-      const job: CompositionJob = { target, draws, resolve, reject, signal, onAbort: () => this.cancel(job) }
+      const job: CompositionJob = { target, draws, render: null, resolve, reject, signal, onAbort: () => this.cancel(job) }
       signal?.addEventListener('abort', job.onAbort, { once: true })
       for (const draw of draws) this.retainTexture(draw.texture)
       ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
       this.onQueued?.()
     })
+  }
+
+  /**
+   * Queues a custom composition (vector tiles drawn with their own scene, for example), under the same
+   * per-frame budget and priorities as source tile compositions. Resolves with `target.texture` once drawn.
+   */
+  enqueueRender(target: RenderTarget, render: CompositionRenderer, signal?: AbortSignal, waited = false): Promise<Texture> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(signal.reason)
+        return
+      }
+      const job: CompositionJob = { target, draws: [], render, resolve, reject, signal, onAbort: () => this.cancel(job) }
+      signal?.addEventListener('abort', job.onAbort, { once: true })
+      ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
+      this.onQueued?.()
+    })
+  }
+
+  /**
+   * Copies a texture (v = 0 at the top, like render targets and flipped ImageBitmaps) over all of `target`,
+   * with no blending. For custom compositions that resolve a multisampled scratch target into their own.
+   */
+  copyTexture(renderer: WebGPURenderer, texture: Texture, target: RenderTarget): void {
+    try {
+      this.prepareMeshes([{ texture, minimumX: 0, minimumY: 0, maximumX: 1, maximumY: 1 }])
+      renderer.setRenderTarget(target)
+      renderer.render(this.scene, this.camera)
+    } finally {
+      for (const mesh of this.meshes) mesh.userData.sourceTexture = null
+    }
   }
 
   /** Moves the composition into `target` ahead of preloads, if it is still queued. */
@@ -199,9 +263,12 @@ export class ImageryCompositor {
 
   protected drawJob(renderer: WebGPURenderer, job: CompositionJob): void {
     try {
-      this.prepareMeshes(job.draws)
-      renderer.setRenderTarget(job.target)
-      renderer.render(this.scene, this.camera)
+      if (job.render !== null) job.render(renderer, job.target)
+      else {
+        this.prepareMeshes(job.draws)
+        renderer.setRenderTarget(job.target)
+        renderer.render(this.scene, this.camera)
+      }
       job.resolve(job.target.texture)
     } catch (error) {
       job.reject(error) // the tile reports a load error instead of waiting forever

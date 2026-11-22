@@ -9,6 +9,8 @@
     "test:browser": "node tests/run.mjs"
   },
   "dependencies": {
+    "@aeronautic/afterburner": "0.5.1",
+    "@aeronautic/core": "0.1.3",
     "@react-three/fiber": "10.0.0-alpha.6",
     "@react-three/tsl": "10.0.0-alpha.6",
     "react": "19.3.1",
