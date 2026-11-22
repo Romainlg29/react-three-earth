@@ -132,7 +132,11 @@ export class ShapeBuilder {
     const gap = style.gapWidth ?? 0
     for (const dash of pieces) {
       const piece = removeDuplicatePoints(dash)
-      if (piece.length < 2) continue
+      if (piece.length < 2) {
+        // A zero-length dash (`line-dasharray: [0, 2]` with round caps) is a dot.
+        if (piece.length === 1 && dash.length >= 2 && style.cap === 'round') this.addCircle(piece[0]!, style.width / 2)
+        continue
+      }
       if (gap > 0) {
         this.addStroke(piece, offset + gap / 2, offset + gap / 2 + style.width, style)
         this.addStroke(piece, offset - gap / 2 - style.width, offset - gap / 2, style)
@@ -209,18 +213,14 @@ export class ShapeBuilder {
         continue
       }
 
-      // Bevel or round: end the incoming segment, fill the outer wedge, start the outgoing one.
+      // Bevel or round: end the incoming segment, start the outgoing one, and fill the wedge between them on
+      // the outer side only (the inner side is covered by both segments), around the line's own vertex.
       const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left)
       const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right)
       if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, endLeft, endRight)
       const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left)
       const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right)
-      const pivot = this.addVertex(point.x + incoming.x * center, point.y + incoming.y * center)
-      if (join === 'round') this.addFan(point, center, halfWidth, incoming, outgoing, pivot)
-      else {
-        this.indices.push3(pivot, endLeft, startLeft)
-        this.indices.push3(pivot, endRight, startRight)
-      }
+      this.addJoinWedge(point, left, right, incoming, outgoing, join === 'round')
       previousLeft = startLeft
       previousRight = startRight
     }
@@ -234,7 +234,7 @@ export class ShapeBuilder {
   /** A round or square cap at a line end; `isStart` caps point backwards. */
   protected addCap(point: Point, normal: Point, center: number, halfWidth: number, cap: LineCap, isStart: boolean): void {
     if (cap === 'butt') return
-    const direction = isStart ? { x: normal.y, y: -normal.x } : { x: -normal.y, y: normal.x } // along the line, outwards
+    const direction = isStart ? { x: -normal.y, y: normal.x } : { x: normal.y, y: -normal.x } // along the line, outwards
     const base = { x: point.x + normal.x * center, y: point.y + normal.y * center }
     if (cap === 'square') {
       const a = this.addVertex(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth)
@@ -257,23 +257,33 @@ export class ShapeBuilder {
     }
   }
 
-  /** A round join: a fan around the band centre from the incoming to the outgoing normal, on the outer side. */
-  protected addFan(point: Point, center: number, halfWidth: number, incoming: Point, outgoing: Point, pivot: number): void {
-    const base = { x: point.x + incoming.x * center, y: point.y + incoming.y * center }
-    const from = Math.atan2(incoming.y, incoming.x)
-    let turn = Math.atan2(outgoing.y, outgoing.x) - from
+  /**
+   * Fills a join's outer wedge: the part of the band [left, right] on the side away from the turn, swept from
+   * the incoming normal to the outgoing one around the vertex, as a bevel (one quad) or round (an arc).
+   */
+  protected addJoinWedge(point: Point, left: number, right: number, incoming: Point, outgoing: Point, round: boolean): void {
+    // The line turns towards +normal when the outgoing direction leans that way; the outer side is then -normal.
+    const outgoingDirection = { x: outgoing.y, y: -outgoing.x }
+    const side = outgoingDirection.x * incoming.x + outgoingDirection.y * incoming.y > 0 ? -1 : 1
+    const outerRadius = Math.max(side * left, side * right)
+    if (outerRadius <= 0) return
+    const innerRadius = Math.max(0, Math.min(side * left, side * right))
+    const from = Math.atan2(incoming.y * side, incoming.x * side)
+    let turn = Math.atan2(outgoing.y * side, outgoing.x * side) - from
     if (turn > Math.PI) turn -= Math.PI * 2
     if (turn < -Math.PI) turn += Math.PI * 2
-    // Fan both sides: the inner side is covered by the segments anyway.
-    for (const side of [1, -1]) {
-      const steps = Math.max(1, Math.ceil((Math.abs(turn) / Math.PI) * ROUND_SEGMENTS))
-      let previous = this.addVertex(base.x + Math.cos(from) * halfWidth * side, base.y + Math.sin(from) * halfWidth * side)
-      for (let step = 1; step <= steps; step++) {
-        const angle = from + (turn * step) / steps
-        const next = this.addVertex(base.x + Math.cos(angle) * halfWidth * side, base.y + Math.sin(angle) * halfWidth * side)
-        this.indices.push3(pivot, previous, next)
-        previous = next
-      }
+    const steps = round ? Math.max(1, Math.ceil((Math.abs(turn) / Math.PI) * ROUND_SEGMENTS)) : 1
+    const ring = (radius: number, angle: number) => this.addVertex(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius)
+    let previousInner = ring(innerRadius, from)
+    let previousOuter = ring(outerRadius, from)
+    for (let step = 1; step <= steps; step++) {
+      const angle = from + (turn * step) / steps
+      const inner = ring(innerRadius, angle)
+      const outer = ring(outerRadius, angle)
+      this.indices.push3(previousInner, previousOuter, outer)
+      if (innerRadius > 0) this.indices.push3(previousInner, outer, inner)
+      previousInner = inner
+      previousOuter = outer
     }
   }
 }

@@ -150,6 +150,7 @@ try {
   if (!only || only === 'vector') {
     await vectorMap('overview', '')
     await vectorMap('close', '&distance=9000&pitch=-50')
+    await vectorMap('webgl2', '&distance=9000&pitch=-50&webgl')
   }
 } finally {
   await browser.close()

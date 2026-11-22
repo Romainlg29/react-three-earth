@@ -77,6 +77,14 @@ describe('style layers', () => {
     expect(layers.find(layer => layer.id === 'background')!.evaluateColor('background-color', 5, undefined)).toEqual([128, 128, 128, 255])
   })
 
+  it('skips a layer with an invalid expression instead of failing its tiles', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { layers, skipped } = compileStyleLayers([{ id: 'bad', type: 'line', source: 's', paint: { 'line-width': ['interpolate', ['linear'], ['zoom']] } }])
+    expect(layers).toEqual([])
+    expect(skipped).toEqual(['bad'])
+    warn.mockRestore()
+  })
+
   it('converts premultiplied style colours to straight-alpha bytes', () => {
     const { layers } = compileStyleLayers([{ id: 'fill', type: 'fill', source: 's', paint: { 'fill-color': 'rgba(255, 0, 0, 0.5)' } }])
     expect(layers[0]!.evaluateColor('fill-color', 0, undefined, 0.5)).toEqual([255, 0, 0, 64])
@@ -125,6 +133,45 @@ describe('ShapeBuilder', () => {
     const dashes = splitIntoDashes([{ x: 0, y: 0 }, { x: 100, y: 0 }], [10, 10])
     expect(dashes).toHaveLength(5)
     expect(dashes[1]).toEqual([{ x: 20, y: 0 }, { x: 30, y: 0 }])
+  })
+
+  it('extends square caps past the line ends', () => {
+    const builder = new ShapeBuilder()
+    builder.setGroup(0)
+    builder.addLine([{ x: 0, y: 0 }, { x: 10, y: 0 }], { width: 2, cap: 'square' })
+    const { positions, indices } = builder.build()!
+    expect(triangleArea(positions, indices)).toBeCloseTo(20 + 2 * 2)
+    const xs = [...positions].filter((_, index) => index % 2 === 0)
+    expect(Math.min(...xs)).toBeCloseTo(-1)
+    expect(Math.max(...xs)).toBeCloseTo(11)
+  })
+
+  it('draws zero-length dashes with round caps as dots', () => {
+    const builder = new ShapeBuilder()
+    builder.setGroup(0)
+    builder.addLine([{ x: 0, y: 0 }, { x: 100, y: 0 }], { width: 4, cap: 'round', dashes: [0, 20] })
+    const mesh = builder.build()!
+    expect(triangleArea(mesh.positions, mesh.indices)).toBeGreaterThan(5 * 0.9 * Math.PI * 4)
+  })
+
+  it('fills round joins on the outer side only, around the line vertex, also with a gap', () => {
+    const turn = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }]
+    const solid = new ShapeBuilder()
+    solid.setGroup(0)
+    solid.addLine(turn, { width: 10, join: 'round' })
+    let mesh = solid.build()!
+    // Two full 100 × 10 bands plus a quarter disc of radius 5 (polygonal, so slightly less).
+    expect(triangleArea(mesh.positions, mesh.indices)).toBeGreaterThan(2000 + 0.95 * (Math.PI * 25) / 4)
+    expect(triangleArea(mesh.positions, mesh.indices)).toBeLessThan(2000 + (Math.PI * 25) / 4 + 0.01)
+
+    const casing = new ShapeBuilder()
+    casing.setGroup(0)
+    casing.addLine(turn, { width: 2, gapWidth: 10, join: 'round' })
+    mesh = casing.build()!
+    // The outer band (radii 5 to 7) gets a quarter annulus; the inner band none.
+    const bands = 2 * 2 * 100 * 2
+    expect(triangleArea(mesh.positions, mesh.indices)).toBeGreaterThan(bands + 0.95 * (Math.PI * (49 - 25)) / 4)
+    expect(triangleArea(mesh.positions, mesh.indices)).toBeLessThan(bands + (Math.PI * (49 - 25)) / 4 + 0.01)
   })
 
   it('records draw groups for consecutive layers of a source', () => {
@@ -346,6 +393,18 @@ describe('MapStyleOverlay', () => {
     const ring = tiles.filter(tile => tile.textOnly)
     expect(ring).toHaveLength(5) // no row above the north edge
     expect(ring.find(tile => tile.column === -1)?.key).toBe(bucketKey({ sourceId: 'base', x: 3, y: 0, z: 2, zoom: 2 }))
+  })
+
+  it('skips ring tiles that labels cannot reach from', () => {
+    const overlay = overlayWithSource(14)
+    // A small region in the middle of tile (1, 1) of level 2: no neighbour is within a quarter tile.
+    expect(overlay.getRegionTiles([0.36, 0.6, 0.38, 0.62], 2).filter(tile => tile.textOnly)).toEqual([])
+  })
+
+  it('places the same tile at each wrapped column at zoom 0', () => {
+    const overlay = overlayWithSource(14)
+    const tiles = overlay.getRegionTiles([0, 0, 1, 1], 0)
+    expect(tiles.map(tile => [tile.column, tile.textOnly])).toEqual([[0, false], [-1, true], [1, true]])
   })
 
   it('overzooms past the source maximum zoom', () => {

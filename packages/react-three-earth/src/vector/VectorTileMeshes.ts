@@ -64,6 +64,7 @@ export class GlyphAtlasTexture {
   /** The texture node read by text materials; its value follows `texture` when the atlas grows. */
   readonly node: ReturnType<typeof texture>
   protected data = new Uint8Array(1)
+  protected dirty = false
 
   constructor() {
     this.texture = this.createTexture(1, 1)
@@ -89,7 +90,14 @@ export class GlyphAtlasTexture {
         this.data.set(glyph.data.subarray(row * glyph.width, (row + 1) * glyph.width), (glyph.y + row) * width + glyph.x)
       }
     }
-    if (update.glyphs.length > 0) this.texture.needsUpdate = true
+    if (update.glyphs.length > 0) this.dirty = true
+  }
+
+  /** Uploads the atlas if glyphs arrived since the last upload. Call before drawing text: one upload per batch. */
+  upload(): void {
+    if (!this.dirty) return
+    this.texture.needsUpdate = true
+    this.dirty = false
   }
 
   dispose(): void {

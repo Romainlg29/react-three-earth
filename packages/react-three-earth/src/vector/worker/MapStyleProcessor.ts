@@ -427,9 +427,17 @@ function representativePoint(type: VectorTileFeature['type'], geometry: Point[][
     }
     return first.at(-1)!
   }
-  const xs = first.map(point => point.x)
-  const ys = first.map(point => point.y)
-  return { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 }
+  let minimumX = Infinity
+  let minimumY = Infinity
+  let maximumX = -Infinity
+  let maximumY = -Infinity
+  for (const { x, y } of first) {
+    minimumX = Math.min(minimumX, x)
+    minimumY = Math.min(minimumY, y)
+    maximumX = Math.max(maximumX, x)
+    maximumY = Math.max(maximumY, y)
+  }
+  return { x: (minimumX + maximumX) / 2, y: (minimumY + maximumY) / 2 }
 }
 
 function firstAnchor(layer: CompiledStyleLayer, zoom: number, feature: StyleFeature): TextAnchor {

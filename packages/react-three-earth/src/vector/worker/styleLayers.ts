@@ -69,6 +69,10 @@ export class CompiledStyleLayer {
     this.maximumZoom = layer.maxzoom ?? 24
     this.visible = layer.layout?.visibility !== 'none'
     this.filter = featureFilter(layer.filter as never, layer.id)
+    // Compile every property now, so a bad expression skips the layer (with a warning) instead of failing tiles.
+    for (const kind of ['paint', 'layout'] as const) {
+      for (const name of Object.keys(specification[`${kind}_${this.type}`] ?? {})) this.compile(kind, name)
+    }
   }
 
   /** Whether the layer draws at this zoom (MapLibre: minzoom inclusive, maxzoom exclusive). */

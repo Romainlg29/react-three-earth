@@ -22,7 +22,7 @@ export interface MapStyleOverlayOptions {
   localFontFamily?: string
   /** Deepest zoom terrain tiles are textured at; past the data's maximum zoom, tiles are overzoomed. Default: 20. */
   maximumZoom?: number
-  /** Starts the worker. Default: the worker shipped with the library. Pass `null` to process on the main thread. */
+  /** Starts the worker. Default: the worker shipped with the library. Pass `null` to process on the main thread. Keep it stable (not an inline arrow in JSX), or the source reloads. */
   createWorker?: (() => Worker) | null
   /** Unused processed tiles kept for reuse, in bytes. Default: 32 MB. */
   retainedTileBytes?: number
@@ -159,7 +159,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const summary = this.summary
     if (summary === null) return false
     const level = this.calculateLevel(range)
-    return summary.backgroundByZoom[level] !== null || summary.sources.some(source => level >= source.minimumZoom)
+    return (summary.backgroundByZoom[Math.min(level, summary.backgroundByZoom.length - 1)] ?? null) !== null || summary.sources.some(source => level >= source.minimumZoom)
   }
 
   lockTexture(range: number[]): Promise<Texture> {
@@ -170,14 +170,16 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   getTexture(range: number[]): Promise<Texture | null> {
     const key = regionKey(range, this.calculateLevel(range))
     const target = this.queuedTargets.get(key)
-    if (target !== undefined) this.compositor?.prioritize(target)
-    else this.waitedRegions.add(key)
     const region = this.regions.peek(key)
+    if (target !== undefined) this.compositor?.prioritize(target)
+    else if (region !== null && this.regions.get(key) === null) this.waitedRegions.add(key) // still loading its tiles
     return region === null ? Promise.resolve(null) : region.then(result => result.texture)
   }
 
   releaseTexture(range: number[]): void {
-    this.regions.release(regionKey(range, this.calculateLevel(range)))
+    const key = regionKey(range, this.calculateLevel(range))
+    this.regions.release(key)
+    if (this.regions.peek(key) === null) this.waitedRegions.delete(key)
   }
 
   shouldSplit(range: number[]): boolean {
@@ -236,19 +238,27 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       const fromRow = Math.max(0, Math.floor((1 - maximumY) * count + epsilon))
       const toRow = Math.min(count - 1, Math.floor((1 - minimumY) * count - epsilon))
       if (fromRow > toRow) continue
-      const seen = new Set<string>()
+      // Labels reach about a quarter of a tile beyond their own; ring tiles further from the region are skipped.
+      const reach = 0.25
+      const regionLeft = minimumX * count
+      const regionRight = maximumX * count
+      const regionTop = (1 - maximumY) * count
+      const regionBottom = (1 - minimumY) * count
       for (const textOnly of [false, true]) {
         const ring = textOnly ? 1 : 0
         for (let column = fromColumn - ring; column <= toColumn + ring; column++) {
           for (let row = Math.max(0, fromRow - ring); row <= Math.min(count - 1, toRow + ring); row++) {
             const isInside = column >= fromColumn && column <= toColumn && row >= fromRow && row <= toRow
             if (textOnly && isInside) continue
+            if (textOnly) {
+              const gapX = Math.max(column - regionRight, regionLeft - (column + 1), 0)
+              const gapY = Math.max(row - regionBottom, regionTop - (row + 1), 0)
+              if (gapX > reach || gapY > reach) continue
+            }
+            // Columns wrap at the antimeridian: the same tile can be placed at several columns (low zooms).
             const x = ((column % count) + count) % count
             const request: TileRequest = { sourceId: source.id, x, y: row, z, zoom: level }
-            const key = bucketKey(request)
-            if (seen.has(key)) continue
-            seen.add(key)
-            tiles.push({ key, request, column, textOnly })
+            tiles.push({ key: bucketKey(request), request, column, textOnly })
           }
         }
       }
@@ -259,8 +269,12 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected async loadRegion(key: string, signal: AbortSignal): Promise<RenderTarget> {
     const { range, level } = parseRegionKey(key)
     const tiles = this.getRegionTiles(range, level)
-    // A tile that fails to load (network, decode) draws as empty rather than failing the whole region.
-    const loads = tiles.map(tile => this.buckets.lock(tile.key).catch(() => null))
+    // A missing tile (404) is an empty bucket. Any other failure fails the region, so 3DTilesRenderer reports
+    // a load error and retries it, rather than caching a hole.
+    const keys = [...new Set(tiles.map(tile => tile.key))]
+    const locks = new Map(keys.map(bucketKeyToLock => [bucketKeyToLock, this.buckets.lock(bucketKeyToLock)]))
+    for (const lock of locks.values()) lock.catch(() => {}) // handled through Promise.all below
+    const loads = tiles.map(tile => locks.get(tile.key)!)
     try {
       const buckets = await abortable(Promise.all(loads), signal)
       const compositor = this.compositor
@@ -284,7 +298,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       }
     } finally {
       this.waitedRegions.delete(key)
-      for (const tile of tiles) this.buckets.release(tile.key)
+      for (const key of keys) this.buckets.release(key)
     }
   }
 
@@ -295,13 +309,15 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     range: readonly number[],
     level: number,
     tiles: readonly RegionTile[],
-    buckets: ReadonlyArray<LoadedBucket | null>,
+    buckets: readonly LoadedBucket[],
   ): void {
     const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
     const width = maximumX - minimumX
     const height = maximumY - minimumY
     const scene = this.scene
-    const background = this.summary?.backgroundByZoom[level] ?? null
+    this.atlas.upload()
+    const backgrounds = this.summary?.backgroundByZoom ?? []
+    const background = backgrounds[Math.min(level, backgrounds.length - 1)] ?? null
     if (background !== null) {
       this.backgroundColor.set(background[0] / 255, background[1] / 255, background[2] / 255, background[3] / 255)
       scene.add(this.background)
