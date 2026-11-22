@@ -265,7 +265,8 @@ HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/cor
   (no lag behind the map). The overlay gives each frame a budget of 4 terrain raycasts, spent on terrain height reads
   (`heightMeters: 'terrain'`) and occlusion tests, served round robin from where the budget ran out (a unit test
   checks 100 markers all get theirs). Each marker re-checks at most every 250 ms, and only when the scene changed
-  (camera, morph, tiles loading); a check that had to wait asks for a frame 250 ms later, for `frameloop="demand"`.
+  (camera, morph, tiles loading); a check that had to wait asks for a frame, for `frameloop="demand"`: when its interval runs out, or at once
+  when only the budget was short.
   Hidden markers spend nothing.
 - **Visibility.** `'visible'`, `'occluded'` (faded to `occludedOpacity`) or `'hidden'` (behind the camera or the globe's
   horizon). Terrain occlusion runs only on the globe at rest: on the flat map the tiles are moved on the GPU, so the meshes
@@ -281,6 +282,9 @@ Changed from the brief:
   a per-anchor offset table.
 - New Earth `update` event (see above), so markers are placed in the frame that draws.
 - Terrain occlusion only on the globe at rest (see above).
+- `onClose` fires only when the user closes a popup, never when `open` turns false or the component unmounts, and a
+  popup's close-on-click listens in the capture phase, so clicking marker B closes A before B opens: the usual
+  "one selected popup" state works.
 - Focus: a popup opened from its marker takes focus; one the app opens takes it only when its content has a control;
   a pointer-tracking tooltip never does. `closeOnClick` closes only on clicks on the map (canvas or markers), not on
   controls or other popups. With `<Popup open>` on a marker, a marker click calls `onOpen` (`marker.togglePopupOnClick`).

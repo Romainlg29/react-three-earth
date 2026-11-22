@@ -409,6 +409,19 @@ async function markers() {
     focusOnMarker: document.activeElement === window.markers.peak.element,
   }))
 
+  // Controlled popups, one selected at a time: clicking the other marker moves the selection, not clears it.
+  const openPopups = () => page.evaluate(() => [...document.querySelectorAll('.react-three-earth-popup')].map(element => element.textContent.replace('×', '').trim()))
+  await page.click('.react-three-earth-marker[aria-label="Place east"]')
+  await page.waitForFunction(() => window.selectedPlace === 'east' && document.querySelectorAll('.react-three-earth-popup').length === 1, null, { timeout: 10_000 })
+  const afterFirst = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.waitForTimeout(300)
+  const afterSecond = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.waitForTimeout(300)
+  const afterThird = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
+  const selection = { afterFirst, afterSecond, afterThird }
+
   // Drag the orange pin 80 pixels to the right: it moves, the map does not.
   const viewBefore = await page.evaluate(() => window.earth.camera.getView())
   const handle = await page.$('.react-three-earth-marker[aria-label="Draggable marker"]')
@@ -453,6 +466,7 @@ async function markers() {
     afterEscape,
     drag: { ...drag, movedPixels: end.x - start.x },
     strictMode: { ...strictMode, errors: strict.errors },
+    selection,
     errors,
   })
 }

@@ -178,18 +178,49 @@ popup only when it lands on the map (the canvas or a marker), not on a control o
 fits), `offsetPixels` (a distance, or `{ xPixels, yPixels }`), `closeOnClick` (default true),
 `closeOnMove` (default false), `closeButton`, `maximumWidthPixels` (default 240), `label`, `onOpen`.
 
+One popup open at a time, opened from markers or from a list:
+
+```tsx
+import { useState } from 'react'
+import { Marker, Popup } from 'react-three-earth/react'
+
+const places = [
+  { id: 'paris', name: 'Paris', longitudeDegrees: 2.35, latitudeDegrees: 48.86 },
+  { id: 'lyon', name: 'Lyon', longitudeDegrees: 4.84, latitudeDegrees: 45.76 },
+]
+
+export function Places() {
+  const [selected, setSelected] = useState<string | null>(null)
+  return places.map(place => (
+    <Marker key={place.id} longitudeDegrees={place.longitudeDegrees} latitudeDegrees={place.latitudeDegrees} label={place.name}>
+      {/* onClose fires only when the user closes it, never when `open` turns false. */}
+      <Popup open={selected === place.id} onOpen={() => setSelected(place.id)} onClose={() => setSelected(null)}>
+        {place.name}
+      </Popup>
+    </Marker>
+  ))
+}
+```
+
 ### Reading the marker
 
 `useMarker()` returns the vanilla `Marker` of the nearest `<Marker>`, in its content too. `ref` on
 `<Marker>` or `<Popup>` gives the vanilla object: `marker.getPosition()`, `marker.visibility`,
 `marker.togglePopup()`.
 
+`marker.visibility` is a plain field, not React state: read it in a frame callback, and keep it in state
+only when it changes.
+
 ```tsx
-import { Marker, useMarker } from 'react-three-earth/react'
+import { useState } from 'react'
+import { Marker, useEarthFrame, useMarker } from 'react-three-earth/react'
 
 function VisibilityText() {
   const marker = useMarker()
-  return <span>{marker?.visibility ?? 'hidden'}</span>
+  const [visibility, setVisibility] = useState('hidden')
+  // Renders only when the value changes (React skips an identical state).
+  useEarthFrame(() => setVisibility(marker?.visibility ?? 'hidden'))
+  return <span>{visibility}</span>
 }
 
 export function Debug() {
@@ -283,8 +314,9 @@ export function followScreen(earth: Earth, element: HTMLElement) {
 All markers and popups of an earth share one overlay with a budget of 4 terrain raycasts a frame (height
 reads and occlusion tests), served in turn so every marker gets its checks however many there are; each
 marker re-checks at most every 250 ms, and only after the camera moved or tiles loaded. With
-`frameloop="demand"` the overlay asks for a frame when a check had to wait, so answers settle after the
-camera stops. A marker can show for a quarter of a second after terrain starts to hide it.
+`frameloop="demand"` the overlay asks for a frame when a check had to wait (at once when only the budget
+was short), so answers settle after the camera stops: 2 markers a frame, about a second for 100 terrain
+markers at 60 fps. A marker can show for a quarter of a second after terrain starts to hide it.
 
 ## Common Mistakes
 

@@ -82,6 +82,7 @@ declare global {
     mapStyleSource?: MapStyleSourceImpl | null
     markers?: Record<string, MarkerImpl | null>
     dragEnds?: GeographicPosition[]
+    selectedPlace?: string | null
   }
 }
 
@@ -104,8 +105,22 @@ function Markers() {
   const peak = useFixtures ? { longitudeDegrees: -90, latitudeDegrees: 0, name: 'Fixture peak', heightMeters: 3900 } : { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, name: 'Mount Fuji', heightMeters: 3776 }
   const [dragged, setDragged] = useState<GeographicPosition>({ longitudeDegrees: peak.longitudeDegrees + 0.05, latitudeDegrees: peak.latitudeDegrees - 0.05 })
   const markers = (window.markers ??= {})
+  // One popup open at a time, controlled: the "selected place" pattern.
+  const [selected, setSelected] = useState<string | null>(null)
+  window.selectedPlace = selected
+  const places = [
+    { id: 'east', longitudeDegrees: peak.longitudeDegrees + 0.08, latitudeDegrees: peak.latitudeDegrees + 0.02 },
+    { id: 'west', longitudeDegrees: peak.longitudeDegrees - 0.06, latitudeDegrees: peak.latitudeDegrees - 0.04 },
+  ]
   return (
     <>
+      {places.map(place => (
+        <Marker key={place.id} longitudeDegrees={place.longitudeDegrees} latitudeDegrees={place.latitudeDegrees} color="#7048e8" label={`Place ${place.id}`}>
+          <Popup open={selected === place.id} onOpen={() => setSelected(place.id)} onClose={() => setSelected(null)}>
+            Place {place.id}
+          </Popup>
+        </Marker>
+      ))}
       <Marker longitudeDegrees={peak.longitudeDegrees} latitudeDegrees={peak.latitudeDegrees} label={peak.name} ref={marker => void (markers.peak = marker)}>
         <Popup>
           <strong>{peak.name}</strong>

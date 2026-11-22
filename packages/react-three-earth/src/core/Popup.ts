@@ -107,6 +107,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
   protected focusBeforeOpen: Element | null = null
   /** Focus moves in at the first frame the popup shows (an element hidden with `visibility` cannot take it). */
   protected focusPending = false
+  protected focusWhenContentArrives = false
   /** Milliseconds between two reads of the terrain under the popup's position. */
   terrainCheckIntervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS
 
@@ -162,6 +163,11 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
         ? null
         : new ResizeObserver(() => {
             this.size = { widthPixels: this.element.offsetWidth, heightPixels: this.element.offsetHeight }
+            if (this.focusWhenContentArrives && this.contentElement.childNodes.length > 0) {
+              this.focusWhenContentArrives = false
+              this.focusPending = this.contentElement.querySelector(FOCUSABLE) !== null
+              if (!this.hidden) this.focusInside()
+            }
             // Content that arrives after opening (a React root renders later) may need the other side.
             if (this.earth !== null) ScreenOverlay.of(this.earth).refresh(this)
           })
@@ -181,7 +187,8 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     acquireScreenLayer(container).append(this.element)
     this.resizeObserver?.observe(this.element, { box: 'border-box' })
     container.addEventListener('pointerdown', this.onContainerPointerDown, true)
-    container.addEventListener('click', this.onContainerClick)
+    // Capture: a click on another marker closes this popup before that marker opens its own (or asks the app to).
+    container.addEventListener('click', this.onContainerClick, true)
     if (this.trackingPointer) this.listenToPointer(container)
     earth.addEventListener('movestart', this.onMoveStart)
     this.marker?.element.setAttribute('aria-expanded', 'true')
@@ -190,7 +197,10 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.dispatchEvent({ type: 'open' })
     // Opened by the user (a marker click): focus moves in. Opened by the app: focus moves only to a control in
     // the content, never away from what the user is typing in to an empty box. A tooltip never takes it.
-    this.focusPending = this.focusAfterOpen && !this.trackingPointer && (focus || this.contentElement.querySelector(FOCUSABLE) !== null)
+    const mayFocus = this.focusAfterOpen && !this.trackingPointer
+    this.focusPending = mayFocus && (focus || this.contentElement.querySelector(FOCUSABLE) !== null)
+    // Content rendered after opening (a React root renders later) gets one look for a control when it arrives.
+    this.focusWhenContentArrives = mayFocus && !this.focusPending && this.contentElement.childNodes.length === 0
     if (!this.hidden) this.focusInside()
     return this
   }
@@ -204,7 +214,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     ScreenOverlay.of(earth).delete(this)
     this.resizeObserver?.unobserve(this.element)
     container.removeEventListener('pointerdown', this.onContainerPointerDown, true)
-    container.removeEventListener('click', this.onContainerClick)
+    container.removeEventListener('click', this.onContainerClick, true)
     this.stopListeningToPointer(container)
     earth.removeEventListener('movestart', this.onMoveStart)
     this.element.remove()
@@ -222,6 +232,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     }
     this.focusBeforeOpen = null
     this.focusPending = false
+    this.focusWhenContentArrives = false
     this.dispatchEvent({ type: 'close' })
     return this
   }

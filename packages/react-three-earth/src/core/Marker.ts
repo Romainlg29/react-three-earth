@@ -397,8 +397,10 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     const earth = this.earth
     if (earth === null) return
     let point = this.project(frame)
-    // Behind the horizon or the camera: no terrain work for a marker nobody sees.
-    if (point === null) {
+    // Behind the horizon or the camera: no terrain work for a marker nobody sees, except a first read of its
+    // height, which may lift it above the horizon (a far summit seen from low down).
+    const neverRead = this.terrainHeightCheck.lastCheckSceneVersion === -1
+    if (point === null && !neverRead) {
       this.setVisibility('hidden')
       return
     }
@@ -408,11 +410,11 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
       if (heightMeters !== this.terrainHeightMeters) {
         this.terrainHeightMeters = heightMeters
         point = this.project(frame)
-        if (point === null) {
-          this.setVisibility('hidden')
-          return
-        }
       }
+    }
+    if (point === null) {
+      this.setVisibility('hidden')
+      return
     }
     if (startTerrainCheck(frame, this.occlusionCheck, this.terrainCheckIntervalMilliseconds)) {
       const distanceMeters = point.distanceTo(frame.cameraPosition)

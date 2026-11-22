@@ -32,8 +32,11 @@ export interface ScreenOverlayFrame {
    * loaded. A marker checked at the current version needs no new check.
    */
   sceneVersion: number
-  /** Set by an item whose terrain check is stale but had to wait: the overlay asks for a later frame. */
-  followUpNeeded: boolean
+  /**
+   * Set by an item whose terrain check is stale but had to wait: the overlay asks for a frame this many
+   * milliseconds later (0 when only the budget was short). Infinity when nothing waits.
+   */
+  followUpDelayMilliseconds: number
 }
 
 /** When an item last read the terrain: see `startTerrainCheck`. */
@@ -100,7 +103,7 @@ export class ScreenOverlay {
       timeMilliseconds: 0,
       raycastsLeft: 0,
       sceneVersion: 0,
-      followUpNeeded: false,
+      followUpDelayMilliseconds: Infinity,
     }
   }
 
@@ -141,7 +144,7 @@ export class ScreenOverlay {
     if (!this.prepareFrame()) return
     this.updateSceneVersion()
     frame.raycastsLeft = TERRAIN_RAYCASTS_PER_FRAME
-    frame.followUpNeeded = false
+    frame.followUpDelayMilliseconds = Infinity
     // Round robin: start where the budget ran out last frame, so every marker gets its checks however many there are.
     const count = this.markers.length
     const start = count === 0 ? 0 : this.cursor % count
@@ -156,11 +159,11 @@ export class ScreenOverlay {
     frame.raycastsLeft = Math.max(frame.raycastsLeft, 1)
     for (const popup of this.popups) popup.updateScreen(frame)
     // With on-demand rendering no frame may come: ask for one when a stale check had to wait.
-    if (frame.followUpNeeded && this.followUpTimer === null) {
+    if (frame.followUpDelayMilliseconds !== Infinity && this.followUpTimer === null) {
       this.followUpTimer = setTimeout(() => {
         this.followUpTimer = null
         this.earth.requestFrame()
-      }, TERRAIN_CHECK_INTERVAL_MILLISECONDS)
+      }, frame.followUpDelayMilliseconds)
     }
   }
 
@@ -203,8 +206,14 @@ export class ScreenOverlay {
  */
 export function startTerrainCheck(frame: ScreenOverlayFrame, state: TerrainCheckState, intervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS): boolean {
   if (state.lastCheckSceneVersion === frame.sceneVersion) return false
-  if (frame.timeMilliseconds - state.lastCheckMilliseconds < intervalMilliseconds || !takeRaycast(frame)) {
-    frame.followUpNeeded = true
+  const waitMilliseconds = intervalMilliseconds - (frame.timeMilliseconds - state.lastCheckMilliseconds)
+  if (waitMilliseconds > 0) {
+    frame.followUpDelayMilliseconds = Math.min(frame.followUpDelayMilliseconds, waitMilliseconds)
+    return false
+  }
+  // Out of budget: the next frame serves the next markers in turn, at once.
+  if (!takeRaycast(frame)) {
+    frame.followUpDelayMilliseconds = 0
     return false
   }
   state.lastCheckMilliseconds = frame.timeMilliseconds

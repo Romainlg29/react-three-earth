@@ -74,7 +74,8 @@ const expectations = {
     ['the popup opens on click, above the pin, with focus inside', r.popup.text.includes('Fixture peak') && r.popup.anchor === 'bottom' && r.popup.focusInside && Math.abs(r.popup.gapAbovePinPixels) <= 1 && r.popup.centreOffsetPixels <= 1],
     ['Escape closes the popup and gives focus back to the marker', !r.afterEscape.open && r.afterEscape.focusOnMarker],
     ['dragging moves the marker, fires dragend once, and leaves the map still', r.drag.dragEnds === 1 && r.drag.movedPixels > 60 && r.drag.cameraMovedMeters < 1],
-    ['under StrictMode: three markers, two pins, content and popup render, no errors', r.strictMode.markerElements === 3 && r.strictMode.pinsShown === 2 && r.strictMode.buriedText === 'sea level' && r.strictMode.popupText.includes('Fixture peak') && r.strictMode.errors.length === 0],
+    ['controlled popups: a click on another marker moves the selection (one open), a second click closes it', JSON.stringify(r.selection) === JSON.stringify({ afterFirst: { selected: 'east', open: ['Place east'] }, afterSecond: { selected: 'west', open: ['Place west'] }, afterThird: { selected: null, open: [] } })],
+    ['under StrictMode: five markers, four pins, content and popup render, no errors', r.strictMode.markerElements === 5 && r.strictMode.pinsShown === 4 && r.strictMode.buriedText === 'sea level' && r.strictMode.popupText.includes('Fixture peak') && r.strictMode.errors.length === 0],
   ],
 }
 

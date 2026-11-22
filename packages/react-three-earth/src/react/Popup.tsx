@@ -97,6 +97,15 @@ function PopupContent({
   const parent = container ?? renderer.domElement.parentElement
   const popup = useMemo(() => new PopupImpl({ closeButton }), [closeButton])
   useImperativeHandle(ref, () => popup, [popup])
+  // True while this component closes the popup itself (its `open` prop, unmounting): not the user, so no
+  // `onClose`. Declared first, so on unmount it is set before the cleanups below close the popup.
+  const closingItself = useRef(false)
+  useLayoutEffect(() => {
+    closingItself.current = false
+    return () => {
+      closingItself.current = true
+    }
+  }, [popup])
 
   useLayoutEffect(() => {
     if (marker === null) return
@@ -138,8 +147,8 @@ function PopupContent({
       if (!controlled) handlers.current.onOpen?.()
     }
     const closed = () => {
-      // Closed because its marker left the map (unmounting, moving): not the user's doing.
-      if (marker !== null && marker.getEarth() === null) return
+      // Closed by this component, or because its marker left the map (unmounting, moving): not the user's doing.
+      if (closingItself.current || (marker !== null && marker.getEarth() === null)) return
       handlers.current.onClose?.()
     }
     popup.addEventListener('open', opened)
@@ -171,7 +180,11 @@ function PopupContent({
     if (shouldOpen === undefined) return
     const target = marker === null ? { earth, container: parent } : { earth: marker.getEarth(), container: marker.getContainer() }
     if (shouldOpen && !popup.isOpen() && target.earth !== null && target.container !== null) popup.addTo(target.earth, target.container, { focus: marker !== null })
-    if (!shouldOpen && popup.isOpen()) popup.remove()
+    if (!shouldOpen && popup.isOpen()) {
+      closingItself.current = true
+      popup.remove()
+      closingItself.current = false
+    }
   }, [popup, shouldOpen, marker, earth, parent])
   // A standalone popup closes when it unmounts; on a marker, `setPopup(null)` above closes it.
   useLayoutEffect(() => () => void popup.remove(), [popup])

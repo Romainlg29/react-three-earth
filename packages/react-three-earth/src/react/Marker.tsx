@@ -173,17 +173,28 @@ function MarkerContent({
 }
 
 /**
- * The default pin, shown by CSS only while it is the marker's sole element. After each render it tells whether
- * it shows, so the default anchor follows: 'bottom' on the pin, 'center' on content of your own.
+ * The default pin, shown by CSS only while it is the marker's sole element. It watches the marker's children so
+ * the default anchor follows: 'bottom' on the pin, 'center' on content of your own.
  */
 function FallbackPin({ marker, anchor }: { marker: MarkerImpl; anchor: ScreenAnchor | undefined }) {
   const element = useRef<HTMLSpanElement>(null)
+  const latestAnchor = useRef(anchor)
+  latestAnchor.current = anchor
   useLayoutEffect(() => {
-    const pin = element.current
-    if (pin === null) return
-    const showsPin = pin.parentElement?.childElementCount === 1
-    marker.element.classList.toggle('react-three-earth-marker-has-pin', showsPin)
-    if (anchor === undefined) marker.setAnchor(showsPin ? 'bottom' : 'center')
-  })
+    const host = element.current?.parentElement
+    if (host == null) return
+    const check = () => {
+      if (latestAnchor.current === undefined) marker.setAnchor(host.childElementCount === 1 ? 'bottom' : 'center')
+    }
+    check()
+    // Content that comes and goes without the marker rendering (a child's own state, Suspense).
+    const observer = new MutationObserver(check)
+    observer.observe(host, { childList: true })
+    return () => observer.disconnect()
+  }, [marker])
+  useLayoutEffect(() => {
+    const host = element.current?.parentElement
+    if (host != null && anchor === undefined) marker.setAnchor(host.childElementCount === 1 ? 'bottom' : 'center')
+  }, [marker, anchor])
   return <span ref={element} className="react-three-earth-marker-fallback-pin" aria-hidden="true" dangerouslySetInnerHTML={{ __html: PIN_SVG }} />
 }
