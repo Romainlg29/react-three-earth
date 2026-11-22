@@ -36,7 +36,9 @@ const expectations = {
     ['invalidate reports pending recompositions', r.pendingAfterCall > 0],
     ['lakes end pink', r.after.pinkShare > r.before.blueShare * 0.6 && r.after.blueShare < r.before.blueShare * 0.2],
     ['no frame of missing texture (lakes stay drawn)', r.minimumLakeShareDuringRedraw > r.before.blueShare * 0.6],
-    ['only regions in the bounds redrawn', r.regionsRedrawn > 0 && r.regionsRedrawn < 200],
+    // The bounds cover the lakes, not the whole view: far regions (the horizon, the globe) stay as they are.
+    ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
+    ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
   ],
 }
 

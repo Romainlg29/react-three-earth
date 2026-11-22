@@ -179,6 +179,19 @@ describe('RefCountedCache.discard', () => {
   })
 })
 
+describe('RefCountedCache.dispose', () => {
+  it('ignores leases released after it, so a disposed cache keeps nothing', async () => {
+    const dispose = vi.fn()
+    const cache = new RefCountedCache({ load: async () => ({}), dispose, getByteLength: () => 1, retainedBytes: 100 })
+    const lease = cache.acquire('a')
+    await lease.promise
+    cache.dispose()
+    lease.release()
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(cache.size).toBe(0)
+  })
+})
+
 describe('ImageryCompositor queues', () => {
   it('draws first textures of visible tiles, then recompositions, then preloads, and runs frame tasks once first', async () => {
     const compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
@@ -328,8 +341,11 @@ describe('MapStyleProcessor.invalidate', () => {
     processor.invalidate(boundsToMercatorRectangles({ westDegrees: 10, southDegrees: 10, eastDegrees: 20, northDegrees: 20 }))
     await Promise.all([process(0, 1), process(1, 1)])
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual(['https://maps.test/1/0/0.pbf', 'https://maps.test/1/1/0.pbf', 'https://maps.test/1/1/0.pbf'])
+    // Refetched tiles skip the browser cache's freshness, so a cached copy from before the change is not reused.
+    expect(fetchSpy.mock.calls.map(([, init]) => (init as RequestInit).cache)).toEqual([undefined, undefined, 'no-cache'])
     processor.invalidate(null)
     await process(0, 1)
     expect(fetchSpy).toHaveBeenCalledTimes(4)
+    expect((fetchSpy.mock.calls[3]![1] as RequestInit).cache).toBe('no-cache')
   })
 })

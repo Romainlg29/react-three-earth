@@ -126,14 +126,19 @@ the foundation GeoJSON `setData`, style edits, feature-state and runtime images 
   visible tiles) and `preload`, under the same per-frame budget. Invalidations mark regions synchronously and start
   their redraws from `runBeforeNextRender`, a once-per-frame task, so calls within a frame coalesce into one redraw
   per region.
-- `earth.inspect().terrain.imageryRecompositionsPending` counts regions waiting or redrawing.
+- Refetches cannot come back stale from the browser: tiles in areas invalidated so far are fetched with
+  `cache: 'no-cache'` (a conditional request, 304 when unchanged; past 64 areas, every tile). A PMTiles source
+  re-reads its header and directories on any invalidate, and its range requests revalidate from then on.
+- A cache disposed while leases are out ignores their later release, so a disposed overlay keeps nothing.
+- `earth.inspect().terrain.imageryRecompositionsPending` counts regions waiting or redrawing; redraws also count
+  in `imageryTilesComposited`.
 - Raster overlays (`XYZImageryOverlay`) are out of scope: their exact-tile fast path hands the source texture to
   terrain materials, so a redraw would need to rebind materials through upstream private state (W7 / W14 if needed).
 
 | Check | Result |
 | --- | --- |
-| Unit tests | 11 new: only overlapping regions (label ring included) redraw, antimeridian, invalidation during a load and during a redraw end fresh, released regions stop redrawing, coalescing, leases, queue order, worker raw-tile cache |
-| Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: 90 regions report pending, then redraw; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
+| Unit tests | 13 new (158 total): only overlapping regions (label ring included) redraw, antimeridian, invalidation during a load and during a redraw end fresh, released regions stop redrawing, coalescing, leases and dispose, queue order, worker raw-tile cache and revalidation, replaced PMTiles archive |
+| Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: of 106 regions held, 90 reach into the bounds and redraw once each; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
 
 ![before](map-vector-invalidate-before.png) ![after](map-vector-invalidate-after.png)
 

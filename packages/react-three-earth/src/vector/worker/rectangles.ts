@@ -43,8 +43,9 @@ function wrapLongitude(longitudeDegrees: number): number {
 }
 
 /**
- * Converts geographic bounds to one rectangle, or two when they cross the antimeridian (`westDegrees` greater
- * than `eastDegrees` once both are wrapped to [-180, 180)). Bounds 360° wide or more span every longitude.
+ * Converts geographic bounds to one rectangle, or two when they cross the antimeridian. The span runs east
+ * from `westDegrees` to `eastDegrees` (across the antimeridian when west is greater); longitudes outside
+ * [-180, 180) wrap. Bounds 360° wide or more span every longitude.
  */
 export function boundsToMercatorRectangles({ westDegrees, southDegrees, eastDegrees, northDegrees }: Bounds): MercatorRectangle[] {
   for (const [name, value] of Object.entries({ westDegrees, southDegrees, eastDegrees, northDegrees })) {

@@ -4,8 +4,13 @@ import { PMTiles, TileType } from 'pmtiles'
 export interface VectorTileFetcher {
   readonly minimumZoom: number
   readonly maximumZoom: number
-  /** Null for a tile that does not exist (404, or empty). */
-  fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null>
+  /**
+   * Null for a tile that does not exist (404, or empty). `revalidate` bypasses the browser's HTTP cache
+   * freshness (`cache: 'no-cache'`): the server is asked again, and answers 304 if the tile did not change.
+   */
+  fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate?: boolean): Promise<Uint8Array | null>
+  /** Forgets what the fetcher caches itself (a PMTiles archive's header and directories). */
+  invalidate?(): void
 }
 
 /** The parts of a style's vector source read here. */
@@ -81,8 +86,9 @@ export class XYZFetcher implements VectorTileFetcher {
     return template.replace(/{z}/g, String(z)).replace(/{x}/g, String(x)).replace(/{y}/g, String(row))
   }
 
-  async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {
-    const response = await this.context.fetch(this.getUrl(x, y, z), { headers: this.context.requestHeaders, signal })
+  async fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate = false): Promise<Uint8Array | null> {
+    const init: RequestInit = { headers: this.context.requestHeaders, signal, ...(revalidate ? { cache: 'no-cache' as const } : {}) }
+    const response = await this.context.fetch(this.getUrl(x, y, z), init)
     if (response.status === 404 || response.status === 204) return null
     if (!response.ok) throw new Error(`MapStyleSource: tile ${z}/${x}/${y} answered ${response.status}.`)
     const bytes = new Uint8Array(await response.arrayBuffer())
@@ -99,19 +105,25 @@ export async function decompressIfGzipped(bytes: Uint8Array): Promise<Uint8Array
 
 /** A PMTiles v3 archive read with HTTP range requests. */
 export class PMTilesFetcher implements VectorTileFetcher {
+  /** Pending re-read of the header after `invalidate`; tiles wait for it. */
+  protected invalidation: Promise<void> | null = null
+
   protected constructor(
     protected readonly archive: PMTiles,
     readonly minimumZoom: number,
     readonly maximumZoom: number,
+    protected readonly options: { revalidate: boolean },
   ) {}
 
   static async create(url: string, context: FetcherContext): Promise<PMTilesFetcher> {
+    // Once invalidated, the archive may have been replaced: range requests skip the HTTP cache's freshness.
+    const options = { revalidate: false }
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
       getBytes: async (offset: number, length: number, signal?: AbortSignal) => {
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
-        const response = await context.fetch(url, { headers, signal })
+        const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) })
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
           throw new Error(`MapStyleSource: PMTiles ${url} answered ${response.status}; the server must support range requests.`)
         }
@@ -125,10 +137,22 @@ export class PMTilesFetcher implements VectorTileFetcher {
     })
     const header = await archive.getHeader()
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
-    return new PMTilesFetcher(archive, header.minZoom, header.maxZoom)
+    return new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
+  }
+
+  /** The archive file may have been replaced: its header and directories are read again. */
+  invalidate(): void {
+    this.options.revalidate = true
+    const previous = this.invalidation ?? Promise.resolve()
+    const invalidation = previous.then(() => this.archive.cache.invalidate(this.archive.source)).catch(() => {})
+    this.invalidation = invalidation
+    void invalidation.finally(() => {
+      if (this.invalidation === invalidation) this.invalidation = null
+    })
   }
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {
+    if (this.invalidation !== null) await this.invalidation
     const response = await this.archive.getZxy(z, x, y, signal)
     if (response === undefined || response.data.byteLength === 0) return null
     return new Uint8Array(response.data)

@@ -173,8 +173,12 @@ async function vectorInvalidate() {
   const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
 
   await setWaterColor('#e0457b')
-  await page.evaluate(() => window.mapStyleSource.invalidate({ westDegrees: 138.4, southDegrees: 35.3, eastDegrees: 139.1, northDegrees: 35.65 }))
-  const pendingAfterCall = await page.evaluate(() => window.earth.inspect().terrain.imageryRecompositionsPending)
+  // In the same task as the call, so no frame runs between: regions marked, and regions held in total.
+  const { pendingAfterCall, regionsHeld } = await page.evaluate(() => {
+    window.mapStyleSource.invalidate({ westDegrees: 138.4, southDegrees: 35.3, eastDegrees: 139.1, northDegrees: 35.65 })
+    const overlays = [...window.mapStyleSource.overlays] // protected, read for the check only
+    return { pendingAfterCall: window.earth.inspect().terrain.imageryRecompositionsPending, regionsHeld: overlays.reduce((sum, overlay) => sum + overlay.regions.size, 0) }
+  })
   const during = []
   const startMilliseconds = Date.now()
   while (Date.now() - startMilliseconds < 120_000) {
@@ -197,6 +201,7 @@ async function vectorInvalidate() {
     before,
     after,
     pendingAfterCall,
+    regionsHeld,
     framesDuringRedraw: during.length,
     minimumLakeShareDuringRedraw: Math.min(...lakeShares),
     regionsRedrawn: composedAfter - composedBefore,

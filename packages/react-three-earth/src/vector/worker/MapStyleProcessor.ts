@@ -67,6 +67,11 @@ export class MapStyleProcessor {
   protected readonly fetchers: Map<string, VectorTileFetcher>
   protected readonly glyphs: GlyphProvider
   protected readonly rawTiles = new Map<string, RawTileEntry>()
+  /**
+   * Areas invalidated so far (`null`: everywhere): tiles there are fetched with `cache: 'no-cache'`, so the
+   * browser's HTTP cache cannot hand back the tile from before the change. Past 64 areas, everywhere.
+   */
+  protected revalidatedAreas: MercatorRectangle[] | null = []
 
   protected constructor(layers: CompiledStyleLayer[], fetchers: Map<string, VectorTileFetcher>, glyphs: GlyphProvider, skipped: string[]) {
     this.layers = layers
@@ -365,6 +370,9 @@ export class MapStyleProcessor {
    * Requests already waiting on a forgotten tile still get it.
    */
   invalidate(rectangles: readonly MercatorRectangle[] | null): void {
+    if (rectangles === null || this.revalidatedAreas === null || this.revalidatedAreas.length + rectangles.length > 64) this.revalidatedAreas = null
+    else this.revalidatedAreas.push(...rectangles)
+    for (const fetcher of this.fetchers.values()) fetcher.invalidate?.()
     for (const [key, entry] of this.rawTiles) {
       if (tileOverlaps(entry.x, entry.y, entry.z, rectangles)) this.rawTiles.delete(key)
     }
@@ -384,7 +392,7 @@ export class MapStyleProcessor {
         z,
         controller,
         waiters: 0,
-        promise: fetcher.fetchTile(x, y, z, controller.signal).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
+        promise: fetcher.fetchTile(x, y, z, controller.signal, this.revalidatedAreas === null || (this.revalidatedAreas.length > 0 && tileOverlaps(x, y, z, this.revalidatedAreas))).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
       }
       created.promise.catch(() => {
         if (this.rawTiles.get(key) === created) this.rawTiles.delete(key) // retry next time

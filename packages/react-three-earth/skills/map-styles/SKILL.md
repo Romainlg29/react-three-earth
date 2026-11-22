@@ -113,7 +113,11 @@ export function LiveMap({ changes }: { changes: EventTarget }) {
 - No argument redraws everything. Bounds are `GeographicBounds` (`westDegrees`, `southDegrees`,
   `eastDegrees`, `northDegrees`); `westDegrees > eastDegrees` crosses the antimeridian.
 - Cached tiles in the bounds are fetched and processed again; textures that draw them redraw, including
-  neighbours whose labels reach in. Other tiles and textures are untouched.
+  neighbours whose labels reach in. Other tiles and textures are untouched. From then on, tiles in
+  invalidated areas are requested with `cache: 'no-cache'`, so the browser's HTTP cache revalidates them
+  (a 304 when unchanged) instead of returning the old copy.
+- PMTiles: any `invalidate` also re-reads the archive's header and directories, so a replaced `.pmtiles`
+  file is read at its new offsets. Call `invalidate()` with no bounds after replacing the whole archive.
 - No flicker: each texture keeps its old content until the new one is drawn over it in one pass. Textures
   still loading when you call it finish, then redraw.
 - Calls within a frame are coalesced. Redraws share the imagery composition budget, after the first
@@ -134,10 +138,11 @@ properties today, give `<MapStyleSource>` a new `style` object: the layer reload
 
 Each new object reloads the source, worker included. Memoise them, and keep `createWorker` stable.
 
-### HIGH: The server or a CDN caches the changed tiles
+### HIGH: A CDN caches the changed tiles
 
-`invalidate` only drops the library's caches. If the HTTP response is cached, the old tile comes back. Send
-`Cache-Control: no-cache` (or versioned URLs) for tiles that change.
+`invalidate` drops the library's caches and makes the browser revalidate, but a CDN in front of the tile
+server can still answer with the old tile. Purge it, or serve changing tiles with `Cache-Control: no-cache`
+(or versioned URLs).
 
 ### MEDIUM: Bounds in the wrong order
 

@@ -240,7 +240,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       if (!this.regionReaches(key, rectangles)) continue
       const work = this.loadingRegions.get(key) ?? this.recompositions.get(key)
       if (work !== undefined) work.stale = true
-      else if (this.regions.get(key) !== null) this.staleRegions.add(key)
+      // Loaded, or between the end of its load and the cache marking it loaded: redraw next frame.
+      else if (this.regions.get(key) !== null || this.regions.isLoading(key)) this.staleRegions.add(key)
     }
     if (this.staleRegions.size > 0) this.compositor?.runBeforeNextRender(this.startRecompositions)
   }
@@ -399,8 +400,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (compositor === null || this.disposed) return
     for (const key of keys) {
       const target = this.regions.get(key)
-      // Released meanwhile, or loading again after a failure (that load draws fresh tiles).
-      if (target === null || this.recompositions.has(key)) continue
+      if (target === null) {
+        // Its load just ended and the cache marks it loaded within microtasks: try again next frame.
+        if (this.regions.isLoading(key) && !this.loadingRegions.has(key)) {
+          this.staleRegions.add(key)
+          compositor.runBeforeNextRender(this.startRecompositions)
+        }
+        continue // otherwise released meanwhile
+      }
       void this.recomposeRegion(key, target, compositor)
     }
   }

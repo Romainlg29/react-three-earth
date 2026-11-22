@@ -5,6 +5,7 @@ interface Entry<Value> {
   /** Set once the promise resolves. */
   value: Value | undefined
   resolved: boolean
+  failed: boolean
   bytes: number
   /** Taken out of the cache by `discard` while locked: freed by its last lease, never retained. */
   discarded: boolean
@@ -98,7 +99,7 @@ export class RefCountedCache<Value> {
       return entry
     }
     const controller = new AbortController()
-    const created: Entry<Value> = { count: 1, controller, promise: undefined as never, value: undefined, resolved: false, bytes: 0, discarded: false }
+    const created: Entry<Value> = { count: 1, controller, promise: undefined as never, value: undefined, resolved: false, failed: false, bytes: 0, discarded: false }
     created.promise = this.options.load(key, controller.signal).then(value => {
       if (controller.signal.aborted) {
         this.options.dispose(value, key)
@@ -110,7 +111,7 @@ export class RefCountedCache<Value> {
       return value
     })
     // A failed load stays (as upstream DataCache does) until its last lock goes, then the next lock retries.
-    created.promise.catch(() => {})
+    created.promise.catch(() => void (created.failed = true))
     this.entries.set(key, created)
     return created
   }
@@ -119,6 +120,12 @@ export class RefCountedCache<Value> {
   peek(key: string): Promise<Value> | null {
     const entry = this.entries.get(key)
     return entry !== undefined && entry.count > 0 ? entry.promise : null
+  }
+
+  /** Whether this key is locked and its value still loading (neither loaded nor failed). */
+  isLoading(key: string): boolean {
+    const entry = this.entries.get(key)
+    return entry !== undefined && entry.count > 0 && !entry.resolved && !entry.failed
   }
 
   /** The loaded value, if this key is locked and done loading. */
@@ -145,9 +152,13 @@ export class RefCountedCache<Value> {
     this.drop(key, entry)
   }
 
-  /** Frees everything, locked or not. */
+  /** Frees everything, locked or not. Leases released later do nothing. */
   dispose(): void {
-    for (const [key, entry] of this.entries) this.drop(key, entry)
+    for (const [key, entry] of this.entries) {
+      entry.count = 0
+      entry.discarded = true
+      this.drop(key, entry)
+    }
     this.unused.clear()
     this.unusedBytes = 0
   }

@@ -26,7 +26,7 @@ export interface EarthInspection {
     tilesParsing: number
     memoryUsedBytes: number
     memoryBudgetBytes: number
-    /** Terrain-tile imagery textures composed on the GPU over the last frame. */
+    /** Terrain-tile imagery textures composed on the GPU over the last frame, redraws after `invalidate` included. */
     imageryTilesComposited: number
     /** Main-thread milliseconds spent on imagery over the last frame (composition, layer setup, tile splitting). */
     imageryMainThreadMilliseconds: number
