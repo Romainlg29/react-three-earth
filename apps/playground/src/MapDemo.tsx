@@ -39,8 +39,11 @@ const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery. `?test=invalidate` (with
 // `?fixtures&map=vector`) reads tiles whose lake colour the browser check changes on the server, then redraws
 // them through `window.mapStyleSource.invalidate(bounds)`.
+// `?map=patterns` (with `?fixtures`) is the fixture style with sprite patterns; images it lacks are listed in
+// `window.styleImagesMissing` for the browser check, which adds one with `window.mapStyleSource.addImage`.
 const liveFixtures = useFixtures && params.get('test') === 'invalidate'
-const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? `/fixtures/style.json${liveFixtures ? '?live' : ''}` : import.meta.env.VITE_MAP_STYLE_URL) : undefined
+const fixtureStyleUrl = params.get('map') === 'patterns' ? '/fixtures/style-patterns.json' : `/fixtures/style.json${liveFixtures ? '?live' : ''}`
+const mapStyleUrl = params.get('map') === 'vector' || (useFixtures && params.get('map') === 'patterns') ? (useFixtures ? fixtureStyleUrl : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
 // The atmosphere's lookup textures are cached between page loads, in dev too: the cache key holds
 // ATMOSPHERE_PRECOMPUTE_VERSION, which a unit test makes you bump when the generating shaders change.
@@ -83,6 +86,7 @@ declare global {
     markers?: Record<string, MarkerImpl | null>
     dragEnds?: GeographicPosition[]
     selectedPlace?: string | null
+    styleImagesMissing?: string[]
   }
 }
 
@@ -193,7 +197,7 @@ export function MapDemo() {
             <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
           </Terrain>
           <Imagery>
-            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
+            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
           </Imagery>
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />

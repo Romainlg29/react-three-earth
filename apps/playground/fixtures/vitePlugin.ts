@@ -3,12 +3,15 @@ import type { Plugin } from 'vite'
 
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
-import { fixtureStyle, vectorTile } from './vectorTiles.ts'
+import { fixturePatternStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
  * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
  * no network.
+ *
+ * `/fixtures/style-patterns.json` is the same style with patterns, from the sprite at /fixtures/sprite.json
+ * (and `@2x`).
  *
  * `/fixtures/style.json?live` reads /fixtures/vector-live/ instead, whose lakes take the colour set with
  * `/fixtures/vector-live/water-color?value=%23e0457b` (empty: the style's blue), for the invalidate check.
@@ -43,6 +46,18 @@ export function fixtureTiles(): Plugin {
           const live = new URLSearchParams(req.url?.split('?')[1] ?? '').has('live')
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(fixtureStyle({ live })))
+          return
+        }
+        if (url === '/fixtures/style-patterns.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixturePatternStyle()))
+          return
+        }
+        const sprite = /^\/fixtures\/sprite(@2x)?\.(json|png)$/.exec(url)
+        if (sprite) {
+          const { json, png } = fixtureSprite(sprite[1] === undefined ? 1 : 2)
+          res.setHeader('Content-Type', sprite[2] === 'json' ? 'application/json' : 'image/png')
+          res.end(sprite[2] === 'json' ? JSON.stringify(json) : Buffer.from(png))
           return
         }
         if (url === '/fixtures/vector-live/water-color') {

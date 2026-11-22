@@ -260,6 +260,64 @@ async function vectorInvalidate() {
   })
 }
 
+const PATTERN_COLOURS = `
+  // By hue, since the terrain is lit: the sprite's green checks (background), dark and light blue stripes
+  // (lakes), red dashes (primary roads), and the runtime image's magenta, then yellow, hatch (Lake Motosu).
+  let green = 0, darkBlue = 0, lightBlue = 0, red = 0, magenta = 0, yellow = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (g > r * 1.2 && g > b * 1.3 && g > 40) green++
+    else if (b > r * 2.5 && b > g * 1.6 && b > 60) darkBlue++
+    else if (b > r * 1.25 && g > r * 1.1 && b >= g && b > 90) lightBlue++
+    else if (r > g * 2.5 && r > b * 2.5 && r > 60) red++
+    else if (r > g * 1.8 && b > g * 1.8 && r > 50 && b > 50) magenta++
+    else if (r > b * 2 && g > b * 2 && r > 70 && g > 70) yellow++
+  }
+  const n = px.length / 4
+  const share = count => +(count / n).toFixed(4)
+  return { meadowShare: share(green), darkBlueShare: share(darkBlue), lightBlueShare: share(lightBlue), redShare: share(red), magentaShare: share(magenta), yellowShare: share(yellow) }
+`
+
+/**
+ * Sprite patterns: `background-pattern`, `fill-pattern` and `line-pattern` from the fixture sprite, then an
+ * image the sprite lacks (reported through `onStyleImageMissing`) added with `addImage` and replaced with
+ * `updateImage`, each redrawing the lake that uses it.
+ */
+async function vectorPatterns(name, query) {
+  // Above Lake Motosu and Lake Kawaguchi, looking down.
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=patterns&camera=138.68,35.47,0,40000,0,-80${query}`)
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 300 })
+  await settled()
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const beforePng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}.png`, OUT), beforePng)
+  const sprite = await analyse(page, beforePng, PATTERN_COLOURS)
+  const missing = await page.evaluate(() => window.styleImagesMissing ?? [])
+  const hatch = rgb => `{ width: 8, height: 8, data: new Uint8Array(Array.from({ length: 64 }, (_, i) => ((i % 8) + Math.floor(i / 8)) % 4 < 2 ? [${rgb}, 255] : [20, 20, 20, 255]).flat()) }`
+  await page.evaluate(`window.mapStyleSource.addImage('hatch', ${hatch('230, 40, 220')})`)
+  await page.waitForTimeout(500)
+  await settled()
+  await page.waitForTimeout(1500)
+  const addedPng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}-added.png`, OUT), addedPng)
+  const added = await analyse(page, addedPng, PATTERN_COLOURS)
+  const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+  await page.evaluate(`window.mapStyleSource.updateImage('hatch', ${hatch('240, 220, 30')})`)
+  await page.waitForTimeout(500)
+  await settled()
+  await page.waitForTimeout(1500)
+  const updatedPng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}-updated.png`, OUT), updatedPng)
+  const updated = await analyse(page, updatedPng, PATTERN_COLOURS)
+  const composedAfter = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+  const inspection = await page.evaluate(() => window.earth.inspect())
+  await page.close()
+  results.push({ check: `vector map style with fixtures, patterns, ${name}`, sprite, missing, added, updated, regionsRedrawnByUpdate: composedAfter - composedBefore, tilesLoaded: inspection.terrain.tilesLoaded, errors })
+}
+
 /** earth.camera on fixture terrain: unproject / project / queryTerrainElevation, events, and getView through the morph. */
 async function cameraAndEvents() {
   // Over the fixture's highest hill (3.9 km), so terrain and ellipsoid differ.
@@ -533,6 +591,10 @@ try {
     await vectorMap('overview', '')
     await vectorMap('close', '&camera=,,,9000,,-50')
     await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
+  }
+  if (!only || only === 'vector' || only === 'patterns') {
+    await vectorPatterns('webgpu', '')
+    await vectorPatterns('webgl2', '&webgl')
   }
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
