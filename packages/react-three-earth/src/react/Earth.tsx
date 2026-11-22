@@ -3,6 +3,7 @@ import { useLayoutEffect, useState, type ReactNode } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { Earth as EarthImpl } from '../core/Earth.js'
+import type { MapViewChange } from '../core/EarthCamera.js'
 import type { ViewMode } from '../view/ViewMorph.js'
 import { EarthContext } from './context.js'
 
@@ -16,6 +17,12 @@ export interface EarthProps {
   view?: ViewMode
   /** Length of the globe-to-map transition (dive, swap, rise). Default: 2.4. */
   viewTransitionSeconds?: number
+  /**
+   * Where the camera starts, applied on the first frame (`earth.camera.jumpTo`). Read once at mount; move
+   * the camera afterwards with `useEarthCamera()`. Default: the camera stays where it is.
+   * @example <Earth initialView={{ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 11, pitchDegrees: -60 }}>
+   */
+  initialView?: MapViewChange
   children?: ReactNode
 }
 
@@ -24,11 +31,13 @@ export interface EarthProps {
  * (ECEF) metres.
  *
   * Everything else (`<Terrain>`, `<Imagery>`, `<Atmosphere>`, `<EarthControls>`) goes inside it. */
-export function Earth({ date, view = '3d', viewTransitionSeconds, children }: EarthProps) {
+export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, children }: EarthProps) {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
-  const [earth] = useState(() => new EarthImpl({ date, view }))
+  const domElement = useThree(state => state.events.connected ?? state.renderer.domElement) as HTMLElement
+  const canvas = useThree(state => state.renderer.domElement) as HTMLElement
+  const [earth] = useState(() => new EarthImpl({ date, view, initialView }))
 
   useLayoutEffect(() => {
     earth.connect(renderer)
@@ -37,6 +46,12 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, children }: Ea
       scene.remove(earth)
     }
   }, [earth, renderer, scene])
+
+  useLayoutEffect(() => {
+    // `click`, `doubleclick`, `contextmenu` and `pointermove`, with the position on Earth.
+    earth.attachPointerEvents(domElement, { canvas })
+    return () => earth.detachPointerEvents()
+  }, [earth, domElement, canvas])
 
   useLayoutEffect(() => {
     if (date !== undefined) earth.date = date
@@ -48,7 +63,7 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, children }: Ea
   }, [earth, view, viewTransitionSeconds, invalidate])
 
   useLayoutEffect(() => {
-    // With frameloop="demand", changes made between frames (earth.camera.jumpTo) still get drawn.
+    // With frameloop="demand", changes made between frames (earth.camera.jumpTo, flyTo) still get drawn.
     const listener = () => invalidate()
     earth.addEventListener('framerequest', listener)
     return () => earth.removeEventListener('framerequest', listener)
@@ -58,7 +73,7 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, children }: Ea
 
   useFrame(
     ({ camera, invalidate }, deltaSeconds) => {
-      // With frameloop="demand", a morph still gets every frame it needs.
+      // With frameloop="demand", a morph or a camera animation still gets every frame it needs.
       if (earth.update(camera, renderer, deltaSeconds)) invalidate()
     },
     { id: 'earth:update', phase: 'update' },

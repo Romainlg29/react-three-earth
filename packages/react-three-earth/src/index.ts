@@ -83,11 +83,31 @@ export {
 } from './core/camera.js'
 export { EarthCamera, type MapView, type MapViewChange } from './core/EarthCamera.js'
 export {
+  createFlightPath,
+  cubicBezier,
+  defaultEasing,
+  DEFAULT_FIT_MAXIMUM_ZOOM,
+  fitBoundsOnMap,
+  flightDurationSeconds,
+  linearEasing,
+  prefersReducedMotion,
+  toViewPadding,
+  type AnimationOptions,
+  type FitBoundsOptions,
+  type FlightPath,
+  type FlyToOptions,
+  type PaddingPixels,
+  type ViewPadding,
+} from './core/cameraAnimation.js'
+export { formatViewHash, parseViewHash } from './core/viewHash.js'
+export {
   CameraMotionDetector,
   EarthEventTracker,
   type EarthEventMap,
   type EarthEventType,
   type EarthFrameState,
+  type EarthPointerEvent,
+  type ViewSample,
 } from './core/events.js'
 export { isOccludedByEllipsoid, type ProjectedPosition, type ScreenPosition } from './core/projection.js'
 export * from './core/zoom.js'

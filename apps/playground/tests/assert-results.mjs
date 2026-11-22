@@ -86,6 +86,30 @@ const expectations = {
     ['controlled popups: a click on another marker moves the selection (one open), a second click closes it', JSON.stringify(r.selection) === JSON.stringify({ afterFirst: { selected: 'east', open: ['Place east'] }, afterSecond: { selected: 'west', open: ['Place west'] }, afterThird: { selected: null, open: [] } })],
     ['under StrictMode: five markers, four pins, content and popup render, no errors', r.strictMode.markerElements === 5 && r.strictMode.pinsShown === 4 && r.strictMode.buriedText === 'sea level' && r.strictMode.popupText.includes('Fixture peak') && r.strictMode.errors.length === 0],
   ],
+  'camera animations and pointer events with fixtures': r => {
+    const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
+    const endsAt = (flight, pitchDegrees) =>
+      flight.completed &&
+      Math.abs(flight.view.longitudeDegrees - r.target.longitudeDegrees) < 1e-6 &&
+      Math.abs(flight.view.latitudeDegrees - r.target.latitudeDegrees) < 1e-6 &&
+      Math.abs(flight.view.zoom - r.target.zoom) < 1e-3 &&
+      angle(flight.view.headingDegrees, r.target.headingDegrees) < 0.01 &&
+      Math.abs(flight.view.pitchDegrees - pitchDegrees) < 0.01
+    const click = r.clicks[0]
+    return [
+      ['flyTo Tokyo → Paris ends at the requested view on the globe', endsAt(r.globe, -50)],
+      ['flyTo Tokyo → Paris ends at the requested view on the flat map', endsAt(r.flat, -90)],
+      ['the flights zoom out on the way', r.globe.lowestZoom < 6 && r.flat.lowestZoom < 6],
+      ['the flights take about their 4 s', Math.abs(r.globe.seconds - 4) < 1 && Math.abs(r.flat.seconds - 4) < 1],
+      ['zoom and rotate events fire inside movestart and moveend', ['globe', 'flat'].every(name => r[name].events.join() === 'movestart,zoomstart,rotatestart,zoomend,rotateend,moveend')],
+      ['the mouse wheel stops a running flight', r.flightCompleted === false],
+      ['fitBounds puts the box inside 40 px of padding', r.fit.completed && r.fit.corners.every(corner => corner.xPixels > 39 && corner.xPixels < 761 && corner.yPixels > 39 && corner.yPixels < 561)],
+      ['one click (a drag is not a click)', r.clicks.length === 1],
+      ['the click reports its screen position', click?.screen.xPixels === 400 && click?.screen.yPixels === 300],
+      ['the click reports the position under it, on the terrain', click?.geographic != null && Math.abs(click.geographic.longitudeDegrees + 89.6) < 1e-4 && Math.abs(click.geographic.latitudeDegrees - 0.3) < 1e-4 && Math.abs(click.geographic.heightMeters - r.elevationAtCenter) < 1 && r.elevationAtCenter > 1000],
+      ['pointermove fires with the pointer', r.pointerMoves > 0],
+    ]
+  },
 }
 
 let failures = 0

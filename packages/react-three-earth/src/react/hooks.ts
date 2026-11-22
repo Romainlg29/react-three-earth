@@ -34,17 +34,19 @@ export function useEarthState<T>(selector: (earth: Earth) => T, { hz = 10 }: { h
 }
 
 /**
- * The vanilla `EarthCamera` of the nearest `<Earth>`: `getView()`, `jumpTo()`, `getBounds()`, `project()`,
- * `unproject()`. Reading it never causes a React render; call its methods in handlers or `useEarthFrame`.
+ * The vanilla `EarthCamera` of the nearest `<Earth>`: `getView()`, `jumpTo()`, `easeTo()`, `flyTo()`,
+ * `fitBounds()`, `getBounds()`, `project()`, `unproject()`. Reading it never causes a React render; call its
+ * methods in handlers or `useEarthFrame`.
  */
 export function useEarthCamera(): EarthCamera {
   return useEarth().camera
 }
 
 /**
- * Listens to an `Earth` event (`load`, `idle`, `movestart`, `move`, `moveend`) while the component is
- * mounted. The handler may change between renders without re-subscribing. Never causes a React render.
- * @example useEarthEvent('moveend', () => setView(earth.camera.getView()))
+ * Listens to an `Earth` event (`load`, `idle`, `movestart`, `move`, `moveend`, `zoom`, `rotate`, `pitch`,
+ * `click`, `doubleclick`, `contextmenu`, `pointermove`, …) while the component is mounted. The handler may
+ * change between renders without re-subscribing. Never causes a React render.
+ * @example useEarthEvent('click', event => console.log(event.geographic))
  */
 export function useEarthEvent<T extends EarthEventType>(type: T, handler: (event: EarthEventMap[T] & { type: T; target: Earth }) => void): void {
   const earth = useEarth()
