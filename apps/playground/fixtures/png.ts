@@ -22,6 +22,28 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
   return out
 }
 
+/** Encodes an RGBA image (straight alpha) as PNG. */
+export function encodePngRgba(width: number, height: number, rgba: (x: number, y: number) => [number, number, number, number]): Uint8Array {
+  const raw = new Uint8Array((width * 4 + 1) * height)
+  for (let y = 0; y < height; y++) {
+    raw[y * (width * 4 + 1)] = 0
+    for (let x = 0; x < width; x++) raw.set(rgba(x, y), y * (width * 4 + 1) + 1 + x * 4)
+  }
+  const header = new Uint8Array(13)
+  const view = new DataView(header.buffer)
+  view.setUint32(0, width)
+  view.setUint32(4, height)
+  header.set([8, 6, 0, 0, 0], 8) // 8 bits, RGBA
+  const parts = [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header), chunk('IDAT', deflateSync(raw)), chunk('IEND', new Uint8Array())]
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0))
+  let offset = 0
+  for (const part of parts) {
+    out.set(part, offset)
+    offset += part.length
+  }
+  return out
+}
+
 /** Encodes an RGB image as PNG. */
 export function encodePng(width: number, height: number, rgb: (x: number, y: number) => [number, number, number]): Uint8Array {
   const raw = new Uint8Array((width * 3 + 1) * height)
