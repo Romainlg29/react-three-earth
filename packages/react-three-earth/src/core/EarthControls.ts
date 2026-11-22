@@ -85,6 +85,7 @@ export class FlatMapControls extends EnvironmentControls {
    * it. `EarthViewControls` sets it from the loaded tiles. Default: 0.
    */
   terrainHeightMeters = 0
+  protected view: ViewMorph | null = null
 
   constructor(camera: Camera | null = null, domElement: HTMLElement | null = null) {
     // The map is not raycast: drags and zooms land on the map plane (the fallback plane).
@@ -97,6 +98,7 @@ export class FlatMapControls extends EnvironmentControls {
 
   /** Takes the map plane and its up direction from the view morph. */
   followView(view: ViewMorph): void {
+    this.view = view
     this.up.copy(view.anchorUp)
     this.fallbackPlane.setFromNormalAndCoplanarPoint(view.anchorUp, view.anchorPosition)
     this.maxAltitude = this.maximumTiltRadians
@@ -106,6 +108,10 @@ export class FlatMapControls extends EnvironmentControls {
     super.update(deltaTime)
     const camera = this.camera as (Camera & { near: number; far: number; updateProjectionMatrix?: () => void }) | null
     if (camera === null) return
+    // Like MapLibre: no zooming out past the map's height, no panning past its poles, and the world
+    // repeats east and west (the camera wraps back to the middle copy once the drag ends).
+    const dragging = (this as unknown as { state: number }).state !== 0
+    this.view?.constrainFlatCamera(camera, { wrap: !dragging })
     // The map is not raycast, so keep the camera out of the relief by hand.
     const height = this.fallbackPlane.distanceToPoint(camera.position)
     const lowest = this.terrainHeightMeters + this.minDistance

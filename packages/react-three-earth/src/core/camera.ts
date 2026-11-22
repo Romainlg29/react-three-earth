@@ -50,8 +50,15 @@ export function setCameraView(
     .addScaledVector(up, Math.sin(pitch))
 
   camera.position.copy(target).addScaledVector(viewDirection, -distanceMeters)
-  camera.up.copy(up)
+  // Looking straight down or up, the vertical no longer fixes the roll: the heading becomes screen-up.
+  if (Math.abs(Math.sin(pitch)) > 0.9999) {
+    camera.up.copy(north).multiplyScalar(Math.cos(heading)).addScaledVector(east, Math.sin(heading))
+    if (Math.sin(pitch) > 0) camera.up.negate()
+  } else {
+    camera.up.copy(up)
+  }
   camera.lookAt(target)
+  camera.up.copy(up)
   camera.updateMatrixWorld()
 }
 

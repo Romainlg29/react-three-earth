@@ -184,3 +184,59 @@ describe('computeFlatPositions', () => {
     expect(Math.abs(flat.getZ(2) + center[2] - 3776 * mercatorScaleFactor(degrees(35.4)))).toBeLessThan(0.05)
   })
 })
+
+describe('flat map like MapLibre', () => {
+  function flatMapCamera(longitudeDegrees: number, latitudeDegrees: number, distanceMeters: number) {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, 2, 1, 1e9)
+    setCameraView(camera, { longitudeDegrees, latitudeDegrees, distanceMeters, pitchDegrees: -90 })
+    view.setMode('2d', { durationSeconds: 0 })
+    view.update(camera, 0)
+    return { view, camera }
+  }
+
+  it('looks north when it starts from straight down', () => {
+    const { view, camera } = flatMapCamera(138.7, 35.4, 100_000)
+    const screenUp = new Vector3(0, 1, 0).applyQuaternion(camera.quaternion).transformDirection(view.earthToFlat)
+    expect(screenUp.y).toBeCloseTo(1, 6)
+  })
+
+  it('stops zooming out where the whole map height fills the screen, and centres it', () => {
+    const { view, camera } = flatMapCamera(138.7, 35.4, 40_000_000)
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    // Visible half height on the map, in Web Mercator metres, equals the map's half height
+    expect(flat.z * Math.tan(MathUtils.degToRad(30))).toBeCloseTo(WEB_MERCATOR_HALF_EXTENT_METERS, 0)
+    expect(flat.y).toBeCloseTo(0, 3)
+  })
+
+  it('never shows past the poles', () => {
+    const { view, camera } = flatMapCamera(0, 84, 1_000_000)
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    const northHalfExtent = flat.z * Math.tan(MathUtils.degToRad(30))
+    expect(flat.y + northHalfExtent).toBeLessThanOrEqual(WEB_MERCATOR_HALF_EXTENT_METERS + 1e-3)
+  })
+
+  it('repeats the world east and west when zoomed out, and wraps the camera back after a long pan', () => {
+    const { view, camera } = flatMapCamera(0, 0, 40_000_000)
+    view.constrainFlatCamera(camera)
+    view.updateWorldCopies(camera)
+    expect(view.firstWorldCopy).toBe(-1)
+    expect(view.worldCopyCount).toBe(3)
+
+    // Pan one and a quarter worlds east: the camera comes back to the middle copy, a quarter world east
+    const east = new Vector3(1, 0, 0).transformDirection(view.anchorFrame)
+    camera.position.addScaledVector(east, 2.5 * WEB_MERCATOR_HALF_EXTENT_METERS * view.scale)
+    camera.updateMatrixWorld()
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    expect(flat.x - view.anchorMercatorXMeters).toBeCloseTo(0.5 * WEB_MERCATOR_HALF_EXTENT_METERS, 0)
+  })
+
+  it('draws one copy on the globe', () => {
+    const view = new ViewMorph()
+    view.updateWorldCopies(new PerspectiveCamera())
+    expect([view.firstWorldCopy, view.worldCopyCount, view.cameraWorldCopy]).toEqual([0, 1, 0])
+  })
+})

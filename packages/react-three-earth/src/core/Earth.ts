@@ -146,6 +146,7 @@ export class Earth extends Group {
     const delta = deltaSeconds ?? (this.lastUpdateTimestamp === null ? 0 : (now - this.lastUpdateTimestamp) / 1000)
     this.lastUpdateTimestamp = now
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
+    this.view.updateWorldCopies(camera)
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
       // The sky, haze and sunlight belong to the globe: they fade out on the flat map.

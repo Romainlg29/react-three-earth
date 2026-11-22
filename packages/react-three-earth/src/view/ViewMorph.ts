@@ -7,6 +7,7 @@ import {
   mercatorScaleFactor,
   mercatorXToLongitude,
   mercatorYToLatitude,
+  WEB_MERCATOR_HALF_EXTENT_METERS,
 } from './webMercator.js'
 
 /** `'3d'`: the globe. `'2d'`: a flat Web Mercator map of the same terrain and imagery. */
@@ -18,6 +19,12 @@ export interface ViewTransitionOptions {
 }
 
 const DEFAULT_TRANSITION_SECONDS = 1.5
+/** Most copies of the world drawn side by side on the flat map. */
+export const MAXIMUM_WORLD_COPIES = 5
+const WORLD_WIDTH_METERS = 2 * WEB_MERCATOR_HALF_EXTENT_METERS
+
+/** What the flat map needs from a camera to fit it: a perspective camera's field of view and aspect. */
+type PerspectiveLike = Camera & { fov?: number; aspect?: number }
 
 const east = new Vector3()
 const north = new Vector3()
@@ -30,12 +37,20 @@ const scratchMatrix2 = new Matrix4()
 const ray = new Ray()
 const plane = new Plane()
 const cartographic = { lat: 0, lon: 0, height: 0 }
+const cameraFlat = new Vector3()
+const cornerFlat = new Vector3()
+const screenUp = new Vector3()
+const screenRight = new Vector3()
+const anchorNorth = new Vector3()
+const NDC_CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const
 
 /** Camera motion from the pose at the start of a 3D-to-2D morph to looking straight down at the anchor. */
 interface CameraFlight {
   camera: Camera
   pivot: Vector3
   distanceMeters: number
+  /** Distance at the end: no higher than the flat map allows (`maximumFlatCameraHeightMeters`). */
+  endDistanceMeters: number
   startDirection: Vector3
   directionRotation: Quaternion
   startQuaternion: Quaternion
@@ -94,6 +109,16 @@ export class ViewMorph {
    * the map is lit and emitted at once and looks too bright.
    */
   flatMapLuminance = 1
+
+  /**
+   * Copies of the world drawn side by side on the flat map, as on MapLibre: `worldCopyCount` copies
+   * starting `firstWorldCopy` world widths east of the anchor's own copy. `update` fits them to the camera.
+   * One copy (0) on the globe and during the morph.
+   */
+  firstWorldCopy = 0
+  worldCopyCount = 1
+  /** The copy of the world under the camera, drawn without a shader offset so it keeps full precision. */
+  cameraWorldCopy = 0
 
   constructor() {
     this.setAnchor(0, 0)
@@ -179,6 +204,86 @@ export class ViewMorph {
     return true
   }
 
+  /**
+   * Fits the world copies to what the camera sees on the flat map. `Earth.update` calls it every frame,
+   * after `update`.
+   */
+  updateWorldCopies(camera: Camera): void {
+    if (this.morph !== 1) {
+      this.firstWorldCopy = 0
+      this.worldCopyCount = 1
+      this.cameraWorldCopy = 0
+      return
+    }
+    camera.updateMatrixWorld()
+    cameraFlat.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(this.earthToFlat)
+    let westMeters = cameraFlat.x
+    let eastMeters = cameraFlat.x
+    for (const [x, y] of NDC_CORNERS) {
+      cornerFlat.set(x, y, 0.5).unproject(camera).applyMatrix4(this.earthToFlat).sub(cameraFlat)
+      // A corner above the horizon (a tilted view) sees the map run on: take as many copies as allowed.
+      const distance = cornerFlat.z < 0 ? -cameraFlat.z / cornerFlat.z : Infinity
+      const hitX = cameraFlat.x + cornerFlat.x * distance
+      westMeters = Math.min(westMeters, Number.isFinite(hitX) ? hitX : -Infinity)
+      eastMeters = Math.max(eastMeters, Number.isFinite(hitX) ? hitX : Infinity)
+    }
+    const anchorX = this.anchorMercatorXMeters
+    const cameraCopy = Math.round((cameraFlat.x - anchorX) / WORLD_WIDTH_METERS)
+    const half = Math.floor(MAXIMUM_WORLD_COPIES / 2)
+    const first = Math.max(cameraCopy - half, Math.ceil((westMeters - anchorX - WEB_MERCATOR_HALF_EXTENT_METERS) / WORLD_WIDTH_METERS))
+    const last = Math.min(cameraCopy + half, Math.floor((eastMeters - anchorX + WEB_MERCATOR_HALF_EXTENT_METERS) / WORLD_WIDTH_METERS))
+    this.cameraWorldCopy = cameraCopy
+    this.firstWorldCopy = Math.min(first, cameraCopy)
+    this.worldCopyCount = Math.max(last, cameraCopy) - this.firstWorldCopy + 1
+  }
+
+  /**
+   * How far north and south a camera at 1 m above the map sees, in metres, with this orientation: screen
+   * half-extents projected on the map's north axis. Top-down approximation (exact without tilt).
+   */
+  protected northHalfExtentPerHeight(camera: PerspectiveLike, quaternion: Quaternion): number {
+    const tangentVertical = Math.tan(MathUtils.degToRad((camera.fov ?? 60) / 2))
+    const tangentHorizontal = tangentVertical * (camera.aspect ?? 1)
+    anchorNorth.set(0, 1, 0).transformDirection(this.anchorFrame)
+    screenUp.set(0, 1, 0).applyQuaternion(quaternion)
+    screenRight.set(1, 0, 0).applyQuaternion(quaternion)
+    return tangentVertical * Math.abs(screenUp.dot(anchorNorth)) + tangentHorizontal * Math.abs(screenRight.dot(anchorNorth))
+  }
+
+  /**
+   * Highest the camera may be above the flat map, in metres: where the map's full height (about ±85°)
+   * just fills the screen north to south, like MapLibre's lowest zoom.
+   */
+  maximumFlatCameraHeightMeters(camera: PerspectiveLike, quaternion: Quaternion = camera.quaternion): number {
+    return (WEB_MERCATOR_HALF_EXTENT_METERS * this.scale) / Math.max(this.northHalfExtentPerHeight(camera, quaternion), 1e-6)
+  }
+
+  /**
+   * Keeps a camera on the flat map like MapLibre: no higher than the map's full height fits, never showing
+   * past its north and south edges, and, since the world repeats, brought back to the anchor's copy of the
+   * world when it pans more than half a world away (the view does not change). Controls call it after
+   * moving the camera, with `wrap: false` mid-drag (the drag's grip point would not follow). Returns true
+   * if the camera moved.
+   */
+  constrainFlatCamera(camera: PerspectiveLike, { wrap = true }: { wrap?: boolean } = {}): boolean {
+    camera.updateMatrixWorld()
+    cameraFlat.setFromMatrixPosition(camera.matrixWorld).applyMatrix4(this.earthToFlat)
+    const before = cameraFlat.clone()
+    const scale = this.scale
+    // Flat coordinates are metres before the map's scale: heights here are divided by it.
+    const maximumHeight = this.maximumFlatCameraHeightMeters(camera) / scale
+    if (cameraFlat.z > maximumHeight) cameraFlat.z = maximumHeight
+    const northHalfExtent = Math.max(cameraFlat.z, 0) * this.northHalfExtentPerHeight(camera, camera.quaternion)
+    const northLimit = Math.max(WEB_MERCATOR_HALF_EXTENT_METERS - northHalfExtent, 0)
+    cameraFlat.y = MathUtils.clamp(cameraFlat.y, -northLimit, northLimit)
+    if (wrap) cameraFlat.x -= Math.round((cameraFlat.x - this.anchorMercatorXMeters) / WORLD_WIDTH_METERS) * WORLD_WIDTH_METERS
+    if (cameraFlat.distanceToSquared(before) === 0) return false
+    // The camera has no parent (R3F's default camera): its world position is its position.
+    camera.position.copy(cameraFlat.applyMatrix4(this.flatToEarth))
+    camera.updateMatrixWorld()
+    return true
+  }
+
   protected begin(camera: Camera): void {
     camera.updateMatrixWorld()
     if (this.mode === '2d') {
@@ -223,7 +328,7 @@ export class ViewMorph {
     camera.updateMatrixWorld()
   }
 
-  protected createFlight(camera: Camera, pivot: Vector3): CameraFlight | null {
+  protected createFlight(camera: PerspectiveLike, pivot: Vector3): CameraFlight | null {
     const position = scratchVector.setFromMatrixPosition(camera.matrixWorld)
     const distanceMeters = position.distanceTo(pivot)
     if (distanceMeters === 0) return null
@@ -246,6 +351,7 @@ export class ViewMorph {
       camera,
       pivot: pivot.clone(),
       distanceMeters,
+      endDistanceMeters: Math.min(distanceMeters, this.maximumFlatCameraHeightMeters(camera, endQuaternion)),
       startDirection,
       directionRotation: new Quaternion().setFromUnitVectors(startDirection, up),
       startQuaternion: camera.quaternion.clone(),
@@ -259,7 +365,7 @@ export class ViewMorph {
     const amount = this.morph
     const { camera } = flight
     scratchQuaternion.identity().slerp(flight.directionRotation, amount)
-    camera.position.copy(flight.startDirection).applyQuaternion(scratchQuaternion).multiplyScalar(flight.distanceMeters).add(flight.pivot)
+    camera.position.copy(flight.startDirection).applyQuaternion(scratchQuaternion).multiplyScalar(MathUtils.lerp(flight.distanceMeters, flight.endDistanceMeters, amount)).add(flight.pivot)
     camera.quaternion.slerpQuaternions(flight.startQuaternion, flight.endQuaternion, amount)
     camera.up.copy(this.anchorUp)
     camera.updateMatrixWorld()
