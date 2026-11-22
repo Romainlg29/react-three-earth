@@ -108,8 +108,8 @@ await page.waitForFunction(() => {
 await page.screenshot({ path: 'map.png' })
 ```
 
-SwiftShader is a CPU rasteriser: use it for correctness, never for frame times. Atmosphere generation
-takes 40 to 55 s on it.
+SwiftShader is a CPU rasteriser: use it for correctness, never for frame times. Paced atmosphere generation
+takes minutes on it: generate in one go with `generationBudgetMillisecondsPerFrame={Infinity}`.
 
 ## Common Mistakes
 

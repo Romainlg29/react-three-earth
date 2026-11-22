@@ -81,7 +81,8 @@ async function precision(highPrecision) {
 }
 
 async function map(atmosphere) {
-  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=${atmosphere ? 1 : 0}`)
+  // SwiftShader rasterises on the CPU, so paced generation would take minutes: generate in one go.
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=${atmosphere ? 1 : 0}&atmosphereBudget=Infinity`)
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain

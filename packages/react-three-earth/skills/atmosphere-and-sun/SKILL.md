@@ -30,8 +30,10 @@ atmospheric scattering (2017). It provides three things:
 - a post-processing node that draws the sky and sun and hazes distant geometry (aerial perspective),
 - a solar ephemeris: the sun's direction is computed from `<Earth date>`.
 
-Lookup textures are generated on the GPU at startup, spread over about 60 frames. Until they are ready,
-the scene renders with neutral sunlight and no sky. No network request is made.
+Lookup textures are generated on the GPU at startup, within a GPU-time budget per frame
+(`generationBudgetMillisecondsPerFrame`, default 4 ms), and cached in IndexedDB so later page loads with
+the same parameters skip generation (`cache={false}` turns it off). Until they are ready, the scene renders
+with neutral sunlight and no sky. No network request is made.
 
 ## Core Patterns
 
@@ -163,8 +165,8 @@ Haze bands on distant terrain seen from orbit, and a one-time warning. Create th
 
 ### MEDIUM: Screenshots taken before `ready`
 
-The first frames have no sky. On a CPU rasteriser (SwiftShader in CI) generation takes 40 to 55 s; on a
-real GPU it is much shorter. Wait for `ready`.
+The first frames have no sky. On a CPU rasteriser (SwiftShader in CI) paced generation takes minutes, so
+tests pass `generationBudgetMillisecondsPerFrame={Infinity}`; on a real GPU it is much shorter. Wait for `ready`.
 
 ## Completion
 
