@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { setCameraView, type CameraView, type Earth as EarthImpl, type ViewMode } from 'react-three-earth'
+import { prefersWebGLBackend, setCameraView, type CameraView, type Earth as EarthImpl, type ViewMode } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
@@ -32,6 +32,8 @@ const atmosphereCache = !params.has('nocache')
 // `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
 const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 const showStatistics = params.get('stats') !== '0'
+// WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU.
+const forceWebGL = params.has('webgl') || (!params.has('webgpu') && prefersWebGLBackend())
 const defaultDate = new Date('2026-11-22T07:00:00Z')
 const requestedDate = new Date(params.get('date') ?? Number.NaN)
 const date = Number.isNaN(requestedDate.getTime()) ? defaultDate : requestedDate
@@ -108,7 +110,7 @@ export function MapDemo() {
   window.setView = setView // tests switch the view like the button does
   return (
     <>
-      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: params.has('webgl'), trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: forceWebGL, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date} view={view}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
