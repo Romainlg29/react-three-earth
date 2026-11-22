@@ -8,7 +8,7 @@ describe('Earth.inspect', () => {
   it('reports an empty earth as plain JSON', () => {
     const earth = new Earth({ date: new Date('2026-11-22T07:00:00Z') })
     const inspection = earth.inspect()
-    expect(inspection).toEqual({ date: '2026-11-22T07:00:00.000Z', terrain: null, imageryLayers: 0, atmosphere: null })
+    expect(inspection).toEqual({ date: '2026-11-22T07:00:00.000Z', updateMilliseconds: 0, terrain: null, imageryLayers: 0, atmosphere: null })
     expect(JSON.parse(JSON.stringify(inspection))).toEqual(inspection)
   })
 

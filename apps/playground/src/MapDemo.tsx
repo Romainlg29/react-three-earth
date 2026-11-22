@@ -1,10 +1,11 @@
 import { Canvas } from '@react-three/fiber'
-import { setCameraView, type Earth as EarthImpl } from 'react-three-earth'
+import { setCameraView, type CameraView, type Earth as EarthImpl } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
   EarthControls,
   Imagery,
+  PerformanceStats,
   QuantizedMeshSource,
   RasterTileSource,
   Terrain,
@@ -18,6 +19,26 @@ const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? '/fixtures/terrain/' : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? '/fixtures/imagery/{z}/{x}/{y}.png' : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
+const showStatistics = params.get('stats') !== '0'
+const defaultDate = new Date('2026-11-22T07:00:00Z')
+const requestedDate = new Date(params.get('date') ?? Number.NaN)
+const date = Number.isNaN(requestedDate.getTime()) ? defaultDate : requestedDate
+
+/**
+ * Mount Fuji from the south-east, late afternoon. Override with
+ * `?camera=longitude,latitude,height,distance,heading,pitch` (degrees and meters), e.g. from space:
+ * `?camera=138.7,35.4,0,8000000,0,-20`.
+ */
+function readCameraView(): CameraView {
+  const defaults = [138.7274, 35.3606, 2000, 60_000, -40, -25] as const
+  const given = params.get('camera')?.split(',') ?? []
+  // Empty or non-numeric fields keep their default
+  const [longitudeDegrees, latitudeDegrees, heightMeters, distanceMeters, headingDegrees, pitchDegrees] = defaults.map((fallback, index) => {
+    const value = Number.parseFloat(given[index] ?? '')
+    return Number.isFinite(value) ? value : fallback
+  }) as [number, number, number, number, number, number]
+  return { longitudeDegrees, latitudeDegrees, heightMeters, distanceMeters, headingDegrees, pitchDegrees }
+}
 
 declare global {
   interface Window {
@@ -25,12 +46,11 @@ declare global {
   }
 }
 
-/** Mount Fuji from the south-east, late afternoon. */
 function InitialView() {
   const camera = useThree(state => state.camera)
   const earth = useEarth()
   useLayoutEffect(() => {
-    setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 2000, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
+    setCameraView(camera, readCameraView())
     window.earth = earth // agents and tests read earth.inspect()
   }, [camera, earth])
   return null
@@ -39,9 +59,10 @@ function InitialView() {
 export function MapDemo() {
   return (
     <>
-      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth date={new Date('2026-11-22T07:00:00Z')}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+        <Earth date={date}>
           <InitialView />
+          {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
             <QuantizedMeshSource url={terrainUrl} />
           </Terrain>
