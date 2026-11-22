@@ -129,8 +129,9 @@ const cameraFlat = new Vector3()
 
 /**
  * Hands the camera between `EarthControls` on the globe and `FlatMapControls` on the flat map, following
- * `earth.view`: input goes to the controls of the view shown, and is ignored while the view morphs. This is
- * what `<EarthControls>` uses; vanilla apps call `update` once per frame, before `earth.update`.
+ * `earth.view`: input goes to the controls of the view shown, and is ignored while the view morphs. User
+ * input stops a running camera animation. This is what `<EarthControls>` uses; vanilla apps call `update`
+ * once per frame, before `earth.update`.
  */
 export class EarthViewControls {
   readonly globe = new EarthControls()
@@ -138,6 +139,10 @@ export class EarthViewControls {
 
   constructor(protected readonly earth: Earth) {
     this.globe.setScene(earth)
+    // User input takes over from a running camera animation (`earth.camera.flyTo` and the rest).
+    const stopAnimation = () => earth.camera.stop()
+    this.globe.addEventListener('start', stopAnimation)
+    this.flatMap.addEventListener('start', stopAnimation)
   }
 
   setCamera(camera: Camera): void {

@@ -110,11 +110,71 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 | `getView` before / after the morph (top-down) | same centre, zoom within 2·10⁻⁶ |
 | Morph events | `movestart`, `moveend`, `idle` |
 
-Not done yet (W1b): `easeTo` / `flyTo` / `fitBounds`, zoom / rotate / pitch events, pointer events with
-geography, `<Earth initialView>`. With relief under a pitched camera, the morph anchors on the ellipsoid
+With relief under a pitched camera, the morph anchors on the ellipsoid
 point under the screen centre rather than the terrain point, so the centre shifts by the relief's parallax
 during a 3D→2D morph. `getBounds` ignores terrain. `idle` does not wait for imagery added after tiles loaded
 (those textures download outside 3DTilesRenderer's counters).
+
+## Camera animations and pointer events (W1b)
+
+```ts
+await earth.camera.flyTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12 }) // true, or false when stopped
+earth.camera.fitBounds(bounds, { paddingPixels: 40 }); earth.camera.setPadding({ leftPixels: 320 })
+earth.addEventListener('click', event => event.geographic) // <Earth initialView={…}>, formatViewHash / parseViewHash
+```
+
+How it works (`src/core/cameraAnimation.ts`, `EarthCamera.ts`, `events.ts`, `Earth.ts`, `viewHash.ts`):
+
+- **Animations are view interpolations replayed through `jumpTo`'s placement**: each frame computes a full
+  view (centre, height, zoom, heading, pitch) and places the camera with it, so they behave the same on the
+  globe and on the flat map, world copies included. `Earth.update` advances them before the morph and the
+  tiles, so tiles load for the frame's pose. The centre moves along a great circle on the globe and a
+  straight Mercator line on the map; heading goes the short way round.
+- **`flyTo` is MapLibre's van Wijk–Nuij curve** (`createFlightPath`: `curve`, `speed`, `screenSpeed`,
+  `minimumZoom`, `maximumDurationSeconds`), with the distance measured in Mercator pixels at the start zoom.
+  With nothing to fly over (only heading or pitch change) it eases, as MapLibre does.
+- **The end height is re-read every frame**: coarse quantized-mesh tiles sit up to 2 km below the ground (the
+  chord of a large tile), so a height read at the start left the camera kilometres off once Paris loaded
+  (the browser check caught zoom 12.9 instead of 11). Re-reading the terrain under the end centre each frame
+  lets the flight land on the tiles that load as it approaches.
+- **Promises, not events, report the end**: each animation returns `Promise<boolean>`, false when stopped by
+  `stop()`, `jumpTo`, another animation, a morph or user input. User input is the controls' own `start`
+  event (3DTilesRenderer fires it on drag, wheel and double tap), hooked in `EarthViewControls`, not in
+  `FlatMapControls`. `prefers-reduced-motion` turns every animation into a jump unless `essential`.
+  Animations called before the first frame wait for the camera, and `initialView` applies without
+  stopping them. The first step counts one frame at most, so a host idle for seconds does not skip ahead.
+- **Padding slides the camera across its screen plane** instead of shifting the projection's principal
+  point: the target lands at the padded centre with heading and pitch untouched, no change to the
+  projection matrix (which R3F, the atmosphere and the controls also own). `getView` casts its ray through
+  the padded centre and measures distance along the camera's axis, so zoom keeps meaning the scale there.
+- **`cameraForBounds` fits on the map, then on screen**: the Web Mercator fit (MapLibre's maths, with
+  heading and uneven padding) is exact on the flat map seen from above; on the globe it is off by up to 6 px
+  for a 13°-wide box (Mercator's scale changes across the box), and tilted views are worse. Up to six steps
+  then place a copy of the camera, project the box's edges and correct zoom and centre, so the box touches
+  the padding within half a pixel on the globe too, tilted or not. When part of the box starts past the
+  horizon (a Pacific-wide box), it first zooms out a level at a time until all of it shows.
+- **Zoom / rotate / pitch events** come from the same per-frame comparison as `move`, on a cheap
+  ellipsoid-only view (no terrain raycast). `zoom` follows ground metres per pixel, not `getView().zoom`,
+  which changes with latitude on the globe while panning at a fixed altitude.
+- **Pointer events**: `earth.attachPointerEvents(element, { canvas })` (`<Earth>` calls it with R3F's event
+  source and the canvas, so positions stay right with an `eventSource` that is not the canvas) dispatches `click` (press and
+  release within 3 px, MapLibre's tolerance), `doubleclick`, `contextmenu` and `pointermove`. Nothing is
+  measured without a listener, and `geographic` is a lazy getter, so `pointermove` costs no raycast unless a
+  listener reads it.
+- Changed from the brief: no `rollDegrees` (nothing in the camera vocabulary uses it yet), the hash is
+  pure functions rather than a URL writer (the app owns `history`), and `animating` replaces MapLibre's
+  `isMoving` (movement is already the `movestart` / `moveend` pair).
+
+| Check (fixtures, SwiftShader) | Result |
+| --- | --- |
+| `flyTo` Tokyo → Paris, 4 s, globe and flat map | ends at the view within 10⁻¹² ° and 2·10⁻¹³ zoom; zooms out to about 2 |
+| Events during the flights | `movestart, zoomstart, rotatestart, zoomend, rotateend, moveend` |
+| Mouse wheel during a 20 s flight | promise resolves false |
+| `fitBounds` with 40 px padding, globe | corners inside the padding |
+| Click at the centre over the 3.9 km hill | exact position, height equals `queryTerrainElevation`; a drag is not a click |
+| Unit tests: `fitBounds` on both views, 5 boxes (city, uneven padding, antimeridian, rotated, view padding) | inside and snug within 0.5 px |
+
+Not done yet: `rollDegrees`, `around` for `zoomTo`, the `offset` option, animating `padding`.
 
 ## Vector map styles (`src/vector/`)
 
@@ -353,6 +413,69 @@ control takes the `earth` and `container` in an options object (the brief left t
 | --- | --- |
 | Unit tests | collection, de-duplication, order, events, the style, TileJSON and PMTiles metadata, sanitising (script, `javascript:` and encoded variants, event attributes, nesting, entities, malformed tags) |
 | Browser, `?fixtures` | OSM link with `target` and `rel`, terrain first, bottom-right; compact with the button at 400 px and expands on click; a style's source attribution appears after the style loads |
+
+### Markers and popups (W9)
+
+HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/core/Marker.ts`, `src/core/Popup.ts`,
+`src/core/ScreenOverlay.ts`, `src/core/markerLayout.ts`, `src/react/Marker.tsx`, `src/react/Popup.tsx`,
+`src/react/domRoot.tsx`).
+
+- **API.** Vanilla `Marker` and `Popup` (three `EventDispatcher`s) with `addTo(earth, container)`, and React `<Marker>` and
+  `<Popup>`. A `<Popup>` anywhere inside `<Marker>` attaches to it through context and opens on click, Enter or Space;
+  everything renders in the marker's element, with a fallback pin that CSS shows only while it is the sole element. `<Popup>` outside a marker points at a position, follows the pointer (`trackPointer`) or
+  is controlled with `open` and `onClose`. Markers take `heightMeters` (a number, or `'terrain'`, the default), `anchor`,
+  `offsetPixels`, `rotationDegrees`, `rotationAlignment` and `pitchAlignment`, `draggable`, `occludedOpacity` and a
+  `label` for screen readers.
+- **React content.** React Three Fiber's reconciler cannot hold DOM nodes, so the content of each marker and popup renders
+  in its own `react-dom` root, with an `its-fine` context bridge: `useEarth`, `useMarker` and the app's own contexts work
+  inside it.
+- **Placement.** Every marker and popup of an earth shares one `ScreenOverlay`, which listens to the new Earth `update`
+  event, fired at the end of `earth.update`, so the DOM is placed from the camera, morph and tiles of the frame that draws
+  (no lag behind the map). The overlay gives each frame a budget of 4 terrain raycasts, spent on terrain height reads
+  (`heightMeters: 'terrain'`) and occlusion tests, served round robin from where the budget ran out (a unit test
+  checks 100 markers all get theirs). Each marker re-checks at most every 250 ms, and only when the scene changed
+  (camera, morph, tiles loading); a check that had to wait asks for a frame, for `frameloop="demand"`: when its interval runs out, or at once
+  when only the budget was short.
+  Hidden markers spend nothing.
+- **Visibility.** `'visible'`, `'occluded'` (faded to `occludedOpacity`) or `'hidden'` (behind the camera or the globe's
+  horizon). Terrain occlusion runs only on the globe at rest: on the flat map the tiles are moved on the GPU, so the meshes
+  the raycast sees do not match what is drawn.
+
+Changed from the brief:
+
+- The CSS is injected once per document and themed with CSS variables (`--react-three-earth-marker-color`,
+  `--react-three-earth-popup-background`, `-color`, `-shadow`, `-radius`, `-padding`, `-font`), like `AttributionControl`,
+  instead of a separate CSS export to import.
+- `anchor` defaults to `'bottom'` for the default pin and `'center'` for an element or content of your own.
+- A popup on a marker opens beside the marker's box (`popupPointOnBox`), so it clears any pin or content size, instead of
+  a per-anchor offset table.
+- New Earth `update` event (see above), so markers are placed in the frame that draws.
+- Terrain occlusion only on the globe at rest (see above).
+- `onClose` fires only when the user closes a popup, never when `open` turns false or the component unmounts, and a
+  popup's close-on-click listens in the capture phase, so clicking marker B closes A before B opens: the usual
+  "one selected popup" state works.
+- Focus: a popup opened from its marker takes focus; one the app opens takes it only when its content has a control;
+  a pointer-tracking tooltip never does. `closeOnClick` closes only on clicks on the map (canvas or markers), not on
+  controls or other popups. With `<Popup open>` on a marker, a marker click calls `onOpen` (`marker.togglePopupOnClick`).
+- Each React root renders into a fresh `display: contents` host per effect run, so StrictMode never puts two roots on one
+  element (a browser check runs the markers under `?strict`).
+- A popup on a marker restores focus to the marker when it closes (a press on the map can keep the marker from taking
+  focus), and `aria-expanded` follows it.
+- A shared `containerPosition` helper (`holdContainerPosition`, `releaseContainerPosition`) makes a static container
+  `position: relative` for markers, popups and now `AttributionControl` too.
+
+Not supported yet: wheel over a marker in a vanilla container that is not inside the controls' element does not zoom;
+occluded markers still take clicks; no clustering (draw thousands of places as W2 / W6 symbols, not DOM).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/markers.test.ts`: anchors, offsets and transforms, popup side and placement beside the marker's box, rotation and tilt with the map, marker lands on `earth.camera.project` in the same update, hidden behind the globe and the camera, shared layer per container, focus and labels, popup open and close (Escape, map click, drag, camera move), pointer tracking |
+| Browser (`?fixtures&markers`, SwiftShader) | the pin on the 3900 m hill reads a terrain height of 3899.99 m |
+| | a marker buried under the hill (height 0) is `'occluded'` at opacity 0.2 |
+| | over 41 frames of camera motion, the pin's transform differs from `earth.project` by at most 0.66 px (whole-pixel rounding, 0.71 px at worst) and the DOM element's tip by 0.66 px |
+| | hidden from the far side of the globe |
+| | the popup opens on click above the pin (gap 0 px, centred within 1 px) with focus inside; `Escape` closes it and returns focus to the marker |
+| | dragging 80 px moves the pin 80 px, fires one `dragend`, and moves the camera 0 m |
 
 ## Atmosphere and @aeronautic effects
 

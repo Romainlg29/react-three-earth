@@ -15,7 +15,8 @@ instead.
   - `skills/`: Agent Skills shipped in the npm package (TanStack Intent format).
   - `test/`: vitest unit tests.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
-  is the centimetre test, `?atmosphere=0` turns the atmosphere off. `tests/run.mjs` drives it in Chromium.
+  is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
+  renders under React's StrictMode. `tests/run.mjs` drives it in Chromium.
 - `docs/spike/SPIKE.md`: what was built and measured so far. Read it before architectural changes.
 
 ## Rules
@@ -31,7 +32,7 @@ instead.
 - The library makes no network request of its own; every URL comes from the app.
 - Performance floor: 60 fps on a Pixel, constant 60 fps on an iPhone.
 - three is pinned to r187 and 3d-tiles-renderer to 0.5.4: some code overrides their private APIs
-  (`composeRegionsOnGpu.ts`, `ImageOverlayPlugin.ts`). Re-check those when bumping.
+  (`composeRegionsOnGpu.ts`, `ImageOverlayPlugin.ts`; `Earth.hasListeners` reads three's `EventDispatcher._listeners`). Re-check those when bumping.
 
 ## Checks
 

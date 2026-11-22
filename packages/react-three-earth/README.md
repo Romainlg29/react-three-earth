@@ -22,6 +22,8 @@ JSON.
   and a solar ephemeris, with lookup textures generated on the device. No network requests.
 - **Centimetre precision anywhere on Earth**: the scene is ECEF metres and model-view matrices are computed
   in 64-bit on the CPU.
+- **Markers and popups**: HTML pins and popups on the globe and the flat map, like MapLibre's, that sit on the terrain,
+  hide behind the horizon and fade behind ridges.
 - **React and vanilla are equal**: every component has a three.js class of the same name.
 - **Agent-first**: [skills](#agent-skills) shipped in the package, JSON `inspect()`, errors that say the fix.
 
@@ -134,6 +136,7 @@ renderer.setAnimationLoop(() => {
 | `<Atmosphere exposure parameters>` | `new Atmosphere({ parameters })`, `install`, `createAerialPerspective` | sky, sun, haze |
 | `<EarthControls enableDamping>` | `new EarthControls(scene, camera, element)` | orbit, pan, zoom |
 | `<AttributionControl compact customAttribution>` | `new AttributionControl({ earth, container, compact })`, `earth.getAttributions()`, `attributionchange` | credit line, compact on small screens |
+| `<Marker longitudeDegrees latitudeDegrees draggable>`, `<Popup>` | `new Marker({ … })`, `new Popup({ … })`, `marker.addTo(earth, container)` | HTML pinned to a place; popups open on click |
 | `useEarth`, `useEarthFrame`, `useEarthState` | | hooks |
 | | `setCameraView`, `toCartesian`, `AtmosphereParameters` | helpers |
 
@@ -172,6 +175,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `getting-started` | building a globe from scratch, in React or vanilla |
 | `coordinates-and-units` | placing objects or the camera at a longitude, latitude and height |
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, bounds, project / unproject, `load` / `idle` / `move` events |
+| `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
 | `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles and PMTiles with `MapStyleSource`, redrawing changed tiles with `invalidate` |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |
