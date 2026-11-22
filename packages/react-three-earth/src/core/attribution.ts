@@ -15,13 +15,16 @@ export interface AttributionSegment {
   href?: string
 }
 
-/** Trims, drops empty strings and de-duplicates (whitespace-insensitively), keeping the first of each. */
+/** Longest attribution kept, in characters: credits are a line of text, and tile metadata is untrusted. */
+export const MAXIMUM_ATTRIBUTION_LENGTH = 2048
+
+/** Trims, caps at `MAXIMUM_ATTRIBUTION_LENGTH`, drops empty strings and de-duplicates (whitespace-insensitively), keeping the first of each. */
 export function normalizeAttributions(input: AttributionInput | readonly AttributionInput[]): string[] {
   const strings = typeof input === 'string' ? [input] : input === undefined ? [] : input.flatMap(entry => (entry === undefined ? [] : typeof entry === 'string' ? [entry] : [...entry]))
   const seen = new Set<string>()
   const result: string[] = []
   for (const entry of strings) {
-    const trimmed = entry.trim()
+    const trimmed = entry.slice(0, MAXIMUM_ATTRIBUTION_LENGTH).trim()
     const key = trimmed.replace(/\s+/g, ' ')
     if (trimmed === '' || seen.has(key)) continue
     seen.add(key)
@@ -106,7 +109,7 @@ function decodeEntities(text: string): string {
   })
 }
 
-const TAG_PATTERN = /^<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/
+const TAG_PATTERN = /<(\/?)([a-zA-Z][a-zA-Z0-9-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/y
 const ATTRIBUTE_PATTERN = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g
 /** Elements whose content is code, not text: dropped with their content. */
 const OPAQUE_ELEMENTS = new Set(['script', 'style', 'template', 'noscript', 'iframe', 'object', 'embed', 'svg', 'math', 'textarea'])
@@ -164,7 +167,8 @@ export function parseAttribution(html: string): AttributionSegment[] {
       index = end === -1 ? html.length : end + 3
       continue
     }
-    const tag = TAG_PATTERN.exec(html.slice(index))
+    TAG_PATTERN.lastIndex = index
+    const tag = TAG_PATTERN.exec(html)
     if (tag === null) {
       // A lone "<" that starts no tag is text (or a half-written tag: its remaining text shows, harmlessly).
       if (skipping === null) buffer += '<'

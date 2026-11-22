@@ -118,18 +118,18 @@ Every source can carry a credit, and a control shows them all (`src/core/attribu
   fires on `setTerrain`, `addImagery`, `removeImagery`, when a source changes its attribution, and when a `MapStyleSource`
   finishes loading.
 - **Style metadata.** `MapStyleProcessor` puts `summary.attributions` together in the style's source order: a style
-  source's own `attribution` wins over its TileJSON's; a PMTiles archive's metadata `attribution` is read after the
-  header (`archive.getMetadata()`, an optional range request to the same archive URL the app gave, in practice served
-  from the same first bytes; a failure is ignored). `MapStyleOverlay` reports it through its new `onLoad(summary)` option,
-  and the source's `attribution` option is added to it. The library fetches nothing it did not fetch before for tiles.
+  source's own `attribution` wins over its TileJSON's; a PMTiles archive's metadata `attribution` is read only when the style gives none. That is one extra range request to
+  the archive URL the app gave (pmtiles does not cache the JSON block), started together with the header read so it adds no
+  round trip; a failure is ignored. Only sources a drawn layer uses, with a working fetcher, are credited. `MapStyleOverlay` reports it through its new `onLoad(summary)` option,
+  and the source's `attribution` option is added to it. 
 - **Sanitising.** `parseAttribution(html)` is a small tokenizer that returns `{ text, href? }` segments and needs no DOM,
   so it is unit-tested in Node. Only `<a href>` with an absolute `http(s)` URL (after decoding entities and removing the
   control characters browsers ignore) becomes a link; every other tag is dropped but its text kept, apart from
-  `<script>`, `<style>`, `<iframe>` and similar, whose content goes too. Attributes other than `href` are never read.
+  `<script>`, `<style>`, `<iframe>` and similar, whose content goes too. Parsing is linear (sticky regex, 100 KB of pathological tags in a few ms) and each entry is capped at 2048 characters. Attributes other than `href` are never read.
   Entities decode to plain text and are not parsed again. The control builds text nodes and `<a>` elements
   (`target="_blank" rel="noopener noreferrer"`) and never uses `innerHTML`. App-provided strings take the same path.
-- **Control.** Vanilla `new AttributionControl({ earth, container, compact?, customAttribution? })` adds a bottom-right
-  element to `container` (made `position: relative` if static) and injects one small `<style>` per document, themed by
+- **Control.** Role `group`; resizes rebuild only when the compact state flips; several controls may share a container. Vanilla `new AttributionControl({ earth, container, compact?, customAttribution? })` adds a bottom-right
+  element to `container` (made `position: relative` if static) and injects one small `<style>` per document (needs `style-src 'unsafe-inline'` under a strict CSP), themed by
   `--react-three-earth-attribution-background`, `-color`, `-link-color` and `-font-size`. `compact` true or false forces
   the mode; undefined is automatic, compact while the container is under 640 px wide (a `ResizeObserver` follows it; the
   rule is the pure `resolveCompact`). Compact shows a "ⓘ" button that expands the text. `<AttributionControl compact

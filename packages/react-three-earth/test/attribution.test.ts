@@ -186,6 +186,22 @@ describe('parseAttribution', () => {
   })
 })
 
+describe('pathological input', () => {
+  it('parses 100 KB of unclosed or nested tags in linear time', () => {
+    const inputs = ['<a'.repeat(50_000), '<a href="'.repeat(11_000), "<a x='".repeat(16_000), '<a '.repeat(33_000), '<'.repeat(100_000), '<a href=x>'.repeat(10_000), '&#'.repeat(50_000)]
+    for (const input of inputs) {
+      const start = performance.now()
+      parseAttribution(input)
+      expect(performance.now() - start, input.slice(0, 12)).toBeLessThan(100)
+    }
+  })
+
+  it('caps each attribution entry', () => {
+    const [entry] = normalizeAttributions('x'.repeat(10_000))
+    expect(entry!.length).toBe(2048)
+  })
+})
+
 describe('resolveCompact', () => {
   it('follows the option when set, and the container width when automatic', () => {
     expect(resolveCompact(true, 2000)).toBe(true)

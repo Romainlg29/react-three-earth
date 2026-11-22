@@ -30,7 +30,8 @@ export interface FetcherContext {
 /** Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. */
 export async function createVectorTileFetcher(source: VectorSourceSpecification, context: FetcherContext): Promise<VectorTileFetcher> {
   if (source.url?.startsWith('pmtiles://') === true) {
-    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context)
+    // The style's own attribution wins, so the archive's metadata is only read when the style has none
+    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context, typeof source.attribution !== 'string')
     if (typeof source.attribution === 'string') archive.attribution = source.attribution
     return archive
   }
@@ -118,7 +119,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
     readonly maximumZoom: number,
   ) {}
 
-  static async create(url: string, context: FetcherContext): Promise<PMTilesFetcher> {
+  static async create(url: string, context: FetcherContext, readAttribution = false): Promise<PMTilesFetcher> {
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
@@ -136,16 +137,14 @@ export class PMTilesFetcher implements VectorTileFetcher {
         }
       },
     })
-    const header = await archive.getHeader()
+    // The metadata is a separate range request (pmtiles does not cache it): start it alongside the header, so it
+    // adds no round trip. An unreadable block must not take the tiles down: attribution is optional.
+    const metadata = readAttribution ? archive.getMetadata().catch(() => null) : Promise.resolve(null)
+    const [header, loaded] = await Promise.all([archive.getHeader(), metadata])
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
     const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom)
-    // The metadata sits next to the header in most archives, so this is usually served from the same cached bytes
-    try {
-      const metadata = (await archive.getMetadata()) as { attribution?: unknown }
-      if (typeof metadata.attribution === 'string') fetcher.attribution = metadata.attribution
-    } catch {
-      // Attribution is optional: an unreadable metadata block must not take the tiles down
-    }
+    const attribution = (loaded as { attribution?: unknown } | null)?.attribution
+    if (typeof attribution === 'string') fetcher.attribution = attribution
     return fetcher
   }
 

@@ -1,5 +1,5 @@
 import type { Earth } from '../core/Earth.js'
-import { parseAttribution, resolveCompact } from '../core/attribution.js'
+import { normalizeAttributions, parseAttribution, resolveCompact } from '../core/attribution.js'
 
 export interface AttributionControlOptions {
   /** The earth whose `getAttributions()` the control shows and whose `attributionchange` event it follows. */
@@ -15,6 +15,7 @@ export interface AttributionControlOptions {
   customAttribution?: string | readonly string[]
 }
 
+const POSITIONED_ATTRIBUTE = 'data-react-three-earth-attribution-positioned'
 const STYLE_ELEMENT_ATTRIBUTE = 'data-react-three-earth-attribution-style'
 
 /**
@@ -65,7 +66,6 @@ export class AttributionControl {
   protected readonly textElement: HTMLElement
   protected readonly toggleButton: HTMLButtonElement
   protected readonly resizeObserver: ResizeObserver | null
-  protected readonly restoreContainerPosition: boolean
   protected compactOption: boolean | undefined
   protected customAttributions: readonly string[]
   protected expanded = false
@@ -80,12 +80,15 @@ export class AttributionControl {
     this.customAttributions = typeof customAttribution === 'string' ? [customAttribution] : [...(customAttribution ?? [])]
     ensureStyle(document)
 
-    this.restoreContainerPosition = document.defaultView?.getComputedStyle(container).position === 'static'
-    if (this.restoreContainerPosition) container.style.position = 'relative'
+    // The first control makes a static container positioned; the last one to go puts it back
+    if (document.defaultView?.getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative'
+      container.setAttribute(POSITIONED_ATTRIBUTE, '')
+    }
 
     this.element = document.createElement('div')
     this.element.className = 'react-three-earth-attribution'
-    this.element.setAttribute('role', 'contentinfo')
+    this.element.setAttribute('role', 'group')
     this.element.setAttribute('aria-label', 'Map attribution')
     this.toggleButton = document.createElement('button')
     this.toggleButton.type = 'button'
@@ -103,11 +106,11 @@ export class AttributionControl {
     this.resizeObserver =
       typeof ResizeObserver === 'undefined'
         ? null
-        : new ResizeObserver(entries => {
-            const width = entries[entries.length - 1]?.contentRect.width
-            if (width === undefined || width === this.containerWidthPixels) return
-            this.containerWidthPixels = width
-            this.update()
+        : new ResizeObserver(() => {
+            // Rebuild only when the container crosses the compact threshold
+            const wasCompact = this.compact
+            this.containerWidthPixels = container.clientWidth
+            if (this.compact !== wasCompact) this.update()
           })
     this.resizeObserver?.observe(container)
     earth.addEventListener('attributionchange', this.onChange)
@@ -133,7 +136,7 @@ export class AttributionControl {
 
   /** Rebuilds the DOM from the earth's current credits. Called for you on every change. */
   update(): void {
-    const entries = [...new Set([...this.earth.getAttributions(), ...this.customAttributions.map(entry => entry.trim()).filter(entry => entry !== '')])]
+    const entries = normalizeAttributions([this.earth.getAttributions(), this.customAttributions])
     this.textElement.replaceChildren()
     entries.forEach((entry, index) => {
       if (index > 0) this.textElement.append(' | ')
@@ -166,7 +169,11 @@ export class AttributionControl {
     this.toggleButton.removeEventListener('click', this.onToggle)
     this.resizeObserver?.disconnect()
     this.element.remove()
-    if (this.restoreContainerPosition) this.container.style.position = ''
+    // Another control may still rely on the position we set
+    if (this.container.hasAttribute(POSITIONED_ATTRIBUTE) && this.container.querySelector('.react-three-earth-attribution') === null) {
+      this.container.removeAttribute(POSITIONED_ATTRIBUTE)
+      this.container.style.position = ''
+    }
   }
 
   protected onToggle = (): void => {

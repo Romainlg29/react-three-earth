@@ -106,7 +106,10 @@ import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, Quantize
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(innerWidth, innerHeight)
-document.body.append(renderer.domElement)
+const container = document.createElement('div')
+container.style.cssText = 'position: relative; width: 100vw; height: 100vh'
+document.body.append(container)
+container.append(renderer.domElement)
 await renderer.init()
 
 const scene = new Scene()
@@ -131,8 +134,8 @@ earth.addImagery(
     ],
   }),
 )
-// The credit line, bottom-right of the canvas's parent (which needs a size); dispose() it on teardown
-const attributionControl = new AttributionControl({ earth, container: renderer.domElement.parentElement! })
+// The credit line, bottom-right of the canvas's parent; dispose() it on teardown
+const attributionControl = new AttributionControl({ earth, container })
 
 const atmosphere = new Atmosphere()
 atmosphere.install(renderer)
@@ -186,6 +189,10 @@ returns the strings. Listen to `earth.addEventListener('attributionchange', …)
 text and `<a href>` links with `http` or `https` URLs are kept; any other markup is dropped, so provider
 strings are safe to pass. Restyle with CSS variables on an ancestor:
 `--react-three-earth-attribution-background`, `-color`, `-link-color`, `-font-size`.
+
+The control injects one `<style>` tag, which a strict Content Security Policy blocks unless it allows
+`style-src 'unsafe-inline'`; otherwise write the rules yourself for the class names
+`react-three-earth-attribution`, `-text` and `-toggle`.
 
 ### Expose the Earth to agents and tests
 

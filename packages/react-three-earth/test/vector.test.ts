@@ -344,6 +344,22 @@ describe('MapStyleProcessor', () => {
     expect(processor.summary.attributions).toEqual(['© Archive', '© TileJSON', '© Inline', '© Style wins'])
   })
 
+  it('credits only drawn sources, and skips the PMTiles metadata when the style has attribution', async () => {
+    const archive = encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6, JSON.stringify({ attribution: '© Archive' }))
+    const { fetch, requests } = createFakeFetch({ 'https://maps.test/world.pmtiles': archive })
+    const style = testStyle({ type: 'vector' }) as { sources: Record<string, object>; layers: Array<Record<string, unknown>> }
+    style.sources = {
+      used: { type: 'vector', url: 'pmtiles://https://maps.test/world.pmtiles', attribution: '© Style' },
+      unused: { type: 'vector', tiles: ['https://maps.test/x/{z}/{x}/{y}.pbf'], attribution: '© Unused' },
+      broken: { type: 'vector', url: '/missing.json', attribution: '© Broken' },
+    }
+    style.layers = ['used', 'broken'].map(source => ({ id: `fill-${source}`, type: 'fill', source, 'source-layer': 'water', paint: {} }))
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
+    expect(processor.summary.attributions).toEqual(['© Style'])
+    // one request for the header and root directory, none for the metadata block
+    expect(requests.filter(request => request.url === 'https://maps.test/world.pmtiles')).toHaveLength(1)
+  })
+
   it('keeps braces of URL templates when resolving them', () => {
     expect(resolveTemplate('/tiles/{z}/{x}/{y}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/tiles/{z}/{x}/{y}.pbf')
     expect(resolveTemplate('glyphs/{fontstack}/{range}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/a/glyphs/{fontstack}/{range}.pbf')

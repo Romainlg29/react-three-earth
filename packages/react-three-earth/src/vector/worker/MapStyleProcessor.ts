@@ -109,8 +109,11 @@ export class MapStyleProcessor {
       ...(hooks.drawLocalGlyph !== undefined ? { drawLocalGlyph: hooks.drawLocalGlyph } : {}),
     })
     // In the style's source order, not in the order the requests finished
+    // and only for sources a drawn layer uses
     const attributions = Object.entries(style.sources ?? {}).flatMap(([id, source]) => {
-      const attribution = fetchers.get(id)?.attribution ?? source.attribution
+      const fetcher = fetchers.get(id)
+      if (fetcher === undefined || !usedSources.has(id)) return []
+      const attribution = source.attribution ?? fetcher.attribution
       return typeof attribution === 'string' ? [attribution] : []
     })
     return new MapStyleProcessor(drawable, fetchers, glyphs, skipped, attributions)
