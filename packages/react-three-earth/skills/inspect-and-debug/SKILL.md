@@ -53,6 +53,8 @@ export function report(earth: Earth) {
 | `imageryRecompositionsPending` | textures still to redraw after `MapStyleSource.invalidate` (see `map-styles`) |
 | `imageryLayers` | `<Imagery>` layers with at least one source |
 | `atmosphere` | null without `<Atmosphere>`; `ready` turns true once lookup textures exist |
+| `camera` | `earth.camera.getView()`: centre, MapLibre `zoom`, heading, pitch (null before the first frame) |
+| `loaded`, `idle` | the `load` event fired; nothing is moving, loading or composing (see `camera-and-events`) |
 
 In React, get the Earth with `useEarth()`; for a HUD use `useEarthState` (see
 `react-hooks-and-frame-loop`).
@@ -102,10 +104,8 @@ const browser = await chromium.launch({
 const page = await browser.newPage()
 await page.goto('http://localhost:5173')
 // window.earth is set by the app in development (see getting-started)
-await page.waitForFunction(() => {
-  const state = window.earth?.inspect()
-  return state?.terrain?.tilesLoaded > 0 && state.terrain.tilesDownloading === 0 && state.terrain.tilesParsing === 0 && state.atmosphere?.ready !== false
-}, null, { timeout: 240_000, polling: 500 })
+// `idle`: camera still, no tile or imagery loading or waiting, atmosphere ready (the `idle` event).
+await page.waitForFunction(() => window.earth?.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
 await page.screenshot({ path: 'map.png' })
 ```
 

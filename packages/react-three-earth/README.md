@@ -166,6 +166,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | --- | --- |
 | `getting-started` | building a globe from scratch, in React or vanilla |
 | `coordinates-and-units` | placing objects or the camera at a longitude, latitude and height |
+| `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, bounds, project / unproject, `load` / `idle` / `move` events |
 | `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles and PMTiles with `MapStyleSource`, redrawing changed tiles with `invalidate` |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |

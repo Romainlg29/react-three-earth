@@ -438,6 +438,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       if (work.stale && !signal.aborted && !this.disposed) {
         this.staleRegions.add(key)
         compositor.runBeforeNextRender(this.startRecompositions)
+      } else if (this.recompositionsPending === 0) {
+        // The last redraw settled after its frame: ask for one more, so `loading` turns false (and `idle` fires) on demand-driven hosts.
+        compositor.onQueued?.()
       }
     }
   }
