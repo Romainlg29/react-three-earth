@@ -1,4 +1,5 @@
 export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
+export { PerformanceMonitor, type PerformanceSample } from './core/PerformanceMonitor.js'
 export { Terrain, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'
 export { Atmosphere, type AtmosphereOptions, type AerialPerspectiveOptions } from './core/Atmosphere.js'
