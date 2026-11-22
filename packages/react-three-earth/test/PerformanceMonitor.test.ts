@@ -19,6 +19,21 @@ function fakeRenderer({ trackTimestamp = true } = {}) {
 }
 
 describe('PerformanceMonitor', () => {
+  it('splits the CPU time into update and render when the render start is marked', () => {
+    const monitor = new PerformanceMonitor(fakeRenderer() as never)
+    expect(monitor.sample(0)).toMatchObject({ cpuUpdateMillisecondsAverage: null, cpuRenderMillisecondsAverage: null })
+    for (let frame = 0; frame < 10; frame++) {
+      const time = frame * 16
+      monitor.beginFrame(time)
+      monitor.markRenderStart(time + 6)
+      monitor.endFrame(time + 8)
+    }
+    const sample = monitor.sample(160)
+    expect(sample.cpuFrameMillisecondsAverage).toBe(8)
+    expect(sample.cpuUpdateMillisecondsAverage).toBe(6)
+    expect(sample.cpuRenderMillisecondsAverage).toBe(2)
+  })
+
   it('reports the frame rate and the worst gap over the last second', () => {
     const monitor = new PerformanceMonitor(fakeRenderer() as never)
     // 59 frames 15 ms apart, then one 100 ms stutter, all within one second
