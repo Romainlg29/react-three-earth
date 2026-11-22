@@ -260,6 +260,64 @@ async function vectorInvalidate() {
   })
 }
 
+const PATTERN_COLOURS = `
+  // By hue, since the terrain is lit: the sprite's green checks (background), dark and light blue stripes
+  // (lakes), red dashes (primary roads), and the runtime image's magenta, then yellow, hatch (Lake Motosu).
+  let green = 0, darkBlue = 0, lightBlue = 0, red = 0, magenta = 0, yellow = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (g > r * 1.2 && g > b * 1.3 && g > 40) green++
+    else if (b > r * 2.5 && b > g * 1.6 && b > 60) darkBlue++
+    else if (b > r * 1.25 && g > r * 1.1 && b >= g && b > 90) lightBlue++
+    else if (r > g * 2.5 && r > b * 2.5 && r > 60) red++
+    else if (r > g * 1.8 && b > g * 1.8 && r > 50 && b > 50) magenta++
+    else if (r > b * 2 && g > b * 2 && r > 70 && g > 70) yellow++
+  }
+  const n = px.length / 4
+  const share = count => +(count / n).toFixed(4)
+  return { meadowShare: share(green), darkBlueShare: share(darkBlue), lightBlueShare: share(lightBlue), redShare: share(red), magentaShare: share(magenta), yellowShare: share(yellow) }
+`
+
+/**
+ * Sprite patterns: `background-pattern`, `fill-pattern` and `line-pattern` from the fixture sprite, then an
+ * image the sprite lacks (reported through `onStyleImageMissing`) added with `addImage` and replaced with
+ * `updateImage`, each redrawing the lake that uses it.
+ */
+async function vectorPatterns(name, query) {
+  // Above Lake Motosu and Lake Kawaguchi, looking down.
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=patterns&camera=138.68,35.47,0,40000,0,-80${query}`)
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 300 })
+  await settled()
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const beforePng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}.png`, OUT), beforePng)
+  const sprite = await analyse(page, beforePng, PATTERN_COLOURS)
+  const missing = await page.evaluate(() => window.styleImagesMissing ?? [])
+  const hatch = rgb => `{ width: 8, height: 8, data: new Uint8Array(Array.from({ length: 64 }, (_, i) => ((i % 8) + Math.floor(i / 8)) % 4 < 2 ? [${rgb}, 255] : [20, 20, 20, 255]).flat()) }`
+  await page.evaluate(`window.mapStyleSource.addImage('hatch', ${hatch('230, 40, 220')})`)
+  await page.waitForTimeout(500)
+  await settled()
+  await page.waitForTimeout(1500)
+  const addedPng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}-added.png`, OUT), addedPng)
+  const added = await analyse(page, addedPng, PATTERN_COLOURS)
+  const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+  await page.evaluate(`window.mapStyleSource.updateImage('hatch', ${hatch('240, 220, 30')})`)
+  await page.waitForTimeout(500)
+  await settled()
+  await page.waitForTimeout(1500)
+  const updatedPng = await page.screenshot()
+  writeFileSync(new URL(`map-vector-patterns-${name}-updated.png`, OUT), updatedPng)
+  const updated = await analyse(page, updatedPng, PATTERN_COLOURS)
+  const composedAfter = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+  const inspection = await page.evaluate(() => window.earth.inspect())
+  await page.close()
+  results.push({ check: `vector map style with fixtures, patterns, ${name}`, sprite, missing, added, updated, regionsRedrawnByUpdate: composedAfter - composedBefore, tilesLoaded: inspection.terrain.tilesLoaded, errors })
+}
+
 /** earth.camera on fixture terrain: unproject / project / queryTerrainElevation, events, and getView through the morph. */
 async function cameraAndEvents() {
   // Over the fixture's highest hill (3.9 km), so terrain and ellipsoid differ.
@@ -320,6 +378,121 @@ async function cameraAndEvents() {
     flatView: flat.view,
     worstFlatProjectErrorPixels: worst(flat.samples, 'projectErrorPixels'),
     morphEvents: flat.events,
+    errors,
+  })
+}
+
+/**
+ * Camera animations and pointer events on fixture terrain: flyTo Tokyo → Paris in 3D and in 2D ends at the
+ * requested view, user input stops a flight, fitBounds fits, and a click reports the position under it.
+ */
+async function cameraAnimations() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0')
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true, null, { timeout: 240_000, polling: 500 })
+  const PARIS = { longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 11, headingDegrees: 20 }
+  const fly = pitchDegrees => page.evaluate(async ({ target }) => {
+    const earth = window.earth
+    earth.camera.jumpTo({ longitudeDegrees: 139.69, latitudeDegrees: 35.69, zoom: 10, headingDegrees: 0, pitchDegrees: -90 })
+    const events = []
+    const listeners = ['movestart', 'zoomstart', 'zoomend', 'rotatestart', 'rotateend', 'moveend'].map(type => {
+      const listener = () => events.push(type)
+      earth.addEventListener(type, listener)
+      return [type, listener]
+    })
+    let lowestZoom = Infinity
+    const sample = () => (lowestZoom = Math.min(lowestZoom, earth.camera.getView().zoom))
+    earth.addEventListener('move', sample)
+    const startMilliseconds = performance.now()
+    const completed = await earth.camera.flyTo(target, { durationSeconds: 4, essential: true })
+    const seconds = (performance.now() - startMilliseconds) / 1000
+    const endView = earth.camera.getView()
+    // The frame after the last one, so moveend has fired.
+    await new Promise(resolve => setTimeout(resolve, 500))
+    earth.removeEventListener('move', sample)
+    for (const [type, listener] of listeners) earth.removeEventListener(type, listener)
+    return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), events }
+  }, { target: { ...PARIS, pitchDegrees } })
+  const globe = await fly(-50)
+  writeFileSync(new URL('fly-to-paris-3d.png', OUT), await page.screenshot())
+
+  // User input stops a flight where it is.
+  const interrupted = await page.evaluate(() => {
+    window.flight = window.earth.camera.flyTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3, zoom: 9 }, { durationSeconds: 20, essential: true })
+    return true
+  })
+  await page.waitForTimeout(1500)
+  await page.mouse.move(400, 300)
+  await page.mouse.wheel(0, -200)
+  const flightCompleted = await page.evaluate(() => Promise.race([window.flight, new Promise(resolve => setTimeout(() => resolve('still running'), 3000))]))
+
+  // fitBounds: the box's corners land inside the padding.
+  const fit = await page.evaluate(async () => {
+    const earth = window.earth
+    const bounds = { westDegrees: -91, southDegrees: -0.5, eastDegrees: -88.5, northDegrees: 1.2 }
+    const completed = await earth.camera.fitBounds(bounds, { paddingPixels: 40, pitchDegrees: -90, durationSeconds: 1, essential: true })
+    const corners = [[-91, -0.5], [-88.5, -0.5], [-88.5, 1.2], [-91, 1.2]].map(([longitudeDegrees, latitudeDegrees]) => earth.project({ longitudeDegrees, latitudeDegrees }))
+    return { completed, corners }
+  })
+
+  // A click at the centre after jumping over the fixture's hill reports the hill under it.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3, zoom: 12, headingDegrees: 0, pitchDegrees: -60 }))
+  const stateLog = []
+  const logState = setInterval(async () => {
+    stateLog.push(await page.evaluate(() => {
+      const i = window.earth.inspect()
+      return JSON.stringify({ idle: i.idle, animating: window.earth.camera.animating, terrain: i.terrain, zoom: i.camera?.zoom, x: window.camera.position.x })
+    }).catch(e => String(e)))
+  }, 15_000)
+  try {
+    await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  } catch (error) {
+    console.error(stateLog.join('\n'))
+    throw error
+  } finally {
+    clearInterval(logState)
+  }
+  // Again, now that the terrain under the centre is loaded at full detail.
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3 }))
+  await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  await page.evaluate(() => {
+    window.pointerEvents = []
+    for (const type of ['click', 'pointermove']) {
+      window.earth.addEventListener(type, event => window.pointerEvents.push({ type, screen: event.screen, geographic: event.geographic }))
+    }
+  })
+  await page.mouse.move(400, 300)
+  await page.mouse.click(400, 300)
+  // A drag is not a click.
+  await page.mouse.move(200, 200)
+  await page.mouse.down()
+  await page.mouse.move(260, 230, { steps: 5 })
+  await page.mouse.up()
+  const pointer = await page.evaluate(() => ({
+    events: window.pointerEvents,
+    elevation: window.earth.queryTerrainElevation({ longitudeDegrees: -89.6, latitudeDegrees: 0.3 }),
+  }))
+  writeFileSync(new URL('click-on-terrain.png', OUT), await page.screenshot())
+
+  // The same flight on the flat map.
+  await page.evaluate(() => window.setView('2d'))
+  // Settled, so the flight's first frame is a fresh movestart.
+  await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  const flat = await fly(-90)
+  writeFileSync(new URL('fly-to-paris-2d.png', OUT), await page.screenshot())
+  await page.close()
+
+  const clicks = pointer.events.filter(event => event.type === 'click')
+  results.push({
+    check: 'camera animations and pointer events with fixtures',
+    globe,
+    flat,
+    target: PARIS,
+    interrupted,
+    flightCompleted,
+    fit,
+    clicks,
+    pointerMoves: pointer.events.filter(event => event.type === 'pointermove').length,
+    elevationAtCenter: pointer.elevation,
     errors,
   })
 }
@@ -387,10 +560,15 @@ try {
     await vectorMap('close', '&camera=,,,9000,,-50')
     await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
   }
+  if (!only || only === 'vector' || only === 'patterns') {
+    await vectorPatterns('webgpu', '')
+    await vectorPatterns('webgl2', '&webgl')
+  }
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
+  if (!only || only === 'camera' || only === 'animations') await cameraAnimations()
 } finally {
   await browser.close()
 }

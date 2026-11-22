@@ -50,6 +50,15 @@ const expectations = {
     ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
     ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
   ],
+  ...Object.fromEntries(['webgpu', 'webgl2'].map(name => [`vector map style with fixtures, patterns, ${name}`, r => [
+    ['background-pattern covers the land (green checks)', r.sprite.meadowShare > 0.5],
+    ['fill-pattern stripes the lakes, dark and light', r.sprite.darkBlueShare > 0.004 && r.sprite.lightBlueShare > 0.003],
+    ['line-pattern dashes the primary roads', r.sprite.redShare > 0.008],
+    ['the image the sprite lacks draws nothing and is reported once', r.sprite.magentaShare === 0 && JSON.stringify(r.missing) === '["hatch"]'],
+    ['addImage draws it', r.added.magentaShare > 0.001],
+    ['updateImage replaces it', r.updated.magentaShare < r.added.magentaShare * 0.1 && r.updated.yellowShare > r.added.yellowShare + 0.001],
+    ['the other patterns stay', r.updated.darkBlueShare > r.sprite.darkBlueShare * 0.8 && r.updated.redShare > r.sprite.redShare * 0.8],
+  ]])),
   'camera and events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     return [
@@ -59,6 +68,30 @@ const expectations = {
       ['the flat map round-trips within 1 px', r.worstFlatProjectErrorPixels < 1],
       ['getView keeps centre, zoom and heading through the morph', Math.abs(r.flatView.longitudeDegrees - r.topDownView.longitudeDegrees) < 1e-4 && Math.abs(r.flatView.latitudeDegrees - r.topDownView.latitudeDegrees) < 1e-4 && Math.abs(r.flatView.zoom - r.topDownView.zoom) < 0.01 && angle(r.flatView.headingDegrees, r.topDownView.headingDegrees) < 0.1],
       ['the morph fires movestart, moveend, then idle', r.morphEvents.join() === 'movestart,moveend,idle'],
+    ]
+  },
+  'camera animations and pointer events with fixtures': r => {
+    const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
+    const endsAt = (flight, pitchDegrees) =>
+      flight.completed &&
+      Math.abs(flight.view.longitudeDegrees - r.target.longitudeDegrees) < 1e-6 &&
+      Math.abs(flight.view.latitudeDegrees - r.target.latitudeDegrees) < 1e-6 &&
+      Math.abs(flight.view.zoom - r.target.zoom) < 1e-3 &&
+      angle(flight.view.headingDegrees, r.target.headingDegrees) < 0.01 &&
+      Math.abs(flight.view.pitchDegrees - pitchDegrees) < 0.01
+    const click = r.clicks[0]
+    return [
+      ['flyTo Tokyo → Paris ends at the requested view on the globe', endsAt(r.globe, -50)],
+      ['flyTo Tokyo → Paris ends at the requested view on the flat map', endsAt(r.flat, -90)],
+      ['the flights zoom out on the way', r.globe.lowestZoom < 6 && r.flat.lowestZoom < 6],
+      ['the flights take about their 4 s', Math.abs(r.globe.seconds - 4) < 1 && Math.abs(r.flat.seconds - 4) < 1],
+      ['zoom and rotate events fire inside movestart and moveend', ['globe', 'flat'].every(name => r[name].events.join() === 'movestart,zoomstart,rotatestart,zoomend,rotateend,moveend')],
+      ['the mouse wheel stops a running flight', r.flightCompleted === false],
+      ['fitBounds puts the box inside 40 px of padding', r.fit.completed && r.fit.corners.every(corner => corner.xPixels > 39 && corner.xPixels < 761 && corner.yPixels > 39 && corner.yPixels < 561)],
+      ['one click (a drag is not a click)', r.clicks.length === 1],
+      ['the click reports its screen position', click?.screen.xPixels === 400 && click?.screen.yPixels === 300],
+      ['the click reports the position under it, on the terrain', click?.geographic != null && Math.abs(click.geographic.longitudeDegrees + 89.6) < 1e-4 && Math.abs(click.geographic.latitudeDegrees - 0.3) < 1e-4 && Math.abs(click.geographic.heightMeters - r.elevationAtCenter) < 1 && r.elevationAtCenter > 1000],
+      ['pointermove fires with the pointer', r.pointerMoves > 0],
     ]
   },
 }

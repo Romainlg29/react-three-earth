@@ -110,11 +110,71 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 | `getView` before / after the morph (top-down) | same centre, zoom within 2·10⁻⁶ |
 | Morph events | `movestart`, `moveend`, `idle` |
 
-Not done yet (W1b): `easeTo` / `flyTo` / `fitBounds`, zoom / rotate / pitch events, pointer events with
-geography, `<Earth initialView>`. With relief under a pitched camera, the morph anchors on the ellipsoid
+With relief under a pitched camera, the morph anchors on the ellipsoid
 point under the screen centre rather than the terrain point, so the centre shifts by the relief's parallax
 during a 3D→2D morph. `getBounds` ignores terrain. `idle` does not wait for imagery added after tiles loaded
 (those textures download outside 3DTilesRenderer's counters).
+
+## Camera animations and pointer events (W1b)
+
+```ts
+await earth.camera.flyTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12 }) // true, or false when stopped
+earth.camera.fitBounds(bounds, { paddingPixels: 40 }); earth.camera.setPadding({ leftPixels: 320 })
+earth.addEventListener('click', event => event.geographic) // <Earth initialView={…}>, formatViewHash / parseViewHash
+```
+
+How it works (`src/core/cameraAnimation.ts`, `EarthCamera.ts`, `events.ts`, `Earth.ts`, `viewHash.ts`):
+
+- **Animations are view interpolations replayed through `jumpTo`'s placement**: each frame computes a full
+  view (centre, height, zoom, heading, pitch) and places the camera with it, so they behave the same on the
+  globe and on the flat map, world copies included. `Earth.update` advances them before the morph and the
+  tiles, so tiles load for the frame's pose. The centre moves along a great circle on the globe and a
+  straight Mercator line on the map; heading goes the short way round.
+- **`flyTo` is MapLibre's van Wijk–Nuij curve** (`createFlightPath`: `curve`, `speed`, `screenSpeed`,
+  `minimumZoom`, `maximumDurationSeconds`), with the distance measured in Mercator pixels at the start zoom.
+  With nothing to fly over (only heading or pitch change) it eases, as MapLibre does.
+- **The end height is re-read every frame**: coarse quantized-mesh tiles sit up to 2 km below the ground (the
+  chord of a large tile), so a height read at the start left the camera kilometres off once Paris loaded
+  (the browser check caught zoom 12.9 instead of 11). Re-reading the terrain under the end centre each frame
+  lets the flight land on the tiles that load as it approaches.
+- **Promises, not events, report the end**: each animation returns `Promise<boolean>`, false when stopped by
+  `stop()`, `jumpTo`, another animation, a morph or user input. User input is the controls' own `start`
+  event (3DTilesRenderer fires it on drag, wheel and double tap), hooked in `EarthViewControls`, not in
+  `FlatMapControls`. `prefers-reduced-motion` turns every animation into a jump unless `essential`.
+  Animations called before the first frame wait for the camera, and `initialView` applies without
+  stopping them. The first step counts one frame at most, so a host idle for seconds does not skip ahead.
+- **Padding slides the camera across its screen plane** instead of shifting the projection's principal
+  point: the target lands at the padded centre with heading and pitch untouched, no change to the
+  projection matrix (which R3F, the atmosphere and the controls also own). `getView` casts its ray through
+  the padded centre and measures distance along the camera's axis, so zoom keeps meaning the scale there.
+- **`cameraForBounds` fits on the map, then on screen**: the Web Mercator fit (MapLibre's maths, with
+  heading and uneven padding) is exact on the flat map seen from above; on the globe it is off by up to 6 px
+  for a 13°-wide box (Mercator's scale changes across the box), and tilted views are worse. Up to six steps
+  then place a copy of the camera, project the box's edges and correct zoom and centre, so the box touches
+  the padding within half a pixel on the globe too, tilted or not. When part of the box starts past the
+  horizon (a Pacific-wide box), it first zooms out a level at a time until all of it shows.
+- **Zoom / rotate / pitch events** come from the same per-frame comparison as `move`, on a cheap
+  ellipsoid-only view (no terrain raycast). `zoom` follows ground metres per pixel, not `getView().zoom`,
+  which changes with latitude on the globe while panning at a fixed altitude.
+- **Pointer events**: `earth.attachPointerEvents(element, { canvas })` (`<Earth>` calls it with R3F's event
+  source and the canvas, so positions stay right with an `eventSource` that is not the canvas) dispatches `click` (press and
+  release within 3 px, MapLibre's tolerance), `doubleclick`, `contextmenu` and `pointermove`. Nothing is
+  measured without a listener, and `geographic` is a lazy getter, so `pointermove` costs no raycast unless a
+  listener reads it.
+- Changed from the brief: no `rollDegrees` (nothing in the camera vocabulary uses it yet), the hash is
+  pure functions rather than a URL writer (the app owns `history`), and `animating` replaces MapLibre's
+  `isMoving` (movement is already the `movestart` / `moveend` pair).
+
+| Check (fixtures, SwiftShader) | Result |
+| --- | --- |
+| `flyTo` Tokyo → Paris, 4 s, globe and flat map | ends at the view within 10⁻¹² ° and 2·10⁻¹³ zoom; zooms out to about 2 |
+| Events during the flights | `movestart, zoomstart, rotatestart, zoomend, rotateend, moveend` |
+| Mouse wheel during a 20 s flight | promise resolves false |
+| `fitBounds` with 40 px padding, globe | corners inside the padding |
+| Click at the centre over the 3.9 km hill | exact position, height equals `queryTerrainElevation`; a drag is not a click |
+| Unit tests: `fitBounds` on both views, 5 boxes (city, uneven padding, antimeridian, rotated, view padding) | inside and snug within 0.5 px |
+
+Not done yet: `rollDegrees`, `around` for `zoomTo`, the `offset` option, animating `padding`.
 
 ## Vector map styles (`src/vector/`)
 
@@ -139,7 +199,7 @@ How it works:
   tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
 - Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
 
-Not supported yet: icons and fill patterns (sprites), raster, hillshade and heatmap layers (skipped with one
+Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
 warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
 tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
@@ -198,6 +258,50 @@ the foundation GeoJSON `setData`, style edits, feature-state and runtime images 
 | Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: of 106 regions held, 90 reach into the bounds and redraw once each; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
 
 ![before](map-vector-invalidate-before.png) ![after](map-vector-invalidate-after.png)
+
+### Sprites, image atlas and patterns (W5)
+
+`fill-pattern`, `line-pattern` and `background-pattern` draw images from the style's `sprite` (URL or MapLibre 3
+array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.addImage` / `updateImage` /
+`removeImage` / `hasImage` add runtime images, with `onStyleImageMissing` (MapLibre's `styleimagemissing`).
+
+- The worker (`worker/sprites.ts`) fetches the sprite JSON and PNG and decodes them with `createImageBitmap` +
+  `OffscreenCanvas`. Images are packed into an RGBA atlas (`worker/imageAtlas.ts`, a shelf packer like the glyph
+  atlas) **only when a tile or the background first uses them**, not the whole sheet. Entries are premultiplied
+  (so linear filtering does not darken transparent edges) and padded with a wrapped copy of their opposite edges
+  (so repeats filter seamlessly). Changes travel as `imageAtlas` on any worker result and are applied before it
+  resolves, as glyphs are; `MapStyleOverlay.imageAtlas` is the main-thread copy, public for plugins (W17).
+- **Patterns stay in the shape mesh, in style order.** A tile with any pattern gets two extra vertex attributes
+  (atlas rectangle as normalised 16-bit, image coordinates as floats) and a second shape material; tiles without
+  patterns keep the colour-only material and no extra bytes. The shader picks pattern or colour per vertex,
+  `fract`s the image coordinates into the rectangle, unpremultiplies and decodes sRGB; the vertex alpha carries the
+  opacity.
+- Fill coordinates are in image pixels anchored at the world's top-left corner; each tile's offset into the
+  repeating image is reduced modulo the image in 64-bit in the worker, so 32-bit vertex values stay small at zoom
+  20 and patterns continue across tiles and regions. Line coordinates run along the line (cumulative distance)
+  and across its width, with the image scaled so its height spans the width (MapLibre); mitre vertices use the
+  mean direction, stretched by the mitre, so the across coordinate stays on the edges. The background pattern is
+  a uniform-driven quad with the same world anchoring, offset reduced on the CPU, drawn over the background
+  colour (one colour and one pattern per zoom: a translucent colour layer above a pattern draws under it).
+- **Image changes redraw only what uses them.** Buckets list the image ids they asked for (and which were missing);
+  the overlay keeps an image id → bucket keys record that outlives cache eviction (pruned to tiles of held regions and cached buckets
+  on each change), so regions whose buckets left the 32 MB cache still redraw.
+  The worker answers an image change with `rebuild`: false when the image was rewritten in place (same size and
+  pixel ratio), so regions drawing those buckets are only redrawn through F1's in-place redraw; true when it
+  appeared, disappeared or moved, so those buckets are re-tessellated from the worker's raw-tile cache (no
+  refetch). Buckets still processing during a change are rebuilt too. Label-ring placements are skipped (patterns
+  are shapes). The helpers are `rebuildTiles(matches)` and `redrawRegions(bucketKeys)`, names shared with W3.
+- Deviation from the brief: `updateImage` accepts another size (it rebuilds instead of throwing as MapLibre
+  does). Icon metadata (`sdf`, `stretchX/Y`, `content`) is parsed and kept for W6, which needs a transparent-padded
+  icon slot rather than the wrapped one.
+
+| Check (`?fixtures&map=patterns`, SwiftShader) | Result |
+| --- | --- |
+| WebGPU and WebGL2 | green checks (background) on 83 % of the view, blue stripes on the lakes, red and white dashes along primary roads; the lake using `hatch` (not in the sprite) draws nothing and is reported once |
+| `addImage('hatch')`, then `updateImage` (same size) | the lake turns magenta, then yellow; the update redrew 46 of 50 regions (the fixture lake's zoom 10 tile covers most of the view) with no re-tessellation |
+| Unit tests | 18 new: sprite URLs and index, atlas padding, premultiplication, in-place rewrite and slot reuse, fill and line pattern coordinates, cross-tile continuity, processor sprites (@2x, array sprites, fallback, failures, runtime images), redraw scope, missing-image reports (background included), evicted buckets, background stacking, `MapStyleSource` image API |
+
+![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
 ## Attribution
 

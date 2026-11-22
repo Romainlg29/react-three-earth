@@ -3,6 +3,27 @@ import { MathUtils, Ray, Raycaster, Vector2, Vector3, type Camera, type Intersec
 
 import { mercatorScaleFactor, WEB_MERCATOR_HALF_EXTENT_METERS, wrapMercatorXNear } from '../view/webMercator.js'
 import { placeCameraAround, toCartesian, type GeographicBounds, type GeographicPosition } from './camera.js'
+import {
+  createFlightPath,
+  DEFAULT_FIT_MAXIMUM_ZOOM,
+  defaultEasing,
+  fitBoundsOnMap,
+  flightDurationSeconds,
+  fromMercatorMeters,
+  greatCircleCenterPath,
+  interpolateDegrees,
+  mercatorCenterPath,
+  mercatorDistancePixels,
+  prefersReducedMotion,
+  toMercatorMeters,
+  toViewPadding,
+  type AnimationOptions,
+  type CenterPath,
+  type FitBoundsOptions,
+  type FlyToOptions,
+  type PaddingPixels,
+  type ViewPadding,
+} from './cameraAnimation.js'
 import type { Earth } from './Earth.js'
 import {
   ellipsoidHorizonPoint,
@@ -55,6 +76,38 @@ const HORIZON_BISECTION_STEPS = 12
 /** Points along the globe's outline for `getBounds`. */
 const HORIZON_SAMPLES = 32
 
+/** Steps that correct a fit on screen (each one projects the box's edges once). */
+const FIT_REFINEMENT_STEPS = 6
+/** Zoom levels a fit may back out by when part of the box starts past the horizon. */
+const FIT_ZOOM_OUT_STEPS = 8
+/** Points along each edge of a box when fitting it. */
+const FIT_SAMPLES_PER_EDGE = 16
+/** MapLibre's default `easeTo` duration. */
+const DEFAULT_EASE_DURATION_SECONDS = 0.5
+
+/** What an animation does from its start view: its length and the view at each progress (0 to 1). */
+interface AnimationPlan {
+  durationSeconds: number
+  frame: (progress: number) => MapViewChange
+}
+
+interface RunningAnimation {
+  /** Builds the plan from the view at the start; null when there is nothing to do. */
+  plan: (start: MapView) => AnimationPlan | null
+  /** Null until the animation starts (the camera is known and no morph runs). */
+  frame: AnimationPlan['frame'] | null
+  durationSeconds: number
+  elapsedSeconds: number
+  easing: (time: number) => number
+  reduceMotion: boolean
+  /** False until the first frame advanced it. */
+  stepped: boolean
+  resolve: (completed: boolean) => void
+}
+
+/** The longest first animation step: one frame at 60 fps. */
+const FIRST_STEP_SECONDS = 1 / 60
+
 const ray = new Ray()
 const flatRay = new Ray()
 const raycaster = new Raycaster()
@@ -90,6 +143,11 @@ export class EarthCamera {
   /** Size of the canvas in CSS pixels. Set by every `earth.update`, or with `setViewportSize`. */
   viewportWidthPixels = 0
   viewportHeightPixels = 0
+  /** Space kept clear on each side of the screen. Default: none. Set it with `setPadding`. */
+  padding: ViewPadding = toViewPadding(0)
+  protected animation: RunningAnimation | null = null
+  /** A copy of the camera that `cameraForBounds` measures fits with. */
+  protected fitCamera: Camera | null = null
 
   constructor(protected readonly earth: Earth) {}
 
@@ -112,24 +170,47 @@ export class EarthCamera {
     return this.earth.view.morph > 0.5
   }
 
-  /** The centre of the screen, zoom, heading, pitch and distance. */
+  /**
+   * The centre of the screen (of the area `padding` leaves), zoom, heading, pitch and distance. With
+   * padding, `distanceMeters` is measured along the camera's axis, so zoom stays the scale at the centre.
+   */
   getView(): MapView {
+    return this.readView(true)
+  }
+
+  /** `getView` on the ellipsoid (the map's plane in 2D), without raycasting the terrain. For the per-frame events. */
+  readEllipsoidView(): MapView {
+    return this.readView(false)
+  }
+
+  /** Ground metres per pixel at the centre for a camera this far away (along its axis): the scale the `zoom` events follow. */
+  distanceToGroundMetersPerPixel(distanceMeters: number): number {
+    const focalLength = focalLengthPixels(this.requireCamera(), this.requireViewport().height)
+    return distanceMeters / focalLength
+  }
+
+  /** `getView`, on the ellipsoid (the map's plane in 2D) when `followTerrain` is false: no terrain raycast. */
+  protected readView(followTerrain: boolean): MapView {
     const camera = this.requireCamera()
-    const focalLength = focalLengthPixels(camera, this.requireViewport().height)
+    const { width, height } = this.requireViewport()
+    const focalLength = focalLengthPixels(camera, height)
     cameraPosition.setFromMatrixPosition(camera.matrixWorld)
     forward.set(0, 0, -1).transformDirection(camera.matrixWorld)
     cameraUp.set(0, 1, 0).transformDirection(camera.matrixWorld)
-    ray.set(cameraPosition, forward)
-    return this.onFlatMap ? this.getFlatMapView(focalLength) : this.getGlobeView(focalLength)
+    const { rightPixels, downPixels } = this.paddingOffset()
+    if (rightPixels === 0 && downPixels === 0) ray.set(cameraPosition, forward)
+    else this.setScreenRay(width / 2 + rightPixels, height / 2 + downPixels, ray)
+    return this.onFlatMap ? this.getFlatMapView(focalLength, followTerrain) : this.getGlobeView(focalLength, followTerrain)
   }
 
-  protected getGlobeView(focalLength: number): MapView {
-    const point = this.intersectTerrain(ray, surfacePoint) ?? intersectEllipsoidOrHorizon(ray, surfacePoint)?.point
+  protected getGlobeView(focalLength: number, followTerrain = true): MapView {
+    const point = (followTerrain ? this.intersectTerrain(ray, surfacePoint) : null) ?? intersectEllipsoidOrHorizon(ray, surfacePoint)?.point
     // Looking away from the Earth: use the point under the camera.
     const center = point ?? WGS84_ELLIPSOID.getPositionToSurfacePoint(cameraPosition, surfacePoint)
     WGS84_ELLIPSOID.getPositionToCartographic(center, cartographic)
     WGS84_ELLIPSOID.getEastNorthUpAxes(cartographic.lat, cartographic.lon, east, north, up)
-    const distanceMeters = cameraPosition.distanceTo(center)
+    // Along the camera's axis (the same as straight to the centre without padding).
+    const distanceMeters = cameraPosition.distanceTo(center) * ray.direction.dot(forward)
     const latitudeDegrees = MathUtils.radToDeg(cartographic.lat)
     const { headingRadians, pitchRadians } = headingAndPitch(forward, cameraUp, east, north, up)
     return {
@@ -143,16 +224,18 @@ export class EarthCamera {
     }
   }
 
-  protected getFlatMapView(focalLength: number): MapView {
+  protected getFlatMapView(focalLength: number, followTerrain = true): MapView {
     const view = this.earth.view
     this.toFlatRay(ray, flatRay)
     // Looking above the map's horizon: use the point under the camera.
-    const center = this.intersectFlatMap(flatRay, flatPoint) ?? flatPoint.copy(flatRay.origin).setZ(0)
+    const center = this.intersectFlatMap(flatRay, flatPoint, followTerrain) ?? flatPoint.copy(flatRay.origin).setZ(0)
     const { longitudeRadians, latitudeRadians, heightMeters } = view.flatToGeodetic(center)
-    // Flat coordinates are Web Mercator metres; the map is `view.scale` ECEF metres per flat unit.
-    const flatDistance = flatRay.origin.distanceTo(center)
+    // Flat coordinates are Web Mercator metres; the map is `view.scale` ECEF metres per flat unit. Along the
+    // camera's axis, as on the globe.
+    const flatForward = viewPoint.copy(forward).transformDirection(view.earthToFlat)
+    const flatDistance = flatRay.origin.distanceTo(center) * flatRay.direction.dot(flatForward)
     const { headingRadians, pitchRadians } = headingAndPitch(
-      flatRay.direction,
+      flatForward,
       cameraUp.transformDirection(view.earthToFlat),
       east.set(1, 0, 0),
       north.set(0, 1, 0),
@@ -170,25 +253,41 @@ export class EarthCamera {
   }
 
   /**
-   * Moves the camera at once. Fields left out keep their current value. Without `heightMeters`, a new
-   * centre sits on the loaded terrain (0 where none is loaded). During a morph to the flat map the morph
-   * flies the camera itself: jump once `earth.view.transitioning` is false. When the screen centre shows
-   * sky, `getView` stands in the horizon point (or the point under the camera), so changing only zoom,
-   * heading or pitch re-aims the camera at that point.
+   * Moves the camera at once, and stops a running animation. Fields left out keep their current value.
+   * Without `heightMeters`, a new centre sits on the loaded terrain (0 where none is loaded). During a morph
+   * to the flat map the morph flies the camera itself: jump once `earth.view.transitioning` is false. When
+   * the screen centre shows sky, `getView` stands in the horizon point (or the point under the camera), so
+   * changing only zoom, heading or pitch re-aims the camera at that point.
    */
   jumpTo(change: MapViewChange): void {
+    this.stop()
+    this.placeView(change)
+    this.earth.requestFrame()
+  }
+
+  /** `jumpTo` without stopping animations or asking for a frame: what each animation frame calls. */
+  protected placeView(change: MapViewChange): void {
     const camera = this.requireCamera()
     const focalLength = focalLengthPixels(camera, this.requireViewport().height)
-    const current = this.getView()
+    const complete =
+      change.longitudeDegrees !== undefined &&
+      change.latitudeDegrees !== undefined &&
+      change.heightMeters !== undefined &&
+      (change.zoom !== undefined || change.distanceMeters !== undefined) &&
+      change.headingDegrees !== undefined &&
+      change.pitchDegrees !== undefined
+    // Animation frames give every field: no need to read the current view (a terrain raycast).
+    const current = complete ? null : this.getView()
     const centerMoved = change.longitudeDegrees !== undefined || change.latitudeDegrees !== undefined
-    const longitudeDegrees = change.longitudeDegrees ?? current.longitudeDegrees
-    const latitudeDegrees = change.latitudeDegrees ?? current.latitudeDegrees
+    const longitudeDegrees = change.longitudeDegrees ?? current!.longitudeDegrees
+    const latitudeDegrees = change.latitudeDegrees ?? current!.latitudeDegrees
     const position = { longitudeDegrees, latitudeDegrees }
-    const heightMeters = change.heightMeters ?? (centerMoved ? (this.queryTerrainElevation(position) ?? 0) : current.heightMeters)
-    const zoom = change.zoom ?? (change.distanceMeters === undefined ? current.zoom : undefined)
-    const heading = MathUtils.degToRad(change.headingDegrees ?? current.headingDegrees)
-    const pitch = MathUtils.degToRad(change.pitchDegrees ?? current.pitchDegrees)
+    const heightMeters = change.heightMeters ?? (centerMoved ? (this.queryTerrainElevation(position) ?? 0) : current!.heightMeters)
+    const zoom = change.zoom ?? (change.distanceMeters === undefined ? current!.zoom : undefined)
+    const heading = MathUtils.degToRad(change.headingDegrees ?? current!.headingDegrees)
+    const pitch = MathUtils.degToRad(change.pitchDegrees ?? current!.pitchDegrees)
 
+    let distanceMeters: number
     if (this.onFlatMap) {
       const view = this.earth.view
       const latitude = MathUtils.degToRad(latitudeDegrees)
@@ -196,7 +295,7 @@ export class EarthCamera {
       // Onto the copy of the world around the camera (the anchor's when it is still).
       target.x = wrapMercatorXNear(target.x, view.worldCopyReferenceXMeters)
       target.applyMatrix4(view.flatToEarth)
-      const distanceMeters = zoom === undefined ? change.distanceMeters! : zoomToMercatorMetersPerPixel(zoom) * focalLength * view.scale
+      distanceMeters = zoom === undefined ? change.distanceMeters! : zoomToMercatorMetersPerPixel(zoom) * focalLength * view.scale
       // The flat map's axes in ECEF: east and north along the plane, up its normal.
       east.setFromMatrixColumn(view.anchorFrame, 0)
       north.setFromMatrixColumn(view.anchorFrame, 1)
@@ -206,10 +305,424 @@ export class EarthCamera {
       const longitude = MathUtils.degToRad(longitudeDegrees)
       const target = WGS84_ELLIPSOID.getCartographicToPosition(latitude, longitude, heightMeters, surfacePoint)
       WGS84_ELLIPSOID.getEastNorthUpAxes(latitude, longitude, east, north, up)
-      const distanceMeters = zoom === undefined ? change.distanceMeters! : zoomToGroundMetersPerPixel(zoom, latitudeDegrees) * focalLength
+      distanceMeters = zoom === undefined ? change.distanceMeters! : zoomToGroundMetersPerPixel(zoom, latitudeDegrees) * focalLength
       placeCameraAround(camera, target, east, north, up, heading, pitch, distanceMeters)
     }
+    // With padding, slide the camera across its screen plane so the target shows at the padded centre.
+    const { rightPixels, downPixels } = this.paddingOffset()
+    if (rightPixels !== 0 || downPixels !== 0) {
+      const metersPerPixel = distanceMeters / focalLength
+      camera.position
+        .addScaledVector(east.setFromMatrixColumn(camera.matrixWorld, 0).normalize(), -rightPixels * metersPerPixel)
+        .addScaledVector(north.setFromMatrixColumn(camera.matrixWorld, 1).normalize(), downPixels * metersPerPixel)
+      camera.updateMatrixWorld()
+    }
+  }
+
+  /** How far the padded centre sits from the middle of the screen, in CSS pixels (right and down). */
+  protected paddingOffset(): { rightPixels: number; downPixels: number } {
+    const { topPixels, rightPixels, bottomPixels, leftPixels } = this.padding
+    return { rightPixels: (leftPixels - rightPixels) / 2, downPixels: (topPixels - bottomPixels) / 2 }
+  }
+
+  /**
+   * Space kept clear on each side of the screen, in CSS pixels (MapLibre's `padding`), for example under a
+   * side panel: the view's centre, `jumpTo`, the animations and `fitBounds` use the middle of the area it
+   * leaves. Changing it does not move the camera; the centre `getView` reports moves instead.
+   */
+  setPadding(padding: PaddingPixels): void {
+    this.padding = toViewPadding(padding)
+  }
+
+  // ---------------------------------------------------------------------------------------------------
+  // Animations
+
+  /** True while an animation (`easeTo`, `flyTo` and the rest) runs or waits for the camera or a morph. */
+  get animating(): boolean {
+    return this.animation !== null
+  }
+
+  /**
+   * Stops a running animation where it is. Its promise resolves to false. User input on `EarthControls`
+   * calls it, as do `jumpTo` and the start of another animation.
+   */
+  stop(): void {
+    const animation = this.animation
+    if (animation === null) return
+    this.animation = null
+    animation.resolve(false)
+  }
+
+  /**
+   * Animates to a view along a straight line: centre, zoom, heading and pitch change together. Resolves to
+   * true at the end, false when stopped (`stop`, `jumpTo`, another animation, user input or a morph).
+   */
+  easeTo(change: MapViewChange, options: AnimationOptions = {}): Promise<boolean> {
+    return this.animate(options, start => this.planEase(start, change, options))
+  }
+
+  /**
+   * Flies to a view, zooming out and back in along the way like MapLibre's `flyTo` (van Wijk and Nuij):
+   * the duration follows the distance (`speed`, `screenSpeed`) unless `durationSeconds` is given. Resolves
+   * like `easeTo`.
+   */
+  flyTo(change: MapViewChange, options: FlyToOptions = {}): Promise<boolean> {
+    return this.animate(options, start => this.planFlight(start, change, options))
+  }
+
+  /** Eases to a zoom, keeping the centre, heading and pitch. */
+  zoomTo(zoom: number, options?: AnimationOptions): Promise<boolean> {
+    return this.easeTo({ zoom }, options)
+  }
+
+  /** Eases to a heading (clockwise from north), the short way round. */
+  rotateTo(headingDegrees: number, options?: AnimationOptions): Promise<boolean> {
+    return this.easeTo({ headingDegrees }, options)
+  }
+
+  /** Eases the heading back to north. */
+  resetNorth(options?: AnimationOptions): Promise<boolean> {
+    return this.rotateTo(0, options)
+  }
+
+  /** Eases to north, looking straight down. */
+  resetNorthPitch(options?: AnimationOptions): Promise<boolean> {
+    return this.easeTo({ headingDegrees: 0, pitchDegrees: -90 }, options)
+  }
+
+  /** Eases the centre to a position, keeping zoom, heading and pitch. */
+  panTo(position: GeographicPosition, options?: AnimationOptions): Promise<boolean> {
+    return this.easeTo({ longitudeDegrees: position.longitudeDegrees, latitudeDegrees: position.latitudeDegrees, heightMeters: position.heightMeters }, options)
+  }
+
+  /**
+   * Eases the centre by a screen offset, in CSS pixels: the point that shows `offset` away from the centre
+   * becomes the centre (positive x right, positive y down).
+   */
+  panBy(offset: ScreenPosition, options?: AnimationOptions): Promise<boolean> {
+    if (!this.ready) return Promise.resolve(false)
+    const { width, height } = this.requireViewport()
+    const { rightPixels, downPixels } = this.paddingOffset()
+    const under = this.unproject({ xPixels: width / 2 + rightPixels + offset.xPixels, yPixels: height / 2 + downPixels + offset.yPixels })
+    if (under !== null) return this.panTo(under, options)
+    // Sky there: move along the map, seen from above with the current heading.
+    const view = this.getView()
+    const heading = MathUtils.degToRad(view.headingDegrees)
+    const metersPerPixel = zoomToMercatorMetersPerPixel(view.zoom)
+    const center = toMercatorMeters(view.longitudeDegrees, view.latitudeDegrees)
+    const up = -offset.yPixels
+    const eastward = (offset.xPixels * Math.cos(heading) + up * Math.sin(heading)) * metersPerPixel
+    const northward = (-offset.xPixels * Math.sin(heading) + up * Math.cos(heading)) * metersPerPixel
+    return this.panTo(fromMercatorMeters(center.xMeters + eastward, center.yMeters + northward), options)
+  }
+
+  /**
+   * The view that shows a longitude-latitude box inside the screen, less `padding` and
+   * `options.paddingPixels`: centre, zoom, heading and pitch, for `jumpTo`, `easeTo` or `flyTo`. Null
+   * before the first frame, or when the padding leaves no room (a warning says so). Fitted on screen, for
+   * the globe's curvature and tilted views too; when part of a box starts past the globe's horizon, it zooms
+   * out until all of it shows, then fits.
+   */
+  cameraForBounds(bounds: GeographicBounds, options: FitBoundsOptions = {}): MapViewChange | null {
+    if (!this.ready) return null
+    const view = this.getView()
+    const extra = toViewPadding(options.paddingPixels)
+    const padding = {
+      topPixels: this.padding.topPixels + extra.topPixels,
+      rightPixels: this.padding.rightPixels + extra.rightPixels,
+      bottomPixels: this.padding.bottomPixels + extra.bottomPixels,
+      leftPixels: this.padding.leftPixels + extra.leftPixels,
+    }
+    const headingDegrees = options.headingDegrees ?? view.headingDegrees
+    const fit = fitBoundsOnMap(bounds, {
+      widthPixels: this.viewportWidthPixels,
+      heightPixels: this.viewportHeightPixels,
+      padding,
+      viewPadding: this.padding,
+      headingDegrees,
+      maximumZoom: options.maximumZoom,
+    })
+    if (fit === null) {
+      console.warn('EarthCamera.cameraForBounds: the padding leaves no room on the screen. Use smaller paddingPixels or earth.camera.padding.')
+      return null
+    }
+    // The map's fit is exact on the flat map seen from above; refine it on screen for the globe's curvature
+    // and for tilted views.
+    const change = { ...fit, headingDegrees, pitchDegrees: options.pitchDegrees ?? view.pitchDegrees }
+    return this.refineFit(bounds, change, padding, options.maximumZoom ?? DEFAULT_FIT_MAXIMUM_ZOOM)
+  }
+
+  /**
+   * Moves a fit's centre and zoom until the box, projected through a copy of the camera, fills the padded
+   * area: a few steps of measuring the box on screen and correcting. Keeps the last good step when the box
+   * reaches past the horizon or behind the camera.
+   */
+  protected refineFit(
+    bounds: GeographicBounds,
+    change: { longitudeDegrees: number; latitudeDegrees: number; zoom: number; headingDegrees: number; pitchDegrees: number },
+    padding: ViewPadding,
+    maximumZoom: number,
+  ): MapViewChange {
+    const camera = this.requireCamera()
+    const scratch = (this.fitCamera ??= camera.clone())
+    scratch.copy(camera as never)
+    const { width, height } = this.requireViewport()
+    const availableWidth = width - padding.leftPixels - padding.rightPixels
+    const availableHeight = height - padding.topPixels - padding.bottomPixels
+    const targetX = padding.leftPixels + availableWidth / 2
+    const targetY = padding.topPixels + availableHeight / 2
+    const { rightPixels, downPixels } = this.paddingOffset()
+    // Only a measured step counts; without one, the map's fit stands.
+    let best = change
+    const longitudeSpan = (bounds.eastDegrees < bounds.westDegrees ? bounds.eastDegrees + 360 : bounds.eastDegrees) - bounds.westDegrees
+    const canShowWhole = this.onFlatMap || (longitudeSpan < 180 && bounds.northDegrees - bounds.southDegrees < 180)
+    this.camera = scratch
+    try {
+      let current = change
+      let measured = false
+      for (let step = 0; step < FIT_REFINEMENT_STEPS + FIT_ZOOM_OUT_STEPS; step++) {
+        this.placeView({ ...current, heightMeters: 0 })
+        const extent = this.measureBoundsOnScreen(bounds)
+        if (extent === null) {
+          // Part of the box is past the horizon or behind the camera: before any good step, zoom out
+          // until all of it shows, then refine from there. After one, keep it. A box wider than a
+          // hemisphere never shows whole on the globe: it keeps the map's fit.
+          if (measured || step >= FIT_ZOOM_OUT_STEPS || !canShowWhole) break
+          current = { ...current, zoom: current.zoom - 1 }
+          continue
+        }
+        measured = true
+        best = current
+        const scale = Math.max((extent.maximumX - extent.minimumX) / availableWidth, (extent.maximumY - extent.minimumY) / availableHeight)
+        const offsetX = (extent.minimumX + extent.maximumX) / 2 - targetX
+        const offsetY = (extent.minimumY + extent.maximumY) / 2 - targetY
+        const zoom = Math.min(maximumZoom, current.zoom - Math.log2(scale))
+        if (Math.abs(zoom - current.zoom) < 1e-5 && Math.hypot(offsetX, offsetY) < 0.01) break
+        // The point now at the camera's centre plus the box's offset becomes the centre.
+        const center = this.unprojectOnSurface(width / 2 + rightPixels + offsetX, height / 2 + downPixels + offsetY)
+        if (center === null) break
+        current = { ...current, longitudeDegrees: wrapLongitudeDegrees(center.longitudeDegrees), latitudeDegrees: center.latitudeDegrees, zoom }
+      }
+    } finally {
+      this.camera = camera
+    }
+    return best
+  }
+
+  /** Screen extent of a box's edges for the current camera, or null when part of it is hidden or behind. */
+  protected measureBoundsOnScreen({ westDegrees, southDegrees, eastDegrees, northDegrees }: GeographicBounds) {
+    const east = eastDegrees < westDegrees ? eastDegrees + 360 : eastDegrees
+    let minimumX = Infinity
+    let maximumX = -Infinity
+    let minimumY = Infinity
+    let maximumY = -Infinity
+    const camera = this.requireCamera()
+    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
+    for (let index = 0; index <= FIT_SAMPLES_PER_EDGE; index++) {
+      const amount = index / FIT_SAMPLES_PER_EDGE
+      const longitudeDegrees = westDegrees + (east - westDegrees) * amount
+      const latitudeDegrees = southDegrees + (northDegrees - southDegrees) * amount
+      for (let side = 0; side < 4; side++) {
+        const position =
+          side === 0 ? { longitudeDegrees, latitudeDegrees: southDegrees }
+          : side === 1 ? { longitudeDegrees, latitudeDegrees: northDegrees }
+          : side === 2 ? { longitudeDegrees: westDegrees, latitudeDegrees }
+          : { longitudeDegrees: east, latitudeDegrees }
+        const point = this.toScenePosition(position, scenePoint)
+        if (!this.toScreen(point, screenPoint).inFront) return null
+        if (!this.onFlatMap && isOccludedByEllipsoid(cameraPosition, point)) return null
+        minimumX = Math.min(minimumX, screenPoint.xPixels)
+        maximumX = Math.max(maximumX, screenPoint.xPixels)
+        minimumY = Math.min(minimumY, screenPoint.yPixels)
+        maximumY = Math.max(maximumY, screenPoint.yPixels)
+      }
+    }
+    return { minimumX, maximumX, minimumY, maximumY }
+  }
+
+  /**
+   * Animates to the view that shows a longitude-latitude box (see `cameraForBounds`): flies, or eases with
+   * `linear: true`. Resolves like `easeTo`, and to false at once when the box cannot fit.
+   */
+  fitBounds(bounds: GeographicBounds, options: FitBoundsOptions = {}): Promise<boolean> {
+    if (!this.ready) {
+      // Before the first frame: fit once the camera is known.
+      return this.animate(options, start => {
+        const change = this.cameraForBounds(bounds, options)
+        if (change === null) return null
+        return options.linear === true ? this.planEase(start, change, options) : this.planFlight(start, change, options)
+      })
+    }
+    const change = this.cameraForBounds(bounds, options)
+    if (change === null) return Promise.resolve(false)
+    return options.linear === true ? this.easeTo(change, options) : this.flyTo(change, options)
+  }
+
+  /**
+   * Advances the running animation by `deltaSeconds`. `earth.update` calls it before choosing tiles.
+   * Returns true while an animation still needs frames.
+   */
+  advanceAnimation(deltaSeconds: number): boolean {
+    const animation = this.animation
+    if (animation === null) return false
+    if (this.earth.view.transitioning) {
+      // The morph flies the camera: a running animation stops, one not started yet waits.
+      if (animation.frame !== null) this.stop()
+      return this.animation !== null
+    }
+    if (animation.frame === null) {
+      if (!this.ready) return true
+      if (!this.startAnimation(animation)) return false
+    }
+    // The first step counts one frame at most: the time before it is the host's idle time (a vanilla host
+    // that renders on demand may not have updated for seconds), not animation time.
+    animation.elapsedSeconds += animation.stepped ? deltaSeconds : Math.min(deltaSeconds, FIRST_STEP_SECONDS)
+    animation.stepped = true
+    this.stepAnimation(animation)
+    return this.animation !== null
+  }
+
+  /**
+   * `jumpTo` without stopping an animation that waits for the first frame: `earth.update` applies
+   * `initialView` with it, so an animation called at mount starts from the initial view.
+   */
+  jumpToInitialView(change: MapViewChange): void {
+    this.placeView(change)
     this.earth.requestFrame()
+  }
+
+  protected animate(options: AnimationOptions, plan: (start: MapView) => AnimationPlan | null): Promise<boolean> {
+    this.stop()
+    let resolve!: (completed: boolean) => void
+    const promise = new Promise<boolean>(settle => (resolve = settle))
+    const animation: RunningAnimation = {
+      plan,
+      frame: null,
+      durationSeconds: 0,
+      elapsedSeconds: 0,
+      easing: options.easing ?? defaultEasing,
+      reduceMotion: options.essential !== true && prefersReducedMotion(),
+      stepped: false,
+      resolve,
+    }
+    this.animation = animation
+    // Start now when the camera is known (MapLibre captures the start view at the call), else on the first frame.
+    if (this.ready && !this.earth.view.transitioning && this.startAnimation(animation)) {
+      if (animation.durationSeconds === 0) this.stepAnimation(animation)
+    }
+    this.earth.requestFrame()
+    return promise
+  }
+
+  /** Plans the animation from the current view. False (and resolved false) when there is nothing to do. */
+  protected startAnimation(animation: RunningAnimation): boolean {
+    const plan = animation.plan(this.getView())
+    if (plan === null) {
+      this.animation = null
+      animation.resolve(false)
+      return false
+    }
+    animation.frame = plan.frame
+    animation.durationSeconds = animation.reduceMotion ? 0 : Math.max(0, plan.durationSeconds)
+    return true
+  }
+
+  protected stepAnimation(animation: RunningAnimation): void {
+    const time = animation.durationSeconds === 0 ? 1 : Math.min(1, animation.elapsedSeconds / animation.durationSeconds)
+    this.placeView(animation.frame!(time >= 1 ? 1 : animation.easing(time)))
+    if (time >= 1) {
+      this.animation = null
+      animation.resolve(true)
+    }
+  }
+
+  /** The full end view of a change made from `start`. */
+  protected resolveTarget(start: MapView, change: MapViewChange): Required<Omit<MapView, 'distanceMeters'>> {
+    const centerMoved = change.longitudeDegrees !== undefined || change.latitudeDegrees !== undefined
+    const longitudeDegrees = change.longitudeDegrees ?? start.longitudeDegrees
+    const latitudeDegrees = change.latitudeDegrees ?? start.latitudeDegrees
+    const heightMeters = change.heightMeters ?? (centerMoved ? (this.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0) : start.heightMeters)
+    const zoom = change.zoom ?? (change.distanceMeters !== undefined ? this.distanceToZoom(change.distanceMeters, latitudeDegrees) : start.zoom)
+    return {
+      longitudeDegrees,
+      latitudeDegrees,
+      heightMeters,
+      zoom,
+      headingDegrees: change.headingDegrees ?? start.headingDegrees,
+      pitchDegrees: change.pitchDegrees ?? start.pitchDegrees,
+    }
+  }
+
+  /**
+   * The end centre's height, frame by frame. Without `heightMeters`, a new centre sits on the terrain, and
+   * the terrain there loads finer as the camera nears it (coarse tiles can sit kilometres below the
+   * ground), so it is read again each frame.
+   */
+  protected followEndHeight(change: MapViewChange, end: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }): () => number {
+    const centerMoved = change.longitudeDegrees !== undefined || change.latitudeDegrees !== undefined
+    if (change.heightMeters !== undefined || !centerMoved) return () => end.heightMeters
+    let heightMeters = end.heightMeters
+    const position = { longitudeDegrees: end.longitudeDegrees, latitudeDegrees: end.latitudeDegrees }
+    return () => (heightMeters = this.queryTerrainElevation(position) ?? heightMeters)
+  }
+
+  /** The zoom at which the camera is this far from a centre at this latitude. */
+  protected distanceToZoom(distanceMeters: number, latitudeDegrees: number): number {
+    const focalLength = focalLengthPixels(this.requireCamera(), this.requireViewport().height)
+    if (this.onFlatMap) return mercatorMetersPerPixelToZoom(distanceMeters / (focalLength * this.earth.view.scale))
+    return groundMetersPerPixelToZoom(distanceMeters / focalLength, latitudeDegrees)
+  }
+
+  protected centerPath(start: MapView, end: { longitudeDegrees: number; latitudeDegrees: number }): CenterPath {
+    // A straight line on the map; the shortest way on the globe.
+    return this.onFlatMap ? mercatorCenterPath(start, end) : greatCircleCenterPath(start, end)
+  }
+
+  protected planEase(start: MapView, change: MapViewChange, options: AnimationOptions): AnimationPlan {
+    const end = this.resolveTarget(start, change)
+    const endHeight = this.followEndHeight(change, end)
+    const path = this.centerPath(start, end)
+    return {
+      durationSeconds: options.durationSeconds ?? DEFAULT_EASE_DURATION_SECONDS,
+      frame: progress => ({
+        ...path(progress),
+        heightMeters: MathUtils.lerp(start.heightMeters, endHeight(), progress),
+        zoom: MathUtils.lerp(start.zoom, end.zoom, progress),
+        headingDegrees: progress >= 1 ? end.headingDegrees : interpolateDegrees(start.headingDegrees, end.headingDegrees, progress),
+        pitchDegrees: MathUtils.lerp(start.pitchDegrees, end.pitchDegrees, progress),
+      }),
+    }
+  }
+
+  protected planFlight(start: MapView, change: MapViewChange, options: FlyToOptions): AnimationPlan {
+    const end = this.resolveTarget(start, change)
+    const { topPixels, rightPixels, bottomPixels, leftPixels } = this.padding
+    const flight = createFlightPath({
+      startWidthPixels: Math.max(this.viewportWidthPixels - leftPixels - rightPixels, this.viewportHeightPixels - topPixels - bottomPixels, 1),
+      distancePixels: mercatorDistancePixels(start, end, start.zoom),
+      zoomChange: end.zoom - start.zoom,
+      curve: options.curve,
+      minimumZoomChange: options.minimumZoom === undefined ? undefined : options.minimumZoom - start.zoom,
+    })
+    // Nothing to fly over (only heading or pitch change): ease, as MapLibre does.
+    if (flight.length === 0) return this.planEase(start, change, options)
+    const endHeight = this.followEndHeight(change, end)
+    let durationSeconds = options.durationSeconds ?? flightDurationSeconds(flight, options)
+    if (options.maximumDurationSeconds !== undefined && durationSeconds > options.maximumDurationSeconds) durationSeconds = 0
+    const path = this.centerPath(start, end)
+    return {
+      durationSeconds,
+      frame: progress => {
+        const s = progress * flight.length
+        return {
+          ...path(progress >= 1 ? 1 : flight.centerAmount(s)),
+          heightMeters: MathUtils.lerp(start.heightMeters, endHeight(), progress),
+          zoom: progress >= 1 ? end.zoom : start.zoom + flight.zoomChange(s),
+          headingDegrees: progress >= 1 ? end.headingDegrees : interpolateDegrees(start.headingDegrees, end.headingDegrees, progress),
+          pitchDegrees: MathUtils.lerp(start.pitchDegrees, end.pitchDegrees, progress),
+        }
+      },
+    }
   }
 
   /** Ground metres one CSS pixel spans at the centre of the screen. */
@@ -449,10 +962,10 @@ export class EarthCamera {
    * under the last guess, a few times over. Exact on flat ground, within centimetres on slopes seen from
    * above. Null when the ray points above the map's horizon.
    */
-  protected intersectFlatMap(flat: Ray, target: Vector3): Vector3 | null {
+  protected intersectFlatMap(flat: Ray, target: Vector3, followTerrain = true): Vector3 | null {
     if (flat.direction.z >= 0) return null
     let heightFlat = 0
-    const iterations = this.earth.terrain === null ? 1 : FLAT_MAP_RELIEF_ITERATIONS
+    const iterations = this.earth.terrain === null || !followTerrain ? 1 : FLAT_MAP_RELIEF_ITERATIONS
     for (let iteration = 0; iteration < iterations; iteration++) {
       const distance = (heightFlat - flat.origin.z) / flat.direction.z
       if (distance < 0) return iteration === 0 ? null : target
