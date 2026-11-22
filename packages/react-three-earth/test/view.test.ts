@@ -270,6 +270,6 @@ describe('flat map like MapLibre', () => {
   it('draws one copy on the globe', () => {
     const view = new ViewMorph()
     view.updateWorldCopies(new PerspectiveCamera())
-    expect([view.firstWorldCopy, view.worldCopyCount, view.cameraWorldCopy]).toEqual([0, 1, 0])
+    expect([view.firstWorldCopy, view.worldCopyCount, view.worldCopyReferenceXMeters]).toEqual([0, 1, view.anchorMercatorXMeters])
   })
 })

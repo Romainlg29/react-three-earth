@@ -14,7 +14,7 @@ export interface EarthProps {
    * morphs between them over `viewTransitionSeconds`; the first value applies at once. Default: '3d'.
    */
   view?: ViewMode
-  /** Length of the globe-to-map morph. Default: 1.5. */
+  /** Length of the globe-to-map transition (dive, swap, rise). Default: 2.4. */
   viewTransitionSeconds?: number
   children?: ReactNode
 }

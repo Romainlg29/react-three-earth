@@ -90,7 +90,7 @@ export class Earth extends Group {
 
   /**
    * Morphs to the globe (`'3d'`) or the flat Web Mercator map (`'2d'`), over `durationSeconds` (default
-   * 1.5, 0 switches at once). The map is anchored where the camera looks, and on the way to 2D the camera
+   * 2.4, 0 switches at once). The map is anchored where the camera looks, and on the way to 2D the camera
    * turns to look straight down. The morph runs in `update`; `view.transitioning` tells when it is done.
    */
   setView(mode: ViewMode, options?: ViewTransitionOptions): void {

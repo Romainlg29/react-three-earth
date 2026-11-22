@@ -59,7 +59,10 @@ interface Transition {
   timeFraction: number
   /** +1 playing forward, -1 reversed. */
   direction: 1 | -1
-  readonly durationSeconds: number
+  /** Length of this transition: the requested length times `durationShare`. */
+  durationSeconds: number
+  /** 1 with a dive, 0.4 without. */
+  readonly durationShare: number
   /** Shares of the timeline: dive, then swap, then rise (they sum to 1). */
   readonly diveShare: number
   readonly swapShare: number
@@ -72,6 +75,8 @@ interface Transition {
   readonly startDistanceMeters: number
   readonly swapDistanceMeters: number
   readonly endDistanceMeters: number
+  /** Slide during the rise that keeps the end view within the map's poles (zero towards the globe). */
+  readonly endOffset: Vector3
 }
 
 function smootherstep(value: number): number {
@@ -145,13 +150,17 @@ export class ViewMorph {
 
   /**
    * Copies of the world drawn side by side on the flat map, as on MapLibre: `worldCopyCount` copies
-   * starting `firstWorldCopy` world widths east of the anchor's own copy. `update` fits them to the camera.
+   * starting `firstWorldCopy` world widths east of the copy around `worldCopyReferenceXMeters`. `update` fits them to the camera.
    * One copy (0) on the globe and during the morph.
    */
   firstWorldCopy = 0
   worldCopyCount = 1
-  /** The copy of the world under the camera, drawn without a shader offset so it keeps full precision. */
-  cameraWorldCopy = 0
+  /**
+   * Web Mercator x that meshes and tiles are wrapped around (within half a world): the camera's on the
+   * flat map, so everything near the camera is drawn without a shader offset at full precision, and the
+   * anchor's otherwise.
+   */
+  worldCopyReferenceXMeters = 0
 
   constructor() {
     this.setAnchor(0, 0)
@@ -172,19 +181,25 @@ export class ViewMorph {
    * reverse from where it is. Asking for the view already shown or headed to only changes the length.
    */
   setMode(mode: ViewMode, { durationSeconds = DEFAULT_TRANSITION_SECONDS }: ViewTransitionOptions = {}): void {
+    const transition = this.transition
     if (mode === this.mode) {
       // Already headed there: only a running transition changes speed (a pending one keeps its own length).
-      if (!this.pendingStart) this.durationSeconds = Math.max(0, durationSeconds)
+      if (!this.pendingStart) this.setDuration(durationSeconds)
       return
     }
     this.mode = mode
-    this.durationSeconds = Math.max(0, durationSeconds)
-    const transition = this.transition
+    this.setDuration(durationSeconds)
     if (transition !== null) {
       transition.direction = (mode === '2d') === transition.towardsFlatMap ? 1 : -1
       return
     }
-    this.pendingStart = true
+    // Back to the view shown before the transition even started: nothing to do.
+    this.pendingStart = this.progress !== (mode === '2d' ? 1 : 0)
+  }
+
+  protected setDuration(durationSeconds: number): void {
+    this.durationSeconds = Math.max(0, durationSeconds)
+    if (this.transition !== null) this.transition.durationSeconds = this.durationSeconds * this.transition.durationShare
   }
 
   /** Places the map plane tangent to the ellipsoid at this point (radians). Moves the map, not the camera. */
@@ -247,7 +262,7 @@ export class ViewMorph {
     if (this.morph !== 1) {
       this.firstWorldCopy = 0
       this.worldCopyCount = 1
-      this.cameraWorldCopy = 0
+      this.worldCopyReferenceXMeters = this.anchorMercatorXMeters
       return
     }
     camera.updateMatrixWorld()
@@ -262,14 +277,16 @@ export class ViewMorph {
       westMeters = Math.min(westMeters, Number.isFinite(hitX) ? hitX : -Infinity)
       eastMeters = Math.max(eastMeters, Number.isFinite(hitX) ? hitX : Infinity)
     }
-    const anchorX = this.anchorMercatorXMeters
-    const cameraCopy = Math.round((cameraFlat.x - anchorX) / WORLD_WIDTH_METERS)
+    const reference = cameraFlat.x
+    this.worldCopyReferenceXMeters = reference
+    // Meshes are placed by their centre within half a world of the reference, and the widest tiles span
+    // half a world: a copy can reach three quarters of a world past its centre.
+    const reach = 1.5 * WEB_MERCATOR_HALF_EXTENT_METERS
     const half = Math.floor(MAXIMUM_WORLD_COPIES / 2)
-    const first = Math.max(cameraCopy - half, Math.ceil((westMeters - anchorX - WEB_MERCATOR_HALF_EXTENT_METERS) / WORLD_WIDTH_METERS))
-    const last = Math.min(cameraCopy + half, Math.floor((eastMeters - anchorX + WEB_MERCATOR_HALF_EXTENT_METERS) / WORLD_WIDTH_METERS))
-    this.cameraWorldCopy = cameraCopy
-    this.firstWorldCopy = Math.min(first, cameraCopy)
-    this.worldCopyCount = Math.max(last, cameraCopy) - this.firstWorldCopy + 1
+    const first = Math.max(-half, Math.ceil((westMeters - reference - reach) / WORLD_WIDTH_METERS))
+    const last = Math.min(half, Math.floor((eastMeters - reference + reach) / WORLD_WIDTH_METERS))
+    this.firstWorldCopy = Math.min(first, 0)
+    this.worldCopyCount = Math.max(last, 0) - this.firstWorldCopy + 1
   }
 
   /**
@@ -297,8 +314,8 @@ export class ViewMorph {
    * Keeps a camera on the flat map like MapLibre: no higher than the map's full height fits, never showing
    * past its north and south edges, and, since the world repeats, brought back to the anchor's copy of the
    * world when it pans more than half a world away (the view does not change). Controls call it after
-   * moving the camera, with `wrap: false` mid-drag (the drag's grip point would not follow). Returns true
-   * if the camera moved.
+   * moving the camera, with `wrap: false` mid-drag (the drag's grip point would not follow). The camera
+   * must have no parent (R3F's default camera has none). Returns true if the camera moved.
    */
   constrainFlatCamera(camera: PerspectiveLike, { wrap = true }: { wrap?: boolean } = {}): boolean {
     camera.updateMatrixWorld()
@@ -322,6 +339,7 @@ export class ViewMorph {
   protected begin(camera: Camera): Transition | null {
     camera.updateMatrixWorld()
     const towardsFlatMap = this.mode === '2d'
+    if (this.progress === (towardsFlatMap ? 1 : 0)) return null
     if (towardsFlatMap) {
       // Leaving the globe: anchor the map where the camera looks.
       const pivot = this.findGlobeCenterPoint(camera, scratchPosition)
@@ -379,18 +397,19 @@ export class ViewMorph {
     const right = new Vector3().crossVectors(heading, up)
     const topDownQuaternion = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(right, heading, up))
 
-    const swapDistanceMeters = Math.min(startDistanceMeters, this.transitionAltitudeMeters)
+    const dives = startDistanceMeters > this.transitionAltitudeMeters * 1.05
+    const swapDistanceMeters = dives ? this.transitionAltitudeMeters : startDistanceMeters
     // Back up where the view started, but no higher than the flat map's full height.
     const endDistanceMeters = towardsFlatMap
       ? Math.min(startDistanceMeters, this.maximumFlatCameraHeightMeters(camera, topDownQuaternion))
       : startDistanceMeters
-    const dives = startDistanceMeters > swapDistanceMeters * 1.05
     return {
       towardsFlatMap,
       timeFraction: 0,
       direction: 1,
       // Close to the ground there is no dive: only the turn and the swap, in a shorter time.
-      durationSeconds: dives ? this.durationSeconds : this.durationSeconds * 0.4,
+      durationSeconds: this.durationSeconds * (dives ? 1 : 0.4),
+      durationShare: dives ? 1 : 0.4,
       diveShare: dives ? 0.4 : 0.5,
       swapShare: dives ? 0.2 : 0.5,
       camera,
@@ -402,7 +421,17 @@ export class ViewMorph {
       startDistanceMeters,
       swapDistanceMeters,
       endDistanceMeters,
+      endOffset: towardsFlatMap ? this.poleClampOffset(camera, topDownQuaternion, endDistanceMeters) : new Vector3(),
     }
+  }
+
+  /** World offset along the anchor's north that keeps a top-down view at this height within the poles. */
+  protected poleClampOffset(camera: PerspectiveLike, quaternion: Quaternion, heightMeters: number): Vector3 {
+    const northHalfExtent = (heightMeters / this.scale) * this.northHalfExtentPerHeight(camera, quaternion)
+    const limit = Math.max(WEB_MERCATOR_HALF_EXTENT_METERS - northHalfExtent, 0)
+    const anchorY = latitudeToMercatorY(this.anchorLatitudeRadians)
+    const shift = (MathUtils.clamp(anchorY, -limit, limit) - anchorY) * this.scale
+    return new Vector3(0, 1, 0).transformDirection(this.anchorFrame).multiplyScalar(shift)
   }
 
   /** Poses the camera and sets the projection for the transition's current time. */
@@ -419,7 +448,12 @@ export class ViewMorph {
         ? logarithmicLerp(transition.startDistanceMeters, transition.swapDistanceMeters, dive)
         : logarithmicLerp(transition.swapDistanceMeters, transition.endDistanceMeters, rise)
     scratchQuaternion.identity().slerp(transition.directionRotation, dive)
-    camera.position.copy(transition.startDirection).applyQuaternion(scratchQuaternion).multiplyScalar(distance).add(transition.pivot)
+    camera.position
+      .copy(transition.startDirection)
+      .applyQuaternion(scratchQuaternion)
+      .multiplyScalar(distance)
+      .add(transition.pivot)
+      .addScaledVector(transition.endOffset, rise)
     camera.quaternion.slerpQuaternions(transition.startQuaternion, transition.topDownQuaternion, dive)
     camera.up.copy(this.anchorUp)
     camera.updateMatrixWorld()

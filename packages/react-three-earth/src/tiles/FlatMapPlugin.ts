@@ -169,12 +169,12 @@ export class FlatMapPlugin {
       return
     }
     globeMatrix.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
-    // The map is one world wide: place each mesh on the copy of the world nearest the anchor, so the map
-    // has no seam at ±180° whatever the anchor, then on the copy under the camera. The other copies are
-    // instances of the same draw, offset in the shader (float32 there only matters when zoomed out).
-    const worldWidthMeters = 2 * WEB_MERCATOR_HALF_EXTENT_METERS
-    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.anchorMercatorXMeters) + view.cameraWorldCopy * worldWidthMeters
-    state.firstWorldCopyOffset = view.firstWorldCopy - view.cameraWorldCopy
+    // The map is one world wide: place each mesh within half a world of the camera (of the anchor during
+    // the morph), so the map has no seam near the camera and everything near it is in the mesh matrix, at
+    // full precision. The other copies are instances of the same draw, offset in the shader: they are at
+    // least a quarter of a world away, so only seen zoomed out, where float32 metres don't show.
+    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.worldCopyReferenceXMeters)
+    state.firstWorldCopyOffset = view.firstWorldCopy
     mesh.count = view.worldCopyCount
     flatMatrix
       .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)

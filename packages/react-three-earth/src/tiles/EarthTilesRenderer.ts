@@ -44,10 +44,10 @@ const groupToAnchor = new Matrix4()
  */
 export function getFlatRegionBox(region: readonly number[], view: ViewMorph, target: Box3): number {
   const [west, south, east, north, minimumHeight, maximumHeight] = region as [number, number, number, number, number, number]
-  // Take the copy of the world nearest the anchor, like the meshes (see FlatMapPlugin).
+  // Take the copy of the world the meshes are drawn on (see FlatMapPlugin), relative to the anchor.
   const unwrappedEast = east < west ? east + 2 * Math.PI : east
   const centerX = longitudeToMercatorX((west + unwrappedEast) / 2)
-  const shift = wrapMercatorXNear(centerX, view.anchorMercatorXMeters) - centerX
+  const shift = wrapMercatorXNear(centerX, view.worldCopyReferenceXMeters) - centerX
   const anchorX = view.anchorMercatorXMeters - shift
   const anchorY = latitudeToMercatorY(view.anchorLatitudeRadians)
   const scale = view.scale
