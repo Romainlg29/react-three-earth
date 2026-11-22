@@ -22,7 +22,7 @@ Lookup-texture generation was the slowest part of startup and caused long frames
   playground's dev server never caches, so shader edits always show.
 
 `earth.inspect().atmosphere` now also reports `generationFrames` and `loadedFromCache`, and the playground
-shows them in the top-left corner. Playground switches: `?nocache`, `?atmosphereBudget=<ms>`.
+shows them in the bottom-left corner. Playground switches: `?nocache`, `?atmosphereBudget=<ms>`.
 
 ### Results in SwiftShader (CPU rasteriser: compare the two columns, not the absolute numbers)
 
@@ -50,7 +50,7 @@ numbers and fingerprints of the textures.
 
 The playground is published to GitHub Pages by `.github/workflows/playground-pages.yml` once Pages is enabled
 (Settings → Pages → Source: GitHub Actions). Open it once to warm the cache, then with `?nocache` to time
-generation; the top-left line gives the time and frame count.
+generation; the bottom-left line gives the time and frame count.
 
 | Device | Browser | Generation | Frames | Cache load |
 | --- | --- | --- | --- | --- |

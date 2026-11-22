@@ -76,7 +76,7 @@ function AtmosphereStatus() {
     }, 250)
     return () => clearInterval(interval)
   }, [])
-  return text === '' ? null : <div style={{ position: 'absolute', top: 8, left: 8, opacity: 0.8 }}>{text}</div>
+  return text === '' ? null : <div style={{ position: 'absolute', bottom: 8, left: 8, opacity: 0.8 }}>{text}</div>
 }
 
 export function MapDemo() {
