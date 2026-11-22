@@ -8,6 +8,8 @@ import { fixtureTiles } from './fixtures/vitePlugin.ts'
 const library = (path: string) => fileURLToPath(new URL(`../../packages/react-three-earth/src/${path}`, import.meta.url))
 
 export default defineConfig({
+  // GitHub Pages serves the playground under /<repository>/ (see .github/workflows/playground-pages.yml).
+  base: process.env.PLAYGROUND_BASE ?? '/',
   plugins: [react(), fixtureTiles()],
   resolve: {
     // Work on the library source directly, no rebuild needed

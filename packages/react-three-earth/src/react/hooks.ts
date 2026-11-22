@@ -9,7 +9,7 @@ export function useEarthFrame(callback: (earth: Earth, deltaSeconds: number) => 
   const earth = useEarth()
   const latest = useRef(callback)
   latest.current = callback
-  useFrame((_, deltaSeconds) => latest.current(earth, deltaSeconds), { after: 'earth:update' })
+  useFrame((_, deltaSeconds) => latest.current(earth, deltaSeconds), { phase: 'update', after: 'earth:update' })
 }
 
 /**
