@@ -7,7 +7,14 @@ export {
   type ScatteringCoordinates,
   type SunAndSkyIrradiance,
 } from './AtmosphereModel.js'
-export { AtmosphereTextures } from './AtmosphereTextures.js'
+export { AtmosphereTextures, type AtmosphereTexturesGenerateOptions } from './AtmosphereTextures.js'
+export {
+  AtmosphereTextureCache,
+  ATMOSPHERE_PRECOMPUTE_VERSION,
+  createAtmosphereCacheKey,
+  type AtmosphereTextureData,
+} from './AtmosphereTextureCache.js'
+export { GenerationPacer } from './GenerationPacer.js'
 export {
   AtmosphereContext,
   correctPositionForEllipsoid,

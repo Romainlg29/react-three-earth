@@ -5,12 +5,22 @@ import { AerialPerspectiveNode } from '../atmosphere/AerialPerspectiveNode.js'
 import { AtmosphereContext } from '../atmosphere/AtmosphereContext.js'
 import { AtmosphereLight } from '../atmosphere/AtmosphereLight.js'
 import { AtmosphereParameters } from '../atmosphere/AtmosphereParameters.js'
+import { AtmosphereTextureCache } from '../atmosphere/AtmosphereTextureCache.js'
 import { getSunDirectionECEF } from '../atmosphere/ephemeris.js'
 
 export interface AtmosphereOptions {
   /** The physical atmosphere and lookup texture sizes. Default: Earth's (`new AtmosphereParameters()`). */
   parameters?: AtmosphereParameters
+  /**
+   * Keeps the generated lookup textures in IndexedDB, keyed by the parameters, so that later page loads
+   * with the same parameters skip generation. True (the default) uses a shared cache holding the two most
+   * recent sets (8 MB each with half-float scattering, 16 MB with 32-bit); false always generates; or pass
+   * your own `AtmosphereTextureCache`.
+   */
+  cache?: boolean | AtmosphereTextureCache
 }
+
+let sharedCache: AtmosphereTextureCache | null = null
 
 /** Options of `Atmosphere.createAerialPerspective`. */
 export interface AerialPerspectiveOptions {
@@ -43,11 +53,15 @@ export class Atmosphere {
    */
   ready: Promise<boolean> | null = null
 
+  /** Where the lookup textures are cached between page loads, or null when they are always generated. */
+  readonly cache: AtmosphereTextureCache | null
+
   protected generation: AbortController | null = null
 
-  constructor({ parameters = new AtmosphereParameters() }: AtmosphereOptions = {}) {
+  constructor({ parameters = new AtmosphereParameters(), cache = true }: AtmosphereOptions = {}) {
     this.context = new AtmosphereContext(parameters)
     this.light = new AtmosphereLight(this.context)
+    this.cache = cache === false ? null : cache === true ? (sharedCache ??= new AtmosphereTextureCache()) : cache
   }
 
   get parameters(): AtmosphereParameters {
@@ -59,13 +73,24 @@ export class Atmosphere {
     return this.context.sunDirection.value
   }
 
-  /** Time the lookup textures took to generate, in milliseconds, or null before they are ready. */
+  /** Time the lookup textures took to generate (or load from the cache), in milliseconds, or null before they are ready. */
   get generationTimeMilliseconds(): number | null {
     return this.context.textures.generationTimeMilliseconds
   }
 
+  /** Animation frames the lookup textures took to generate (or load), or null before they are ready. */
+  get generationFrames(): number | null {
+    return this.context.textures.generationFrames
+  }
+
+  /** Whether the lookup textures were loaded from the cache instead of generated. */
+  get loadedFromCache(): boolean {
+    return this.context.textures.loadedFromCache
+  }
+
   /**
-   * Starts generating the lookup textures on this renderer, a few passes per frame (see `ready` and
+   * Starts generating the lookup textures on this renderer (or loading them from `cache`), spending about
+   * `context.textures.budgetMillisecondsPerFrame` of GPU time per frame (see `ready` and
    * `generationTimeMilliseconds`). Until they are ready the scene renders with neutral sunlight and no sky.
    * Nothing else on the renderer changes, so the returned undo function has nothing to restore; the
    * textures are kept until `dispose`, since generating them again would cost the same.
@@ -85,7 +110,7 @@ export class Atmosphere {
       await renderer.init()
       if (signal.aborted) return false
       this.context.prepare(renderer)
-      const milliseconds = await this.context.textures.generate(renderer, signal)
+      const milliseconds = await this.context.textures.generate(renderer, signal, { cache: this.cache })
       if (milliseconds === null) return false
       this.context.texturesReady.value = 1
       return true
