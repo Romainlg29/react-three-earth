@@ -7,7 +7,6 @@ import {
   If,
   isBackgroundDepth,
   logarithmicDepthToViewZ,
-  mix,
   perspectiveDepthToViewZ,
   smoothstep,
   uniform,
