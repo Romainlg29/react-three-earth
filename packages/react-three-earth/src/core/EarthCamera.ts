@@ -193,7 +193,8 @@ export class EarthCamera {
       const view = this.earth.view
       const latitude = MathUtils.degToRad(latitudeDegrees)
       const target = view.geodeticToFlat(MathUtils.degToRad(longitudeDegrees), latitude, heightMeters, flatPoint)
-      target.x = wrapMercatorXNear(target.x, view.anchorMercatorXMeters)
+      // Onto the copy of the world around the camera (the anchor's when it is still).
+      target.x = wrapMercatorXNear(target.x, view.worldCopyReferenceXMeters)
       target.applyMatrix4(view.flatToEarth)
       const distanceMeters = zoom === undefined ? change.distanceMeters! : zoomToMercatorMetersPerPixel(zoom) * focalLength * view.scale
       // The flat map's axes in ECEF: east and north along the plane, up its normal.
@@ -368,7 +369,8 @@ export class EarthCamera {
     if (morph === 0) return target
     const latitude = MathUtils.degToRad(position.latitudeDegrees)
     const flat = view.geodeticToFlat(MathUtils.degToRad(position.longitudeDegrees), latitude, position.heightMeters ?? 0, flatScenePoint)
-    flat.x = wrapMercatorXNear(flat.x, view.anchorMercatorXMeters)
+    // The copy of the world nearest the camera on the flat map (the anchor's during the morph).
+    flat.x = wrapMercatorXNear(flat.x, view.worldCopyReferenceXMeters)
     return target.lerp(flat.applyMatrix4(view.flatToEarth), morph)
   }
 
@@ -397,7 +399,7 @@ export class EarthCamera {
 
   /**
    * The surface position under a screen point, ignoring terrain: the ellipsoid, or the map's plane in 2D
-   * (held inside the one world around the anchor, longitudes not wrapped). Null on sky.
+   * (longitudes not wrapped, so they stay continuous across world copies). Null on sky.
    */
   protected unprojectOnSurface(xPixels: number, yPixels: number): GeographicPosition | null {
     this.setScreenRay(xPixels, yPixels, ray)
@@ -405,9 +407,8 @@ export class EarthCamera {
       this.toFlatRay(ray, flatRay)
       if (flatRay.direction.z >= 0) return null
       const point = flatRay.at(-flatRay.origin.z / flatRay.direction.z, flatPoint)
-      // The map ends at the edges of the Web Mercator square: one world wide, around the anchor.
-      const anchorX = this.earth.view.anchorMercatorXMeters
-      point.x = Math.max(anchorX - WEB_MERCATOR_HALF_EXTENT_METERS, Math.min(anchorX + WEB_MERCATOR_HALF_EXTENT_METERS, point.x))
+      // The map ends north and south at the Web Mercator square; east and west, copies of the world repeat,
+      // so a view wider than one world spans every longitude.
       point.y = Math.max(-WEB_MERCATOR_HALF_EXTENT_METERS, Math.min(WEB_MERCATOR_HALF_EXTENT_METERS, point.y))
       const { longitudeRadians, latitudeRadians } = this.earth.view.flatToGeodetic(point)
       return { longitudeDegrees: MathUtils.radToDeg(longitudeRadians), latitudeDegrees: MathUtils.radToDeg(latitudeRadians) }
