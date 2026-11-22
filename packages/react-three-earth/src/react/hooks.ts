@@ -1,7 +1,9 @@
 import { useFrame } from '@react-three/fiber/extension'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { Earth } from '../core/Earth.js'
+import type { EarthCamera } from '../core/EarthCamera.js'
+import type { EarthEventMap, EarthEventType } from '../core/events.js'
 import { useEarth } from './context.js'
 
 /** Runs every frame with the vanilla `Earth`. Never causes a React render. */
@@ -29,4 +31,30 @@ export function useEarthState<T>(selector: (earth: Earth) => T, { hz = 10 }: { h
     return () => clearInterval(id)
   }, [earth, hz])
   return value
+}
+
+/**
+ * The vanilla `EarthCamera` of the nearest `<Earth>`: `getView()`, `jumpTo()`, `getBounds()`, `project()`,
+ * `unproject()`. Reading it never causes a React render; call its methods in handlers or `useEarthFrame`.
+ */
+export function useEarthCamera(): EarthCamera {
+  return useEarth().camera
+}
+
+/**
+ * Listens to an `Earth` event (`load`, `idle`, `movestart`, `move`, `moveend`) while the component is
+ * mounted. The handler may change between renders without re-subscribing. Never causes a React render.
+ * @example useEarthEvent('moveend', () => setView(earth.camera.getView()))
+ */
+export function useEarthEvent<T extends EarthEventType>(type: T, handler: (event: EarthEventMap[T] & { type: T; target: Earth }) => void): void {
+  const earth = useEarth()
+  const latest = useRef(handler)
+  useLayoutEffect(() => {
+    latest.current = handler
+  })
+  useEffect(() => {
+    const listener = (event: EarthEventMap[T] & { type: T; target: Earth }) => latest.current(event)
+    earth.addEventListener(type, listener as never)
+    return () => earth.removeEventListener(type, listener as never)
+  }, [earth, type])
 }

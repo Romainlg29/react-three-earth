@@ -153,7 +153,15 @@ export class Atmosphere {
     return () => {}
   }
 
+  /** True from `install` until the lookup textures are ready, or their generation failed or was aborted. */
+  get generating(): boolean {
+    return this.generationRunning
+  }
+
+  protected generationRunning = false
+
   protected async generate(renderer: WebGPURenderer, signal: AbortSignal): Promise<boolean> {
+    this.generationRunning = true
     try {
       await renderer.init()
       if (signal.aborted) return false
@@ -173,6 +181,8 @@ export class Atmosphere {
     } catch (error) {
       console.error('Atmosphere: generating the lookup textures failed.', error)
       return false
+    } finally {
+      this.generationRunning = false
     }
   }
 

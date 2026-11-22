@@ -1,9 +1,13 @@
-import { Group, type Camera } from 'three'
+import { Group, Vector2, type Camera } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { ViewMorph, type ViewMode, type ViewTransitionOptions } from '../view/ViewMorph.js'
 import type { Atmosphere } from './Atmosphere.js'
+import type { GeographicPosition } from './camera.js'
+import { EarthCamera, type MapView } from './EarthCamera.js'
+import { CameraMotionDetector, EarthEventTracker, type EarthEventMap } from './events.js'
 import type { Imagery } from './Imagery.js'
+import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
 
 export interface EarthOptions {
@@ -38,6 +42,12 @@ export interface EarthInspection {
     imageryMainThreadMillisecondsTotal: number
   }
   imageryLayers: number
+  /** `earth.camera.getView()`, or null before the first `update`. */
+  camera: MapView | null
+  /** True once the first view finished loading (the `load` event fired). */
+  loaded: boolean
+  /** True while nothing is moving, loading or composing (since the last `idle` event). */
+  idle: boolean
   /** The globe-to-map morph: `morph` is 0 on the globe and 1 on the flat map. */
   view: { mode: ViewMode; morph: number; anchorLongitudeDegrees: number; anchorLatitudeDegrees: number }
   /** Null without an atmosphere. */
@@ -69,14 +79,19 @@ function inspectImagery(terrain: Terrain) {
  * The root of a map: holds the terrain, imagery and atmosphere, all in Earth-centred, Earth-fixed
  * (ECEF, WGS84) metres. Add it to the scene and call `update` once per frame.
  */
-export class Earth extends Group {
+export class Earth extends Group<EarthEventMap> {
   date: Date
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
   /** The globe-to-map morph, shared with the terrain, atmosphere and controls. Change it with `setView`. */
   readonly view = new ViewMorph()
+  /** Zoom, centre, bounds and screen conversions for the camera the Earth is seen through. */
+  readonly camera = new EarthCamera(this)
   /** Main-thread time of the last `update()`, in milliseconds. */
   lastUpdateMilliseconds = 0
+  protected readonly events = new EarthEventTracker()
+  protected readonly cameraMotion = new CameraMotionDetector()
+  protected readonly viewportSize = new Vector2()
   protected readonly imagery = new Set<Imagery>()
   /** `performance.now()` at the last `update()`, for the morph's clock. */
   protected lastUpdateTimestamp: number | null = null
@@ -145,6 +160,9 @@ export class Earth extends Group {
     const now = performance.now()
     const delta = deltaSeconds ?? (this.lastUpdateTimestamp === null ? 0 : (now - this.lastUpdateTimestamp) / 1000)
     this.lastUpdateTimestamp = now
+    renderer.getSize(this.viewportSize)
+    this.camera.setCamera(camera)
+    this.camera.setViewportSize(this.viewportSize.x, this.viewportSize.y)
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
@@ -152,8 +170,57 @@ export class Earth extends Group {
       this.atmosphere.opacity = 1 - this.view.morph
       this.atmosphere.update(camera, this.date)
     }
+    const cameraMoved = this.dispatchFrameEvents(camera, morphing)
     this.lastUpdateMilliseconds = performance.now() - now
-    return morphing || this.view.transitioning
+    // After a move, one more frame tells whether the camera stopped (`moveend`).
+    return morphing || this.view.transitioning || cameraMoved
+  }
+
+  /** Fires this frame's `move*`, `load` and `idle` events. Returns true when the camera moved. */
+  protected dispatchFrameEvents(camera: Camera, morphing: boolean): boolean {
+    camera.updateMatrixWorld()
+    // A running morph counts as one move, even on frames where the camera itself holds still.
+    const cameraMoved = this.cameraMotion.update(camera, this.viewportSize.x, this.viewportSize.y) || morphing
+    const busy = morphing || this.view.transitioning || this.isLoading()
+    for (const type of this.events.update({ cameraMoved, busy })) this.dispatchEvent({ type })
+    return cameraMoved
+  }
+
+  /** True while terrain tiles or imagery are loading or waiting to be composed, or the atmosphere is generating. */
+  protected isLoading(): boolean {
+    if (this.terrain?.loading === true) return true
+    // A failed generation leaves the atmosphere off for good: it must not hold `idle` back.
+    return this.atmosphere !== null && this.atmosphere.generating && this.atmosphere.context.texturesReady.value !== 1
+  }
+
+  /** True once the first view finished loading (the `load` event fired). */
+  get loaded(): boolean {
+    return this.events.loaded
+  }
+
+  /** True while nothing is moving, loading or composing (since the last `idle` event). */
+  get idle(): boolean {
+    return this.events.idle
+  }
+
+  /** Asks the host for a frame (the `framerequest` event), for changes made between frames. */
+  requestFrame(): void {
+    this.dispatchEvent({ type: 'framerequest' })
+  }
+
+  /** Where a geographic position appears on the screen. See `EarthCamera.project`. */
+  project(position: GeographicPosition): ProjectedPosition {
+    return this.camera.project(position)
+  }
+
+  /** The geographic position under a screen point, or null on sky. See `EarthCamera.unproject`. */
+  unproject(screen: ScreenPosition): (GeographicPosition & { heightMeters: number }) | null {
+    return this.camera.unproject(screen)
+  }
+
+  /** Height of the loaded terrain at a position, or null where none is loaded. See `EarthCamera.queryTerrainElevation`. */
+  queryTerrainElevation(position: GeographicPosition): number | null {
+    return this.camera.queryTerrainElevation(position)
   }
 
   inspect(): EarthInspection {
@@ -183,6 +250,9 @@ export class Earth extends Group {
               ...inspectImagery(terrain),
             },
       imageryLayers: this.imagery.size,
+      camera: this.camera.ready ? this.camera.getView() : null,
+      loaded: this.events.loaded,
+      idle: this.events.idle,
       view: this.view.inspect(),
       atmosphere:
         this.atmosphere === null
