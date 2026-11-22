@@ -59,6 +59,13 @@ describe('GenerationPacer', () => {
     pacer.observe(1, -0.5)
     expect(pacer.millisecondsPerWeight).toBeNull()
   })
+  it('estimates the remaining GPU time once a batch is measured', () => {
+    const pacer = new GenerationPacer(4)
+    expect(pacer.estimateRemaining([10, 10, 10], 0)).toBe(Infinity)
+    pacer.observe(10, 1) // 0.1 ms per weight
+    expect(pacer.estimateRemaining([10, 10, 10], 1)).toBeCloseTo(2)
+    expect(pacer.estimateRemaining([10, 10, 10], 3)).toBe(0)
+  })
 })
 
 describe('createAtmosphereCacheKey', () => {
@@ -106,7 +113,7 @@ describe('ATMOSPHERE_PRECOMPUTE_VERSION', () => {
   // Cached lookup textures are keyed by this version. When these files change, decide whether the
   // generated textures change: if they do, bump ATMOSPHERE_PRECOMPUTE_VERSION; either way, record the new
   // hash and version here.
-  const recorded = { version: 2, sourceHash: '7b3ad24c' }
+  const recorded = { version: 2, sourceHash: '80c0c548' }
 
   it('is reviewed whenever the code that generates the lookup textures changes', () => {
     const source = [modelSource, precomputeSource, texturesSource].map(text => text.replace(/\r\n/g, '\n')).join('\n')

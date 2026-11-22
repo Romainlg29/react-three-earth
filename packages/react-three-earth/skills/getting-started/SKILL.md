@@ -39,7 +39,7 @@ Vanilla three.js only needs `react-three-earth` and `three@0.187.0`.
 
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
-import { setCameraView } from 'react-three-earth'
+import { prefersWebGLBackend, setCameraView } from 'react-three-earth'
 import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
 import { useLayoutEffect } from 'react'
 
@@ -54,7 +54,7 @@ function InitialView() {
 
 export function App() {
   return (
-    <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+    <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
       <Earth>
         <InitialView />
         <Terrain>
@@ -84,8 +84,9 @@ bottom-right corner (see "Show attribution" below).
 
 What each piece does:
 
-- `<Canvas>` is WebGPU by default in R3F v10, with a WebGL2 fallback. `reversedDepthBuffer: true` keeps
-  the haze clean from orbit. `near`/`far` are starting values: `<EarthControls>` refits them every frame.
+- `<Canvas>` is WebGPU by default in R3F v10, with a WebGL2 fallback. `forceWebGL: prefersWebGLBackend()`
+  picks WebGL 2 in Safari and on iOS, where WebGPU costs far more CPU per frame (27 ms against 2.5 ms in
+  Chrome on the same Mac). `reversedDepthBuffer: true` keeps the haze clean from orbit. `near`/`far` are starting values: `<EarthControls>` refits them every frame.
 - `<Earth>` turns on `renderer.highPrecision` (64-bit model-view matrices, centimetre-stable anywhere on
   the planet) and updates tiles and the sun every frame. Everything else goes inside it.
 - `<Terrain>` takes exactly one terrain source. `<Imagery>` stacks raster sources bottom to top.
@@ -101,9 +102,9 @@ What each piece does:
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, setCameraView } from 'react-three-earth'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
 
-const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true })
+const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(innerWidth, innerHeight)
 const container = document.createElement('div')

@@ -38,7 +38,7 @@ and `three@0.187.0`.
 
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
-import { setCameraView } from 'react-three-earth'
+import { prefersWebGLBackend, setCameraView } from 'react-three-earth'
 import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
 import { useLayoutEffect } from 'react'
 
@@ -53,7 +53,7 @@ function InitialView() {
 
 export function App() {
   return (
-    <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ near: 1, far: 1e8 }} dpr={[1, 2]}>
+    <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() }} camera={{ near: 1, far: 1e8 }} dpr={[1, 2]}>
       <Earth date={new Date('2026-11-22T07:00:00Z')}>
         <InitialView />
         <Terrain>
@@ -82,9 +82,9 @@ The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, setCameraView } from 'react-three-earth'
+import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
 
-const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true })
+const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setSize(innerWidth, innerHeight)
 document.body.append(renderer.domElement)
 await renderer.init()
