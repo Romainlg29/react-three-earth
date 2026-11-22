@@ -8,7 +8,7 @@ import { CollisionGrid, layoutLineLabels, shapeText, type ShapingOptions } from 
 import { MapStyleProcessor, resolveTokens } from '../src/vector/worker/MapStyleProcessor.js'
 import { ShapeBuilder, splitIntoDashes } from '../src/vector/worker/ShapeBuilder.js'
 import { compileStyleLayers, toRgba } from '../src/vector/worker/styleLayers.js'
-import { resolveTemplate } from '../src/vector/worker/tileSources.js'
+import { PMTilesFetcher, resolveTemplate } from '../src/vector/worker/tileSources.js'
 import type { TileBucket } from '../src/vector/worker/types.js'
 import { createFakeFetch, encodeGlyphRange, encodePMTiles } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
@@ -374,6 +374,38 @@ describe('MapStyleProcessor', () => {
     processor.invalidate(null)
     expect((await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).shapes).not.toBeNull()
     expect(await processor.processTile({ sourceId: 'base', x: 4, y: 5, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
+  })
+
+  it('never serves a PMTiles header read started before the last invalidate from memory', async () => {
+    const url = 'https://maps.test/world.pmtiles'
+    // Over 16 KiB, so a whole header read can be answered from the kept first bytes.
+    const padding = { z: 3, x: 7, y: 7, data: new Uint8Array(20_000).fill(7) }
+    const archive = (x: number, y: number) => encodePMTiles([{ z: 3, x, y, data: testTile() }, padding], 0, 6)
+    const files: Record<string, Uint8Array> = { [url]: archive(4, 5) }
+    const fake = createFakeFetch(files)
+    // Holds back the next offset-0 read until released, to answer after an invalidate.
+    let hold: { release: () => void } | null = null
+    const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>
+      if (hold === null && headers.range?.startsWith('bytes=0-') && fake.requests.length > 0) {
+        const response = await fake.fetch(input, init) // the archive as it is now, answered later
+        await new Promise<void>(resolve => (hold = { release: resolve }))
+        return response
+      }
+      return fake.fetch(input, init)
+    }) as typeof globalThis.fetch
+    const fetcher = await PMTilesFetcher.create(url, { baseUrl: url, requestHeaders: {}, fetch })
+    fetcher.invalidate()
+    files[url] = archive(1, 1)
+    const stale = fetcher.fetchTile(4, 5, 3) // its header read is held back
+    await vi.waitFor(() => expect(hold).not.toBeNull())
+    files[url] = archive(0, 0)
+    fetcher.invalidate()
+    hold!.release()
+    await stale.catch(() => null)
+    const requestsBefore = fake.requests.length
+    expect(await fetcher.fetchTile(0, 0, 3)).not.toBeNull() // read through the newest header
+    expect(fake.requests.length).toBeGreaterThan(requestsBefore)
   })
 
   it('keeps braces of URL templates when resolving them', () => {

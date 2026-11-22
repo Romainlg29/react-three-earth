@@ -121,6 +121,8 @@ interface PMTilesFetcherState {
   revalidate: boolean
   /** The first read's bytes (offset 0), which answer later ranges inside them; cleared by `invalidate`. */
   firstBytes: { data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string } | undefined
+  /** Incremented by `invalidate`: a read started before it must not store its (stale) bytes as `firstBytes`. */
+  generation: number
 }
 
 /** A PMTiles v3 archive read with HTTP range requests. */
@@ -139,7 +141,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
     // pmtiles caches the header and directories but not the JSON metadata. The first read (offset 0, 16 KiB) almost
     // always holds the metadata too, so later ranges inside it are answered from these bytes (`firstBytes`) instead of
     // the network. `invalidate` forgets them.
-    const options: PMTilesFetcherState = { revalidate: false, firstBytes: undefined }
+    const options: PMTilesFetcherState = { revalidate: false, firstBytes: undefined, generation: 0 }
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
@@ -149,6 +151,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
           const { data, etag, cacheControl, expires } = firstBytes
           return { data: data.slice(offset, offset + length), etag, cacheControl, expires }
         }
+        const generation = options.generation
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
         const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) })
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
@@ -161,7 +164,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
           cacheControl: response.headers.get('Cache-Control') ?? undefined,
           expires: response.headers.get('Expires') ?? undefined,
         }
-        if (offset === 0 && options.firstBytes === undefined) options.firstBytes = { ...result, data: data.slice(0) }
+        if (offset === 0 && options.firstBytes === undefined && generation === options.generation) options.firstBytes = { ...result, data: data.slice(0) }
         return result
       },
     })
@@ -184,6 +187,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
   invalidate(): void {
     this.options.revalidate = true
     this.options.firstBytes = undefined
+    this.options.generation++
     this.archive = new PMTiles(this.archive.source)
   }
 
