@@ -2,7 +2,7 @@ import { TilesRenderer, type Tile } from '3d-tiles-renderer'
 import { Box3, Frustum, Matrix4, Vector3 } from 'three'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
-import { clampLatitudeToWebMercator, latitudeToMercatorY, longitudeToMercatorX, mercatorScaleFactor } from '../view/webMercator.js'
+import { latitudeToMercatorY, longitudeToMercatorX, mercatorScaleFactor, wrapMercatorXNear } from '../view/webMercator.js'
 
 /** What `calculateTileViewError` writes (3DTilesRenderer's view error target). */
 export interface TileViewError {
@@ -44,20 +44,24 @@ const groupToAnchor = new Matrix4()
  */
 export function getFlatRegionBox(region: readonly number[], view: ViewMorph, target: Box3): number {
   const [west, south, east, north, minimumHeight, maximumHeight] = region as [number, number, number, number, number, number]
-  const anchorX = longitudeToMercatorX(view.anchorLongitude)
-  const anchorY = latitudeToMercatorY(view.anchorLatitude)
+  // Take the copy of the world nearest the anchor, like the meshes (see FlatMapPlugin).
+  const unwrappedEast = east < west ? east + 2 * Math.PI : east
+  const centerX = longitudeToMercatorX((west + unwrappedEast) / 2)
+  const shift = wrapMercatorXNear(centerX, view.anchorMercatorXMeters) - centerX
+  const anchorX = view.anchorMercatorXMeters - shift
+  const anchorY = latitudeToMercatorY(view.anchorLatitudeRadians)
   const scale = view.scale
   const largestScaleFactor = Math.max(mercatorScaleFactor(south), mercatorScaleFactor(north))
   const smallestScaleFactor = south <= 0 && north >= 0 ? 1 : Math.min(mercatorScaleFactor(south), mercatorScaleFactor(north))
   const heights = [minimumHeight * largestScaleFactor, minimumHeight * smallestScaleFactor, maximumHeight * largestScaleFactor, maximumHeight * smallestScaleFactor]
   target.min.set(
     (longitudeToMercatorX(west) - anchorX) * scale,
-    (latitudeToMercatorY(clampLatitudeToWebMercator(south)) - anchorY) * scale,
+    (latitudeToMercatorY(south) - anchorY) * scale,
     Math.min(...heights) * scale,
   )
   target.max.set(
-    (longitudeToMercatorX(east) - anchorX) * scale,
-    (latitudeToMercatorY(clampLatitudeToWebMercator(north)) - anchorY) * scale,
+    (longitudeToMercatorX(unwrappedEast) - anchorX) * scale,
+    (latitudeToMercatorY(north) - anchorY) * scale,
     Math.max(...heights) * scale,
   )
   return largestScaleFactor
@@ -80,8 +84,9 @@ export class EarthTilesRenderer extends TilesRendererWithInternals {
     super.prepareForTraversal()
     const view = this.view
     if (view === null || view.morph === 0) return
-    // The anchor frame is rigid, so distances measured in it are world distances.
-    groupToAnchor.copy(view.anchorFrame).invert().multiply(this.group.matrixWorld)
+    // Upstream's frustum and camera position are already in the tile set's frame (ECEF), like the anchor
+    // frame. That frame is rigid, so distances measured in it are world distances.
+    groupToAnchor.copy(view.anchorFrame).invert()
     while (this.flatCameraInfo.length < this.cameraInfo.length) this.flatCameraInfo.push({ frustum: new Frustum(), position: new Vector3() })
     this.flatCameraInfo.length = this.cameraInfo.length
     this.cameraInfo.forEach((info, index) => {

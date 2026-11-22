@@ -1,10 +1,18 @@
 import type { Tile } from '3d-tiles-renderer'
 import { BufferAttribute, Matrix4, Mesh, type BufferGeometry, type Material, type Object3D } from 'three'
-import { attribute, diffuseColor, mix, positionGeometry, uniform, vec4 } from 'three/tsl'
+import { attribute, diffuseColor, mat3, mix, normalGeometry, positionGeometry, transformNormalToView, uniform, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
-import { ecefToGeodetic, latitudeToMercatorY, longitudeToMercatorX, mercatorScaleFactor, unwrapLongitude, type GeodeticRadians } from '../view/webMercator.js'
+import {
+  ecefToGeodetic,
+  latitudeToMercatorY,
+  longitudeToMercatorX,
+  mercatorScaleFactor,
+  unwrapLongitude,
+  wrapMercatorXNear,
+  type GeodeticRadians,
+} from '../view/webMercator.js'
 
 /** Name of the vertex attribute holding each vertex's flat-map position, relative to the mesh's flat centre. */
 export const FLAT_POSITION_ATTRIBUTE = 'positionFlat'
@@ -14,14 +22,14 @@ const FLAT_STATE = Symbol('FLAT_STATE')
 /** Per-mesh morph state, read by the shared shader uniforms when the mesh is drawn. */
 interface FlatMeshState {
   /** The mesh's centre in flat coordinates (Web Mercator metres): `positionFlat` is relative to it. */
-  readonly centerX: number
-  readonly centerY: number
-  readonly centerZ: number
+  readonly centerXMeters: number
+  readonly centerYMeters: number
+  readonly centerZMeters: number
   /** Takes the mesh's own (globe) vertex positions into its flat frame. Identity on the globe. */
   readonly globeToFlat: Matrix4
   morph: number
   flatMapLuminance: number
-  /** Whether `matrixWorld` currently holds the flat frame. */
+  /** Whether `matrixWorld` holds the flat frame: only between `onBeforeRender` and `onAfterRender`. */
   flattened: boolean
 }
 
@@ -31,9 +39,10 @@ function getState(object: Object3D): FlatMeshState | undefined {
   return (object as FlatMesh)[FLAT_STATE]
 }
 
+const identityMatrix = new Matrix4()
 const globeToFlatUniform = uniform(new Matrix4()).onObjectUpdate(({ object }, self) => {
   const state = object === null ? undefined : getState(object)
-  if (state !== undefined) self.value = state.globeToFlat
+  self.value = state?.globeToFlat ?? identityMatrix
 })
 const morphUniform = uniform(0).onObjectUpdate(({ object }) => (object === null ? 0 : (getState(object)?.morph ?? 0)))
 const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (object === null ? 1 : (getState(object)?.flatMapLuminance ?? 1)))
@@ -45,6 +54,12 @@ const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (objec
  */
 const morphedPosition = mix(globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz, attribute(FLAT_POSITION_ATTRIBUTE, 'vec3'), morphUniform)
 
+/**
+ * The normal, turned with the geometry into the flat frame, so shading stays continuous when the morph
+ * starts (the mesh is then drawn with the flat frame's matrix). On the map itself sunlight is faded out.
+ */
+const morphedNormal = transformNormalToView(mat3(globeToFlatUniform).mul(normalGeometry).normalize())
+
 /** On the flat map the imagery is shown unlit, as a map: its colour is emitted, fading in with the morph. */
 const flatEmission = diffuseColor.rgb.mul(morphUniform).mul(flatMapLuminanceUniform)
 
@@ -53,7 +68,7 @@ const combinedEmissions = new WeakSet<Node>()
 
 type WrappableMaterial = NodeMaterial & { [WRAPPED]?: true; emissiveNode?: Node | null }
 
-const geodetic: GeodeticRadians = { longitude: 0, latitude: 0, height: 0 }
+const geodetic: GeodeticRadians = { longitude: 0, latitude: 0, heightMeters: 0 }
 const meshToTileScene = new Matrix4()
 const globeMatrix = new Matrix4()
 const flatMatrix = new Matrix4()
@@ -107,20 +122,27 @@ export class FlatMapPlugin {
     }
     const center = computeFlatPositions(mesh.geometry, meshToTileScene, referenceLongitude)
     mesh[FLAT_STATE] = {
-      centerX: center[0],
-      centerY: center[1],
-      centerZ: center[2],
+      centerXMeters: center[0],
+      centerYMeters: center[1],
+      centerZMeters: center[2],
       globeToFlat: new Matrix4(),
       morph: 0,
       flatMapLuminance: 1,
       flattened: false,
     }
-    wrapMaterial(mesh.material as Material)
+    wrapMaterial(mesh.material as Material, mesh.geometry.hasAttribute('normal'))
 
-    const previous = mesh.onBeforeRender
+    // The flat matrix only lives for the draw: raycasts, pointer events and everything else between frames
+    // see the globe matrix.
+    const previousBeforeRender = mesh.onBeforeRender
     mesh.onBeforeRender = (...args) => {
       this.applyMorph(mesh)
-      previous.apply(mesh, args)
+      previousBeforeRender.apply(mesh, args)
+    }
+    const previousAfterRender = mesh.onAfterRender
+    mesh.onAfterRender = (...args) => {
+      previousAfterRender.apply(mesh, args)
+      restoreGlobeMatrix(mesh)
     }
   }
 
@@ -131,18 +153,18 @@ export class FlatMapPlugin {
     if (state === undefined) return
     const morph = view?.morph ?? 0
     if (morph === 0 || view === null || this.tiles === null || mesh.parent === null) {
-      if (state.flattened) {
-        mesh.matrixWorld.multiplyMatrices(mesh.parent?.matrixWorld ?? globeMatrix.identity(), mesh.matrix)
-        state.flattened = false
-      }
+      restoreGlobeMatrix(mesh)
       state.morph = 0
       state.globeToFlat.identity()
       return
     }
     globeMatrix.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
+    // The map is one world wide: place each mesh on the copy of the world nearest the anchor, so the map
+    // has no seam at ±180° whatever the anchor.
+    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.anchorMercatorXMeters)
     flatMatrix
       .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)
-      .multiply(centerOffset.makeTranslation(state.centerX, state.centerY, state.centerZ))
+      .multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
     state.globeToFlat.copy(flatMatrix).invert().multiply(globeMatrix)
     mesh.matrixWorld.copy(flatMatrix)
     state.flattened = true
@@ -151,11 +173,20 @@ export class FlatMapPlugin {
   }
 }
 
-function wrapMaterial(material: Material): void {
+function restoreGlobeMatrix(mesh: FlatMesh): void {
+  const state = mesh[FLAT_STATE]
+  if (state === undefined || !state.flattened) return
+  if (mesh.parent === null) mesh.matrixWorld.copy(mesh.matrix)
+  else mesh.matrixWorld.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
+  state.flattened = false
+}
+
+function wrapMaterial(material: Material, hasNormals: boolean): void {
   const nodeMaterial = material as WrappableMaterial
   if ((material as { isNodeMaterial?: boolean }).isNodeMaterial !== true || nodeMaterial[WRAPPED] === true) return
   nodeMaterial[WRAPPED] = true
   nodeMaterial.positionNode = morphedPosition
+  if (hasNormals && nodeMaterial.normalNode == null) nodeMaterial.normalNode = morphedNormal
   if ('emissiveNode' in nodeMaterial) {
     const existing = nodeMaterial.emissiveNode ?? null
     if (existing === null) {
@@ -193,7 +224,7 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
     )
     reference ??= geodetic.longitude
     const longitude = unwrapLongitude(geodetic.longitude, reference)
-    const values = [longitudeToMercatorX(longitude), latitudeToMercatorY(geodetic.latitude), geodetic.height * mercatorScaleFactor(geodetic.latitude)]
+    const values = [longitudeToMercatorX(longitude), latitudeToMercatorY(geodetic.latitude), geodetic.heightMeters * mercatorScaleFactor(geodetic.latitude)]
     for (let axis = 0; axis < 3; axis++) {
       const value = values[axis]!
       flat[index * 3 + axis] = value

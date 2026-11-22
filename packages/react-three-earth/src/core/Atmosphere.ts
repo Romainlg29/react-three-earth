@@ -56,7 +56,8 @@ export class Atmosphere {
 
   /**
    * 0 to 1: how much sky, haze and sunlight there is. `Earth` fades it out on the flat map. At 0 the scene
-   * shows unlit and unhazed, over the canvas's clear colour. Costs nothing to change.
+   * shows unlit and unhazed, over the canvas's clear colour. Also sets the sun light's intensity, so set
+   * this rather than `light.intensity`. Costs nothing to change.
    */
   get opacity(): number {
     return this.context.opacity.value

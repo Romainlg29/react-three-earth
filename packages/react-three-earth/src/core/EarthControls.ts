@@ -1,7 +1,7 @@
 // Pivot material adapted from takram three-geospatial (MIT, (c) 2024 Shota Matsuda), storybook-webgpu at b012ad06,
 // itself ported from 3DTilesRendererJS's PivotPointMesh (Apache-2.0).
 import { EnvironmentControls, GlobeControls } from '3d-tiles-renderer'
-import { Group, type Camera, type Material, type Mesh } from 'three'
+import { Group, Vector3, type Camera, type Material, type Mesh } from 'three'
 import {
   cameraProjectionMatrix,
   Fn,
@@ -18,6 +18,8 @@ import {
 import { NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
+import { mercatorScaleFactor } from '../view/webMercator.js'
+import type { Earth } from './Earth.js'
 
 function createPivotMaterial(): Material {
   const size = uniform(15).mul(screenDPR)
@@ -78,13 +80,18 @@ function replacePivotMaterial(controls: object): void {
 export class FlatMapControls extends EnvironmentControls {
   /** Steepest tilt away from looking straight down, in radians. Default: 0 (a flat 2D map). */
   maximumTiltRadians = 0
+  /**
+   * Highest terrain under the camera, in map metres above the plane: the camera stays `minDistance` above
+   * it. `EarthViewControls` sets it from the loaded tiles. Default: 0.
+   */
+  terrainHeightMeters = 0
 
   constructor(camera: Camera | null = null, domElement: HTMLElement | null = null) {
     // The map is not raycast: drags and zooms land on the map plane (the fallback plane).
     super(new Group(), camera as never, domElement as never)
     this.useFallbackPlane = true
     this.minAltitude = 0
-    this.minDistance = 2
+    this.minDistance = 10
     replacePivotMaterial(this)
   }
 
@@ -98,8 +105,96 @@ export class FlatMapControls extends EnvironmentControls {
   override update(deltaTime?: number): void {
     super.update(deltaTime)
     const camera = this.camera as (Camera & { near: number; far: number; updateProjectionMatrix?: () => void }) | null
-    if (camera === null || !('near' in camera)) return
-    fitClippingPlanes(camera, this.fallbackPlane.distanceToPoint(camera.position))
+    if (camera === null) return
+    // The map is not raycast, so keep the camera out of the relief by hand.
+    const height = this.fallbackPlane.distanceToPoint(camera.position)
+    const lowest = this.terrainHeightMeters + this.minDistance
+    if (height < lowest) {
+      camera.position.addScaledVector(this.fallbackPlane.normal, lowest - height)
+      camera.updateMatrixWorld()
+    }
+    if ('near' in camera) fitClippingPlanes(camera, Math.max(height, lowest) - this.terrainHeightMeters)
+  }
+}
+
+const cameraFlat = new Vector3()
+
+/**
+ * Hands the camera between `EarthControls` on the globe and `FlatMapControls` on the flat map, following
+ * `earth.view`: input goes to the controls of the view shown, and is ignored while the view morphs. This is
+ * what `<EarthControls>` uses; vanilla apps call `update` once per frame, before `earth.update`.
+ */
+export class EarthViewControls {
+  readonly globe = new EarthControls()
+  readonly flatMap = new FlatMapControls()
+
+  constructor(protected readonly earth: Earth) {
+    this.globe.setScene(earth)
+  }
+
+  setCamera(camera: Camera): void {
+    this.globe.setCamera(camera)
+    this.flatMap.setCamera(camera)
+  }
+
+  attach(domElement: HTMLElement): void {
+    this.globe.attach(domElement)
+    this.flatMap.attach(domElement)
+  }
+
+  detach(): void {
+    this.globe.detach()
+    this.flatMap.detach()
+  }
+
+  set enableDamping(value: boolean) {
+    this.globe.enableDamping = value
+    this.flatMap.enableDamping = value
+  }
+
+  update(deltaSeconds?: number): void {
+    const { earth, globe, flatMap } = this
+    const view = earth.view
+    const onGlobe = view.mode === '3d' && !view.transitioning
+    const onFlatMap = view.mode === '2d' && !view.transitioning
+    globe.enabled = onGlobe
+    flatMap.enabled = onFlatMap
+    if (onGlobe) {
+      const tiles = earth.terrain?.tiles
+      if (tiles !== undefined && globe.ellipsoidGroup !== tiles.group) globe.setEllipsoid(tiles.ellipsoid, tiles.group)
+      globe.update(deltaSeconds)
+    } else if (onFlatMap) {
+      flatMap.followView(view)
+      flatMap.terrainHeightMeters = this.findTerrainHeightUnderCamera()
+      flatMap.update(deltaSeconds)
+    } else {
+      // Mid-morph, keep the whole map and globe between the clipping planes.
+      const camera = globe.camera as (Camera & { near: number; far: number }) | null
+      if (camera !== null && 'near' in camera) fitClippingPlanes(camera, camera.position.distanceTo(view.anchorPosition))
+    }
+  }
+
+  /** Highest point of the visible tiles under the camera, from their regions, in map metres. */
+  protected findTerrainHeightUnderCamera(): number {
+    const view = this.earth.view
+    const camera = this.flatMap.camera
+    const tiles = this.earth.terrain?.tiles
+    if (camera === null || tiles === undefined) return 0
+    const { longitudeRadians, latitudeRadians } = view.flatToGeodetic(cameraFlat.copy(camera.position).applyMatrix4(view.earthToFlat))
+    let highest = 0
+    for (const tile of tiles.visibleTiles as Set<{ boundingVolume?: { region?: number[] } }>) {
+      const region = tile.boundingVolume?.region
+      if (region === undefined) continue
+      const [west, south, east, north, , maximumHeight] = region as [number, number, number, number, number, number]
+      if (longitudeRadians < west || longitudeRadians > east || latitudeRadians < south || latitudeRadians > north) continue
+      highest = Math.max(highest, maximumHeight)
+    }
+    return highest * mercatorScaleFactor(latitudeRadians) * view.scale
+  }
+
+  dispose(): void {
+    this.globe.dispose()
+    this.flatMap.dispose()
   }
 }
 

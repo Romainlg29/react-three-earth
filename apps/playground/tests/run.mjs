@@ -80,17 +80,19 @@ async function precision(highPrecision) {
   results.push({ check: `precision, highPrecision ${highPrecision ? 'on' : 'off'}`, maxErrorPx: Number(maxErrorPx.toFixed(2)), separationPx: Number(separationPx.toFixed(1)), errors })
 }
 
-async function map(atmosphere) {
-  const { page, errors } = await open(`/?fixtures&atmosphere=${atmosphere ? 1 : 0}`)
+async function map(atmosphere, view = '3d') {
+  const { page, errors } = await open(`/?fixtures&atmosphere=${atmosphere ? 1 : 0}&view=${view}`)
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain
     const atmosphereReady = inspection?.atmosphere === null || inspection?.atmosphere?.ready === true
-    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && atmosphereReady
+    const settledView = inspection?.view.morph === (inspection?.view.mode === '2d' ? 1 : 0)
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && atmosphereReady && settledView
   }, null, { timeout: 240_000, polling: 500 })
   await page.waitForTimeout(3000) // overlays compose and tiles fade in
   const png = await page.screenshot()
-  writeFileSync(new URL(`map-atmosphere-${atmosphere ? 'on' : 'off'}.png`, OUT), png)
+  const name = `map${view === '2d' ? '-2d' : ''}-atmosphere-${atmosphere ? 'on' : 'off'}`
+  writeFileSync(new URL(`${name}.png`, OUT), png)
   const inspection = await page.evaluate(() => window.earth.inspect())
   const stats = await analyse(page, png, `
     let green = 0, black = 0, sky = 0
@@ -104,7 +106,7 @@ async function map(atmosphere) {
     return { greenShare: +(green / n).toFixed(3), blackShare: +(black / n).toFixed(3), blueSkyShare: +(sky / n).toFixed(3) }
   `)
   await page.close()
-  results.push({ check: `map with fixtures, atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
+  results.push({ check: `map with fixtures, ${view}, atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
 }
 
 const only = process.argv[2]
@@ -116,6 +118,10 @@ try {
   if (!only || only === 'map') {
     await map(false)
     await map(true)
+  }
+  if (!only || only === 'map' || only === '2d') {
+    await map(false, '2d')
+    await map(true, '2d')
   }
 } finally {
   await browser.close()

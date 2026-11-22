@@ -55,8 +55,8 @@ function smoothstep(value: number): number {
  * plane. The map's own coordinates ("flat coordinates") are Web Mercator metres: x east, y north, and z the
  * height times the projection's scale factor, so relief keeps its shape at every latitude.
  *
- * Everything here is in the Earth's frame (ECEF metres), which is also the world frame when the `Earth`
- * sits at the scene origin, as it does by default.
+ * Everything here is in the Earth's frame (ECEF metres). The camera is read and moved in world space, so
+ * keep the `Earth` at the scene origin (its default), as `setCameraView` and the controls also assume.
  */
 export class ViewMorph {
   /** The view shown, or being morphed to. */
@@ -69,14 +69,15 @@ export class ViewMorph {
   protected pendingStart = false
   protected flight: CameraFlight | null = null
 
-  /** Anchor longitude and latitude, in radians. */
-  anchorLongitude = 0
-  anchorLatitude = 0
+  anchorLongitudeRadians = 0
+  anchorLatitudeRadians = 0
+  /** Web Mercator x of the anchor. */
+  anchorMercatorXMeters = 0
   /** ECEF position of the anchor, on the ellipsoid. */
   readonly anchorPosition = new Vector3()
   /** Ellipsoid normal at the anchor: the map plane's normal. */
   readonly anchorUp = new Vector3(0, 0, 1)
-  /** Map metres per Web Mercator metre: `cos(anchorLatitude)`, so the map is true to scale at the anchor. */
+  /** Map metres per Web Mercator metre: `cos(anchorLatitudeRadians)`, so the map is true to scale at the anchor. */
   scale = 1
   /** Flat coordinates to ECEF. A similarity: rotation, uniform scale and translation. */
   readonly flatToEarth = new Matrix4()
@@ -87,8 +88,10 @@ export class ViewMorph {
 
   /**
    * Brightness of unlit imagery on the flat map. In 2D the terrain is shown as a map, without sunlight, so
-   * night and slopes do not darken it: the imagery colour times this value is emitted. `<Atmosphere>`
-   * sets it to undo its exposure.
+   * night and slopes do not darken it: the imagery colour times this value is emitted, fading in with the
+   * morph. `<Atmosphere>` sets it to undo its exposure, and the atmosphere's sun fades out as it fades in.
+   * Lights of your own are not touched: scale them by `1 - morph` (the playground's `PlainLights` does), or
+   * the map is lit and emitted at once and looks too bright.
    */
   flatMapLuminance = 1
 
@@ -127,8 +130,9 @@ export class ViewMorph {
 
   /** Places the map plane tangent to the ellipsoid at this point (radians). Moves the map, not the camera. */
   setAnchor(longitudeRadians: number, latitudeRadians: number): void {
-    this.anchorLongitude = longitudeRadians
-    this.anchorLatitude = latitudeRadians
+    this.anchorLongitudeRadians = longitudeRadians
+    this.anchorLatitudeRadians = latitudeRadians
+    this.anchorMercatorXMeters = longitudeToMercatorX(longitudeRadians)
     WGS84_ELLIPSOID.getCartographicToPosition(latitudeRadians, longitudeRadians, 0, this.anchorPosition)
     WGS84_ELLIPSOID.getEastNorthUpAxes(latitudeRadians, longitudeRadians, east, north, this.anchorUp)
     this.anchorFrame.makeBasis(east, north, this.anchorUp).setPosition(this.anchorPosition)
@@ -151,9 +155,9 @@ export class ViewMorph {
   }
 
   /** Longitude, latitude (radians) and height (metres) of a point given in flat coordinates. */
-  flatToGeodetic(flat: Vector3): { longitude: number; latitude: number; height: number } {
-    const latitude = mercatorYToLatitude(flat.y)
-    return { longitude: mercatorXToLongitude(flat.x), latitude, height: flat.z / mercatorScaleFactor(latitude) }
+  flatToGeodetic(flat: Vector3): { longitudeRadians: number; latitudeRadians: number; heightMeters: number } {
+    const latitudeRadians = mercatorYToLatitude(flat.y)
+    return { longitudeRadians: mercatorXToLongitude(flat.x), latitudeRadians, heightMeters: flat.z / mercatorScaleFactor(latitudeRadians) }
   }
 
   /**
@@ -206,7 +210,7 @@ export class ViewMorph {
     plane.setFromNormalAndCoplanarPoint(this.anchorUp, this.anchorPosition)
     const hit = ray.intersectPlane(plane, scratchVector) ?? plane.projectPoint(ray.origin, scratchVector)
     const flat = hit.applyMatrix4(this.earthToFlat)
-    const { longitude, latitude } = this.flatToGeodetic(flat)
+    const { longitudeRadians: longitude, latitudeRadians: latitude } = this.flatToGeodetic(flat)
 
     // Moving the anchor moves the map: carry the camera with it, so the view does not change.
     const previousEarthToFlat = scratchMatrix2.copy(this.earthToFlat)
@@ -266,8 +270,8 @@ export class ViewMorph {
     return {
       mode: this.mode,
       morph: this.morph,
-      anchorLongitudeDegrees: MathUtils.radToDeg(this.anchorLongitude),
-      anchorLatitudeDegrees: MathUtils.radToDeg(this.anchorLatitude),
+      anchorLongitudeDegrees: MathUtils.radToDeg(this.anchorLongitudeRadians),
+      anchorLatitudeDegrees: MathUtils.radToDeg(this.anchorLatitudeRadians),
     }
   }
 }

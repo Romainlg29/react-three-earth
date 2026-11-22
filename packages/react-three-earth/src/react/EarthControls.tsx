@@ -1,7 +1,7 @@
 import { useFrame, useThree } from '@react-three/fiber/extension'
 import { useLayoutEffect, useState } from 'react'
 
-import { EarthControls as EarthControlsImpl, fitClippingPlanes, FlatMapControls } from '../core/EarthControls.js'
+import { EarthViewControls } from '../core/EarthControls.js'
 import { useEarth } from './context.js'
 
 export interface EarthControlsProps {
@@ -19,59 +19,23 @@ export function EarthControls({ enableDamping = true, maximumFlatMapTiltDegrees 
   const earth = useEarth()
   const camera = useThree(state => state.camera)
   const domElement = useThree(state => state.events.connected ?? state.renderer.domElement) as HTMLElement
-  const [globeControls] = useState(() => new EarthControlsImpl())
-  const [flatMapControls] = useState(() => new FlatMapControls())
+  const [controls] = useState(() => new EarthViewControls(earth))
 
   useLayoutEffect(() => {
-    globeControls.setScene(earth)
-    globeControls.setCamera(camera)
-    globeControls.attach(domElement)
-    globeControls.enableDamping = enableDamping
-    flatMapControls.setCamera(camera)
-    flatMapControls.attach(domElement)
-    flatMapControls.enableDamping = enableDamping
-    return () => {
-      globeControls.detach()
-      flatMapControls.detach()
-    }
-  }, [globeControls, flatMapControls, earth, camera, domElement, enableDamping])
+    controls.setCamera(camera)
+    controls.attach(domElement)
+    controls.enableDamping = enableDamping
+    return () => controls.detach()
+  }, [controls, camera, domElement, enableDamping])
 
   useLayoutEffect(() => {
-    flatMapControls.maximumTiltRadians = (maximumFlatMapTiltDegrees * Math.PI) / 180
-  }, [flatMapControls, maximumFlatMapTiltDegrees])
+    controls.flatMap.maximumTiltRadians = (maximumFlatMapTiltDegrees * Math.PI) / 180
+  }, [controls, maximumFlatMapTiltDegrees])
 
-  useLayoutEffect(
-    () => () => {
-      globeControls.dispose()
-      flatMapControls.dispose()
-    },
-    [globeControls, flatMapControls],
-  )
+  useLayoutEffect(() => () => controls.dispose(), [controls])
 
   // Before the Earth updates tiles, so tiles are chosen for this frame's camera.
-  useFrame(
-    ({ delta }) => {
-      const view = earth.view
-      const onGlobe = view.mode === '3d' && !view.transitioning
-      const onFlatMap = view.mode === '2d' && !view.transitioning
-      globeControls.enabled = onGlobe
-      flatMapControls.enabled = onFlatMap
-      if (onGlobe) {
-        const tiles = earth.terrain?.tiles
-        if (tiles !== undefined && globeControls.ellipsoidGroup !== tiles.group) {
-          globeControls.setEllipsoid(tiles.ellipsoid, tiles.group)
-        }
-        globeControls.update(delta)
-      } else if (onFlatMap) {
-        flatMapControls.followView(view)
-        flatMapControls.update(delta)
-      } else if ('near' in camera) {
-        // Mid-morph, keep the whole map and globe between the clipping planes.
-        fitClippingPlanes(camera, camera.position.distanceTo(view.anchorPosition))
-      }
-    },
-    { id: 'earth:controls', phase: 'update', before: 'earth:update' },
-  )
+  useFrame(({ delta }) => controls.update(delta), { id: 'earth:controls', phase: 'update', before: 'earth:update' })
 
   return null
 }

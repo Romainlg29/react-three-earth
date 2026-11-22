@@ -13,6 +13,7 @@ import {
   mercatorScaleFactor,
   mercatorYToLatitude,
   unwrapLongitude,
+  wrapMercatorXNear,
   WEB_MERCATOR_HALF_EXTENT_METERS,
   WEB_MERCATOR_MAX_LATITUDE_RADIANS,
 } from '../src/view/webMercator.js'
@@ -40,6 +41,13 @@ describe('Web Mercator', () => {
     expect(mercatorScaleFactor(degrees(60))).toBeCloseTo(2, 12)
   })
 
+  it('places x on the copy of the world nearest the anchor', () => {
+    const anchor = longitudeToMercatorX(degrees(179))
+    const west = longitudeToMercatorX(degrees(-179))
+    expect(wrapMercatorXNear(west, anchor)).toBeCloseTo(longitudeToMercatorX(degrees(181)), 6)
+    expect(wrapMercatorXNear(anchor, anchor)).toBe(anchor)
+  })
+
   it('unwraps longitudes around a reference', () => {
     expect(unwrapLongitude(-Math.PI + 0.01, Math.PI - 0.01)).toBeCloseTo(Math.PI + 0.01, 12)
     expect(unwrapLongitude(0.5, 0)).toBe(0.5)
@@ -49,7 +57,7 @@ describe('Web Mercator', () => {
 describe('ecefToGeodetic', () => {
   it('matches the iterative WGS84 conversion to a tenth of a millimetre on and above terrain', () => {
     const cartographic = { lat: 0, lon: 0, height: 0 }
-    const result = { longitude: 0, latitude: 0, height: 0 }
+    const result = { longitude: 0, latitude: 0, heightMeters: 0 }
     const position = new Vector3()
     for (const [longitude, latitude, height] of [
       [138.7274, 35.3606, 3776],
@@ -64,7 +72,7 @@ describe('ecefToGeodetic', () => {
       expect(result.longitude).toBeCloseTo(cartographic.lon, 12)
       // 2e-11 rad is 0.13 mm on the ground
       expect(Math.abs(result.latitude - degrees(latitude))).toBeLessThan(2e-11)
-      expect(Math.abs(result.height - height)).toBeLessThan(1e-4)
+      expect(Math.abs(result.heightMeters - height)).toBeLessThan(1e-4)
     }
   })
 })
@@ -103,8 +111,8 @@ describe('ViewMorph frames', () => {
     expect(view.transitioning).toBe(true)
     view.update(camera, 0.5)
     expect(view.morph).toBeCloseTo(0.5, 12)
-    expect(MathUtils.radToDeg(view.anchorLongitude)).toBeCloseTo(138.7274, 4)
-    expect(MathUtils.radToDeg(view.anchorLatitude)).toBeCloseTo(35.3606, 4)
+    expect(MathUtils.radToDeg(view.anchorLongitudeRadians)).toBeCloseTo(138.7274, 4)
+    expect(MathUtils.radToDeg(view.anchorLatitudeRadians)).toBeCloseTo(35.3606, 4)
     view.update(camera, 0.5)
     expect(view.morph).toBe(1)
     expect(view.transitioning).toBe(false)
@@ -135,7 +143,7 @@ describe('ViewMorph frames', () => {
     const cameraFlatAfter = camera.position.clone().applyMatrix4(view.earthToFlat)
     expect(cameraFlatAfter.x).toBeCloseTo(cameraFlatBefore.x, 3)
     expect(cameraFlatAfter.y).toBeCloseTo(cameraFlatBefore.y, 3)
-    const anchorFlat = view.geodeticToFlat(view.anchorLongitude, view.anchorLatitude, 0)
+    const anchorFlat = view.geodeticToFlat(view.anchorLongitudeRadians, view.anchorLatitudeRadians, 0)
     expect(Math.hypot(anchorFlat.x - cameraFlatAfter.x, anchorFlat.y - cameraFlatAfter.y)).toBeLessThan(1e-3)
     expect(view.inspect().mode).toBe('3d')
   })

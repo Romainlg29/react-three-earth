@@ -22,11 +22,11 @@ const WGS84_SEMI_MINOR_AXIS_METERS = WGS84_SEMI_MAJOR_AXIS_METERS * (1 - WGS84_F
 const WGS84_FIRST_ECCENTRICITY_SQUARED = WGS84_FLATTENING * (2 - WGS84_FLATTENING)
 const WGS84_SECOND_ECCENTRICITY_SQUARED = WGS84_FIRST_ECCENTRICITY_SQUARED / (1 - WGS84_FIRST_ECCENTRICITY_SQUARED)
 
-/** A geodetic position, in radians and metres. */
+/** A geodetic position: longitude and latitude in radians, height above the WGS84 ellipsoid in metres. */
 export interface GeodeticRadians {
   longitude: number
   latitude: number
-  height: number
+  heightMeters: number
 }
 
 export function clampLatitudeToWebMercator(latitudeRadians: number): number {
@@ -72,7 +72,7 @@ export function ecefToGeodetic(x: number, y: number, z: number, target: Geodetic
   if (p < 1e-9) {
     target.longitude = 0
     target.latitude = z >= 0 ? Math.PI / 2 : -Math.PI / 2
-    target.height = Math.abs(z) - b
+    target.heightMeters = Math.abs(z) - b
     return target
   }
   const theta = Math.atan2(z * a, p * b)
@@ -92,7 +92,7 @@ export function ecefToGeodetic(x: number, y: number, z: number, target: Geodetic
       : z / sinLatitude - primeVerticalRadius * (1 - WGS84_FIRST_ECCENTRICITY_SQUARED)
   target.longitude = longitude
   target.latitude = latitude
-  target.height = height
+  target.heightMeters = height
   return target
 }
 
@@ -102,4 +102,11 @@ export function unwrapLongitude(longitudeRadians: number, referenceRadians: numb
   while (longitude - referenceRadians > Math.PI) longitude -= 2 * Math.PI
   while (longitude - referenceRadians < -Math.PI) longitude += 2 * Math.PI
   return longitude
+}
+
+const WEB_MERCATOR_WORLD_WIDTH_METERS = 2 * WEB_MERCATOR_HALF_EXTENT_METERS
+
+/** Shifts a Web Mercator x by whole world widths to within half a world of a reference x. */
+export function wrapMercatorXNear(xMeters: number, referenceXMeters: number): number {
+  return xMeters - Math.round((xMeters - referenceXMeters) / WEB_MERCATOR_WORLD_WIDTH_METERS) * WEB_MERCATOR_WORLD_WIDTH_METERS
 }
