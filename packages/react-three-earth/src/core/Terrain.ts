@@ -12,7 +12,7 @@ import type { TerrainSource } from './sources.js'
 export interface TerrainOptions {
   /** The terrain source. Only the first one is used for now. */
   sources: TerrainSource[]
-  /** Screen-space error target in pixels: lower is sharper and loads more. Default: 6 (3DTilesRenderer's terrain setting). */
+  /** Screen-space error target in pixels: lower is sharper and loads more. Default: 2 (QuantizedMeshPlugin's recommended setting). */
   errorTargetPixels?: number
   /** GPU memory budget for terrain geometry and imagery, in bytes. Default: 300 MB, sized for phones. */
   memoryBudgetBytes?: number

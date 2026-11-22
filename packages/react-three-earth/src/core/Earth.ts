@@ -13,6 +13,8 @@ export interface EarthOptions {
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
 export interface EarthInspection {
   date: string
+  /** Main-thread time of the last `update()`: tile traversal, imagery composition and the sun. */
+  updateMilliseconds: number
   terrain: null | {
     url: string
     tilesLoaded: number
@@ -64,6 +66,8 @@ export class Earth extends Group {
   date: Date
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
+  /** Main-thread time of the last `update()`, in milliseconds. */
+  lastUpdateMilliseconds = 0
   protected readonly imagery = new Set<Imagery>()
 
   constructor({ date = new Date() }: EarthOptions = {}) {
@@ -111,8 +115,10 @@ export class Earth extends Group {
 
   /** Loads tiles for the camera and moves the sun. Call once per frame, before rendering. */
   update(camera: Camera, renderer: WebGPURenderer): void {
+    const start = performance.now()
     this.terrain?.update(camera, renderer)
     this.atmosphere?.update(camera, this.date)
+    this.lastUpdateMilliseconds = performance.now() - start
   }
 
   inspect(): EarthInspection {
@@ -127,6 +133,7 @@ export class Earth extends Group {
       | undefined
     return {
       date: this.date.toISOString(),
+      updateMilliseconds: this.lastUpdateMilliseconds,
       terrain:
         tiles === undefined || terrain === null
           ? null
