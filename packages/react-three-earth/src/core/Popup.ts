@@ -108,6 +108,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
   /** Focus moves in at the first frame the popup shows (an element hidden with `visibility` cannot take it). */
   protected focusPending = false
   protected focusWhenContentArrives = false
+  protected focusWindowTimer: ReturnType<typeof setTimeout> | undefined = undefined
   /** Milliseconds between two reads of the terrain under the popup's position. */
   terrainCheckIntervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS
 
@@ -197,7 +198,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     // Content rendered after opening (a React root renders later) gets one look: see `focusContentControl`.
     this.focusWhenContentArrives = mayFocus && !this.focusPending
     // Only right after opening: content that changes later must not pull focus away from the user.
-    if (this.focusWhenContentArrives) setTimeout(() => (this.focusWhenContentArrives = false), 500)
+    if (this.focusWhenContentArrives) this.focusWindowTimer = setTimeout(() => (this.focusWhenContentArrives = false), 500)
     if (!this.hidden) this.focusInside()
     return this
   }
@@ -230,6 +231,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.focusBeforeOpen = null
     this.focusPending = false
     this.focusWhenContentArrives = false
+    clearTimeout(this.focusWindowTimer)
     this.dispatchEvent({ type: 'close' })
     return this
   }
