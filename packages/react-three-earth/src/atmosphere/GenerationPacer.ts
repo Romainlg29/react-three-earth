@@ -29,7 +29,8 @@ export class GenerationPacer {
   protected lastWeight = 0
 
   constructor(budgetMilliseconds: number) {
-    this.budgetMilliseconds = Math.max(0, budgetMilliseconds)
+    // Anything but a positive number (NaN from a bad query string) would disable the budget.
+    this.budgetMilliseconds = budgetMilliseconds > 0 ? budgetMilliseconds : 4
   }
 
   /**

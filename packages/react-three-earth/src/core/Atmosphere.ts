@@ -65,7 +65,9 @@ export class Atmosphere {
 
   constructor({ parameters = new AtmosphereParameters(), cache = true, generationBudgetMillisecondsPerFrame }: AtmosphereOptions = {}) {
     this.context = new AtmosphereContext(parameters)
-    if (generationBudgetMillisecondsPerFrame !== undefined) this.context.textures.budgetMillisecondsPerFrame = generationBudgetMillisecondsPerFrame
+    if (generationBudgetMillisecondsPerFrame !== undefined && generationBudgetMillisecondsPerFrame > 0) {
+      this.context.textures.budgetMillisecondsPerFrame = generationBudgetMillisecondsPerFrame
+    }
     this.light = new AtmosphereLight(this.context)
     this.cache = cache === false ? null : cache === true ? (sharedCache ??= new AtmosphereTextureCache()) : cache
   }

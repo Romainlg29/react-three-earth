@@ -56,13 +56,13 @@ class WebGLIdleWaiter implements GpuIdleWaiter {
     gl.flush()
     try {
       // Give up after a second, as if the GPU were idle: a lost context never signals.
-      // Polled task by task for the first milliseconds (batches are a few ms long), then every millisecond
-      // or so, not to spin a phone's CPU.
+      // Polled task by task for the first milliseconds (batches are a few ms long), then by timer, not to
+      // spin a phone's CPU (browsers clamp nested timers to 4 ms, which only overestimates long batches).
       const start = performance.now()
       while (performance.now() - start < 1000) {
         const status = gl.clientWaitSync(sync, 0, 0)
         if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED || status === gl.WAIT_FAILED) return
-        if (performance.now() - start < 8) await nextTask()
+        if (performance.now() - start < 12) await nextTask()
         else await new Promise(resolve => setTimeout(resolve, 1))
       }
     } finally {

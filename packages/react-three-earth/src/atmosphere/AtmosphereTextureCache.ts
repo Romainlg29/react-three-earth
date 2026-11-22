@@ -1,8 +1,9 @@
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
 
 /**
- * Part of every cache key. `AtmosphereTextures` also adds a hash of the precomputation's source code, so
- * editing the shaders invalidates cached textures by itself; bump this for changes that hash misses.
+ * Part of every cache key: bump it whenever the precomputation's output changes for the same parameters
+ * (AtmosphereModel.ts, precompute.ts, AtmosphereTextures.ts), so that cached textures from an older version
+ * are never used. A unit test fails when those files change, as a reminder.
  */
 export const ATMOSPHERE_PRECOMPUTE_VERSION = 1
 
@@ -30,8 +31,8 @@ const AGE_INDEX = 'storedAtMilliseconds'
  * The identity of a set of lookup textures: every parameter (sizes included), the scattering texture's
  * storage type and the precomputation version. Plain JSON, so it is stable across sessions.
  */
-export function createAtmosphereCacheKey(parameters: AtmosphereParameters, scatteringHalfFloat: boolean, implementation = ''): string {
-  return JSON.stringify({ version: ATMOSPHERE_PRECOMPUTE_VERSION, implementation, scatteringHalfFloat, parameters: sortKeys(parameters) })
+export function createAtmosphereCacheKey(parameters: AtmosphereParameters, scatteringHalfFloat: boolean): string {
+  return JSON.stringify({ version: ATMOSPHERE_PRECOMPUTE_VERSION, scatteringHalfFloat, parameters: sortKeys(parameters) })
 }
 
 /** A copy with object keys sorted at every level, so that key order never changes the JSON. */
@@ -107,12 +108,15 @@ export class AtmosphereTextureCache {
       store.put(entry)
       // Walks keys only, newest first, never loading the other sets' textures.
       const cursorRequest = store.index(AGE_INDEX).openKeyCursor(null, 'prev')
-      let kept = 0
+      // The new set always stays, even if a clock moved back makes it look older.
+      let kept = 1
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result
         if (cursor === null) return
-        if (kept < this.maximumEntries) kept++
-        else store.delete(cursor.primaryKey)
+        if (cursor.primaryKey !== key) {
+          if (kept < this.maximumEntries) kept++
+          else store.delete(cursor.primaryKey)
+        }
         cursor.continue()
       }
       await transactionDone(transaction)
@@ -171,7 +175,7 @@ export class AtmosphereTextureCache {
             resolve(null)
           }
         } catch {
-          forget()
+          // Thrown synchronously (IndexedDB forbidden here): it would throw again, so the miss is kept.
           resolve(null)
         }
       })

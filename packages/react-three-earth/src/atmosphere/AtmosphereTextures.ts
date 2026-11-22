@@ -23,9 +23,8 @@ import {
 import { float, Fn, int, ivec2, ivec3, mrt, screenCoordinate, struct, texture3D, texture3DLoad, textureLoad, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import { NodeMaterial, QuadMesh, type Node, type Renderer } from 'three/webgpu'
 
-import { AtmosphereModel, type AtmosphereTextureSet } from './AtmosphereModel.js'
-import * as precompute from './precompute.js'
-import { createAtmosphereCacheKey, hashString, type AtmosphereTextureCache, type AtmosphereTextureData } from './AtmosphereTextureCache.js'
+import type { AtmosphereModel, AtmosphereTextureSet } from './AtmosphereModel.js'
+import { createAtmosphereCacheKey, type AtmosphereTextureCache, type AtmosphereTextureData } from './AtmosphereTextureCache.js'
 import { GenerationPacer } from './GenerationPacer.js'
 import { createGpuIdleWaiter, nextTask, type GpuIdleWaiter } from './GpuIdleWaiter.js'
 import {
@@ -129,23 +128,6 @@ const PASS_COST = {
   multipleScattering: 153,
 } as const
 
-let implementationFingerprint: string | null = null
-
-/**
- * A hash of the code that decides what the lookup textures contain (the model, the pass bodies and the
- * pass sequence), so that cached textures from another version of it are never used.
- */
-function getImplementationFingerprint(): string {
-  implementationFingerprint ??= hashString(
-    [
-      String(AtmosphereModel),
-      ...Object.values(precompute).map(String),
-      String((AtmosphereTextures.prototype as unknown as { createUnits: unknown }).createUnits),
-    ].join('\n'),
-  )
-  return implementationFingerprint
-}
-
 export interface AtmosphereTexturesGenerateOptions {
   /** Loads the textures from this cache when it holds them, and stores them in it otherwise. */
   cache?: AtmosphereTextureCache | null
@@ -174,8 +156,8 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
   budgetMillisecondsPerFrame = 4
 
   /**
-   * Units (passes, or slices of 3D passes) per frame where the GPU's work cannot be timed (neither
-   * WebGPU nor WebGL 2 backend). Unused otherwise.
+   * Units (passes, or slices of 3D passes) per frame where the GPU's work cannot be timed (neither a
+   * WebGPU nor a WebGL 2 backend, or a GPU that stopped answering). Unused otherwise.
    */
   untimedUnitsPerFrame = 8
 
@@ -246,7 +228,7 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     const scatteringType = this.selectScatteringType(renderer)
     this.scatteringTarget.texture.type = scatteringType
     const cache = options.cache ?? null
-    const cacheKey = cache === null ? null : createAtmosphereCacheKey(this.model.parameters, scatteringType === HalfFloatType, getImplementationFingerprint())
+    const cacheKey = cache === null ? null : createAtmosphereCacheKey(this.model.parameters, scatteringType === HalfFloatType)
     const materials: NodeMaterial[] = []
     const createMaterial: MaterialFactory = (fragment, additive = false) => {
       const material = new NodeMaterial()
@@ -302,14 +284,17 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     // The waiter's own latency (a promise or a poll) is not GPU work: the fastest of a few waits with
     // nothing of ours queued (the app may slip a frame into one of them).
     let latencyMilliseconds = 0
-    if (waiter !== null && this.budgetMillisecondsPerFrame !== Infinity) {
-      await this.waitForGpu(waiter, signal)
+    // Becomes null (untimed batches from then on) if the GPU ever fails to answer a wait.
+    let timer = this.budgetMillisecondsPerFrame === Infinity ? null : waiter
+    if (timer !== null) {
+      let answered = await this.waitForGpu(timer, signal)
       latencyMilliseconds = Infinity
-      for (let sample = 0; sample < 3; sample++) {
+      for (let sample = 0; sample < 3 && answered; sample++) {
         const before = performance.now()
-        await this.waitForGpu(waiter, signal)
+        answered = await this.waitForGpu(timer, signal)
         latencyMilliseconds = Math.min(latencyMilliseconds, performance.now() - before)
       }
+      if (!answered) timer = null
     }
     // A material's first draw compiles its shader, which says nothing about the GPU cost of later draws.
     const compiled = new Set<NodeMaterial>()
@@ -319,7 +304,7 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
       await nextFrame()
       throwIfAborted(signal)
       frames++
-      if (waiter === null || this.budgetMillisecondsPerFrame === Infinity) {
+      if (timer === null) {
         const perFrame = this.budgetMillisecondsPerFrame === Infinity ? Infinity : Math.max(1, Math.floor(this.untimedUnitsPerFrame))
         const count = Math.min(units.length - next, perFrame)
         this.runUnits(renderer, units.slice(next, next + count))
@@ -329,19 +314,21 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
       // Let the app's own animation-frame callbacks submit this frame first, then wait for the GPU to
       // finish it: otherwise the app's frame would queue ahead of the batch and be timed as part of it.
       await nextTask()
-      await this.waitForGpu(waiter, signal)
-      const count = pacer.plan(weights, next)
+      if (!(await this.waitForGpu(timer, signal))) timer = null
+      const count = timer === null ? 1 : pacer.plan(weights, next)
       const batch = units.slice(next, next + count)
       const compiling = batch.some(unit => !compiled.has(unit.material))
       for (const unit of batch) compiled.add(unit.material)
       const before = performance.now()
       this.runUnits(renderer, batch)
-      await this.waitForGpu(waiter, signal)
-      if (!compiling) {
-        pacer.observe(
-          batch.reduce((sum, unit) => sum + unit.weight, 0),
-          performance.now() - before - latencyMilliseconds,
-        )
+      if (timer !== null) {
+        if (!(await this.waitForGpu(timer, signal))) timer = null
+        else if (!compiling) {
+          pacer.observe(
+            batch.reduce((sum, unit) => sum + unit.weight, 0),
+            performance.now() - before - latencyMilliseconds,
+          )
+        }
       }
       next += count
     }
@@ -350,14 +337,18 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
 
   /**
    * Waits for the GPU, giving up when `signal` aborts (a lost device may never answer) or after
-   * `maximumGpuWaitMilliseconds` (then carries on as if it had answered).
+   * `maximumGpuWaitMilliseconds`. Returns false if it gave up on time: the GPU cannot be timed.
    */
-  protected async waitForGpu(waiter: GpuIdleWaiter, signal?: AbortSignal): Promise<void> {
+  protected async waitForGpu(waiter: GpuIdleWaiter, signal?: AbortSignal): Promise<boolean> {
+    throwIfAborted(signal)
     let timeout: ReturnType<typeof setTimeout> | undefined
     let onAbort: (() => void) | undefined
+    let answered = false
     try {
       await Promise.race([
-        waiter.wait(),
+        waiter.wait().then(() => {
+          answered = true
+        }),
         new Promise<void>(resolve => (timeout = setTimeout(resolve, this.maximumGpuWaitMilliseconds))),
         new Promise<void>(resolve => {
           onAbort = resolve
@@ -369,6 +360,7 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
       if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
     }
     throwIfAborted(signal)
+    return answered
   }
 
   /** Draws the units without disturbing the app's renderer state. */
@@ -562,10 +554,15 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     ]
   }
 
-  /** Reads the lookup textures back from the GPU. They must be generated. */
+  /** Reads the lookup textures back from the GPU, RGBA, rows in WebGPU's order. They must be generated. */
   async readBack(renderer: Renderer): Promise<AtmosphereTextureData> {
-    const read = async (target: RenderTarget, slice = 0) =>
-      (await renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, 0, slice)) as Float32Array | Uint16Array
+    // The WebGL backend stores render targets upside down (its texture lookups flip them back), while
+    // data textures are not flipped: rows are put in WebGPU's order, which the cached data uses.
+    const flipRows = (renderer.backend as { isWebGLBackend?: boolean }).isWebGLBackend === true
+    const read = async (target: RenderTarget, slice = 0) => {
+      const data = (await renderer.readRenderTargetPixelsAsync(target, 0, 0, target.width, target.height, 0, slice)) as Float32Array | Uint16Array
+      return flipRows ? reverseRows(data, target.width * 4) : data
+    }
     const transmittance = await read(this.transmittanceTarget)
     const irradiance = await read(this.irradianceTarget)
     const target = this.scatteringTarget
@@ -609,6 +606,14 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     this.quad.geometry.dispose()
     ;(this.quad.material as NodeMaterial).dispose()
   }
+}
+
+/** A copy of row-major data with its rows in reverse order. */
+function reverseRows<Data extends Float32Array | Uint16Array>(data: Data, rowLength: number): Data {
+  const result = data.slice() as Data
+  const rows = data.length / rowLength
+  for (let row = 0; row < rows; row++) result.set(data.subarray(row * rowLength, (row + 1) * rowLength), (rows - 1 - row) * rowLength)
+  return result
 }
 
 /**

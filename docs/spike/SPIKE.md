@@ -8,30 +8,40 @@ Lookup-texture generation was the slowest part of startup and caused long frames
   written to two textures by a multiple-render-target pass, then copied texel for texel into the scattering
   texture. The generated textures are bit-identical to before on WebGPU and on the WebGL 2 fallback.
 - **Batches timed on the GPU.** Each animation frame runs a batch of passes (or slices of 3D passes) sized so
-  that it takes about `textures.budgetMillisecondsPerFrame` (4 ms) of GPU time. The cost is measured after
-  each batch (WebGPU `onSubmittedWorkDone`, a WebGL 2 fence), so the same code adapts to a desktop GPU and
-  a phone. A batch may grow at most twice as heavy as the last measured one.
-- **IndexedDB cache.** Generated textures are stored keyed by every parameter, the storage type and a
-  precompute version (`ATMOSPHERE_PRECOMPUTE_VERSION`), and later page loads copy them back instead of
-  generating. On by default (`<Atmosphere cache={false} />` opts out); two sets are kept, 8 MB each with
-  half-float scattering (16 MB with 32-bit). A read-back that cannot be right is never stored.
+  that it takes about `generationBudgetMillisecondsPerFrame` (default 4 ms) of GPU time. The cost is measured
+  after each batch (WebGPU `onSubmittedWorkDone`, a WebGL 2 fence), after the app has submitted its own
+  frame, so the same code adapts to a desktop GPU and a phone. Batches grow at most twice as heavy as the
+  last measured one, a shader's first compile is not counted, cheap copy passes run all slices at once, and
+  a GPU that stops answering falls back to a fixed number of passes per frame. `Infinity` generates
+  everything in one frame (a loading screen).
+- **IndexedDB cache.** Generated textures are stored keyed by every parameter, the storage type and
+  `ATMOSPHERE_PRECOMPUTE_VERSION` (a unit test fails when the generating code changes, as a reminder to bump
+  it). Later page loads copy them back instead of generating. On by default (`<Atmosphere cache={false} />`
+  opts out); two sets are kept, 8 MB each with half-float scattering (16 MB with 32-bit). A read-back that
+  cannot be right (a WebGL 2 driver that cannot read half floats leaves zeros) is never stored. The
+  playground's dev server never caches, so shader edits always show.
 
 `earth.inspect().atmosphere` now also reports `generationFrames` and `loadedFromCache`, and the playground
-shows them in the top-left corner. `?nocache` forces generation.
+shows them in the top-left corner. Playground switches: `?nocache`, `?atmosphereBudget=<ms>`.
 
 ### Results in SwiftShader (CPU rasteriser: compare the two columns, not the absolute numbers)
 
+Textures alone (`tests/atmosphere.mjs`), output bit-identical before and after on both backends, from
+generation and from the cache:
+
 | Run | Before | After |
 | --- | --- | --- |
-| WebGPU, total generation | 30.2 s | 16.6 s |
-| WebGPU, longest frame during generation | 2033 ms (p95 633 ms) | 16.8 ms (p95 16.7 ms) |
-| WebGL 2, total generation | 51.2 s | 53.1 s |
-| WebGL 2, longest frame during generation | 1400 ms | 467 ms (p95 16.8 ms) |
-| Second page load, WebGPU (cache hit) | 30 s | 0.42 s, 25 frames |
+| WebGPU, total generation | 30.2 s | 18.7 s |
+| WebGPU, longest frame during generation | 2033 ms (p95 633 ms) | 16.8 ms (p95 16.8 ms) |
+| WebGL 2, total generation | 51.2 s | 42.4 s |
+| WebGL 2, longest frame during generation | 1400 ms | 83 ms (p95 16.7 ms) |
+| Second page load (cache hit) | same as first | 0.20 s WebGPU, 0.15 s WebGL 2, about 10 frames |
 
-The remaining long WebGL 2 frames in SwiftShader are single slices (one slice is never split); on a GPU a
-density slice is a few milliseconds. If phones show long frames there, the next step is splitting slices
-into row bands.
+Inside the full map scene, SwiftShader frames take over a second each, so paced generation runs one pass per
+frame and takes minutes (237 frames); the browser checks pass `?atmosphereBudget=Infinity`. A pass is never
+split, so on a real device generation needs at least about 240 frames (4 s at 60 fps) the first time. If a
+phone shows long frames or a slow first start, the next steps are splitting density slices into row bands
+and a larger budget when the app has headroom.
 
 `node apps/playground/tests/atmosphere.mjs [webgl] [cache]` (with `pnpm dev` running, under xvfb) prints these
 numbers and fingerprints of the textures.
