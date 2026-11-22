@@ -1,4 +1,5 @@
 import type { MapStyleProcessor } from './worker/MapStyleProcessor.js'
+import type { MercatorRectangle } from './worker/rectangles.js'
 import type { AtlasUpdate, MapStyleProcessorOptions, MapStyleSummary, TileBucket, TileRequest, WorkerRequest, WorkerResponse } from './worker/types.js'
 
 /** Where a style's tiles are processed: a worker by default, the main thread as a fallback. */
@@ -6,6 +7,8 @@ export interface MapStyleBackend {
   init(options: MapStyleProcessorOptions): Promise<MapStyleSummary>
   /** Resolves after the bucket's glyph atlas changes were handed to `onAtlasUpdate`. */
   processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket>
+  /** Forgets cached raw tiles overlapping the rectangles (`null`: all); later `processTile` calls fetch again. */
+  invalidate(rectangles: MercatorRectangle[] | null): void
   dispose(): void
 }
 
@@ -70,6 +73,10 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
     })
   }
 
+  invalidate(rectangles: MercatorRectangle[] | null): void {
+    this.worker.postMessage({ type: 'invalidate', rectangles } satisfies WorkerRequest)
+  }
+
   dispose(): void {
     this.worker.terminate()
     const error = new DOMException('MapStyleSource: disposed', 'AbortError')
@@ -77,7 +84,7 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
     this.pending.clear()
   }
 
-  protected call<T>(message: WorkerRequest): Promise<T> {
+  protected call<T>(message: Extract<WorkerRequest, { id: number }>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this.pending.set(message.id, { resolve: resolve as (value: never) => void, reject })
       this.worker.postMessage(message)
@@ -116,6 +123,10 @@ export class InlineMapStyleBackend implements MapStyleBackend {
     const atlas = this.processor.takeAtlasUpdate()
     if (atlas !== null) this.onAtlasUpdate(atlas)
     return bucket
+  }
+
+  invalidate(rectangles: MercatorRectangle[] | null): void {
+    this.processor?.invalidate(rectangles)
   }
 
   dispose(): void {

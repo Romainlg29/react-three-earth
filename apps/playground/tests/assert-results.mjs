@@ -40,6 +40,16 @@ const expectations = {
     ['the button expands the credits', r.expanded.buttonVisible && r.expanded.textVisible && r.expanded.text.includes('OpenStreetMap')],
     ['a style\'s source attribution shows once it loads', r.vector.text === 'Synthetic test terrain | © Fixture map data' && r.vector.links[0]?.href === 'https://example.com/fixture-map'],
   ],
+  // Redrawn in place: the lakes change colour and never disappear while regions redraw.
+  'vector map style with fixtures, invalidate': r => [
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['invalidate reports pending recompositions', r.pendingAfterCall > 0],
+    ['lakes end pink', r.after.pinkShare > r.before.blueShare * 0.6 && r.after.blueShare < r.before.blueShare * 0.2],
+    ['no frame of missing texture (lakes stay drawn)', r.minimumLakeShareDuringRedraw > r.before.blueShare * 0.6],
+    // The bounds cover the lakes, not the whole view: far regions (the horizon, the globe) stay as they are.
+    ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
+    ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
+  ],
   'camera and events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     return [

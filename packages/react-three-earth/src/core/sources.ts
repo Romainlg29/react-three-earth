@@ -2,6 +2,7 @@ import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
 
 import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
+import type { GeographicBounds } from './camera.js'
 import { MapStyleOverlay } from '../vector/MapStyleOverlay.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
 
@@ -169,10 +170,14 @@ export interface MapStyleSourceOptions {
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.
+ *
+ * When tile data changes on the server, `invalidate(bounds)` redraws what it covers, with no flicker.
  */
 export class MapStyleSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
   readonly options: MapStyleSourceOptions
+  /** Overlays created for `Imagery` layers, live until disposed. */
+  protected readonly overlays = new Set<MapStyleOverlay>()
 
   constructor(options: MapStyleSourceOptions) {
     super(options.attribution)
@@ -184,11 +189,37 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
 
   createOverlay({ opacity }: { opacity: number }): MapStyleOverlay {
     const { url, style, attribution: _attribution, ...rest } = this.options
-    return new MapStyleOverlay({
+    const overlay = new MapStyleOverlay({
       ...rest,
       style: (url ?? style)!,
       opacity,
       onLoad: summary => this.setLoadedAttributions(summary.attributions),
     })
+    this.pruneDisposedOverlays()
+    this.overlays.add(overlay)
+    return overlay
+  }
+
+  /**
+   * Redraws what changed within `bounds` (no argument: everywhere) in every `Imagery` layer using this source:
+   * cached tiles there are fetched and processed again, and terrain textures that draw them (labels crossing
+   * in from neighbours included) are redrawn in place. Each texture keeps its old content until the new one is
+   * ready. Calls within a frame are coalesced.
+   * @example source.invalidate({ westDegrees: 138, southDegrees: 35, eastDegrees: 139, northDegrees: 36 })
+   */
+  invalidate(bounds?: GeographicBounds): void {
+    this.pruneDisposedOverlays()
+    for (const overlay of this.overlays) overlay.invalidate(bounds)
+  }
+
+  /** Regions waiting to be redrawn after `invalidate`, over every layer using this source. */
+  get recompositionsPending(): number {
+    let count = 0
+    for (const overlay of this.overlays) if (!overlay.isDisposed) count += overlay.recompositionsPending
+    return count
+  }
+
+  protected pruneDisposedOverlays(): void {
+    for (const overlay of this.overlays) if (overlay.isDisposed) this.overlays.delete(overlay)
   }
 }

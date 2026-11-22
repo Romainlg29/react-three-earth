@@ -3,6 +3,8 @@
  * the typed arrays are transferred, not copied.
  */
 
+import type { MercatorRectangle } from './rectangles.js'
+
 /** Vector tile coordinates are rescaled to this extent, whatever the source layer's own extent. */
 export const TILE_EXTENT = 4096
 
@@ -117,6 +119,8 @@ export type WorkerRequest =
   | { type: 'init'; id: number; options: MapStyleProcessorOptions }
   | { type: 'tile'; id: number; request: TileRequest }
   | { type: 'cancel'; id: number }
+  /** Forgets cached raw tiles overlapping the rectangles (`null`: all), so the next request fetches them again. */
+  | { type: 'invalidate'; rectangles: MercatorRectangle[] | null }
 
 export type WorkerResponse =
   | { type: 'result'; id: number; value: unknown }

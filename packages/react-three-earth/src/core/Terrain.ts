@@ -134,9 +134,21 @@ export class Terrain implements AttributionProvider {
     return this.overlays.compositor.pendingCount
   }
 
+  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles), or being redrawn. */
+  get imageryRecompositionsPending(): number {
+    let count = 0
+    for (const imagery of this.imagery) {
+      for (const overlay of imagery.overlays) {
+        const pending = (overlay as { recompositionsPending?: unknown }).recompositionsPending
+        if (typeof pending === 'number') count += pending
+      }
+    }
+    return count
+  }
+
   /**
    * True while the tileset's root or terrain tiles are queued, downloading or parsing, a loaded tile still waits for the next
-   * `update` to be shown, or imagery waits to be composed. `Earth` reads it for the `idle` event.
+   * `update` to be shown, or imagery waits to be composed or redrawn after `invalidate`. `Earth` reads it for the `idle` event.
    */
   get loading(): boolean {
     const { stats, rootLoadingState, isLoading } = this.tiles as unknown as {
@@ -147,7 +159,7 @@ export class Terrain implements AttributionProvider {
     }
     if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
     const { queued, downloading, parsing } = stats
-    return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0
+    return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0 || this.imageryRecompositionsPending > 0
   }
 
   /**

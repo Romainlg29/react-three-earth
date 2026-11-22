@@ -191,6 +191,75 @@ async function attribution() {
   })
 }
 
+const LAKE_COLOURS = `
+  // Lakes start blue (the style's colour) and turn pink once their tiles change and are redrawn.
+  let blue = 0, pink = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (b > r * 1.5 && b > g * 1.1 && b > 60) blue++
+    else if (r > g * 1.8 && b > g * 1.2 && r > 80) pink++
+  }
+  const n = px.length / 4
+  return { blueShare: +(blue / n).toFixed(4), pinkShare: +(pink / n).toFixed(4) }
+`
+
+/**
+ * `MapStyleSource.invalidate`: the fixture server recolours the lakes, the page invalidates their bounds, and
+ * the redrawn regions show the new colour. Screenshots taken while regions redraw must never lose the lakes
+ * (no frame of missing texture): every region keeps its old texture until the new one is drawn over it.
+ */
+async function vectorInvalidate() {
+  const setWaterColor = value => fetch(`${BASE}/fixtures/vector-live/water-color?value=${encodeURIComponent(value)}`)
+  await setWaterColor('')
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&map=vector&test=invalidate')
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 200 })
+  await settled()
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const beforePng = await page.screenshot()
+  writeFileSync(new URL('map-vector-invalidate-before.png', OUT), beforePng)
+  const before = await analyse(page, beforePng, LAKE_COLOURS)
+  const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+
+  await setWaterColor('#e0457b')
+  // In the same task as the call, so no frame runs between: regions marked, and regions held in total.
+  const { pendingAfterCall, regionsHeld } = await page.evaluate(() => {
+    window.mapStyleSource.invalidate({ westDegrees: 138.4, southDegrees: 35.3, eastDegrees: 139.1, northDegrees: 35.65 })
+    const overlays = [...window.mapStyleSource.overlays] // protected, read for the check only
+    return { pendingAfterCall: window.earth.inspect().terrain.imageryRecompositionsPending, regionsHeld: overlays.reduce((sum, overlay) => sum + overlay.regions.size, 0) }
+  })
+  const during = []
+  const startMilliseconds = Date.now()
+  while (Date.now() - startMilliseconds < 120_000) {
+    const pending = await page.evaluate(() => window.earth.inspect().terrain.imageryRecompositionsPending)
+    const shares = await analyse(page, await page.screenshot(), LAKE_COLOURS)
+    during.push({ ...shares, pending })
+    if (pending === 0) break
+  }
+  await settled()
+  await page.waitForTimeout(1000)
+  const afterPng = await page.screenshot()
+  writeFileSync(new URL('map-vector-invalidate-after.png', OUT), afterPng)
+  const after = await analyse(page, afterPng, LAKE_COLOURS)
+  const composedAfter = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+  await page.close()
+  await setWaterColor('')
+  const lakeShares = during.map(frame => frame.blueShare + frame.pinkShare)
+  results.push({
+    check: 'vector map style with fixtures, invalidate',
+    before,
+    after,
+    pendingAfterCall,
+    regionsHeld,
+    framesDuringRedraw: during.length,
+    minimumLakeShareDuringRedraw: Math.min(...lakeShares),
+    regionsRedrawn: composedAfter - composedBefore,
+    errors,
+  })
+}
+
 /** earth.camera on fixture terrain: unproject / project / queryTerrainElevation, events, and getView through the morph. */
 async function cameraAndEvents() {
   // Over the fixture's highest hill (3.9 km), so terrain and ellipsoid differ.
@@ -319,6 +388,7 @@ try {
     await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
   }
   if (!only || only === 'attribution') await attribution()
+  if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
 } finally {

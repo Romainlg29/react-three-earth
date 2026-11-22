@@ -14,6 +14,7 @@ import {
   type TextJustify,
   type TextSection,
 } from './labels.js'
+import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
 import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
 import { compileStyleLayers, toRgba, type CompiledStyleLayer, type StyleFeature, type StyleLayerSpecification } from './styleLayers.js'
 import { createVectorTileFetcher, resolveTemplate, type VectorSourceSpecification, type VectorTileFetcher } from './tileSources.js'
@@ -47,6 +48,9 @@ interface SymbolCandidate {
 }
 
 interface RawTileEntry {
+  x: number
+  y: number
+  z: number
   promise: Promise<VectorTile | null>
   waiters: number
   controller: AbortController
@@ -63,6 +67,13 @@ export class MapStyleProcessor {
   protected readonly fetchers: Map<string, VectorTileFetcher>
   protected readonly glyphs: GlyphProvider
   protected readonly rawTiles = new Map<string, RawTileEntry>()
+  /** Tiles fetched this session, oldest first (at most 4096), so `invalidate` knows which the browser may cache. */
+  protected readonly fetchedTiles = new Map<string, { x: number; y: number; z: number }>()
+  /**
+   * Fetched tiles in invalidated areas: their next fetch uses `cache: 'no-cache'`, once, so the browser's HTTP
+   * cache cannot hand back the tile from before the change.
+   */
+  protected readonly revalidatedTiles = new Set<string>()
 
   protected constructor(layers: CompiledStyleLayer[], fetchers: Map<string, VectorTileFetcher>, glyphs: GlyphProvider, skipped: string[], attributions: string[]) {
     this.layers = layers
@@ -365,6 +376,18 @@ export class MapStyleProcessor {
     return text.build()
   }
 
+  /**
+   * Forgets raw tiles overlapping the rectangles (`null`: every tile), so the next request fetches them again.
+   * Requests already waiting on a forgotten tile still get it.
+   */
+  invalidate(rectangles: readonly MercatorRectangle[] | null): void {
+    for (const [key, tile] of this.fetchedTiles) if (tileOverlaps(tile.x, tile.y, tile.z, rectangles)) this.revalidatedTiles.add(key)
+    for (const fetcher of this.fetchers.values()) fetcher.invalidate?.()
+    for (const [key, entry] of this.rawTiles) {
+      if (tileOverlaps(entry.x, entry.y, entry.z, rectangles)) this.rawTiles.delete(key)
+    }
+  }
+
   /** Fetches and decodes a tile once, shared by concurrent requests; aborted only when every waiter is. */
   protected getRawTile(sourceId: string, x: number, y: number, z: number, signal?: AbortSignal): Promise<VectorTile | null> {
     const fetcher = this.fetchers.get(sourceId)
@@ -373,15 +396,23 @@ export class MapStyleProcessor {
     let entry = this.rawTiles.get(key)
     if (entry === undefined) {
       const controller = new AbortController()
+      const revalidate = this.revalidatedTiles.delete(key)
       const created: RawTileEntry = {
+        x,
+        y,
+        z,
         controller,
         waiters: 0,
-        promise: fetcher.fetchTile(x, y, z, controller.signal).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
+        promise: fetcher.fetchTile(x, y, z, controller.signal, revalidate).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
       }
       created.promise.catch(() => {
+        if (revalidate) this.revalidatedTiles.add(key) // an aborted or failed refetch must not use up the revalidation
         if (this.rawTiles.get(key) === created) this.rawTiles.delete(key) // retry next time
       })
       this.rawTiles.set(key, created)
+      this.fetchedTiles.delete(key)
+      this.fetchedTiles.set(key, { x, y, z })
+      if (this.fetchedTiles.size > 4096) this.fetchedTiles.delete(this.fetchedTiles.keys().next().value!)
       entry = created
       if (this.rawTiles.size > RAW_TILE_CACHE_SIZE) {
         for (const [oldKey, old] of this.rawTiles) {

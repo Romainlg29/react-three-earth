@@ -6,8 +6,13 @@ export interface VectorTileFetcher {
   attribution?: string
   readonly minimumZoom: number
   readonly maximumZoom: number
-  /** Null for a tile that does not exist (404, or empty). */
-  fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null>
+  /**
+   * Null for a tile that does not exist (404, or empty). `revalidate` bypasses the browser's HTTP cache
+   * freshness (`cache: 'no-cache'`): the server is asked again, and answers 304 if the tile did not change.
+   */
+  fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate?: boolean): Promise<Uint8Array | null>
+  /** Forgets what the fetcher caches itself (a PMTiles archive's header and directories). */
+  invalidate?(): void
 }
 
 /** The parts of a style's vector source read here. */
@@ -93,8 +98,9 @@ export class XYZFetcher implements VectorTileFetcher {
     return template.replace(/{z}/g, String(z)).replace(/{x}/g, String(x)).replace(/{y}/g, String(row))
   }
 
-  async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {
-    const response = await this.context.fetch(this.getUrl(x, y, z), { headers: this.context.requestHeaders, signal })
+  async fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate = false): Promise<Uint8Array | null> {
+    const init: RequestInit = { headers: this.context.requestHeaders, signal, ...(revalidate ? { cache: 'no-cache' as const } : {}) }
+    const response = await this.context.fetch(this.getUrl(x, y, z), init)
     if (response.status === 404 || response.status === 204) return null
     if (!response.ok) throw new Error(`MapStyleSource: tile ${z}/${x}/${y} answered ${response.status}.`)
     const bytes = new Uint8Array(await response.arrayBuffer())
@@ -109,30 +115,42 @@ export async function decompressIfGzipped(bytes: Uint8Array): Promise<Uint8Array
   return new Uint8Array(await new Response(stream).arrayBuffer())
 }
 
+/** What a `PMTilesFetcher` shares with its archive's byte reader. */
+interface PMTilesFetcherState {
+  /** Set by `invalidate`: range requests skip the HTTP cache's freshness from then on. */
+  revalidate: boolean
+  /** The first read's bytes (offset 0), which answer later ranges inside them; cleared by `invalidate`. */
+  firstBytes: { data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string } | undefined
+}
+
 /** A PMTiles v3 archive read with HTTP range requests. */
 export class PMTilesFetcher implements VectorTileFetcher {
   attribution?: string
 
   protected constructor(
-    protected readonly archive: PMTiles,
+    protected archive: PMTiles,
     readonly minimumZoom: number,
     readonly maximumZoom: number,
+    protected readonly options: PMTilesFetcherState,
   ) {}
 
   static async create(url: string, context: FetcherContext, readAttribution = false): Promise<PMTilesFetcher> {
+    // Once invalidated, the archive may have been replaced: range requests skip the HTTP cache's freshness.
     // pmtiles caches the header and directories but not the JSON metadata. The first read (offset 0, 16 KiB) almost
-    // always holds the metadata too, so later ranges inside it are answered from these bytes instead of the network.
-    let firstBytes: { offset: 0; data: ArrayBuffer; etag?: string; cacheControl?: string; expires?: string } | undefined
+    // always holds the metadata too, so later ranges inside it are answered from these bytes (`firstBytes`) instead of
+    // the network. `invalidate` forgets them.
+    const options: PMTilesFetcherState = { revalidate: false, firstBytes: undefined }
     const archive = new PMTiles({
       getKey: () => url,
       // No If-Match: it is not a CORS-safelisted header, so it would add a preflight to every request.
       getBytes: async (offset: number, length: number, signal?: AbortSignal) => {
+        const firstBytes = options.firstBytes
         if (firstBytes !== undefined && offset + length <= firstBytes.data.byteLength) {
           const { data, etag, cacheControl, expires } = firstBytes
           return { data: data.slice(offset, offset + length), etag, cacheControl, expires }
         }
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
-        const response = await context.fetch(url, { headers, signal })
+        const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) })
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
           throw new Error(`MapStyleSource: PMTiles ${url} answered ${response.status}; the server must support range requests.`)
         }
@@ -143,7 +161,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
           cacheControl: response.headers.get('Cache-Control') ?? undefined,
           expires: response.headers.get('Expires') ?? undefined,
         }
-        if (offset === 0 && firstBytes === undefined) firstBytes = { offset: 0, ...result, data: data.slice(0) }
+        if (offset === 0 && options.firstBytes === undefined) options.firstBytes = { ...result, data: data.slice(0) }
         return result
       },
     })
@@ -153,10 +171,20 @@ export class PMTilesFetcher implements VectorTileFetcher {
     const metadata = readAttribution ? archive.getMetadata().catch(() => null) : Promise.resolve(null)
     const [header, loaded] = await Promise.all([archive.getHeader(), metadata])
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
-    const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom)
+    const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
     const attribution = (loaded as { attribution?: unknown } | null)?.attribution
     if (typeof attribution === 'string') fetcher.attribution = attribution
     return fetcher
+  }
+
+  /**
+   * The archive file may have been replaced: a fresh reader (and cache) reads its header and every directory
+   * again. From then on, range requests revalidate with the server (`cache: 'no-cache'`).
+   */
+  invalidate(): void {
+    this.options.revalidate = true
+    this.options.firstBytes = undefined
+    this.archive = new PMTiles(this.archive.source)
   }
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {
