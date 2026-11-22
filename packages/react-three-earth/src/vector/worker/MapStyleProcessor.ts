@@ -14,6 +14,7 @@ import {
   type TextJustify,
   type TextSection,
 } from './labels.js'
+import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
 import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
 import { compileStyleLayers, toRgba, type CompiledStyleLayer, type StyleFeature, type StyleLayerSpecification } from './styleLayers.js'
 import { createVectorTileFetcher, resolveTemplate, type VectorSourceSpecification, type VectorTileFetcher } from './tileSources.js'
@@ -47,6 +48,9 @@ interface SymbolCandidate {
 }
 
 interface RawTileEntry {
+  x: number
+  y: number
+  z: number
   promise: Promise<VectorTile | null>
   waiters: number
   controller: AbortController
@@ -356,6 +360,16 @@ export class MapStyleProcessor {
     return text.build()
   }
 
+  /**
+   * Forgets raw tiles overlapping the rectangles (`null`: every tile), so the next request fetches them again.
+   * Requests already waiting on a forgotten tile still get it.
+   */
+  invalidate(rectangles: readonly MercatorRectangle[] | null): void {
+    for (const [key, entry] of this.rawTiles) {
+      if (tileOverlaps(entry.x, entry.y, entry.z, rectangles)) this.rawTiles.delete(key)
+    }
+  }
+
   /** Fetches and decodes a tile once, shared by concurrent requests; aborted only when every waiter is. */
   protected getRawTile(sourceId: string, x: number, y: number, z: number, signal?: AbortSignal): Promise<VectorTile | null> {
     const fetcher = this.fetchers.get(sourceId)
@@ -365,6 +379,9 @@ export class MapStyleProcessor {
     if (entry === undefined) {
       const controller = new AbortController()
       const created: RawTileEntry = {
+        x,
+        y,
+        z,
         controller,
         waiters: 0,
         promise: fetcher.fetchTile(x, y, z, controller.signal).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),

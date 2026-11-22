@@ -100,6 +100,43 @@ has a fixed size on the ground.
 
 ![vector map](map-vector-overview.png) ![close-up](map-vector-close.png) ![with atmosphere](map-vector-atmosphere.png)
 
+### Redrawing changed regions: `invalidate(bounds)` (F1)
+
+`MapStyleSource.invalidate(bounds?)` redraws what changed on the tile server, with no flicker and no hole. It is
+the foundation GeoJSON `setData`, style edits, feature-state and runtime images will build on.
+
+- Regions are redrawn **in place**. `drawRegion` already renders into the shared multisampled scratch target and
+  resolves into the region's own target, so a redraw enqueues a new job into the same `RenderTarget`: the terrain
+  material keeps sampling the old content until one copy pass overwrites it. No texture swap, no 3DTilesRenderer
+  private API.
+- The worker forgets raw tiles overlapping the bounds (a new `invalidate` message; messages are ordered, so later
+  tile requests fetch again). Processed buckets in the bounds are `discard`ed from the `RefCountedCache`: the next
+  lock loads them again, while regions still drawing with the old bucket hold it through a **lease** (`acquire`),
+  so a release can never hit the new entry. Buckets outside the bounds stay cached: only changed tiles are refetched.
+- **Which regions redraw** is exact rather than a widened box: a region redraws when any tile it draws overlaps the
+  bounds, including the label ring (neighbour tiles whose labels reach in). This replaces the brief's "widen the
+  bounds by the label reach" with the same test the region uses to pick its tiles, so it cannot drift from it.
+- Bounds crossing the antimeridian (west > east) become two rectangles in normalised Web Mercator; 360° or more is
+  everything; a point or line is widened by 1e-12 so it touches the tiles it lies on, while tiles that only share
+  an edge with real bounds are left out.
+- A region invalidated **while loading** finishes and shows what it drew, then redraws once (a stale flag per load
+  in flight rather than a generation counter, so nothing per key outlives the load). A region invalidated during its
+  own redraw redraws once more after. A region released mid-redraw aborts the redraw before its target is freed.
+- **Scheduling**: `ImageryCompositor` has a third queue, `recomposition`, between `waited` (first textures of
+  visible tiles) and `preload`, under the same per-frame budget. Invalidations mark regions synchronously and start
+  their redraws from `runBeforeNextRender`, a once-per-frame task, so calls within a frame coalesce into one redraw
+  per region.
+- `earth.inspect().terrain.imageryRecompositionsPending` counts regions waiting or redrawing.
+- Raster overlays (`XYZImageryOverlay`) are out of scope: their exact-tile fast path hands the source texture to
+  terrain materials, so a redraw would need to rebind materials through upstream private state (W7 / W14 if needed).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | 11 new: only overlapping regions (label ring included) redraw, antimeridian, invalidation during a load and during a redraw end fresh, released regions stop redrawing, coalescing, leases, queue order, worker raw-tile cache |
+| Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: 90 regions report pending, then redraw; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
+
+![before](map-vector-invalidate-before.png) ![after](map-vector-invalidate-after.png)
+
 ## Atmosphere and @aeronautic effects
 
 @aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one

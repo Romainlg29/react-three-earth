@@ -22,6 +22,17 @@ export interface GeographicPosition {
   heightMeters?: number
 }
 
+/**
+ * A longitude-latitude box. `westDegrees` greater than `eastDegrees` crosses the antimeridian
+ * (170 to -170 spans 20 degrees across it).
+ */
+export interface GeographicBounds {
+  westDegrees: number
+  southDegrees: number
+  eastDegrees: number
+  northDegrees: number
+}
+
 const target = new Vector3()
 const east = new Vector3()
 const north = new Vector3()

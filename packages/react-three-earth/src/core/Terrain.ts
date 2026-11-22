@@ -109,6 +109,18 @@ export class Terrain {
     return this.overlays.compositor.pendingCount
   }
 
+  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles), or being redrawn. */
+  get imageryRecompositionsPending(): number {
+    let count = 0
+    for (const imagery of this.imagery) {
+      for (const overlay of imagery.overlays) {
+        const pending = (overlay as { recompositionsPending?: unknown }).recompositionsPending
+        if (typeof pending === 'number') count += pending
+      }
+    }
+    return count
+  }
+
   /**
    * Calls `listener` whenever the terrain needs another frame: tiles finished loading, or imagery is still
    * waiting to be composed. Hosts that render on demand (R3F `frameloop="demand"`) forward it to their

@@ -173,7 +173,7 @@ export function composeRegionsOnGpu(
     signal?.addEventListener('abort', () => target.dispose(), { once: true })
     queuedTargets.set(key, target)
     try {
-      return await compositor.enqueue(target, getCompositeDraws(range, level, tiledImageSource), signal, waitedKeys.has(key))
+      return await compositor.enqueue(target, getCompositeDraws(range, level, tiledImageSource), signal, waitedKeys.has(key) ? 'waited' : 'preload')
     } catch (error) {
       target.dispose() // the cache gets no item; safe to call twice
       throw error

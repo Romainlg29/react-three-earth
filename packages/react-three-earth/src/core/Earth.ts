@@ -32,6 +32,8 @@ export interface EarthInspection {
     imageryMainThreadMilliseconds: number
     /** Imagery compositions waiting for a later frame's budget. */
     imageryCompositionsPending: number
+    /** Imagery textures waiting to be redrawn after `MapStyleSource.invalidate`, or being redrawn. */
+    imageryRecompositionsPending: number
     /** Terrain-tile imagery textures composed since the terrain was created. */
     imageryTilesCompositedTotal: number
     /** Main-thread milliseconds spent on imagery since the terrain was created. */
@@ -60,6 +62,7 @@ function inspectImagery(terrain: Terrain) {
     imageryTilesComposited: lastFrame.tilesComposited,
     imageryMainThreadMilliseconds: lastFrame.mainThreadMilliseconds,
     imageryCompositionsPending: terrain.imageryCompositionsPending,
+    imageryRecompositionsPending: terrain.imageryRecompositionsPending,
     imageryTilesCompositedTotal: total.tilesComposited,
     imageryMainThreadMillisecondsTotal: total.mainThreadMilliseconds,
   }

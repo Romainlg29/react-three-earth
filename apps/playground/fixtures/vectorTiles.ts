@@ -42,8 +42,8 @@ const inTile = (points: Array<[number, number]>) => {
   return Math.max(...xs) > -margin && Math.min(...xs) < 4096 + margin && Math.max(...ys) > -margin && Math.min(...ys) < 4096 + margin
 }
 
-/** One vector tile of the synthetic data: layers `water`, `roads` and `places`. */
-export function vectorTile(z: number, x: number, y: number): Uint8Array {
+/** One vector tile of the synthetic data: layers `water`, `roads` and `places`. `waterColor` tags the lakes. */
+export function vectorTile(z: number, x: number, y: number, waterColor?: string): Uint8Array {
   const water: EncodedFeature[] = []
   for (const lake of LAKES) {
     const ring: Array<[number, number]> = []
@@ -51,7 +51,7 @@ export function vectorTile(z: number, x: number, y: number): Uint8Array {
       const angle = (-step / 48) * Math.PI * 2 // clockwise once y points down
       ring.push(project(lake.center[0] + Math.cos(angle) * lake.radius * 1.4, lake.center[1] + Math.sin(angle) * lake.radius, z, x, y))
     }
-    if (inTile(ring)) water.push({ type: 'Polygon', geometry: [ring], properties: { name: lake.name } })
+    if (inTile(ring)) water.push({ type: 'Polygon', geometry: [ring], properties: { name: lake.name, ...(waterColor === undefined ? {} : { color: waterColor }) } })
   }
   const roadFeatures: EncodedFeature[] = []
   if (z >= 8) {
@@ -72,14 +72,17 @@ export function vectorTile(z: number, x: number, y: number): Uint8Array {
   ])
 }
 
-/** A MapLibre style over the synthetic tiles. No `glyphs`: labels use the local font. */
-export function fixtureStyle(): object {
+/**
+ * A MapLibre style over the synthetic tiles. No `glyphs`: labels use the local font. `live` reads the tiles
+ * whose lake colour the invalidate check changes (`/fixtures/vector-live/`), and colours lakes from their data.
+ */
+export function fixtureStyle({ live = false }: { live?: boolean } = {}): object {
   return {
     version: 8,
-    sources: { fixture: { type: 'vector', tiles: ['/fixtures/vector/{z}/{x}/{y}.pbf'], maxzoom: 14 } },
+    sources: { fixture: { type: 'vector', tiles: [live ? '/fixtures/vector-live/{z}/{x}/{y}.pbf' : '/fixtures/vector/{z}/{x}/{y}.pbf'], maxzoom: 14 } },
     layers: [
       { id: 'background', type: 'background', paint: { 'background-color': '#efe9dc' } },
-      { id: 'water', type: 'fill', source: 'fixture', 'source-layer': 'water', paint: { 'fill-color': '#5fa8e8' } },
+      { id: 'water', type: 'fill', source: 'fixture', 'source-layer': 'water', paint: { 'fill-color': ['to-color', ['get', 'color'], '#5fa8e8'] } },
       {
         id: 'road-casing',
         type: 'line',

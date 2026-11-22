@@ -50,6 +50,7 @@ export function report(earth: Earth) {
 | `memoryUsedBytes`, `memoryBudgetBytes` | tile cache use against `memoryBudgetBytes` |
 | `imageryTilesComposited`, `imageryMainThreadMilliseconds` | imagery GPU composition over the last frame |
 | `imageryCompositionsPending` | compositions waiting for a later frame's budget |
+| `imageryRecompositionsPending` | textures still to redraw after `MapStyleSource.invalidate` (see `map-styles`) |
 | `imageryLayers` | `<Imagery>` layers with at least one source |
 | `atmosphere` | null without `<Atmosphere>`; `ready` turns true once lookup textures exist |
 

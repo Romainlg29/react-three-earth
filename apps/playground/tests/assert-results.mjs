@@ -30,6 +30,14 @@ const expectations = {
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
     ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
   ],
+  // Redrawn in place: the lakes change colour and never disappear while regions redraw.
+  'vector map style with fixtures, invalidate': r => [
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['invalidate reports pending recompositions', r.pendingAfterCall > 0],
+    ['lakes end pink', r.after.pinkShare > r.before.blueShare * 0.6 && r.after.blueShare < r.before.blueShare * 0.2],
+    ['no frame of missing texture (lakes stay drawn)', r.minimumLakeShareDuringRedraw > r.before.blueShare * 0.6],
+    ['only regions in the bounds redrawn', r.regionsRedrawn > 0 && r.regionsRedrawn < 200],
+  ],
 }
 
 let failures = 0

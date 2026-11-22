@@ -6,6 +6,15 @@ interface Entry<Value> {
   value: Value | undefined
   resolved: boolean
   bytes: number
+  /** Taken out of the cache by `discard` while locked: freed by its last lease, never retained. */
+  discarded: boolean
+}
+
+/** A lock on one cache entry, released through the lease itself, so it survives a `discard` of its key. */
+export interface Lease<Value> {
+  readonly promise: Promise<Value>
+  /** Ends the lock. Calling it again does nothing. */
+  release(): void
 }
 
 export interface RefCountedCacheOptions<Value> {
@@ -22,6 +31,9 @@ export interface RefCountedCacheOptions<Value> {
 /**
  * A cache of values locked by key: the first `lock` loads, the last `release` frees. A released value can
  * be kept for reuse within a byte budget; a value still loading when its last lock goes is aborted.
+ *
+ * `discard` takes a key out so the next lock loads it again (its content changed). Holders of the old value
+ * keep it until they let go, so they must hold it through `acquire` leases, not `lock` / `release` by key.
  */
 export class RefCountedCache<Value> {
   protected readonly entries = new Map<string, Entry<Value>>()
@@ -39,15 +51,54 @@ export class RefCountedCache<Value> {
     return this.entries.size
   }
 
+  /** Keys loaded or loading, locked or kept for reuse. */
+  keys(): IterableIterator<string> {
+    return this.entries.keys()
+  }
+
   lock(key: string): Promise<Value> {
+    return this.lockEntry(key).promise
+  }
+
+  /** Locks a key like `lock`, returning a lease that releases this very entry, even after a `discard`. */
+  acquire(key: string): Lease<Value> {
+    const entry = this.lockEntry(key)
+    let released = false
+    return {
+      promise: entry.promise,
+      release: () => {
+        if (released) return
+        released = true
+        this.releaseEntry(key, entry)
+      },
+    }
+  }
+
+  /**
+   * Takes a key out of the cache: the next lock loads it again. An unlocked value is freed now; a locked one
+   * (or one still loading) stays with its leases and is freed by the last one.
+   */
+  discard(key: string): void {
+    const entry = this.entries.get(key)
+    if (entry === undefined) return
+    if (entry.count === 0) {
+      this.revive(key, entry)
+      this.drop(key, entry)
+      return
+    }
+    this.entries.delete(key)
+    entry.discarded = true
+  }
+
+  protected lockEntry(key: string): Entry<Value> {
     let entry = this.entries.get(key)
     if (entry !== undefined) {
       if (entry.count === 0) this.revive(key, entry)
       entry.count++
-      return entry.promise
+      return entry
     }
     const controller = new AbortController()
-    const created: Entry<Value> = { count: 1, controller, promise: undefined as never, value: undefined, resolved: false, bytes: 0 }
+    const created: Entry<Value> = { count: 1, controller, promise: undefined as never, value: undefined, resolved: false, bytes: 0, discarded: false }
     created.promise = this.options.load(key, controller.signal).then(value => {
       if (controller.signal.aborted) {
         this.options.dispose(value, key)
@@ -61,8 +112,7 @@ export class RefCountedCache<Value> {
     // A failed load stays (as upstream DataCache does) until its last lock goes, then the next lock retries.
     created.promise.catch(() => {})
     this.entries.set(key, created)
-    entry = created
-    return entry.promise
+    return created
   }
 
   /** The pending or loaded value of a locked key, without taking a lock. */
@@ -79,10 +129,14 @@ export class RefCountedCache<Value> {
 
   release(key: string): void {
     const entry = this.entries.get(key)
-    if (entry === undefined || entry.count === 0) return
+    if (entry !== undefined) this.releaseEntry(key, entry)
+  }
+
+  protected releaseEntry(key: string, entry: Entry<Value>): void {
+    if (entry.count === 0) return
     entry.count--
     if (entry.count > 0) return
-    if (entry.resolved && this.options.retainedBytes > 0) {
+    if (entry.resolved && !entry.discarded && this.options.retainedBytes > 0) {
       this.unused.set(key, entry)
       this.unusedBytes += entry.bytes
       this.trim()

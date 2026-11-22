@@ -25,6 +25,11 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
     )
     return
   }
+  if (data.type === 'invalidate') {
+    // Messages arrive in order: tile requests sent after this one fetch again.
+    processor?.then(created => created.invalidate(data.rectangles)).catch(() => {})
+    return
+  }
   if (data.type === 'cancel') {
     controllers.get(data.id)?.abort(new DOMException('cancelled', 'AbortError'))
     controllers.delete(data.id)
