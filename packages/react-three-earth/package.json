@@ -39,13 +39,19 @@
     "vitest": "^5.1.1"
   },
   "dependencies": {
-    "3d-tiles-renderer": "0.5.4"
+    "3d-tiles-renderer": "0.5.4",
+    "@mapbox/tiny-sdf": "^2.3.0",
+    "@mapbox/vector-tile": "^2.0.5",
+    "@maplibre/maplibre-gl-style-spec": "^26.9.0",
+    "earcut": "^3.2.4",
+    "pbf": "^4.0.2",
+    "pmtiles": "^4.5.0"
   },
   "peerDependencies": {
-    "three": ">=0.187.0 <0.188.0",
-    "react": ">=19.0 <19.4",
     "@react-three/fiber": "^10.0.0-alpha.6",
-    "@react-three/tsl": "^10.0.0-alpha.6"
+    "@react-three/tsl": "^10.0.0-alpha.6",
+    "react": ">=19.0 <19.4",
+    "three": ">=0.187.0 <0.188.0"
   },
   "peerDependenciesMeta": {
     "react": {

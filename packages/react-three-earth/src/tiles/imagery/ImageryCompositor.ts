@@ -47,10 +47,17 @@ export interface CompositeDraw {
   maximumY: number
 }
 
-/** A queued composition. */
+/**
+ * Draws a composition into its target with any scene. Called inside `ImageryCompositor.render`, with the
+ * renderer's state saved (and restored after), its clear colour transparent black and its MRT off.
+ */
+export type CompositionRenderer = (renderer: WebGPURenderer, target: RenderTarget) => void
+
+/** A queued composition: source tile quads, or a custom render. */
 interface CompositionJob {
   target: RenderTarget
   draws: readonly CompositeDraw[]
+  render: CompositionRenderer | null
   resolve: (texture: Texture) => void
   reject: (reason: unknown) => void
   signal: AbortSignal | undefined
@@ -132,12 +139,43 @@ export class ImageryCompositor {
         reject(signal.reason)
         return
       }
-      const job: CompositionJob = { target, draws, resolve, reject, signal, onAbort: () => this.cancel(job) }
+      const job: CompositionJob = { target, draws, render: null, resolve, reject, signal, onAbort: () => this.cancel(job) }
       signal?.addEventListener('abort', job.onAbort, { once: true })
       for (const draw of draws) this.retainTexture(draw.texture)
       ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
       this.onQueued?.()
     })
+  }
+
+  /**
+   * Queues a custom composition (vector tiles drawn with their own scene, for example), under the same
+   * per-frame budget and priorities as source tile compositions. Resolves with `target.texture` once drawn.
+   */
+  enqueueRender(target: RenderTarget, render: CompositionRenderer, signal?: AbortSignal, waited = false): Promise<Texture> {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(signal.reason)
+        return
+      }
+      const job: CompositionJob = { target, draws: [], render, resolve, reject, signal, onAbort: () => this.cancel(job) }
+      signal?.addEventListener('abort', job.onAbort, { once: true })
+      ;(waited ? this.waitedQueue : this.preloadQueue).push(job)
+      this.onQueued?.()
+    })
+  }
+
+  /**
+   * Copies a texture (v = 0 at the top, like render targets and flipped ImageBitmaps) over all of `target`,
+   * with no blending. For custom compositions that resolve a multisampled scratch target into their own.
+   */
+  copyTexture(renderer: WebGPURenderer, texture: Texture, target: RenderTarget): void {
+    try {
+      this.prepareMeshes([{ texture, minimumX: 0, minimumY: 0, maximumX: 1, maximumY: 1 }])
+      renderer.setRenderTarget(target)
+      renderer.render(this.scene, this.camera)
+    } finally {
+      for (const mesh of this.meshes) mesh.userData.sourceTexture = null
+    }
   }
 
   /** Moves the composition into `target` ahead of preloads, if it is still queued. */
@@ -199,9 +237,12 @@ export class ImageryCompositor {
 
   protected drawJob(renderer: WebGPURenderer, job: CompositionJob): void {
     try {
-      this.prepareMeshes(job.draws)
-      renderer.setRenderTarget(job.target)
-      renderer.render(this.scene, this.camera)
+      if (job.render !== null) job.render(renderer, job.target)
+      else {
+        this.prepareMeshes(job.draws)
+        renderer.setRenderTarget(job.target)
+        renderer.render(this.scene, this.camera)
+      }
       job.resolve(job.target.texture)
     } catch (error) {
       job.reject(error) // the tile reports a load error instead of waiting forever
