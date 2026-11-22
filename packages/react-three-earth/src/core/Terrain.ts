@@ -8,6 +8,7 @@ import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/Ti
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { ViewMorph } from '../view/ViewMorph.js'
+import type { AttributionProvider } from './attribution.js'
 import type { Imagery } from './Imagery.js'
 import type { TerrainSource } from './sources.js'
 
@@ -40,12 +41,13 @@ interface FrameRequestDispatcher {
 }
 
 /** The ground: a terrain tile pyramid with imagery layers draped on it. */
-export class Terrain {
+export class Terrain implements AttributionProvider {
   readonly tiles: EarthTilesRenderer
   readonly overlays: ImageOverlayPlugin
   /** Lays the tiles on the flat map and morphs them (see `setView`). */
   readonly flatMap: FlatMapPlugin
   protected readonly imagery = new Set<Imagery>()
+  protected readonly source: TerrainSource
 
   constructor({
     sources,
@@ -59,6 +61,7 @@ export class Terrain {
     if (source === undefined) throw new Error('Terrain: needs one source, for example new QuantizedMeshSource({ url }).')
     if (ignored.length > 0) console.warn('Terrain: only the first source is used for now; stacking terrain sources is planned.')
 
+    this.source = source
     this.tiles = new EarthTilesRenderer(source.url)
     for (const plugin of source.createPlugins()) this.tiles.registerPlugin(plugin)
     this.tiles.registerPlugin(new TileMaterialReplacementPlugin(createMaterial))
@@ -71,6 +74,16 @@ export class Terrain {
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
     this.tiles.lruCache.minBytesSize = memoryBudgetBytes * 0.75
+  }
+
+  /** The credits of the terrain source. */
+  getAttributions(): readonly string[] {
+    return this.source.getAttributions?.() ?? []
+  }
+
+  /** Calls `listener` when `getAttributions()` changes. Returns a function that removes it. */
+  addAttributionListener(listener: () => void): () => void {
+    return this.source.addAttributionListener?.(listener) ?? (() => {})
   }
 
   /** The object to add to the scene. */

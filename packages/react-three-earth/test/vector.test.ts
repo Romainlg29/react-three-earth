@@ -326,6 +326,24 @@ describe('MapStyleProcessor', () => {
     expect(await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 3, zoom: 3 })).toMatchObject({ shapes: null })
   })
 
+  it('reads attribution from the style, TileJSON and PMTiles metadata, in the style\'s source order', async () => {
+    const archive = encodePMTiles([{ z: 3, x: 4, y: 5, data: testTile() }], 0, 6, JSON.stringify({ attribution: '© Archive' }))
+    const { fetch } = createFakeFetch({
+      'https://maps.test/tiles.json': { tiles: ['https://maps.test/t/{z}/{x}/{y}.pbf'], attribution: '© TileJSON' },
+      'https://maps.test/world.pmtiles': archive,
+    })
+    const style = testStyle({ type: 'vector', url: '/tiles.json' }) as { sources: Record<string, object>; layers: Array<Record<string, unknown>> }
+    style.sources = {
+      first: { type: 'vector', url: 'pmtiles://https://maps.test/world.pmtiles' },
+      second: { type: 'vector', url: '/tiles.json' },
+      third: { type: 'vector', tiles: ['https://maps.test/x/{z}/{x}/{y}.pbf'], attribution: '© Inline' },
+      overridden: { type: 'vector', url: '/tiles.json', attribution: '© Style wins' },
+    }
+    style.layers = ['first', 'second', 'third', 'overridden'].map(source => ({ id: `fill-${source}`, type: 'fill', source, 'source-layer': 'water', paint: {} }))
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
+    expect(processor.summary.attributions).toEqual(['© Archive', '© TileJSON', '© Inline', '© Style wins'])
+  })
+
   it('keeps braces of URL templates when resolving them', () => {
     expect(resolveTemplate('/tiles/{z}/{x}/{y}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/tiles/{z}/{x}/{y}.pbf')
     expect(resolveTemplate('glyphs/{fontstack}/{range}.pbf', 'https://maps.test/a/style.json')).toBe('https://maps.test/a/glyphs/{fontstack}/{range}.pbf')
@@ -372,7 +390,7 @@ describe('RefCountedCache', () => {
 describe('MapStyleOverlay', () => {
   function overlayWithSource(maximumZoom: number) {
     const overlay = new MapStyleOverlay({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [] }
+    overlay.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
     return overlay as unknown as { calculateLevel(range: number[]): number; getRegionTiles(range: number[], level: number): Array<{ key: string; textOnly: boolean; column: number }> }
   }
 

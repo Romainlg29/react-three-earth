@@ -12,5 +12,6 @@ export {
   type QuantizedMeshSourceProps,
   type RasterTileSourceProps,
 } from './sources.js'
+export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
 export { useEarth } from './context.js'
 export { useEarthFrame, useEarthState } from './hooks.js'

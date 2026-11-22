@@ -1,7 +1,8 @@
-import { Group, type Camera } from 'three'
+import { Group, type Camera, type Object3DEventMap } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { ViewMorph, type ViewMode, type ViewTransitionOptions } from '../view/ViewMorph.js'
+import { collectAttributions, type AttributionProvider } from './attribution.js'
 import type { Atmosphere } from './Atmosphere.js'
 import type { Imagery } from './Imagery.js'
 import type { Terrain } from './Terrain.js'
@@ -65,11 +66,17 @@ function inspectImagery(terrain: Terrain) {
   }
 }
 
+/** Events an `Earth` dispatches, on top of three's. */
+export interface EarthEventMap extends Object3DEventMap {
+  /** The result of `getAttributions()` may have changed: a source was added or removed, or a style finished loading its metadata. */
+  attributionchange: {}
+}
+
 /**
  * The root of a map: holds the terrain, imagery and atmosphere, all in Earth-centred, Earth-fixed
  * (ECEF, WGS84) metres. Add it to the scene and call `update` once per frame.
  */
-export class Earth extends Group {
+export class Earth extends Group<EarthEventMap> {
   date: Date
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
@@ -78,6 +85,7 @@ export class Earth extends Group {
   /** Main-thread time of the last `update()`, in milliseconds. */
   lastUpdateMilliseconds = 0
   protected readonly imagery = new Set<Imagery>()
+  protected readonly attributionSubscriptions = new Map<AttributionProvider, () => void>()
   /** `performance.now()` at the last `update()`, for the morph's clock. */
   protected lastUpdateTimestamp: number | null = null
 
@@ -108,26 +116,52 @@ export class Earth extends Group {
   setTerrain(terrain: Terrain | null): void {
     if (this.terrain === terrain) return
     if (this.terrain !== null) {
+      this.unsubscribeAttributions(this.terrain)
       this.terrain.setView(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
     }
     this.terrain = terrain
     if (terrain !== null) {
+      this.subscribeAttributions(terrain)
       terrain.setView(this.view)
       this.add(terrain.object)
       for (const imagery of this.imagery) terrain.addImagery(imagery)
     }
+    this.dispatchEvent({ type: 'attributionchange' })
   }
 
   addImagery(imagery: Imagery): void {
+    if (!this.imagery.has(imagery)) this.subscribeAttributions(imagery)
     this.imagery.add(imagery)
     this.terrain?.addImagery(imagery)
+    this.dispatchEvent({ type: 'attributionchange' })
   }
 
   removeImagery(imagery: Imagery): void {
+    this.unsubscribeAttributions(imagery)
     this.imagery.delete(imagery)
     this.terrain?.removeImagery(imagery)
+    this.dispatchEvent({ type: 'attributionchange' })
+  }
+
+  /**
+   * The credits of everything on the earth, de-duplicated: the terrain first, then the imagery layers in the
+   * order they were added. Each is a string of text, possibly with `<a href>` links (`parseAttribution` splits it
+   * safely). `AttributionControl` shows them; listen to the `attributionchange` event to follow changes.
+   */
+  getAttributions(): string[] {
+    return collectAttributions([...(this.terrain === null ? [] : [this.terrain]), ...this.imagery])
+  }
+
+  protected subscribeAttributions(provider: AttributionProvider): void {
+    const remove = provider.addAttributionListener?.(() => this.dispatchEvent({ type: 'attributionchange' }))
+    if (remove !== undefined) this.attributionSubscriptions.set(provider, remove)
+  }
+
+  protected unsubscribeAttributions(provider: AttributionProvider): void {
+    this.attributionSubscriptions.get(provider)?.()
+    this.attributionSubscriptions.delete(provider)
   }
 
   setAtmosphere(atmosphere: Atmosphere | null): void {
@@ -198,6 +232,8 @@ export class Earth extends Group {
   }
 
   override dispose(): void {
+    for (const remove of this.attributionSubscriptions.values()) remove()
+    this.attributionSubscriptions.clear()
     this.terrain?.dispose()
     this.atmosphere?.dispose()
   }

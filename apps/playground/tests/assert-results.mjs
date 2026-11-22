@@ -30,6 +30,16 @@ const expectations = {
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
     ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
   ],
+  'attribution control': r => [
+    ['wide window shows the terrain and OpenStreetMap credits', r.wide.text === 'Synthetic test terrain | © OpenStreetMap contributors'],
+    ['the OpenStreetMap credit is a safe link', r.wide.links.length === 1 && r.wide.links[0].href === 'https://www.openstreetmap.org/copyright' && r.wide.links[0].target === '_blank' && r.wide.links[0].rel === 'noopener noreferrer'],
+    ['it sits in the bottom-right corner', r.wide.bottomRight?.right === 0 && r.wide.bottomRight?.bottom === 0],
+    ['earth.getAttributions() lists terrain first, then imagery', JSON.stringify(r.wide.earthAttributions) === JSON.stringify(['Synthetic test terrain', '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'])],
+    ['wide window has no toggle button', r.wide.textVisible && !r.wide.buttonVisible],
+    ['narrow window is compact: only the button', r.compact.buttonVisible && !r.compact.textVisible],
+    ['the button expands the credits', r.expanded.buttonVisible && r.expanded.textVisible && r.expanded.text.includes('OpenStreetMap')],
+    ['a style\'s source attribution shows once it loads', r.vector.text === 'Synthetic test terrain | © Fixture map data' && r.vector.links[0]?.href === 'https://example.com/fixture-map'],
+  ],
 }
 
 let failures = 0

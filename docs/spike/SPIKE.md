@@ -100,6 +100,51 @@ has a fixed size on the ground.
 
 ![vector map](map-vector-overview.png) ![close-up](map-vector-close.png) ![with atmosphere](map-vector-atmosphere.png)
 
+## Attribution
+
+Every source can carry a credit, and a control shows them all (`src/core/attribution.ts`, `src/controls/AttributionControl.ts`,
+`src/react/AttributionControl.tsx`).
+
+- **Sources.** `RasterTileSource`, `QuantizedMeshSource` and `MapStyleSource` take `attribution` (a string or an array)
+  and extend `AttributionTracker`, which gives them `getAttributions()`, `setAttribution()` and
+  `addAttributionListener()`. A changed React `attribution` prop calls `setAttribution` instead of rebuilding the source,
+  so credits never reload tiles.
+- **Plugin seam.** Collection works on a structural interface, `AttributionProvider { getAttributions(); addAttributionListener?() }`,
+  not on source classes. `TerrainSource` and `ImagerySource` extend `Partial<AttributionProvider>`, so a custom source
+  opts in by adding the method (or by extending `AttributionTracker`). `Terrain` and `Imagery` forward their sources.
+- **Earth.** `earth.getAttributions()` returns the de-duplicated strings, terrain first, then imagery layers in the order
+  added, sources in order within a layer. Duplicates are matched after trimming and collapsing whitespace. Earth is a
+  three `Group`, so the `attributionchange` event is three's own `EventDispatcher` (typed through `EarthEventMap`). It
+  fires on `setTerrain`, `addImagery`, `removeImagery`, when a source changes its attribution, and when a `MapStyleSource`
+  finishes loading.
+- **Style metadata.** `MapStyleProcessor` puts `summary.attributions` together in the style's source order: a style
+  source's own `attribution` wins over its TileJSON's; a PMTiles archive's metadata `attribution` is read after the
+  header (`archive.getMetadata()`, an optional range request to the same archive URL the app gave, in practice served
+  from the same first bytes; a failure is ignored). `MapStyleOverlay` reports it through its new `onLoad(summary)` option,
+  and the source's `attribution` option is added to it. The library fetches nothing it did not fetch before for tiles.
+- **Sanitising.** `parseAttribution(html)` is a small tokenizer that returns `{ text, href? }` segments and needs no DOM,
+  so it is unit-tested in Node. Only `<a href>` with an absolute `http(s)` URL (after decoding entities and removing the
+  control characters browsers ignore) becomes a link; every other tag is dropped but its text kept, apart from
+  `<script>`, `<style>`, `<iframe>` and similar, whose content goes too. Attributes other than `href` are never read.
+  Entities decode to plain text and are not parsed again. The control builds text nodes and `<a>` elements
+  (`target="_blank" rel="noopener noreferrer"`) and never uses `innerHTML`. App-provided strings take the same path.
+- **Control.** Vanilla `new AttributionControl({ earth, container, compact?, customAttribution? })` adds a bottom-right
+  element to `container` (made `position: relative` if static) and injects one small `<style>` per document, themed by
+  `--react-three-earth-attribution-background`, `-color`, `-link-color` and `-font-size`. `compact` true or false forces
+  the mode; undefined is automatic, compact while the container is under 640 px wide (a `ResizeObserver` follows it; the
+  rule is the pure `resolveCompact`). Compact shows a "ⓘ" button that expands the text. `<AttributionControl compact
+  customAttribution container />` wraps it, mounting into the canvas's parent unless `container` is given.
+
+Deviations from the brief: the sources' `attribution` accepts an array as well as a string; `Earth.getAttributions()`
+needs sources to expose an optional change listener (`addAttributionListener`) next to `getAttributions()`, so the
+event fires when a style loads; `MapStyleSource` appends to, rather than replaces, what the style declares; the
+control takes the `earth` and `container` in an options object (the brief left the constructor's shape open).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | collection, de-duplication, order, events, the style, TileJSON and PMTiles metadata, sanitising (script, `javascript:` and encoded variants, event attributes, nesting, entities, malformed tags) |
+| Browser, `?fixtures` | OSM link with `target` and `rel`, terrain first, bottom-right; compact with the button at 400 px and expands on click; a style's source attribution appears after the style loads |
+
 ## Atmosphere and @aeronautic effects
 
 @aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one

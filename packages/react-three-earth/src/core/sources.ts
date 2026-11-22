@@ -1,11 +1,12 @@
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
 
+import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import { MapStyleOverlay } from '../vector/MapStyleOverlay.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
 
 /** Anything that can feed a `Terrain`: a root URL plus the 3DTilesRenderer plugins that read it. */
-export interface TerrainSource {
+export interface TerrainSource extends Partial<AttributionProvider> {
   readonly kind: 'terrain'
   /** The URL the tile renderer starts from. */
   readonly url: string
@@ -14,7 +15,7 @@ export interface TerrainSource {
 }
 
 /** Anything that can feed an `Imagery` layer. */
-export interface ImagerySource {
+export interface ImagerySource extends Partial<AttributionProvider> {
   readonly kind: 'imagery'
   /** Creates the overlay draped on terrain tiles. Called once per `Imagery`. */
   createOverlay(options: { opacity: number }): unknown
@@ -30,6 +31,12 @@ export interface QuantizedMeshSourceOptions {
   skirtLengthMeters?: number
   /** Smooths normals along skirts. Default: true. */
   smoothSkirtNormals?: boolean
+  /**
+   * Credit for the data, shown by `AttributionControl` and returned by `Earth.getAttributions()`. Plain text, or
+   * HTML where only `<a href="https://…">` links are kept.
+   * @example '<a href="https://reearth.io">Re:Earth</a> Terrain'
+   */
+  attribution?: string | readonly string[]
 }
 
 /**
@@ -39,13 +46,14 @@ export interface QuantizedMeshSourceOptions {
  * Heights must be ellipsoidal (WGS84) to sit on the globe; Re:Earth Terrain's `ellipsoid` endpoint
  * already adds the EGM2008 geoid.
  */
-export class QuantizedMeshSource implements TerrainSource {
+export class QuantizedMeshSource extends AttributionTracker implements TerrainSource {
   readonly kind = 'terrain'
   readonly url: string
   readonly skirtLengthMeters: number | undefined
   readonly smoothSkirtNormals: boolean
 
-  constructor({ url, skirtLengthMeters, smoothSkirtNormals = true }: QuantizedMeshSourceOptions) {
+  constructor({ url, skirtLengthMeters, smoothSkirtNormals = true, attribution }: QuantizedMeshSourceOptions) {
+    super(attribution)
     this.url = url.endsWith('/') ? url : `${url}/`
     this.skirtLengthMeters = skirtLengthMeters
     this.smoothSkirtNormals = smoothSkirtNormals
@@ -75,6 +83,12 @@ export interface RasterTileSourceOptions {
   tileDimensionPixels?: number
   /** Tiling projection. Default: 'EPSG:3857' (Web Mercator, what XYZ servers use). */
   projection?: 'EPSG:3857' | 'EPSG:4326'
+  /**
+   * Credit for the tiles, shown by `AttributionControl` and returned by `Earth.getAttributions()`. Plain text, or
+   * HTML where only `<a href="https://…">` links are kept. Most tile servers require it.
+   * @example '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+   */
+  attribution?: string | readonly string[]
 }
 
 /**
@@ -82,14 +96,15 @@ export interface RasterTileSourceOptions {
  *
  * Tiles decode off the main thread and are composed onto terrain tiles on the GPU.
  */
-export class RasterTileSource implements ImagerySource {
+export class RasterTileSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
   readonly url: string
   readonly levels: number
   readonly tileDimensionPixels: number
   readonly projection: 'EPSG:3857' | 'EPSG:4326'
 
-  constructor({ url, levels = 20, tileDimensionPixels = 256, projection = 'EPSG:3857' }: RasterTileSourceOptions) {
+  constructor({ url, levels = 20, tileDimensionPixels = 256, projection = 'EPSG:3857', attribution }: RasterTileSourceOptions) {
+    super(attribution)
     if (!url.includes('{z}') || !url.includes('{x}') || !url.includes('{y}')) {
       throw new Error(
         `RasterTileSource: the url needs {z}, {x} and {y} placeholders, got "${url}". ` +
@@ -136,6 +151,11 @@ export interface MapStyleSourceOptions {
    * process tiles on the main thread.
    */
   createWorker?: (() => Worker) | null
+  /**
+   * Credit in addition to the `attribution` the style's sources and their TileJSON or PMTiles metadata carry,
+   * which is read once the style has loaded. Same format as `RasterTileSource`'s.
+   */
+  attribution?: string | readonly string[]
 }
 
 /**
@@ -146,12 +166,16 @@ export interface MapStyleSourceOptions {
  * texture, at that texture's resolution, with 4× multisampling. Not supported yet: icons and patterns
  * (sprites), raster, hillshade and heatmap layers, right-to-left and complex scripts, 3D extrusion (drawn
  * flat).
+ *
+ * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
+ * the style loads and joins `attribution`, and `attributionchange` fires on the earth.
  */
-export class MapStyleSource implements ImagerySource {
+export class MapStyleSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
   readonly options: MapStyleSourceOptions
 
   constructor(options: MapStyleSourceOptions) {
+    super(options.attribution)
     if ((options.url === undefined) === (options.style === undefined)) {
       throw new Error('MapStyleSource: pass either `url` (a style URL) or `style` (a style document).')
     }
@@ -159,7 +183,12 @@ export class MapStyleSource implements ImagerySource {
   }
 
   createOverlay({ opacity }: { opacity: number }): MapStyleOverlay {
-    const { url, style, ...rest } = this.options
-    return new MapStyleOverlay({ ...rest, style: (url ?? style)!, opacity })
+    const { url, style, attribution: _attribution, ...rest } = this.options
+    return new MapStyleOverlay({
+      ...rest,
+      style: (url ?? style)!,
+      opacity,
+      onLoad: summary => this.setLoadedAttributions(summary.attributions),
+    })
   }
 }

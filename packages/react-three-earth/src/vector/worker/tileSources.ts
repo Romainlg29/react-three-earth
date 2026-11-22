@@ -2,6 +2,8 @@ import { PMTiles, TileType } from 'pmtiles'
 
 /** Fetches the raw (decompressed) bytes of vector tiles of one style source. */
 export interface VectorTileFetcher {
+  /** The attribution in the source's TileJSON or PMTiles metadata, when it has one. */
+  attribution?: string
   readonly minimumZoom: number
   readonly maximumZoom: number
   /** Null for a tile that does not exist (404, or empty). */
@@ -16,6 +18,7 @@ export interface VectorSourceSpecification {
   minzoom?: number
   maxzoom?: number
   scheme?: 'xyz' | 'tms'
+  attribution?: string
 }
 
 export interface FetcherContext {
@@ -27,7 +30,9 @@ export interface FetcherContext {
 /** Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. */
 export async function createVectorTileFetcher(source: VectorSourceSpecification, context: FetcherContext): Promise<VectorTileFetcher> {
   if (source.url?.startsWith('pmtiles://') === true) {
-    return PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context)
+    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context)
+    if (typeof source.attribution === 'string') archive.attribution = source.attribution
+    return archive
   }
   let specification = source
   let baseUrl = context.baseUrl
@@ -41,13 +46,17 @@ export async function createVectorTileFetcher(source: VectorSourceSpecification,
   }
   const templates = specification.tiles
   if (templates === undefined || templates.length === 0) throw new Error('MapStyleSource: a vector source needs `tiles`, a TileJSON `url` or a `pmtiles://` url.')
-  return new XYZFetcher(
+  const fetcher = new XYZFetcher(
     templates.map(template => resolveTemplate(template, baseUrl)),
     specification.minzoom ?? 0,
     specification.maxzoom ?? 22,
     specification.scheme === 'tms',
     context,
   )
+  // The style's own `attribution` on the source wins over the TileJSON's
+  const attribution = source.attribution ?? specification.attribution
+  if (typeof attribution === 'string') fetcher.attribution = attribution
+  return fetcher
 }
 
 function withoutUndefined<T extends object>(value: T): Partial<T> {
@@ -67,6 +76,8 @@ export function resolveUrl(url: string, baseUrl: string): string {
 
 /** XYZ (or TMS) URL templates, served in turn across `tiles` entries. */
 export class XYZFetcher implements VectorTileFetcher {
+  attribution?: string
+
   constructor(
     protected readonly templates: string[],
     readonly minimumZoom: number,
@@ -99,6 +110,8 @@ export async function decompressIfGzipped(bytes: Uint8Array): Promise<Uint8Array
 
 /** A PMTiles v3 archive read with HTTP range requests. */
 export class PMTilesFetcher implements VectorTileFetcher {
+  attribution?: string
+
   protected constructor(
     protected readonly archive: PMTiles,
     readonly minimumZoom: number,
@@ -125,7 +138,15 @@ export class PMTilesFetcher implements VectorTileFetcher {
     })
     const header = await archive.getHeader()
     if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
-    return new PMTilesFetcher(archive, header.minZoom, header.maxZoom)
+    const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom)
+    // The metadata sits next to the header in most archives, so this is usually served from the same cached bytes
+    try {
+      const metadata = (await archive.getMetadata()) as { attribution?: unknown }
+      if (typeof metadata.attribution === 'string') fetcher.attribution = metadata.attribution
+    } catch {
+      // Attribution is optional: an unreadable metadata block must not take the tiles down
+    }
+    return fetcher
   }
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal): Promise<Uint8Array | null> {

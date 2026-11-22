@@ -38,7 +38,7 @@ const createMaterial = () => new MeshStandardNodeMaterial({ color: '#c8c8c8', ro
 export function GreyGround() {
   return (
     <Terrain createMaterial={createMaterial}>
-      <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
+      <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" attribution="Terrain: Re:Earth Terrain" />
     </Terrain>
   )
 }

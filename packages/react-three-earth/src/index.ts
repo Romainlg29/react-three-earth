@@ -1,4 +1,16 @@
-export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
+export { Earth, type EarthOptions, type EarthInspection, type EarthEventMap } from './core/Earth.js'
+export {
+  AttributionTracker,
+  attributionText,
+  collectAttributions,
+  normalizeAttributions,
+  parseAttribution,
+  resolveCompact,
+  type AttributionInput,
+  type AttributionProvider,
+  type AttributionSegment,
+} from './core/attribution.js'
+export { AttributionControl, type AttributionControlOptions } from './controls/AttributionControl.js'
 export { PerformanceMonitor, type PerformanceSample } from './core/PerformanceMonitor.js'
 export { Terrain, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'

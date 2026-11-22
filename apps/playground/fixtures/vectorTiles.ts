@@ -76,7 +76,7 @@ export function vectorTile(z: number, x: number, y: number): Uint8Array {
 export function fixtureStyle(): object {
   return {
     version: 8,
-    sources: { fixture: { type: 'vector', tiles: ['/fixtures/vector/{z}/{x}/{y}.pbf'], maxzoom: 14 } },
+    sources: { fixture: { type: 'vector', tiles: ['/fixtures/vector/{z}/{x}/{y}.pbf'], maxzoom: 14, attribution: '© <a href="https://example.com/fixture-map">Fixture map</a> data' } },
     layers: [
       { id: 'background', type: 'background', paint: { 'background-color': '#efe9dc' } },
       { id: 'water', type: 'fill', source: 'fixture', 'source-layer': 'water', paint: { 'fill-color': '#5fa8e8' } },

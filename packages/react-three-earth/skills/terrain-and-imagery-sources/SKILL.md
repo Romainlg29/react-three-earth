@@ -13,6 +13,7 @@ metadata:
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Imagery.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/attribution.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Imagery.tsx'
@@ -45,7 +46,7 @@ import { QuantizedMeshSource, Terrain } from 'react-three-earth/react'
 export function Ground() {
   return (
     <Terrain memoryBudgetBytes={300 * 2 ** 20} errorTargetPixels={4}>
-      <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
+      <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" attribution="Terrain: Re:Earth Terrain, Mapterhorn" />
     </Terrain>
   )
 }
@@ -64,7 +65,10 @@ import { Imagery, RasterTileSource } from 'react-three-earth/react'
 export function Basemap() {
   return (
     <Imagery>
-      <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
+      <RasterTileSource
+        url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        attribution='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+      />
     </Imagery>
   )
 }
@@ -76,6 +80,10 @@ export function Basemap() {
   lower drops the sharpest zoom.
 - `tileDimensionPixels`: 256 by default; 512 for "@2x" or MapTiler-style 512 px tiles.
 - `projection`: `'EPSG:3857'` (Web Mercator, default, what XYZ servers use) or `'EPSG:4326'`.
+- `attribution`: the provider's required credit, text or HTML with `<a href>` links (everything else is
+  stripped). Every source takes it, `QuantizedMeshSource` and `MapStyleSource` included; show it with
+  `<AttributionControl />` (see `getting-started`). A `MapStyleSource` adds the `attribution` of its style's
+  sources and their TileJSON or PMTiles metadata after loading.
 
 Tiles decode off the main thread and are composed onto each terrain tile on the GPU.
 
@@ -110,7 +118,8 @@ Vanilla: `const labels = new Imagery({ sources: [...], opacity: 0.8 })`, `earth.
 
 ### Write a custom source
 
-A source is any object with the `kind` tag and one factory method. Implement the exported interfaces:
+A source is any object with the `kind` tag and one factory method, plus an optional `getAttributions()`
+(extend `AttributionTracker` to get it, `setAttribution` and change events for free). Implement the exported interfaces:
 
 ```ts
 import { RasterTileSource, type ImagerySource, type TerrainSource } from 'react-three-earth'
@@ -122,6 +131,10 @@ export class TenantImagerySource implements ImagerySource {
   constructor(protected readonly tenant: string) {}
   createOverlay(options: { opacity: number }) {
     return new RasterTileSource({ url: `https://tiles.example.com/${this.tenant}/{z}/{x}/{y}.png` }).createOverlay(options)
+  }
+  // Optional: credit shown by AttributionControl. Add addAttributionListener(listener) if it can change.
+  getAttributions() {
+    return ['Tiles: Example Co.']
   }
 }
 
@@ -164,7 +177,8 @@ For a smooth ellipsoid, use a quantized-mesh `ellipsoid` tileset or a flat-heigh
 
 ### MEDIUM: Missing attribution
 
-Most providers require visible credit. The library renders none; add it to your UI.
+Most providers require visible credit. Set `attribution` on the source and render `<AttributionControl />`
+(vanilla: `new AttributionControl({ earth, container })`); without both nothing is shown.
 
 ## Completion
 

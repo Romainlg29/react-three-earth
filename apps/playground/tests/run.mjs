@@ -140,6 +140,57 @@ async function vectorMap(name, query) {
   results.push({ check: `vector map style with fixtures, ${name}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, imageryTilesCompositedTotal: inspection.terrain.imageryTilesCompositedTotal, errors, warnings })
 }
 
+/** The attribution control: its DOM, its links, its compact mode, and a style's own attribution. */
+async function attribution() {
+  const read = page =>
+    page.evaluate(() => {
+      const element = document.querySelector('.react-three-earth-attribution')
+      const button = element?.querySelector('button')
+      const text = element?.querySelector('.react-three-earth-attribution-text')
+      const links = [...(element?.querySelectorAll('a') ?? [])].map(a => ({ text: a.textContent, href: a.href, target: a.target, rel: a.rel }))
+      const visible = node => node !== null && node !== undefined && node.getBoundingClientRect().width > 0
+      const box = element?.getBoundingClientRect()
+      return {
+        present: element != null,
+        text: text?.textContent ?? '',
+        links,
+        buttonVisible: visible(button),
+        textVisible: visible(text),
+        earthAttributions: window.earth?.getAttributions() ?? [],
+        bottomRight: box ? { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) } : null,
+      }
+    })
+  const waitForControl = (page, needle) => page.waitForFunction(needle => document.querySelector('.react-three-earth-attribution-text')?.textContent.includes(needle), needle, { timeout: 120_000 })
+
+  // Wide window: full text, no button
+  const wide = await open('/?fixtures&stats=0&atmosphere=0', { width: 1000, height: 600 })
+  await waitForControl(wide.page, 'OpenStreetMap')
+  const wideState = await read(wide.page)
+  // Narrow window: compact, the button expands it
+  await wide.page.setViewportSize({ width: 400, height: 600 })
+  await wide.page.waitForFunction(() => document.querySelector('.react-three-earth-attribution-toggle')?.getBoundingClientRect().width > 0, null, { timeout: 30_000 })
+  const compactState = await read(wide.page)
+  await wide.page.click('.react-three-earth-attribution-toggle')
+  const expandedState = await read(wide.page)
+  writeFileSync(new URL('attribution-compact-expanded.png', OUT), await wide.page.screenshot())
+  await wide.page.close()
+
+  // A style's source attribution arrives once the style has loaded
+  const vector = await open('/?fixtures&stats=0&atmosphere=0&map=vector', { width: 1000, height: 600 })
+  await waitForControl(vector.page, 'Fixture map')
+  const vectorState = await read(vector.page)
+  await vector.page.close()
+
+  results.push({
+    check: 'attribution control',
+    wide: wideState,
+    compact: compactState,
+    expanded: expandedState,
+    vector: vectorState,
+    errors: [...wide.errors, ...vector.errors],
+  })
+}
+
 async function afterburner(plume) {
   const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
   await page.waitForFunction(() => {
@@ -203,6 +254,7 @@ try {
     await vectorMap('close', '&camera=,,,9000,,-50')
     await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
   }
+  if (!only || only === 'attribution') await attribution()
   if (!only || only === 'afterburner') await afterburnerChecks()
 } finally {
   await browser.close()

@@ -39,7 +39,7 @@ and `three@0.187.0`.
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
 import { setCameraView } from 'react-three-earth'
-import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
 import { useLayoutEffect } from 'react'
 
 /** Starts the camera over Mount Fuji. R3F's default camera sits at the centre of the Earth. */
@@ -57,20 +57,24 @@ export function App() {
       <Earth date={new Date('2026-11-22T07:00:00Z')}>
         <InitialView />
         <Terrain>
-          <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
+          <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" attribution="Terrain: Re:Earth Terrain, Mapterhorn" />
         </Terrain>
         <Imagery>
-          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <RasterTileSource
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          />
         </Imagery>
         <Atmosphere />
         <EarthControls />
+        <AttributionControl />
       </Earth>
     </Canvas>
   )
 }
 ```
 
-The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Show the attribution your tile providers require (OpenStreetMap: "© OpenStreetMap contributors").
+The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` shows them all (compact on small screens); tile providers such as OpenStreetMap require visible credit.
 
 ## Quick start (vanilla three.js)
 
@@ -124,11 +128,12 @@ renderer.setAnimationLoop(() => {
 | --- | --- | --- |
 | `<Earth date>` | `new Earth({ date })`, `connect`, `update`, `inspect` | root; ECEF metres; drives the sun |
 | `<Terrain errorTargetPixels memoryBudgetBytes createMaterial …>` | `new Terrain({ sources, … })` | the ground, one terrain source |
-| `<QuantizedMeshSource url>` | `new QuantizedMeshSource({ url })` | quantized-mesh terrain |
+| `<QuantizedMeshSource url attribution>` | `new QuantizedMeshSource({ url, attribution })` | quantized-mesh terrain |
 | `<Imagery opacity>` | `new Imagery({ sources, opacity })` | a raster layer; layers stack |
-| `<RasterTileSource url levels tileDimensionPixels projection>` | `new RasterTileSource({ … })` | XYZ raster tiles |
+| `<RasterTileSource url levels tileDimensionPixels projection attribution>` | `new RasterTileSource({ … })` | XYZ raster tiles |
 | `<Atmosphere exposure parameters>` | `new Atmosphere({ parameters })`, `install`, `createAerialPerspective` | sky, sun, haze |
 | `<EarthControls enableDamping>` | `new EarthControls(scene, camera, element)` | orbit, pan, zoom |
+| `<AttributionControl compact customAttribution>` | `new AttributionControl({ earth, container, compact })`, `earth.getAttributions()`, `attributionchange` | credit line, compact on small screens |
 | `useEarth`, `useEarthFrame`, `useEarthState` | | hooks |
 | | `setCameraView`, `toCartesian`, `AtmosphereParameters` | helpers |
 

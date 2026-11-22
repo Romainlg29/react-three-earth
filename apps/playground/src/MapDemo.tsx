@@ -2,6 +2,7 @@ import { Canvas } from '@react-three/fiber'
 import { setCameraView, type CameraView, type Earth as EarthImpl, type ViewMode } from 'react-three-earth'
 import {
   Atmosphere,
+  AttributionControl,
   Earth,
   EarthControls,
   Imagery,
@@ -15,6 +16,8 @@ import {
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
+
+const OPENSTREETMAP_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
 const params = new URLSearchParams(location.search)
 const useFixtures = params.has('fixtures')
@@ -112,10 +115,10 @@ export function MapDemo() {
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
-            <QuantizedMeshSource url={terrainUrl} />
+            <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
           </Terrain>
           <Imagery>
-            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />}
+            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
           </Imagery>
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />
@@ -123,6 +126,7 @@ export function MapDemo() {
             <PlainLights />
           )}
           <EarthControls />
+          <AttributionControl />
         </Earth>
       </Canvas>
       <button
@@ -133,13 +137,6 @@ export function MapDemo() {
         {view === '3d' ? 'Flat map (2D)' : 'Globe (3D)'}
       </button>
       {withAtmosphere && <AtmosphereStatus />}
-      <div style={{ position: 'absolute', bottom: 8, right: 8, opacity: 0.7 }}>
-        {useFixtures
-          ? 'Synthetic test tiles'
-          : mapStyleUrl !== undefined
-            ? 'Terrain: Re:Earth Terrain, Mapterhorn. Map: see the style\'s attribution'
-            : 'Terrain: Re:Earth Terrain, Mapterhorn. Imagery: © OpenStreetMap contributors'}
-      </div>
     </>
   )
 }

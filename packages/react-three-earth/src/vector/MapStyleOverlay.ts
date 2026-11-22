@@ -26,6 +26,8 @@ export interface MapStyleOverlayOptions {
   createWorker?: (() => Worker) | null
   /** Unused processed tiles kept for reuse, in bytes. Default: 32 MB. */
   retainedTileBytes?: number
+  /** Called once the style is loaded and `summary` is set. */
+  onLoad?: (summary: MapStyleSummary) => void
 }
 
 /** One vector tile a region draws. */
@@ -65,7 +67,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   declare imageSource: { init(): Promise<void>; tiling: unknown }
   /** Upstream `ImageOverlay.fetch`: goes through 3DTilesRenderer's download queue and `preprocessURL`. */
   declare fetch: (url: string, options?: RequestInit) => Promise<Response>
-  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity'>> & { baseUrl: string | undefined }
+  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad'>> & { baseUrl: string | undefined }
+  protected readonly onLoad: ((summary: MapStyleSummary) => void) | undefined
   protected backend: MapStyleBackend | null = null
   protected resolution = 256
   protected readonly atlas = new GlyphAtlasTexture()
@@ -91,8 +94,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     maximumZoom = 20,
     createWorker = createVectorTileWorker,
     retainedTileBytes = 32 * MEGABYTE_BYTES,
+    onLoad,
   }: MapStyleOverlayOptions) {
     super({ url: 'map-style://{z}/{x}/{y}', levels: maximumZoom + 1, tileDimension: TILE_SIZE_PIXELS, projection: 'EPSG:3857', opacity })
+    this.onLoad = onLoad
     this.options = { style, baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, retainedTileBytes }
     this.textMaterial = createTextMaterial(this.atlas)
     const background = createBackgroundMaterial()
@@ -145,6 +150,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       console.warn(`MapStyleSource: ${this.summary.skippedLayers.length} style layers are not supported yet and are skipped: ${this.summary.skippedLayers.join(', ')}`)
     }
     await this.imageSource.init()
+    this.onLoad?.(this.summary)
   }
 
   /** Smallest zoom whose 512-pixel tiles have at least `resolution` pixels across the range. */
