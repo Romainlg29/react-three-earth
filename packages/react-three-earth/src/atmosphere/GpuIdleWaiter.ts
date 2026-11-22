@@ -16,7 +16,7 @@ interface WebGLBackendLike {
 }
 
 /** Resolves on the next macrotask without the 4 ms clamp nested `setTimeout` calls get. */
-function nextTask(): Promise<void> {
+export function nextTask(): Promise<void> {
   if (typeof MessageChannel !== 'function') return new Promise(resolve => setTimeout(resolve, 0))
   return new Promise(resolve => {
     const channel = new MessageChannel()
@@ -56,11 +56,14 @@ class WebGLIdleWaiter implements GpuIdleWaiter {
     gl.flush()
     try {
       // Give up after a second, as if the GPU were idle: a lost context never signals.
-      const deadline = performance.now() + 1000
-      while (performance.now() < deadline) {
+      // Polled task by task for the first milliseconds (batches are a few ms long), then every millisecond
+      // or so, not to spin a phone's CPU.
+      const start = performance.now()
+      while (performance.now() - start < 1000) {
         const status = gl.clientWaitSync(sync, 0, 0)
         if (status === gl.ALREADY_SIGNALED || status === gl.CONDITION_SATISFIED || status === gl.WAIT_FAILED) return
-        await nextTask()
+        if (performance.now() - start < 8) await nextTask()
+        else await new Promise(resolve => setTimeout(resolve, 1))
       }
     } finally {
       gl.deleteSync(sync)

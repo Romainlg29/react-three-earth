@@ -20,6 +20,12 @@ export class GenerationPacer {
    */
   maximumGrowth = 2
 
+  /**
+   * Heaviest batch ever planned, whatever the estimate says: a guard against an estimate that is far
+   * too low. The default is about two slices of the scattering-density pass at the default sizes.
+   */
+  maximumWeight = 40_000_000
+
   protected lastWeight = 0
 
   constructor(budgetMilliseconds: number) {
@@ -28,7 +34,7 @@ export class GenerationPacer {
 
   /**
    * How many of the units, taken in order from `first`, to run this frame: as many as the estimate says
-   * fit in the budget and within `maximumGrowth` of the last batch, and always at least one (a unit
+   * fit in the budget, within `maximumGrowth` of the last batch and under `maximumWeight`, and always at least one (a unit
    * cannot be split). One before any measurement.
    */
   plan(weights: readonly number[], first: number): number {
@@ -36,7 +42,7 @@ export class GenerationPacer {
     if (remaining <= 0) return 0
     const perWeight = this.millisecondsPerWeight
     if (perWeight === null) return 1
-    const maximumWeight = this.lastWeight * this.maximumGrowth
+    const maximumWeight = Math.min(this.lastWeight * this.maximumGrowth, this.maximumWeight)
     let count = 0
     let weight = 0
     while (count < remaining) {
@@ -53,9 +59,10 @@ export class GenerationPacer {
    * gradually, since passes differ in cost per weight and one cheap batch says little about the next.
    */
   observe(weight: number, milliseconds: number): void {
-    if (!(weight > 0) || !Number.isFinite(milliseconds)) return
+    // Nothing measurable (at or below the waiter's own latency) says nothing about the cost.
+    if (!(weight > 0) || !(milliseconds > 0) || !Number.isFinite(milliseconds)) return
     this.lastWeight = weight
-    const sample = Math.max(0, milliseconds) / weight
+    const sample = milliseconds / weight
     const previous = this.millisecondsPerWeight
     this.millisecondsPerWeight = previous === null || sample > previous ? sample : previous * 0.7 + sample * 0.3
   }

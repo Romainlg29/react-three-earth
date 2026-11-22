@@ -15,11 +15,14 @@ import { useThree } from '@react-three/fiber'
 
 const params = new URLSearchParams(location.search)
 const useFixtures = params.has('fixtures')
-const terrainUrl = useFixtures ? '/fixtures/terrain/' : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
-const imageryUrl = useFixtures ? '/fixtures/imagery/{z}/{x}/{y}.png' : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
+const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
+const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
-// `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device.
-const atmosphereCache = !params.has('nocache')
+// `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device. The
+// dev server never caches them, so that edits to the atmosphere's shaders always show.
+const atmosphereCache = import.meta.env.PROD && !params.has('nocache')
+// `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
+const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 
 declare global {
   interface Window {
@@ -42,10 +45,11 @@ function InitialView() {
 function AtmosphereStatus() {
   const [text, setText] = useState('')
   useEffect(() => {
+    const startMilliseconds = performance.now()
     const interval = setInterval(() => {
       const atmosphere = window.earth?.inspect().atmosphere
       if (atmosphere == null) return setText('')
-      if (!atmosphere.ready) return setText('Atmosphere: generating…')
+      if (!atmosphere.ready) return setText(`Atmosphere: generating… ${((performance.now() - startMilliseconds) / 1000).toFixed(0)} s`)
       const seconds = ((atmosphere.generationTimeMilliseconds ?? 0) / 1000).toFixed(2)
       setText(`Atmosphere: ${atmosphere.loadedFromCache ? 'loaded from cache' : 'generated'} in ${seconds} s, ${atmosphere.generationFrames} frames`)
       clearInterval(interval)
@@ -68,7 +72,7 @@ export function MapDemo() {
             <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />
           </Imagery>
           {withAtmosphere ? (
-            <Atmosphere cache={atmosphereCache} />
+            <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />
           ) : (
             <>
               <ambientLight intensity={0.6} />

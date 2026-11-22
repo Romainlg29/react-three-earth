@@ -14,14 +14,15 @@ export interface AtmosphereProps extends AtmosphereOptions {
 
 /**
  * Sky, sunlight and aerial perspective. Takes over the canvas's render pipeline and sets AgX tone mapping
- * (restored on unmount). `parameters` is read once, at mount: the lookup textures are generated from it.
+ * (restored on unmount). `parameters`, `cache` and `generationBudgetMillisecondsPerFrame` are read once, at mount: the lookup textures are generated
+ * from the parameters (or loaded from the cache).
  * Create the canvas renderer with `reversedDepthBuffer: true` for clean haze at long range.
  */
-export function Atmosphere({ exposure = 10, parameters }: AtmosphereProps) {
+export function Atmosphere({ exposure = 10, parameters, cache, generationBudgetMillisecondsPerFrame }: AtmosphereProps) {
   const earth = useEarth()
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const camera = useThree(state => state.camera)
-  const [atmosphere] = useState(() => new AtmosphereImpl({ parameters }))
+  const [atmosphere] = useState(() => new AtmosphereImpl({ parameters, cache, generationBudgetMillisecondsPerFrame }))
 
   const invalidate = useThree(state => state.invalidate)
   // Read through a ref, so a new invalidate function never reinstalls the atmosphere

@@ -18,6 +18,11 @@ export interface AtmosphereOptions {
    * your own `AtmosphereTextureCache`.
    */
   cache?: boolean | AtmosphereTextureCache
+  /**
+   * GPU time spent generating the lookup textures per frame, in milliseconds (see
+   * `AtmosphereTextures.budgetMillisecondsPerFrame`). Default: 4. Infinity generates them in one frame.
+   */
+  generationBudgetMillisecondsPerFrame?: number
 }
 
 let sharedCache: AtmosphereTextureCache | null = null
@@ -58,8 +63,9 @@ export class Atmosphere {
 
   protected generation: AbortController | null = null
 
-  constructor({ parameters = new AtmosphereParameters(), cache = true }: AtmosphereOptions = {}) {
+  constructor({ parameters = new AtmosphereParameters(), cache = true, generationBudgetMillisecondsPerFrame }: AtmosphereOptions = {}) {
     this.context = new AtmosphereContext(parameters)
+    if (generationBudgetMillisecondsPerFrame !== undefined) this.context.textures.budgetMillisecondsPerFrame = generationBudgetMillisecondsPerFrame
     this.light = new AtmosphereLight(this.context)
     this.cache = cache === false ? null : cache === true ? (sharedCache ??= new AtmosphereTextureCache()) : cache
   }

@@ -27,8 +27,16 @@ describe('GenerationPacer', () => {
 
   it('grows batches at most by maximumGrowth over the last measured one', () => {
     const pacer = new GenerationPacer(1000)
-    pacer.observe(1, 0) // a fence that signalled at once
+    pacer.observe(1, 1e-9) // a fence that signalled almost at once
     expect(pacer.plan(Array(100).fill(1), 0)).toBe(2)
+  })
+
+  it('never plans a batch heavier than maximumWeight', () => {
+    const pacer = new GenerationPacer(1000)
+    pacer.maximumGrowth = Infinity
+    pacer.maximumWeight = 25
+    pacer.observe(10, 1e-9)
+    expect(pacer.plan(Array(100).fill(10), 0)).toBe(2)
   })
 
   it('follows a costlier measurement at once and a cheaper one gradually', () => {
@@ -44,6 +52,8 @@ describe('GenerationPacer', () => {
     const pacer = new GenerationPacer(4)
     pacer.observe(0, 5)
     pacer.observe(1, Number.NaN)
+    pacer.observe(1, 0) // no slower than the waiter's own latency
+    pacer.observe(1, -0.5)
     expect(pacer.millisecondsPerWeight).toBeNull()
   })
 })
@@ -75,8 +85,10 @@ describe('isPlausible', () => {
     expect(isPlausible(valid())).toBe(true)
   })
 
-  it('rejects all-zero transmittance (a failed readback)', () => {
+  it('rejects all-zero textures (a failed readback)', () => {
     expect(isPlausible({ ...valid(), transmittance: new Float32Array(8) })).toBe(false)
+    expect(isPlausible({ ...valid(), scattering: new Uint16Array(4) })).toBe(false)
+    expect(isPlausible({ ...valid(), scattering: new Float32Array(4), scatteringHalfFloat: false })).toBe(false)
   })
 
   it('rejects NaN, negative and infinite values', () => {

@@ -1,8 +1,8 @@
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
 
 /**
- * Bumped whenever the precomputation's output changes for the same parameters (shaders, sample counts,
- * texture layout), so that textures cached by an older version are never used.
+ * Part of every cache key. `AtmosphereTextures` also adds a hash of the precomputation's source code, so
+ * editing the shaders invalidates cached textures by itself; bump this for changes that hash misses.
  */
 export const ATMOSPHERE_PRECOMPUTE_VERSION = 1
 
@@ -22,16 +22,35 @@ interface StoredEntry {
 }
 
 const DATABASE_NAME = 'react-three-earth-atmosphere'
+const DATABASE_VERSION = 2
 const STORE_NAME = 'atmosphere-textures'
+const AGE_INDEX = 'storedAtMilliseconds'
 
 /**
  * The identity of a set of lookup textures: every parameter (sizes included), the scattering texture's
  * storage type and the precomputation version. Plain JSON, so it is stable across sessions.
  */
-export function createAtmosphereCacheKey(parameters: AtmosphereParameters, scatteringHalfFloat: boolean): string {
-  const fields: Record<string, unknown> = {}
-  for (const name of Object.keys(parameters).sort()) fields[name] = (parameters as unknown as Record<string, unknown>)[name]
-  return JSON.stringify({ version: ATMOSPHERE_PRECOMPUTE_VERSION, scatteringHalfFloat, parameters: fields })
+export function createAtmosphereCacheKey(parameters: AtmosphereParameters, scatteringHalfFloat: boolean, implementation = ''): string {
+  return JSON.stringify({ version: ATMOSPHERE_PRECOMPUTE_VERSION, implementation, scatteringHalfFloat, parameters: sortKeys(parameters) })
+}
+
+/** A copy with object keys sorted at every level, so that key order never changes the JSON. */
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys)
+  if (value === null || typeof value !== 'object') return value
+  const result: Record<string, unknown> = {}
+  for (const name of Object.keys(value).sort()) result[name] = sortKeys((value as Record<string, unknown>)[name])
+  return result
+}
+
+/** FNV-1a hash of a string, as 8 hex digits: a short fingerprint, not a security measure. */
+export function hashString(text: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index++) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0')
 }
 
 function promisify<Result>(request: IDBRequest<Result>): Promise<Result> {
@@ -86,9 +105,16 @@ export class AtmosphereTextureCache {
       const store = transaction.objectStore(STORE_NAME)
       const entry: StoredEntry = { key, storedAtMilliseconds: Date.now(), data }
       store.put(entry)
-      const entries = (await promisify(store.getAll())) as StoredEntry[]
-      const others = entries.filter(other => other.key !== key).sort((a, b) => b.storedAtMilliseconds - a.storedAtMilliseconds)
-      for (const stale of others.slice(this.maximumEntries - 1)) store.delete(stale.key)
+      // Walks keys only, newest first, never loading the other sets' textures.
+      const cursorRequest = store.index(AGE_INDEX).openKeyCursor(null, 'prev')
+      let kept = 0
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result
+        if (cursor === null) return
+        if (kept < this.maximumEntries) kept++
+        else store.delete(cursor.primaryKey)
+        cursor.continue()
+      }
       await transactionDone(transaction)
     } catch (error) {
       console.warn('Atmosphere: could not cache the lookup textures.', error)
@@ -108,17 +134,44 @@ export class AtmosphereTextureCache {
     }
   }
 
+  /** The database, opened once; a failed or closed connection is opened again on the next call. */
   protected open(): Promise<IDBDatabase | null> {
     if (this.database === null) {
+      const forget = (): void => {
+        this.database = null
+      }
       this.database = new Promise(resolve => {
         if (typeof indexedDB === 'undefined') return resolve(null)
         try {
-          const request = indexedDB.open(DATABASE_NAME, 1)
-          request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME, { keyPath: 'key' })
-          request.onsuccess = () => resolve(request.result)
-          request.onerror = () => resolve(null)
-          request.onblocked = () => resolve(null)
+          const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
+          request.onupgradeneeded = () => {
+            const database = request.result
+            if (database.objectStoreNames.contains(STORE_NAME)) database.deleteObjectStore(STORE_NAME)
+            database.createObjectStore(STORE_NAME, { keyPath: 'key' }).createIndex(AGE_INDEX, AGE_INDEX)
+          }
+          request.onsuccess = () => {
+            const database = request.result
+            // Let another tab upgrade the database: close, and reopen on the next call.
+            database.onversionchange = () => {
+              database.close()
+              forget()
+            }
+            database.onclose = forget
+            resolve(database)
+          }
+          request.onerror = () => {
+            forget()
+            resolve(null)
+          }
+          // Another tab holds an older version open: miss this time. The request still completes once
+          // that tab lets go, and onsuccess closes nothing, so drop the connection then.
+          request.onblocked = () => {
+            request.onsuccess = () => request.result.close()
+            forget()
+            resolve(null)
+          }
         } catch {
+          forget()
           resolve(null)
         }
       })

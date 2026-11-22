@@ -23,10 +23,11 @@ import {
 import { float, Fn, int, ivec2, ivec3, mrt, screenCoordinate, struct, texture3D, texture3DLoad, textureLoad, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import { NodeMaterial, QuadMesh, type Node, type Renderer } from 'three/webgpu'
 
-import type { AtmosphereModel, AtmosphereTextureSet } from './AtmosphereModel.js'
-import { createAtmosphereCacheKey, type AtmosphereTextureCache, type AtmosphereTextureData } from './AtmosphereTextureCache.js'
+import { AtmosphereModel, type AtmosphereTextureSet } from './AtmosphereModel.js'
+import * as precompute from './precompute.js'
+import { createAtmosphereCacheKey, hashString, type AtmosphereTextureCache, type AtmosphereTextureData } from './AtmosphereTextureCache.js'
 import { GenerationPacer } from './GenerationPacer.js'
-import { createGpuIdleWaiter } from './GpuIdleWaiter.js'
+import { createGpuIdleWaiter, nextTask, type GpuIdleWaiter } from './GpuIdleWaiter.js'
 import {
   computeDirectIrradianceTexel,
   computeIndirectIrradiance,
@@ -100,11 +101,12 @@ const SingleScatteringStruct = struct({ rayleigh: 'vec3', mie: 'vec3' }, 'Atmosp
 
 type MaterialFactory = (fragment: Node, additive?: boolean) => NodeMaterial
 
-/** One full-screen draw: a 2D pass, or one slice of a 3D pass. */
+/** Full-screen draws run together: a 2D pass, or slices of a 3D pass. */
 interface WorkUnit {
   target: RenderTarget
   material: NodeMaterial
-  slice: number
+  /** The slices to draw (3D targets), or [0]; a number n stands for slices 0 to n - 1. */
+  slices: number[] | number
   /** Relative GPU cost: estimated texture fetches (or equivalent work) per texel, times texels. */
   weight: number
 }
@@ -126,6 +128,23 @@ const PASS_COST = {
   /** 51 samples, a scattering lookup (two fetches) and a transmittance lookup each. */
   multipleScattering: 153,
 } as const
+
+let implementationFingerprint: string | null = null
+
+/**
+ * A hash of the code that decides what the lookup textures contain (the model, the pass bodies and the
+ * pass sequence), so that cached textures from another version of it are never used.
+ */
+function getImplementationFingerprint(): string {
+  implementationFingerprint ??= hashString(
+    [
+      String(AtmosphereModel),
+      ...Object.values(precompute).map(String),
+      String((AtmosphereTextures.prototype as unknown as { createUnits: unknown }).createUnits),
+    ].join('\n'),
+  )
+  return implementationFingerprint
+}
 
 export interface AtmosphereTexturesGenerateOptions {
   /** Loads the textures from this cache when it holds them, and stores them in it otherwise. */
@@ -149,7 +168,8 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
    * slices of 3D passes) is sized from the measured cost of the previous ones, so that on any device
    * generation adds about this much to a frame: the app keeps its frame rate while the textures fill. A
    * single slice is never split, so one batch can exceed a very small budget. Raise it for a faster
-   * startup when the app has headroom, lower it if frames still drop.
+   * startup when the app has headroom, lower it if frames still drop. Infinity generates everything in
+   * one frame, for a loading screen (a long frame, the shortest total time).
    */
   budgetMillisecondsPerFrame = 4
 
@@ -158,6 +178,9 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
    * WebGPU nor WebGL 2 backend). Unused otherwise.
    */
   untimedUnitsPerFrame = 8
+
+  /** Longest wait for the GPU to report a batch done before carrying on regardless, in milliseconds. */
+  maximumGpuWaitMilliseconds = 1000
 
   /** Wall time of the last generation (or cache load), from the first pass to the GPU finishing, in milliseconds. */
   generationTimeMilliseconds: number | null = null
@@ -223,7 +246,7 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     const scatteringType = this.selectScatteringType(renderer)
     this.scatteringTarget.texture.type = scatteringType
     const cache = options.cache ?? null
-    const cacheKey = cache === null ? null : createAtmosphereCacheKey(this.model.parameters, scatteringType === HalfFloatType)
+    const cacheKey = cache === null ? null : createAtmosphereCacheKey(this.model.parameters, scatteringType === HalfFloatType, getImplementationFingerprint())
     const materials: NodeMaterial[] = []
     const createMaterial: MaterialFactory = (fragment, additive = false) => {
       const material = new NodeMaterial()
@@ -276,40 +299,76 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     const waiter = createGpuIdleWaiter(renderer)
     const pacer = new GenerationPacer(this.budgetMillisecondsPerFrame)
     const weights = units.map(unit => unit.weight)
-    // The waiter's own latency (a promise or a poll) is not GPU work: measure it once with nothing queued.
+    // The waiter's own latency (a promise or a poll) is not GPU work: the fastest of a few waits with
+    // nothing of ours queued (the app may slip a frame into one of them).
     let latencyMilliseconds = 0
-    if (waiter !== null) {
-      await waiter.wait()
-      const before = performance.now()
-      await waiter.wait()
-      latencyMilliseconds = performance.now() - before
+    if (waiter !== null && this.budgetMillisecondsPerFrame !== Infinity) {
+      await this.waitForGpu(waiter, signal)
+      latencyMilliseconds = Infinity
+      for (let sample = 0; sample < 3; sample++) {
+        const before = performance.now()
+        await this.waitForGpu(waiter, signal)
+        latencyMilliseconds = Math.min(latencyMilliseconds, performance.now() - before)
+      }
     }
+    // A material's first draw compiles its shader, which says nothing about the GPU cost of later draws.
+    const compiled = new Set<NodeMaterial>()
     let frames = 0
     let next = 0
     while (next < units.length) {
       await nextFrame()
       throwIfAborted(signal)
       frames++
-      if (waiter === null) {
-        const count = Math.min(units.length - next, Math.max(1, Math.floor(this.untimedUnitsPerFrame)))
+      if (waiter === null || this.budgetMillisecondsPerFrame === Infinity) {
+        const perFrame = this.budgetMillisecondsPerFrame === Infinity ? Infinity : Math.max(1, Math.floor(this.untimedUnitsPerFrame))
+        const count = Math.min(units.length - next, perFrame)
         this.runUnits(renderer, units.slice(next, next + count))
         next += count
         continue
       }
-      await waiter.wait()
-      throwIfAborted(signal)
+      // Let the app's own animation-frame callbacks submit this frame first, then wait for the GPU to
+      // finish it: otherwise the app's frame would queue ahead of the batch and be timed as part of it.
+      await nextTask()
+      await this.waitForGpu(waiter, signal)
       const count = pacer.plan(weights, next)
       const batch = units.slice(next, next + count)
+      const compiling = batch.some(unit => !compiled.has(unit.material))
+      for (const unit of batch) compiled.add(unit.material)
       const before = performance.now()
       this.runUnits(renderer, batch)
-      await waiter.wait()
-      pacer.observe(
-        batch.reduce((sum, unit) => sum + unit.weight, 0),
-        performance.now() - before - latencyMilliseconds,
-      )
+      await this.waitForGpu(waiter, signal)
+      if (!compiling) {
+        pacer.observe(
+          batch.reduce((sum, unit) => sum + unit.weight, 0),
+          performance.now() - before - latencyMilliseconds,
+        )
+      }
       next += count
     }
     return frames
+  }
+
+  /**
+   * Waits for the GPU, giving up when `signal` aborts (a lost device may never answer) or after
+   * `maximumGpuWaitMilliseconds` (then carries on as if it had answered).
+   */
+  protected async waitForGpu(waiter: GpuIdleWaiter, signal?: AbortSignal): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    let onAbort: (() => void) | undefined
+    try {
+      await Promise.race([
+        waiter.wait(),
+        new Promise<void>(resolve => (timeout = setTimeout(resolve, this.maximumGpuWaitMilliseconds))),
+        new Promise<void>(resolve => {
+          onAbort = resolve
+          signal?.addEventListener('abort', onAbort, { once: true })
+        }),
+      ])
+    } finally {
+      clearTimeout(timeout)
+      if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
+    }
+    throwIfAborted(signal)
   }
 
   /** Draws the units without disturbing the app's renderer state. */
@@ -323,9 +382,12 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     try {
       for (const unit of units) {
         this.quad.material = unit.material
-        this.slice.value = unit.slice
-        renderer.setRenderTarget(unit.target, unit.slice)
-        this.quad.render(renderer)
+        const slices = typeof unit.slices === 'number' ? Array.from({ length: unit.slices }, (_, slice) => slice) : unit.slices
+        for (const slice of slices) {
+          this.slice.value = slice
+          renderer.setRenderTarget(unit.target, slice)
+          this.quad.render(renderer)
+        }
       }
     } finally {
       renderer.autoClear = previousAutoClear
@@ -439,11 +501,16 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
     return units
   }
 
-  /** Units drawing a full-screen pass into a 2D target, or into each slice of a 3D one. */
+  /**
+   * Units drawing a full-screen pass into a 2D target, or into the slices of a 3D one: one unit per slice
+   * for costly passes, one for all slices of a cheap one (a copy), so that cheap passes never cost a frame
+   * per slice.
+   */
   protected passUnits(target: RenderTarget, material: NodeMaterial, costPerTexel: number): WorkUnit[] {
     const depth = target instanceof RenderTarget3D ? target.depth : 1
     const weight = costPerTexel * target.width * target.height
-    return Array.from({ length: depth }, (_, slice) => ({ target, material, slice, weight }))
+    if (costPerTexel <= PASS_COST.copy) return [{ target, material, slices: depth, weight: weight * depth }]
+    return Array.from({ length: depth }, (_, slice) => ({ target, material, slices: [slice], weight }))
   }
 
   /**
@@ -546,7 +613,8 @@ export class AtmosphereTextures implements AtmosphereTextureSet {
 
 /**
  * Whether read-back textures can be right: every value finite, transmittance within [0, 1] and reaching
- * 1 somewhere (rays that leave the atmosphere at once), irradiance and scattering not negative.
+ * 1 somewhere (rays that leave the atmosphere at once), irradiance and scattering not negative, and
+ * scattering not all zero.
  */
 export function isPlausible(data: AtmosphereTextureData): boolean {
   let transmittanceMaximum = 0
@@ -556,13 +624,21 @@ export function isPlausible(data: AtmosphereTextureData): boolean {
   }
   if (transmittanceMaximum < 0.999) return false
   for (const value of data.irradiance) if (!(value >= 0) || !Number.isFinite(value)) return false
+  // A failed readback (WebGL 2 does not guarantee half-float reads) leaves zeros: a sky must have light.
+  let scatteringNonZero = false
   if (data.scatteringHalfFloat) {
     // Half floats: exponent bits all set is infinity or NaN; the sign bit is negative (or -0).
-    for (const word of data.scattering) if ((word & 0x7c00) === 0x7c00 || (word & 0x8000) !== 0) return false
+    for (const word of data.scattering) {
+      if ((word & 0x7c00) === 0x7c00 || (word & 0x8000) !== 0) return false
+      if (word !== 0) scatteringNonZero = true
+    }
   } else {
-    for (const value of data.scattering) if (!(value >= 0) || !Number.isFinite(value)) return false
+    for (const value of data.scattering) {
+      if (!(value >= 0) || !Number.isFinite(value)) return false
+      if (value > 0) scatteringNonZero = true
+    }
   }
-  return true
+  return scatteringNonZero
 }
 
 /** Intermediate textures, released once the lookup textures are generated. */

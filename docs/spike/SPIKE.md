@@ -1,5 +1,52 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
+## Round 3: faster atmosphere startup
+
+Lookup-texture generation was the slowest part of startup and caused long frames while it ran. Three changes:
+
+- **One single-scattering pass instead of three.** Rayleigh and Mie single scattering are integrated once and
+  written to two textures by a multiple-render-target pass, then copied texel for texel into the scattering
+  texture. The generated textures are bit-identical to before on WebGPU and on the WebGL 2 fallback.
+- **Batches timed on the GPU.** Each animation frame runs a batch of passes (or slices of 3D passes) sized so
+  that it takes about `textures.budgetMillisecondsPerFrame` (4 ms) of GPU time. The cost is measured after
+  each batch (WebGPU `onSubmittedWorkDone`, a WebGL 2 fence), so the same code adapts to a desktop GPU and
+  a phone. A batch may grow at most twice as heavy as the last measured one.
+- **IndexedDB cache.** Generated textures are stored keyed by every parameter, the storage type and a
+  precompute version (`ATMOSPHERE_PRECOMPUTE_VERSION`), and later page loads copy them back instead of
+  generating. On by default (`<Atmosphere cache={false} />` opts out); two sets are kept, 8 MB each with
+  half-float scattering (16 MB with 32-bit). A read-back that cannot be right is never stored.
+
+`earth.inspect().atmosphere` now also reports `generationFrames` and `loadedFromCache`, and the playground
+shows them in the top-left corner. `?nocache` forces generation.
+
+### Results in SwiftShader (CPU rasteriser: compare the two columns, not the absolute numbers)
+
+| Run | Before | After |
+| --- | --- | --- |
+| WebGPU, total generation | 30.2 s | 16.6 s |
+| WebGPU, longest frame during generation | 2033 ms (p95 633 ms) | 16.8 ms (p95 16.7 ms) |
+| WebGL 2, total generation | 51.2 s | 53.1 s |
+| WebGL 2, longest frame during generation | 1400 ms | 467 ms (p95 16.8 ms) |
+| Second page load, WebGPU (cache hit) | 30 s | 0.42 s, 25 frames |
+
+The remaining long WebGL 2 frames in SwiftShader are single slices (one slice is never split); on a GPU a
+density slice is a few milliseconds. If phones show long frames there, the next step is splitting slices
+into row bands.
+
+`node apps/playground/tests/atmosphere.mjs [webgl] [cache]` (with `pnpm dev` running, under xvfb) prints these
+numbers and fingerprints of the textures.
+
+### On devices
+
+The playground is published to GitHub Pages by `.github/workflows/playground-pages.yml` once Pages is enabled
+(Settings → Pages → Source: GitHub Actions). Open it once to warm the cache, then with `?nocache` to time
+generation; the top-left line gives the time and frame count.
+
+| Device | Browser | Generation | Frames | Cache load |
+| --- | --- | --- | --- | --- |
+| Pixel | Chrome | to measure | | |
+| iPhone | Safari | to measure | | |
+
 ## Round 2: our own atmosphere, GPU imagery, takram removed
 
 Romain's call after round 1: drop takram and write our own atmosphere, and move imagery composition to the GPU.
