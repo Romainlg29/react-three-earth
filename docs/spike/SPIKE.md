@@ -1,5 +1,63 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
+## Round 2: our own atmosphere, GPU imagery, takram removed
+
+Romain's call after round 1: drop takram and write our own atmosphere, and move imagery composition to the GPU.
+Both are done, reviewed by a second model and fixed. The library now depends only on three, 3d-tiles-renderer
+and (optionally) React and R3F, and it makes no network request of its own.
+
+### Atmosphere (`src/atmosphere/`)
+
+- Bruneton 2017 precomputed scattering, ported to typed TSL (BSD-3, see THIRD_PARTY_NOTICES.md).
+- Lookup textures are generated on the device at startup from `AtmosphereParameters` (SI units), with fragment
+  passes only, so WebGPU and the WebGL2 fallback behave the same. Change the parameters (haze, another planet)
+  and the textures regenerate. Generation is spread over about 60 frames to avoid a hitch; until it finishes the
+  scene renders without haze or sky, and `earth.inspect().atmosphere.ready` turns true when it does.
+- Transmittance and irradiance are always 32-bit (half floats flush grazing-ray transmittance to zero and give
+  NaNs near the horizon on phones). Scattering is 32-bit where the device can filter and blend it, half float
+  otherwise. Memory: 8 MB (half) or 16 MB (float) kept, plus 24 / 48 MB transient during generation.
+- Positions are corrected per fragment so the model's altitude equals the height above WGS84: exact on the
+  ground at every latitude, within 27 m above ground even from 20,000 km.
+- Sun light is a `DirectionalLight` registered with `Light.registerNode` (r187's replacement for `addLight`):
+  sunlight attenuated at each fragment plus sky irradiance as ambient. Stock `MeshStandardNodeMaterial` works.
+- Our own solar ephemeris (Astronomical Almanac + GMST), unit-tested against solstice and equinox values.
+- The playground creates the renderer with `reversedDepthBuffer: true`; without it, haze bands from orbit
+  (float depth steps reach hundreds of km). The atmosphere warns once if it is off.
+- Not done: stars, moon, shadow length, and correction for geometry beyond the horizon.
+
+Generation time is not measured on a real GPU yet: SwiftShader (a CPU rasteriser) takes 40 to 55 s, which says
+nothing about phones. Measuring it on a Pixel and an iPhone is the first on-device task.
+
+### Imagery (`src/tiles/imagery/`)
+
+- Each terrain tile's imagery is composed on the GPU into a 256×256 render target, one quad per covering source
+  tile, instead of a main-thread canvas. Decoding was already off-thread (`createImageBitmap`).
+- On SwiftShader the main-thread cost per tile went from about 58 ms (canvas upload) to about 1 to 2 ms.
+- Compositions run inside a per-frame budget (2 ms by default, `imageryCompositionBudgetMilliseconds`). Tiles
+  3DTilesRenderer is waiting for go before preloads. Source tiles' GPU copies are freed once composed. Frames
+  are requested while work is pending, so R3F's `frameloop="demand"` works.
+- `earth.inspect().terrain` reports `imageryTilesComposited`, `imageryMainThreadMilliseconds` (last frame) and
+  totals, for on-device profiling.
+- It overrides a private 3d-tiles-renderer class instance (`TiledRegionImageSource`), isolated in
+  `composeRegionsOnGpu.ts`: pin the version, and ask upstream for an extension point.
+
+### Results now
+
+| Check | Result |
+| --- | --- |
+| Precision, highPrecision on | 1 cm = 128.7 px, worst error 0.7 px |
+| Map, atmosphere off | imagery drapes correctly (78 % checker pixels), same image as the canvas path |
+| Map, atmosphere on | sky, horizon glow, haze, sunlit terrain (92 % sky or haze, 0 % black) |
+| WebGL2 fallback | same images |
+| Console and Vite startup | no warnings or errors |
+| Unit tests | 60 pass |
+
+![map with atmosphere](map-atmosphere-on.png) ![from orbit](map-orbit.png)
+
+---
+
+## Round 1 (historical)
+
 **Question:** can we build react-three-earth on 3DTilesRendererJS and takram three-geospatial, rendering
 with WebGPU through React Three Fiber v10? And do we keep centimeter precision at planet scale?
 

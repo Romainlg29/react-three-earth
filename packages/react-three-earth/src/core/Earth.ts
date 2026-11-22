@@ -141,7 +141,7 @@ export class Earth extends Group {
         this.atmosphere === null
           ? null
           : {
-              ready: this.atmosphere.generationTimeMilliseconds !== null,
+              ready: this.atmosphere.context.texturesReady.value === 1,
               generationTimeMilliseconds: this.atmosphere.generationTimeMilliseconds,
             },
     }
