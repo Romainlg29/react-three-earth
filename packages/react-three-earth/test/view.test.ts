@@ -103,17 +103,19 @@ describe('ViewMorph frames', () => {
     expect(summit.sub(view.anchorPosition).dot(view.anchorUp)).toBeCloseTo(3776, 6)
   })
 
-  it('eases the morph and anchors where the camera looks', () => {
+  it('turns top-down and swaps at once near the ground, anchored where the camera looks', () => {
     const view = new ViewMorph()
     const camera = new PerspectiveCamera(60, 1, 1, 1e8)
     setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
     view.setMode('2d', { durationSeconds: 1 })
     expect(view.transitioning).toBe(true)
-    view.update(camera, 0.5)
-    expect(view.morph).toBeCloseTo(0.5, 12)
+    // 60 km is under the swap altitude: no dive, 40 % of the duration
+    view.update(camera, 0.3)
+    expect(view.morph).toBeGreaterThan(0)
+    expect(view.morph).toBeLessThan(1)
     expect(MathUtils.radToDeg(view.anchorLongitudeRadians)).toBeCloseTo(138.7274, 4)
     expect(MathUtils.radToDeg(view.anchorLatitudeRadians)).toBeCloseTo(35.3606, 4)
-    view.update(camera, 0.5)
+    view.update(camera, 0.15)
     expect(view.morph).toBe(1)
     expect(view.transitioning).toBe(false)
 
@@ -121,6 +123,37 @@ describe('ViewMorph frames', () => {
     const forward = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion)
     expect(forward.dot(view.anchorUp)).toBeCloseTo(-1, 9)
     expect(camera.position.distanceTo(view.anchorPosition)).toBeCloseTo(60_000, 3)
+  })
+
+  it('from orbit, dives to the swap altitude, swaps there, then rises', () => {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, 1, 1, 1e9)
+    setCameraView(camera, { longitudeDegrees: 2.35, latitudeDegrees: 48.85, distanceMeters: 12_000_000, pitchDegrees: -90 })
+    view.setMode('2d', { durationSeconds: 10 })
+    view.update(camera, 0)
+    const distance = () => camera.position.distanceTo(view.anchorPosition)
+    // Before the swap the globe is untouched; at the swap the camera is low
+    view.update(camera, 3.9)
+    expect(view.morph).toBe(0)
+    view.update(camera, 0.2)
+    expect(view.morph).toBeGreaterThan(0)
+    expect(distance()).toBeCloseTo(200_000, 0)
+    view.update(camera, 1.9)
+    expect(view.morph).toBe(1)
+    expect(distance()).toBeCloseTo(200_000, 0)
+    view.update(camera, 4)
+    expect(view.transitioning).toBe(false)
+    // Back up, capped where the whole map height fills the screen
+    expect(distance()).toBeCloseTo(Math.min(12_000_000, view.maximumFlatCameraHeightMeters(camera)), 0)
+
+    // Reversed halfway back, it plays backwards to the globe at the start distance
+    view.setMode('3d', { durationSeconds: 10 })
+    view.update(camera, 0)
+    view.update(camera, 5)
+    expect(view.morph).toBeLessThan(1)
+    view.setMode('2d')
+    view.update(camera, 6)
+    expect(view.morph).toBe(1)
   })
 
   it('re-anchors under the screen centre on the way back, without moving the view', () => {
@@ -182,5 +215,84 @@ describe('computeFlatPositions', () => {
     expect(Math.abs(flat.getX(1) + center[0] - expectedX)).toBeLessThan(0.05)
     expect(Math.abs(flat.getY(2) + center[1] - latitudeToMercatorY(degrees(35.4)))).toBeLessThan(0.05)
     expect(Math.abs(flat.getZ(2) + center[2] - 3776 * mercatorScaleFactor(degrees(35.4)))).toBeLessThan(0.05)
+  })
+})
+
+describe('flat map like MapLibre', () => {
+  function flatMapCamera(longitudeDegrees: number, latitudeDegrees: number, distanceMeters: number) {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, 2, 1, 1e9)
+    setCameraView(camera, { longitudeDegrees, latitudeDegrees, distanceMeters, pitchDegrees: -90 })
+    view.setMode('2d', { durationSeconds: 0 })
+    view.update(camera, 0)
+    return { view, camera }
+  }
+
+  it('looks north when it starts from straight down', () => {
+    const { view, camera } = flatMapCamera(138.7, 35.4, 100_000)
+    const screenUp = new Vector3(0, 1, 0).applyQuaternion(camera.quaternion).transformDirection(view.earthToFlat)
+    expect(screenUp.y).toBeCloseTo(1, 6)
+  })
+
+  it('stops zooming out where the whole map height fills the screen, and centres it', () => {
+    const { view, camera } = flatMapCamera(138.7, 35.4, 40_000_000)
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    // Visible half height on the map, in Web Mercator metres, equals the map's half height
+    expect(flat.z * Math.tan(MathUtils.degToRad(30))).toBeCloseTo(WEB_MERCATOR_HALF_EXTENT_METERS, 0)
+    expect(flat.y).toBeCloseTo(0, 3)
+  })
+
+  it('never shows past the poles', () => {
+    const { view, camera } = flatMapCamera(0, 84, 1_000_000)
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    const northHalfExtent = flat.z * Math.tan(MathUtils.degToRad(30))
+    expect(flat.y + northHalfExtent).toBeLessThanOrEqual(WEB_MERCATOR_HALF_EXTENT_METERS + 1e-3)
+  })
+
+  it('repeats the world east and west when zoomed out, and wraps the camera back after a long pan', () => {
+    const { view, camera } = flatMapCamera(0, 0, 40_000_000)
+    view.constrainFlatCamera(camera)
+    view.updateWorldCopies(camera)
+    expect(view.firstWorldCopy).toBe(-1)
+    expect(view.worldCopyCount).toBe(3)
+
+    // Pan one and a quarter worlds east: the camera comes back to the middle copy, a quarter world east
+    const east = new Vector3(1, 0, 0).transformDirection(view.anchorFrame)
+    camera.position.addScaledVector(east, 2.5 * WEB_MERCATOR_HALF_EXTENT_METERS * view.scale)
+    camera.updateMatrixWorld()
+    view.constrainFlatCamera(camera)
+    const flat = camera.position.clone().applyMatrix4(view.earthToFlat)
+    expect(flat.x - view.anchorMercatorXMeters).toBeCloseTo(0.5 * WEB_MERCATOR_HALF_EXTENT_METERS, 0)
+  })
+
+  it('goes back to the globe across ±180° without throwing the camera a world away', () => {
+    const { view, camera } = flatMapCamera(179, 10, 100_000)
+    // Pan 300 km east, past the antimeridian
+    camera.position.add(new Vector3(1, 0, 0).transformDirection(view.anchorFrame).multiplyScalar(300_000))
+    camera.updateMatrixWorld()
+    const before = camera.position.clone()
+    view.setMode('3d')
+    view.update(camera, 0)
+    expect(view.inspect().anchorLongitudeDegrees).toBeLessThan(-177)
+    // The map re-anchors under the camera (a few km as the tangent plane turns), not a world width away
+    expect(camera.position.distanceTo(before)).toBeLessThan(20_000)
+  })
+
+  it('eases the pole clamp in when switching to the map near the ground', () => {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, 2, 1, 1e9)
+    setCameraView(camera, { longitudeDegrees: 0, latitudeDegrees: 84.9, distanceMeters: 150_000, pitchDegrees: -90 })
+    const before = camera.position.clone()
+    view.setMode('2d', { durationSeconds: 1 })
+    view.update(camera, 0)
+    expect(camera.position.distanceTo(before)).toBeLessThan(1)
+  })
+
+  it('draws one copy on the globe', () => {
+    const view = new ViewMorph()
+    view.updateWorldCopies(new PerspectiveCamera())
+    expect([view.firstWorldCopy, view.worldCopyCount, view.worldCopyReferenceXMeters]).toEqual([0, 1, view.anchorMercatorXMeters])
   })
 })

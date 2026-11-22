@@ -62,6 +62,7 @@ declare global {
   interface Window {
     earth?: EarthImpl
     setView?: (view: ViewMode) => void
+    camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
   }
 }
@@ -72,6 +73,7 @@ function InitialView() {
   useLayoutEffect(() => {
     setCameraView(camera, readCameraView())
     window.earth = earth // agents and tests read earth.inspect()
+    window.camera = camera
   }, [camera, earth])
   return null
 }

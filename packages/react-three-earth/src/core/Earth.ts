@@ -108,7 +108,7 @@ export class Earth extends Group<EarthEventMap> {
 
   /**
    * Morphs to the globe (`'3d'`) or the flat Web Mercator map (`'2d'`), over `durationSeconds` (default
-   * 1.5, 0 switches at once). The map is anchored where the camera looks, and on the way to 2D the camera
+   * 2.4, 0 switches at once). The map is anchored where the camera looks, and on the way to 2D the camera
    * turns to look straight down. The morph runs in `update`; `view.transitioning` tells when it is done.
    */
   setView(mode: ViewMode, options?: ViewTransitionOptions): void {
@@ -167,6 +167,7 @@ export class Earth extends Group<EarthEventMap> {
     this.camera.setCamera(camera)
     this.camera.setViewportSize(this.viewportSize.x, this.viewportSize.y)
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
+    this.view.updateWorldCopies(camera)
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
       // The sky, haze and sunlight belong to the globe: they fade out on the flat map.

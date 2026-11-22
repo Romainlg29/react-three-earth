@@ -1,6 +1,6 @@
 import type { Tile } from '3d-tiles-renderer'
 import { BufferAttribute, Matrix4, Mesh, type BufferGeometry, type Material, type Object3D } from 'three'
-import { attribute, diffuseColor, mat3, mix, normalGeometry, positionGeometry, transformNormalToView, uniform, vec4 } from 'three/tsl'
+import { attribute, diffuseColor, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
@@ -11,6 +11,7 @@ import {
   mercatorScaleFactor,
   unwrapLongitude,
   wrapMercatorXNear,
+  WEB_MERCATOR_HALF_EXTENT_METERS,
   type GeodeticRadians,
 } from '../view/webMercator.js'
 
@@ -29,6 +30,8 @@ interface FlatMeshState {
   readonly globeToFlat: Matrix4
   morph: number
   flatMapLuminance: number
+  /** World copies drawn as instances: instance 0 is this many world widths from the mesh's own frame. */
+  firstWorldCopyOffset: number
   /** Whether `matrixWorld` holds the flat frame: only between `onBeforeRender` and `onAfterRender`. */
   flattened: boolean
 }
@@ -45,6 +48,7 @@ const globeToFlatUniform = uniform(new Matrix4()).onObjectUpdate(({ object }, se
   self.value = state?.globeToFlat ?? identityMatrix
 })
 const morphUniform = uniform(0).onObjectUpdate(({ object }) => (object === null ? 0 : (getState(object)?.morph ?? 0)))
+const firstWorldCopyOffsetUniform = uniform(0).onObjectUpdate(({ object }) => (object === null ? 0 : (getState(object)?.firstWorldCopyOffset ?? 0)))
 const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (object === null ? 1 : (getState(object)?.flatMapLuminance ?? 1)))
 
 /**
@@ -52,7 +56,12 @@ const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (objec
  * result is the geometry's position exactly (mix with weight 0). Otherwise the mesh is drawn with its flat
  * frame's matrix and the globe position is brought into that frame first.
  */
-const morphedPosition = mix(globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz, attribute(FLAT_POSITION_ATTRIBUTE, 'vec3'), morphUniform)
+const worldCopyOffset = vec3(float(instanceIndex).add(firstWorldCopyOffsetUniform).mul(2 * WEB_MERCATOR_HALF_EXTENT_METERS), 0, 0)
+const morphedPosition = mix(
+  globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz,
+  attribute(FLAT_POSITION_ATTRIBUTE, 'vec3').add(worldCopyOffset),
+  morphUniform,
+)
 
 /**
  * The normal, turned with the geometry into the flat frame, so shading stays continuous when the morph
@@ -128,6 +137,7 @@ export class FlatMapPlugin {
       globeToFlat: new Matrix4(),
       morph: 0,
       flatMapLuminance: 1,
+      firstWorldCopyOffset: 0,
       flattened: false,
     }
     wrapMaterial(mesh.material as Material, mesh.geometry.hasAttribute('normal'))
@@ -159,9 +169,13 @@ export class FlatMapPlugin {
       return
     }
     globeMatrix.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
-    // The map is one world wide: place each mesh on the copy of the world nearest the anchor, so the map
-    // has no seam at ±180° whatever the anchor.
-    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.anchorMercatorXMeters)
+    // The map is one world wide: place each mesh within half a world of the camera (of the anchor during
+    // the morph), so the map has no seam near the camera and everything near it is in the mesh matrix, at
+    // full precision. The other copies are instances of the same draw, offset in the shader: they are at
+    // least a quarter of a world away, so only seen zoomed out, where float32 metres don't show.
+    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.worldCopyReferenceXMeters)
+    state.firstWorldCopyOffset = view.firstWorldCopy
+    mesh.count = view.worldCopyCount
     flatMatrix
       .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)
       .multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
@@ -176,6 +190,7 @@ export class FlatMapPlugin {
 function restoreGlobeMatrix(mesh: FlatMesh): void {
   const state = mesh[FLAT_STATE]
   if (state === undefined || !state.flattened) return
+  mesh.count = 1
   if (mesh.parent === null) mesh.matrixWorld.copy(mesh.matrix)
   else mesh.matrixWorld.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
   state.flattened = false
