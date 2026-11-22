@@ -1,7 +1,7 @@
 // Pivot material adapted from takram three-geospatial (MIT, (c) 2024 Shota Matsuda), storybook-webgpu at b012ad06,
 // itself ported from 3DTilesRendererJS's PivotPointMesh (Apache-2.0).
-import { GlobeControls } from '3d-tiles-renderer'
-import type { Material, Mesh } from 'three'
+import { EnvironmentControls, GlobeControls } from '3d-tiles-renderer'
+import { Group, type Camera, type Material, type Mesh } from 'three'
 import {
   cameraProjectionMatrix,
   Fn,
@@ -16,6 +16,8 @@ import {
   vec4,
 } from 'three/tsl'
 import { NodeMaterial } from 'three/webgpu'
+
+import type { ViewMorph } from '../view/ViewMorph.js'
 
 function createPivotMaterial(): Material {
   const size = uniform(15).mul(screenDPR)
@@ -57,9 +59,57 @@ function createPivotMaterial(): Material {
 export class EarthControls extends GlobeControls {
   constructor(...args: ConstructorParameters<typeof GlobeControls>) {
     super(...args)
-    const pivotMesh = (this as unknown as { pivotMesh: Mesh }).pivotMesh
-    ;(pivotMesh.material as Material).dispose()
-    pivotMesh.material = createPivotMaterial()
-    pivotMesh.onBeforeRender = () => {}
+    replacePivotMaterial(this)
   }
+}
+
+function replacePivotMaterial(controls: object): void {
+  const pivotMesh = (controls as { pivotMesh: Mesh }).pivotMesh
+  ;(pivotMesh.material as Material).dispose()
+  pivotMesh.material = createPivotMaterial()
+  pivotMesh.onBeforeRender = () => {}
+}
+
+/**
+ * Pan, zoom and rotate over the flat map (`Earth.setView('2d')`): 3DTilesRenderer's `EnvironmentControls`
+ * on the map plane, looking straight down by default. Call `followView` before `update` each frame, so the
+ * plane follows the map's anchor. Like `EarthControls`, it fits the camera's near and far planes.
+ */
+export class FlatMapControls extends EnvironmentControls {
+  /** Steepest tilt away from looking straight down, in radians. Default: 0 (a flat 2D map). */
+  maximumTiltRadians = 0
+
+  constructor(camera: Camera | null = null, domElement: HTMLElement | null = null) {
+    // The map is not raycast: drags and zooms land on the map plane (the fallback plane).
+    super(new Group(), camera as never, domElement as never)
+    this.useFallbackPlane = true
+    this.minAltitude = 0
+    this.minDistance = 2
+    replacePivotMaterial(this)
+  }
+
+  /** Takes the map plane and its up direction from the view morph. */
+  followView(view: ViewMorph): void {
+    this.up.copy(view.anchorUp)
+    this.fallbackPlane.setFromNormalAndCoplanarPoint(view.anchorUp, view.anchorPosition)
+    this.maxAltitude = this.maximumTiltRadians
+  }
+
+  override update(deltaTime?: number): void {
+    super.update(deltaTime)
+    const camera = this.camera as (Camera & { near: number; far: number; updateProjectionMatrix?: () => void }) | null
+    if (camera === null || !('near' in camera)) return
+    fitClippingPlanes(camera, this.fallbackPlane.distanceToPoint(camera.position))
+  }
+}
+
+/** Near and far planes for a camera at this height above the map: the whole visible map, with depth to spare. */
+export function fitClippingPlanes(camera: Camera & { near: number; far: number; updateProjectionMatrix?: () => void }, heightMeters: number): void {
+  const height = Math.max(Math.abs(heightMeters), 1)
+  const near = Math.max(0.1, height * 1e-3)
+  const far = Math.max(height * 100, 1e8)
+  if (camera.near === near && camera.far === far) return
+  camera.near = near
+  camera.far = far
+  camera.updateProjectionMatrix?.()
 }

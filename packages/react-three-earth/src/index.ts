@@ -3,7 +3,11 @@ export { Terrain, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'
 export { Atmosphere, type AtmosphereOptions, type AerialPerspectiveOptions } from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
-export { EarthControls } from './core/EarthControls.js'
+export { EarthControls, FlatMapControls } from './core/EarthControls.js'
+export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
+export * from './view/webMercator.js'
+export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
+export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE } from './tiles/FlatMapPlugin.js'
 export {
   QuantizedMeshSource,
   RasterTileSource,

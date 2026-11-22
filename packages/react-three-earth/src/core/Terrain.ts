@@ -1,11 +1,13 @@
-import { TilesRenderer } from '3d-tiles-renderer'
 import type { Camera, Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
+import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
+import type { ViewMorph } from '../view/ViewMorph.js'
 import type { Imagery } from './Imagery.js'
 import type { TerrainSource } from './sources.js'
 
@@ -39,8 +41,10 @@ interface FrameRequestDispatcher {
 
 /** The ground: a terrain tile pyramid with imagery layers draped on it. */
 export class Terrain {
-  readonly tiles: TilesRenderer
+  readonly tiles: EarthTilesRenderer
   readonly overlays: ImageOverlayPlugin
+  /** Lays the tiles on the flat map and morphs them (see `setView`). */
+  readonly flatMap: FlatMapPlugin
   protected readonly imagery = new Set<Imagery>()
 
   constructor({
@@ -55,12 +59,14 @@ export class Terrain {
     if (source === undefined) throw new Error('Terrain: needs one source, for example new QuantizedMeshSource({ url }).')
     if (ignored.length > 0) console.warn('Terrain: only the first source is used for now; stacking terrain sources is planned.')
 
-    this.tiles = new TilesRenderer(source.url)
+    this.tiles = new EarthTilesRenderer(source.url)
     for (const plugin of source.createPlugins()) this.tiles.registerPlugin(plugin)
     this.tiles.registerPlugin(new TileMaterialReplacementPlugin(createMaterial))
     this.overlays = new ImageOverlayPlugin({ compositionBudgetMilliseconds: imageryCompositionBudgetMilliseconds })
     this.tiles.registerPlugin(this.overlays)
     if (fade) this.tiles.registerPlugin(new TilesFadePlugin())
+    this.flatMap = new FlatMapPlugin()
+    this.tiles.registerPlugin(this.flatMap)
 
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
@@ -70,6 +76,12 @@ export class Terrain {
   /** The object to add to the scene. */
   get object(): Object3D {
     return this.tiles.group
+  }
+
+  /** Follows a globe-to-map morph: tiles are selected and drawn for it. `Earth.setTerrain` calls it. */
+  setView(view: ViewMorph | null): void {
+    this.tiles.view = view
+    this.flatMap.view = view
   }
 
   addImagery(imagery: Imagery): void {

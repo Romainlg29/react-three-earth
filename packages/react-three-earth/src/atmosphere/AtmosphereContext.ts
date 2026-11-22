@@ -89,6 +89,8 @@ export class AtmosphereContext {
    * result and select on it, so nothing ever reads the empty textures' 0 / 0 into the frame.
    */
   readonly texturesReady: UniformNode<'float', number> = uniform(0)
+  /** 0 to 1: how much of the sky and haze the aerial perspective applies (faded out on the flat map). */
+  readonly opacity: UniformNode<'float', number> = uniform(1)
 
   constructor(parameters: AtmosphereParameters) {
     this.model = new AtmosphereModel(parameters)
