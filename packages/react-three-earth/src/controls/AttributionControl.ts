@@ -1,5 +1,6 @@
 import type { Earth } from '../core/Earth.js'
 import { normalizeAttributions, parseAttribution, resolveCompact } from '../core/attribution.js'
+import { holdContainerPosition, releaseContainerPosition } from '../core/containerPosition.js'
 
 export interface AttributionControlOptions {
   /** The earth whose `getAttributions()` the control shows and whose `attributionchange` event it follows. */
@@ -15,7 +16,6 @@ export interface AttributionControlOptions {
   customAttribution?: string | readonly string[]
 }
 
-const POSITIONED_ATTRIBUTE = 'data-react-three-earth-attribution-positioned'
 const STYLE_ELEMENT_ATTRIBUTE = 'data-react-three-earth-attribution-style'
 
 /**
@@ -80,11 +80,8 @@ export class AttributionControl {
     this.customAttributions = typeof customAttribution === 'string' ? [customAttribution] : [...(customAttribution ?? [])]
     ensureStyle(document)
 
-    // The first control makes a static container positioned; the last one to go puts it back
-    if (document.defaultView?.getComputedStyle(container).position === 'static') {
-      container.style.position = 'relative'
-      container.setAttribute(POSITIONED_ATTRIBUTE, '')
-    }
+    // The first overlay makes a static container positioned; the last one to go puts it back
+    holdContainerPosition(container)
 
     this.element = document.createElement('div')
     this.element.className = 'react-three-earth-attribution'
@@ -169,11 +166,7 @@ export class AttributionControl {
     this.toggleButton.removeEventListener('click', this.onToggle)
     this.resizeObserver?.disconnect()
     this.element.remove()
-    // Another control may still rely on the position we set
-    if (this.container.hasAttribute(POSITIONED_ATTRIBUTE) && this.container.querySelector('.react-three-earth-attribution') === null) {
-      this.container.removeAttribute(POSITIONED_ATTRIBUTE)
-      this.container.style.position = ''
-    }
+    releaseContainerPosition(this.container)
   }
 
   protected onToggle = (): void => {

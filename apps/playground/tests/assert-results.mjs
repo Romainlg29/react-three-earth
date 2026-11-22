@@ -61,6 +61,19 @@ const expectations = {
       ['the morph fires movestart, moveend, then idle', r.morphEvents.join() === 'movestart,moveend,idle'],
     ]
   },
+  'markers and popups with fixtures': r => [
+    ['the pin sits on the hill (terrain height within 50 m of 3900 m)', Math.abs(r.peakHeightMeters - 3900) < 50],
+    ['the pin is a labelled button', r.peakTagName === 'BUTTON' && r.peakLabel === 'Fixture peak'],
+    ['React content renders in the marker', r.buriedText === 'sea level'],
+    ['a marker under the hill fades (occluded, opacity 0.2)', r.buriedVisibility === 'occluded' && Number(r.buriedOpacity) === 0.2],
+    ['checked on every frame of the camera move', r.frames >= 35],
+    ['the marker is placed in the frame that draws (transform within 0.5 px of project)', r.maximumTransformErrorPixels <= 0.5],
+    ['the pin\'s tip stays within 1 px of its projected point while the camera moves', r.maximumElementErrorPixels <= 1],
+    ['hidden behind the globe', r.behindHorizon.visibility === 'hidden' && r.behindHorizon.cssVisibility === 'hidden'],
+    ['the popup opens on click, above the pin, with focus inside', r.popup.text.includes('Fixture peak') && r.popup.anchor === 'bottom' && r.popup.focusInside && Math.abs(r.popup.gapAbovePinPixels) <= 1 && r.popup.centreOffsetPixels <= 1],
+    ['Escape closes the popup and gives focus back to the marker', !r.afterEscape.open && r.afterEscape.focusOnMarker],
+    ['dragging moves the marker, fires dragend once, and leaves the map still', r.drag.dragEnds === 1 && r.drag.movedPixels > 60 && r.drag.cameraMovedMeters < 1],
+  ],
 }
 
 let failures = 0

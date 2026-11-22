@@ -203,6 +203,7 @@ export class Earth extends Group<EarthEventMap> {
       this.atmosphere.update(camera, this.date)
     }
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)
+    this.dispatchEvent({ type: 'update' })
     this.lastUpdateMilliseconds = performance.now() - now
     // After a move, one more frame tells whether the camera stopped (`moveend`).
     return morphing || this.view.transitioning || cameraMoved

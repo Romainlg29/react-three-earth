@@ -45,3 +45,6 @@ export function useRegisterSource<T>(registry: SourceRegistry<T> | null, source:
   if (registry === null) throw new Error(`<${componentName}> must sit inside <${layerName}>.`)
   useLayoutEffect(() => registry.register(source), [registry, source])
 }
+
+/** The vanilla `Marker` of the nearest `<Marker>`, for a `<Popup>` or content inside it. */
+export const MarkerContext = createContext<import('../core/Marker.js').Marker | null>(null)

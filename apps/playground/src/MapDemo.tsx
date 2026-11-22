@@ -1,5 +1,14 @@
 import { Canvas } from '@react-three/fiber'
-import { prefersWebGLBackend, setCameraView, type CameraView, type Earth as EarthImpl, type MapStyleSource as MapStyleSourceImpl, type ViewMode } from 'react-three-earth'
+import {
+  prefersWebGLBackend,
+  setCameraView,
+  type CameraView,
+  type Earth as EarthImpl,
+  type GeographicPosition,
+  type MapStyleSource as MapStyleSourceImpl,
+  type Marker as MarkerImpl,
+  type ViewMode,
+} from 'react-three-earth'
 import {
   Atmosphere,
   AttributionControl,
@@ -7,7 +16,9 @@ import {
   EarthControls,
   Imagery,
   MapStyleSource,
+  Marker,
   PerformanceStats,
+  Popup,
   QuantizedMeshSource,
   RasterTileSource,
   Terrain,
@@ -38,6 +49,8 @@ const atmosphereCache = !params.has('nocache')
 // `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
 const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 const showStatistics = params.get('stats') !== '0'
+// `?markers` adds markers and popups (on the fixture terrain's highest hill with `?fixtures`).
+const showMarkers = params.has('markers')
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
 // (`?webgl` wins if both are given).
 const forceWebGL = params.has('webgl') || (!params.has('webgpu') && prefersWebGLBackend())
@@ -67,6 +80,8 @@ declare global {
     setView?: (view: ViewMode) => void
     camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
+    markers?: Record<string, MarkerImpl | null>
+    dragEnds?: GeographicPosition[]
   }
 }
 
@@ -79,6 +94,41 @@ function InitialView() {
     window.camera = camera
   }, [camera, earth])
   return null
+}
+
+/**
+ * Markers for `?markers`. With fixtures: a pin with a popup on the highest hill (3900 m at -90°, 0°), a label
+ * buried under it (height 0, so the hill hides it), and a draggable pin. Otherwise the same around Fuji.
+ */
+function Markers() {
+  const peak = useFixtures ? { longitudeDegrees: -90, latitudeDegrees: 0, name: 'Fixture peak', heightMeters: 3900 } : { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, name: 'Mount Fuji', heightMeters: 3776 }
+  const [dragged, setDragged] = useState<GeographicPosition>({ longitudeDegrees: peak.longitudeDegrees + 0.05, latitudeDegrees: peak.latitudeDegrees - 0.05 })
+  const markers = (window.markers ??= {})
+  return (
+    <>
+      <Marker longitudeDegrees={peak.longitudeDegrees} latitudeDegrees={peak.latitudeDegrees} label={peak.name} ref={marker => void (markers.peak = marker)}>
+        <Popup>
+          <strong>{peak.name}</strong>
+          <div>{peak.heightMeters} m</div>
+        </Popup>
+      </Marker>
+      <Marker longitudeDegrees={peak.longitudeDegrees - 0.1} latitudeDegrees={peak.latitudeDegrees + 0.1} heightMeters={0} label="Buried label" ref={marker => void (markers.buried = marker)}>
+        <div style={{ padding: '2px 6px', background: '#fff', borderRadius: 4, font: '12px system-ui', boxShadow: '0 1px 3px rgba(0,0,0,0.3)' }}>sea level</div>
+      </Marker>
+      <Marker
+        {...dragged}
+        draggable
+        color="#e8590c"
+        label="Draggable marker"
+        ref={marker => void (markers.draggable = marker)}
+        onDragEnd={position => {
+          // Without the height, the marker keeps following the terrain.
+          setDragged({ longitudeDegrees: position.longitudeDegrees, latitudeDegrees: position.latitudeDegrees })
+          ;(window.dragEnds ??= []).push(position)
+        }}
+      />
+    </>
+  )
 }
 
 /** Plain lights for the atmosphere-off check, faded out on the flat map like the atmosphere's sun. */
@@ -137,6 +187,7 @@ export function MapDemo() {
           )}
           <EarthControls />
           <AttributionControl />
+          {showMarkers ? <Markers /> : null}
         </Earth>
       </Canvas>
       <button

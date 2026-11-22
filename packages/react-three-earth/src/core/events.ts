@@ -5,7 +5,7 @@ import type { Camera, Object3DEventMap } from 'three'
  * `earth.addEventListener('moveend', listener)`, or `useEarthEvent('moveend', listener)` in React.
  *
  * Every event but `framerequest` fires from `earth.update`, once per frame at most, in this order:
- * `movestart`, `move`, `moveend`, `load`, `idle`. `framerequest` fires at once, from `earth.requestFrame`.
+ * `movestart`, `move`, `moveend`, `load`, `idle`, `update`. `framerequest` fires at once, from `earth.requestFrame`.
  */
 export interface EarthEventMap extends Object3DEventMap {
   /**
@@ -35,6 +35,12 @@ export interface EarthEventMap extends Object3DEventMap {
    * loading its metadata. `AttributionControl` follows it.
    */
   attributionchange: object
+  /**
+   * The end of every `earth.update`: the camera, the morph and the tiles are final for the frame about to be
+   * drawn. Markers and popups place themselves here, so they never lag behind the map. Move the camera before
+   * `earth.update` (as `EarthControls` does) for anything listening here to see it in the same frame.
+   */
+  update: object
 }
 
 export type EarthEventType = Exclude<keyof EarthEventMap, keyof Object3DEventMap>
