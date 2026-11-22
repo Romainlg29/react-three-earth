@@ -6,7 +6,7 @@ import type { GeographicBounds } from '../src/core/camera.js'
 import { createFlightPath, cubicBezier, fitBoundsOnMap, flightDurationSeconds, mercatorDistancePixels, toViewPadding } from '../src/core/cameraAnimation.js'
 import { Earth } from '../src/core/Earth.js'
 import { EarthViewControls } from '../src/core/EarthControls.js'
-import { EarthEventTracker, type EarthEventType } from '../src/core/events.js'
+import { CameraMotionDetector, EarthEventTracker, type EarthEventType } from '../src/core/events.js'
 import { formatViewHash, parseViewHash } from '../src/core/viewHash.js'
 
 const WIDTH_PIXELS = 800
@@ -69,6 +69,12 @@ describe('easing and the flight path', () => {
     expect(path.centerAmount(path.length)).toBeCloseTo(1, 6)
     expect(path.zoomChange(path.length)).toBeCloseTo(1, 6)
     expect(path.zoomChange(path.length / 2)).toBeLessThan(-3)
+  })
+
+  it('divides screenSpeed by the curvature minimumZoom calls for', () => {
+    const path = createFlightPath({ startWidthPixels: 800, distancePixels: 50_000, zoomChange: 0, minimumZoomChange: -2 })
+    expect(path.curve).not.toBeCloseTo(1.42, 2)
+    expect(flightDurationSeconds(path, { screenSpeed: 1 })).toBeCloseTo(path.length / (1 / path.curve), 9)
   })
 
   it('zooms without panning when the centre stays', () => {
@@ -296,6 +302,14 @@ describe('fitBounds', () => {
     expect(Math.max(...points.map(point => point.yPixels))).toBeLessThan(HEIGHT_PIXELS - 39.5)
   })
 
+  it('zooms out until a box wider than the visible globe shows, then fits it', () => {
+    const { earth } = createEarth()
+    const pacific = { westDegrees: 120, southDegrees: -40, eastDegrees: -120, northDegrees: 40 }
+    earth.camera.jumpTo(earth.camera.cameraForBounds(pacific, { paddingPixels: 20, pitchDegrees: -90 })!)
+    const points = projectBoundsEdges(earth, pacific)
+    expect(points.every(point => point.visible)).toBe(true)
+  })
+
   it('stops at maximumZoom, and refuses padding that leaves no room', async () => {
     const { earth } = createEarth()
     const tiny = { westDegrees: 2.35, southDegrees: 48.86, eastDegrees: 2.3501, northDegrees: 48.8601 }
@@ -379,7 +393,47 @@ describe('zoom, rotate and pitch events', () => {
   })
 })
 
+describe('camera motion', () => {
+  it('ignores rounding noise in the camera matrix, but adds up a slow creep', () => {
+    const detector = new CameraMotionDetector()
+    const camera = new PerspectiveCamera(60, 4 / 3, 1, 1e8)
+    camera.position.set(6_378_137, 1000, 2000)
+    camera.updateMatrixWorld()
+    detector.update(camera, 800, 600)
+    // Flip the last bits, as controls re-deriving the same pose do.
+    camera.matrixWorld.elements[12] = 6_378_137 + 2e-9
+    expect(detector.update(camera, 800, 600)).toBe(false)
+    camera.matrixWorld.elements[12] = 6_378_137 - 2e-9
+    expect(detector.update(camera, 800, 600)).toBe(false)
+    let moved = false
+    for (let step = 1; step <= 10 && !moved; step++) {
+      camera.matrixWorld.elements[12] = 6_378_137 + step * 2e-6
+      moved = detector.update(camera, 800, 600)
+    }
+    expect(moved).toBe(true)
+  })
+})
+
 describe('initialView', () => {
+  it('does not stop an animation called before the first frame; it starts from the initial view', async () => {
+    const earth = new Earth({ initialView: { ...TOKYO, zoom: 9, pitchDegrees: -90 } })
+    const camera = new PerspectiveCamera(60, WIDTH_PIXELS / HEIGHT_PIXELS, 1, 1e8)
+    const done = earth.camera.easeTo({ zoom: 11 }, { durationSeconds: 0.5 })
+    earth.update(camera, renderer, 1 / 60)
+    expect(earth.camera.getView().longitudeDegrees).toBeCloseTo(TOKYO.longitudeDegrees, 6)
+    let frames = 0
+    while (earth.update(camera, renderer, 1 / 60) && frames < 1000) frames++
+    await expect(done).resolves.toBe(true)
+    expect(earth.camera.getView().zoom).toBeCloseTo(11, 6)
+  })
+
+  it('counts at most one frame of the host\'s idle time on the first step', () => {
+    const { earth } = createEarth()
+    void earth.camera.flyTo({ ...PARIS, zoom: 12 }, { durationSeconds: 2 })
+    // A vanilla host rendering on demand, idle for 5 s before this frame.
+    expect(earth.camera.advanceAnimation(5)).toBe(true)
+  })
+
   it('applies on the first update, once the camera is known', () => {
     const earth = new Earth({ initialView: { ...PARIS, zoom: 9, pitchDegrees: -70 } })
     const camera = new PerspectiveCamera(60, WIDTH_PIXELS / HEIGHT_PIXELS, 1, 1e8)
@@ -433,6 +487,17 @@ describe('pointer events', () => {
 
     earth.detachPointerEvents()
     expect(element.count()).toBe(0)
+  })
+
+  it('measures from the canvas when events come from another element', () => {
+    const { earth } = createEarth()
+    const source = createElement()
+    const canvas = { getBoundingClientRect: () => ({ left: 110, top: 70, width: WIDTH_PIXELS, height: HEIGHT_PIXELS }) }
+    earth.attachPointerEvents(source as unknown as HTMLElement, { canvas: canvas as unknown as HTMLElement })
+    let screen: unknown
+    earth.addEventListener('pointermove', event => (screen = event.screen))
+    source.fire('pointermove', { clientX: 120, clientY: 75 })
+    expect(screen).toEqual({ xPixels: 10, yPixels: 5 })
   })
 
   it('reports null on sky', () => {

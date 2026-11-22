@@ -186,6 +186,9 @@ export class EarthEventTracker {
   }
 }
 
+/** Matrix changes below this share of an element's size are rounding, not motion (6 µm at the Earth's radius). */
+const MATRIX_NOISE_RELATIVE = 1e-12
+
 /**
  * Tells whether a camera moved between calls: its world matrix, field of view or the viewport changed.
  * Near and far planes are left out, since the controls refit them every frame.
@@ -207,8 +210,14 @@ export class CameraMotionDetector {
       viewportWidthPixels !== this.lastWidthPixels ||
       viewportHeightPixels !== this.lastHeightPixels
     for (let index = 0; index < 16; index++) {
-      if (elements[index] !== this.lastMatrix[index]) moved = true
-      this.lastMatrix[index] = elements[index]!
+      const value = elements[index]!
+      // A few units in the last place is float noise, not motion: GlobeControls can re-derive the same pose
+      // every frame with the last bits flipping, which would hold `idle` back forever.
+      if (first || Math.abs(value - this.lastMatrix[index]!) > MATRIX_NOISE_RELATIVE * Math.max(1, Math.abs(value))) {
+        moved = true
+        // Kept only on a real change, so a slow creep still adds up to one.
+        this.lastMatrix[index] = value
+      }
     }
     this.lastCamera = camera
     this.lastFieldOfView = fieldOfView

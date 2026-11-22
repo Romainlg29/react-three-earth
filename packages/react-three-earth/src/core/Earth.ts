@@ -123,16 +123,19 @@ export class Earth extends Group<EarthEventMap> {
   }
 
   /**
-   * Listens to pointer input on the canvas (or the element that receives its events), for the `click`,
-   * `doubleclick`, `contextmenu` and `pointermove` events. `<Earth>` calls it. Calling it again moves the
-   * listeners to the new element.
+   * Listens to pointer input on `element`, for the `click`, `doubleclick`, `contextmenu` and `pointermove`
+   * events. `element` is the canvas, or the element that receives its events (R3F's `eventSource`); screen
+   * positions are measured from `canvas` (default: `element`). `<Earth>` calls it. Calling it again moves
+   * the listeners.
    */
-  attachPointerEvents(element: HTMLElement): void {
+  attachPointerEvents(element: HTMLElement, { canvas = element }: { canvas?: HTMLElement } = {}): void {
     this.detachPointerEvents()
     /** Where the primary pointer went down, for telling clicks from drags. */
     let down: { x: number; y: number } | null = null
     const dispatch = (type: 'click' | 'doubleclick' | 'contextmenu' | 'pointermove', originalEvent: MouseEvent) => {
-      const rectangle = element.getBoundingClientRect()
+      // Nothing to measure without a listener (pointermove fires constantly; the rectangle can force a layout).
+      if (!this.hasListeners(type)) return
+      const rectangle = canvas.getBoundingClientRect()
       const screen = { xPixels: originalEvent.clientX - rectangle.left, yPixels: originalEvent.clientY - rectangle.top }
       const camera = this.camera
       let geographic: EarthPointerEvent['geographic'] | undefined
@@ -174,6 +177,12 @@ export class Earth extends Group<EarthEventMap> {
         element.removeEventListener('pointermove', onPointerMove)
       },
     }
+  }
+
+  /** True when a listener waits for this event type. */
+  protected hasListeners(type: string): boolean {
+    const listeners = (this as unknown as { _listeners?: Record<string, unknown[] | undefined> })._listeners
+    return (listeners?.[type]?.length ?? 0) > 0
   }
 
   /** Stops listening to pointer input. */
@@ -269,7 +278,7 @@ export class Earth extends Group<EarthEventMap> {
     this.camera.setCamera(camera)
     this.camera.setViewportSize(this.viewportSize.x, this.viewportSize.y)
     if (this.pendingInitialView !== null && this.camera.ready && !this.view.transitioning) {
-      this.camera.jumpTo(this.pendingInitialView)
+      this.camera.jumpToInitialView(this.pendingInitialView)
       this.pendingInitialView = null
     }
     // Before the morph and the tiles, so they follow this frame's camera.

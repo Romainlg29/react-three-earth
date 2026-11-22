@@ -205,6 +205,8 @@ export function mercatorDistancePixels(
 export interface FlightPath {
   /** Length of the path, in the curve's own units. 0 when nothing changes. */
   length: number
+  /** The curvature used: `curve`, or the one `minimumZoomChange` called for. */
+  curve: number
   /** Share of the way from the start centre to the end centre (0 to 1) at step `s`. */
   centerAmount(s: number): number
   /** Zoom change from the start at step `s`, in zoom levels. */
@@ -249,10 +251,11 @@ export function createFlightPath({
   const length = (r(1) - r0) / rho
   if (Math.abs(u1) < 1e-6 || !Number.isFinite(length)) {
     // No pan: zoom only, exponentially.
-    if (Math.abs(w0 - w1) < 1e-6) return { length: 0, centerAmount: () => 1, zoomChange: s => (s > 0 ? zoomChange : 0) }
+    if (Math.abs(w0 - w1) < 1e-6) return { length: 0, curve: rho, centerAmount: () => 1, zoomChange: s => (s > 0 ? zoomChange : 0) }
     const direction = w1 < w0 ? -1 : 1
     return {
       length: Math.abs(Math.log(w1 / w0)) / rho,
+      curve: rho,
       centerAmount: () => 1,
       // w(s) = exp(direction · rho · s), zoom change = -log2(w(s))
       zoomChange: s => -(direction * rho * s) / Math.LN2,
@@ -260,14 +263,16 @@ export function createFlightPath({
   }
   return {
     length,
+    curve: rho,
     centerAmount: s => (w0 * ((Math.cosh(r0) * Math.tanh(r0 + rho * s) - Math.sinh(r0)) / rho2)) / u1,
     zoomChange: s => Math.log2(Math.cosh(r0 + rho * s) / Math.cosh(r0)),
   }
 }
 
 /** The flight's duration in seconds, from MapLibre's `speed` and `screenSpeed` (screenfuls per second). */
-export function flightDurationSeconds(path: FlightPath, { curve = 1.42, speed = 1.2, screenSpeed }: Pick<FlyToOptions, 'curve' | 'speed' | 'screenSpeed'>): number {
-  const velocity = screenSpeed !== undefined ? screenSpeed / curve : speed
+export function flightDurationSeconds(path: FlightPath, { speed = 1.2, screenSpeed }: Pick<FlyToOptions, 'speed' | 'screenSpeed'>): number {
+  // Divided by the curvature actually flown, which `minimumZoom` may have replaced.
+  const velocity = screenSpeed !== undefined ? screenSpeed / path.curve : speed
   return path.length / velocity
 }
 

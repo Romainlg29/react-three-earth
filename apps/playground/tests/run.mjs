@@ -378,7 +378,21 @@ async function cameraAnimations() {
 
   // A click at the centre after jumping over the fixture's hill reports the hill under it.
   await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3, zoom: 12, headingDegrees: 0, pitchDegrees: -60 }))
-  await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  const stateLog = []
+  const logState = setInterval(async () => {
+    stateLog.push(await page.evaluate(() => {
+      const i = window.earth.inspect()
+      return JSON.stringify({ idle: i.idle, animating: window.earth.camera.animating, terrain: i.terrain, zoom: i.camera?.zoom, x: window.camera.position.x })
+    }).catch(e => String(e)))
+  }, 15_000)
+  try {
+    await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })
+  } catch (error) {
+    console.error(stateLog.join('\n'))
+    throw error
+  } finally {
+    clearInterval(logState)
+  }
   // Again, now that the terrain under the centre is loaded at full detail.
   await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -89.6, latitudeDegrees: 0.3 }))
   await page.waitForFunction(() => window.earth.inspect().idle === true, null, { timeout: 240_000, polling: 500 })

@@ -141,7 +141,8 @@ How it works (`src/core/cameraAnimation.ts`, `EarthCamera.ts`, `events.ts`, `Ear
   `stop()`, `jumpTo`, another animation, a morph or user input. User input is the controls' own `start`
   event (3DTilesRenderer fires it on drag, wheel and double tap), hooked in `EarthViewControls`, not in
   `FlatMapControls`. `prefers-reduced-motion` turns every animation into a jump unless `essential`.
-  Animations called before the first frame wait for the camera.
+  Animations called before the first frame wait for the camera, and `initialView` applies without
+  stopping them. The first step counts one frame at most, so a host idle for seconds does not skip ahead.
 - **Padding slides the camera across its screen plane** instead of shifting the projection's principal
   point: the target lands at the padded centre with heading and pitch untouched, no change to the
   projection matrix (which R3F, the atmosphere and the controls also own). `getView` casts its ray through
@@ -150,13 +151,16 @@ How it works (`src/core/cameraAnimation.ts`, `EarthCamera.ts`, `events.ts`, `Ear
   heading and uneven padding) is exact on the flat map seen from above; on the globe it is off by up to 6 px
   for a 13°-wide box (Mercator's scale changes across the box), and tilted views are worse. Up to six steps
   then place a copy of the camera, project the box's edges and correct zoom and centre, so the box touches
-  the padding within half a pixel on the globe too, tilted or not.
+  the padding within half a pixel on the globe too, tilted or not. When part of the box starts past the
+  horizon (a Pacific-wide box), it first zooms out a level at a time until all of it shows.
 - **Zoom / rotate / pitch events** come from the same per-frame comparison as `move`, on a cheap
   ellipsoid-only view (no terrain raycast). `zoom` follows ground metres per pixel, not `getView().zoom`,
   which changes with latitude on the globe while panning at a fixed altitude.
-- **Pointer events**: `earth.attachPointerEvents(element)` (`<Earth>` calls it) dispatches `click` (press and
-  release within 3 px, MapLibre's tolerance), `doubleclick`, `contextmenu` and `pointermove`. `geographic`
-  is a lazy getter, so `pointermove` costs no raycast unless a listener reads it.
+- **Pointer events**: `earth.attachPointerEvents(element, { canvas })` (`<Earth>` calls it with R3F's event
+  source and the canvas, so positions stay right with an `eventSource` that is not the canvas) dispatches `click` (press and
+  release within 3 px, MapLibre's tolerance), `doubleclick`, `contextmenu` and `pointermove`. Nothing is
+  measured without a listener, and `geographic` is a lazy getter, so `pointermove` costs no raycast unless a
+  listener reads it.
 - Changed from the brief: no `rollDegrees` (nothing in the camera vocabulary uses it yet), the hash is
   pure functions rather than a URL writer (the app owns `history`), and `animating` replaces MapLibre's
   `isMoving` (movement is already the `movestart` / `moveend` pair).

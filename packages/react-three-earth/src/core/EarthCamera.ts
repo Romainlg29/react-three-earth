@@ -78,6 +78,8 @@ const HORIZON_SAMPLES = 32
 
 /** Steps that correct a fit on screen (each one projects the box's edges once). */
 const FIT_REFINEMENT_STEPS = 6
+/** Zoom levels a fit may back out by when part of the box starts past the horizon. */
+const FIT_ZOOM_OUT_STEPS = 8
 /** Points along each edge of a box when fitting it. */
 const FIT_SAMPLES_PER_EDGE = 16
 /** MapLibre's default `easeTo` duration. */
@@ -98,8 +100,13 @@ interface RunningAnimation {
   elapsedSeconds: number
   easing: (time: number) => number
   reduceMotion: boolean
+  /** False until the first frame advanced it. */
+  stepped: boolean
   resolve: (completed: boolean) => void
 }
+
+/** The longest first animation step: one frame at 60 fps. */
+const FIRST_STEP_SECONDS = 1 / 60
 
 const ray = new Ray()
 const flatRay = new Ray()
@@ -413,8 +420,8 @@ export class EarthCamera {
    * The view that shows a longitude-latitude box inside the screen, less `padding` and
    * `options.paddingPixels`: centre, zoom, heading and pitch, for `jumpTo`, `easeTo` or `flyTo`. Null
    * before the first frame, or when the padding leaves no room (a warning says so). Fitted on screen, for
-   * the globe's curvature and tilted views too; a box reaching past the globe's horizon keeps the closest
-   * fit that shows all of it.
+   * the globe's curvature and tilted views too; when part of a box starts past the globe's horizon, it zooms
+   * out until all of it shows, then fits.
    */
   cameraForBounds(bounds: GeographicBounds, options: FitBoundsOptions = {}): MapViewChange | null {
     if (!this.ready) return null
@@ -469,10 +476,19 @@ export class EarthCamera {
     this.camera = scratch
     try {
       let current = change
-      for (let step = 0; step < FIT_REFINEMENT_STEPS; step++) {
+      let measured = false
+      for (let step = 0; step < FIT_REFINEMENT_STEPS + FIT_ZOOM_OUT_STEPS; step++) {
         this.placeView({ ...current, heightMeters: 0 })
         const extent = this.measureBoundsOnScreen(bounds)
-        if (extent === null) break
+        if (extent === null) {
+          // Part of the box is past the horizon or behind the camera: before any good step, zoom out
+          // until all of it shows, then refine from there. After one, keep it.
+          if (measured || step >= FIT_ZOOM_OUT_STEPS) break
+          current = { ...current, zoom: current.zoom - 1 }
+          best = current
+          continue
+        }
+        measured = true
         best = current
         const scale = Math.max((extent.maximumX - extent.minimumX) / availableWidth, (extent.maximumY - extent.minimumY) / availableHeight)
         const offsetX = (extent.minimumX + extent.maximumX) / 2 - targetX
@@ -555,9 +571,21 @@ export class EarthCamera {
       if (!this.ready) return true
       if (!this.startAnimation(animation)) return false
     }
-    animation.elapsedSeconds += deltaSeconds
+    // The first step counts one frame at most: the time before it is the host's idle time (a vanilla host
+    // that renders on demand may not have updated for seconds), not animation time.
+    animation.elapsedSeconds += animation.stepped ? deltaSeconds : Math.min(deltaSeconds, FIRST_STEP_SECONDS)
+    animation.stepped = true
     this.stepAnimation(animation)
     return this.animation !== null
+  }
+
+  /**
+   * `jumpTo` without stopping an animation that waits for the first frame: `earth.update` applies
+   * `initialView` with it, so an animation called at mount starts from the initial view.
+   */
+  jumpToInitialView(change: MapViewChange): void {
+    this.placeView(change)
+    this.earth.requestFrame()
   }
 
   protected animate(options: AnimationOptions, plan: (start: MapView) => AnimationPlan | null): Promise<boolean> {
@@ -571,6 +599,7 @@ export class EarthCamera {
       elapsedSeconds: 0,
       easing: options.easing ?? defaultEasing,
       reduceMotion: options.essential !== true && prefersReducedMotion(),
+      stepped: false,
       resolve,
     }
     this.animation = animation

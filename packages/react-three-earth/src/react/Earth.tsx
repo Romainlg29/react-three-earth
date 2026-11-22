@@ -36,6 +36,7 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, c
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
   const domElement = useThree(state => state.events.connected ?? state.renderer.domElement) as HTMLElement
+  const canvas = useThree(state => state.renderer.domElement) as HTMLElement
   const [earth] = useState(() => new EarthImpl({ date, view, initialView }))
 
   useLayoutEffect(() => {
@@ -48,9 +49,9 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, c
 
   useLayoutEffect(() => {
     // `click`, `doubleclick`, `contextmenu` and `pointermove`, with the position on Earth.
-    earth.attachPointerEvents(domElement)
+    earth.attachPointerEvents(domElement, { canvas })
     return () => earth.detachPointerEvents()
-  }, [earth, domElement])
+  }, [earth, domElement, canvas])
 
   useLayoutEffect(() => {
     if (date !== undefined) earth.date = date
