@@ -110,11 +110,67 @@ How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`
 | `getView` before / after the morph (top-down) | same centre, zoom within 2·10⁻⁶ |
 | Morph events | `movestart`, `moveend`, `idle` |
 
-Not done yet (W1b): `easeTo` / `flyTo` / `fitBounds`, zoom / rotate / pitch events, pointer events with
-geography, `<Earth initialView>`. With relief under a pitched camera, the morph anchors on the ellipsoid
+With relief under a pitched camera, the morph anchors on the ellipsoid
 point under the screen centre rather than the terrain point, so the centre shifts by the relief's parallax
 during a 3D→2D morph. `getBounds` ignores terrain. `idle` does not wait for imagery added after tiles loaded
 (those textures download outside 3DTilesRenderer's counters).
+
+## Camera animations and pointer events (W1b)
+
+```ts
+await earth.camera.flyTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12 }) // true, or false when stopped
+earth.camera.fitBounds(bounds, { paddingPixels: 40 }); earth.camera.setPadding({ leftPixels: 320 })
+earth.addEventListener('click', event => event.geographic) // <Earth initialView={…}>, formatViewHash / parseViewHash
+```
+
+How it works (`src/core/cameraAnimation.ts`, `EarthCamera.ts`, `events.ts`, `Earth.ts`, `viewHash.ts`):
+
+- **Animations are view interpolations replayed through `jumpTo`'s placement**: each frame computes a full
+  view (centre, height, zoom, heading, pitch) and places the camera with it, so they behave the same on the
+  globe and on the flat map, world copies included. `Earth.update` advances them before the morph and the
+  tiles, so tiles load for the frame's pose. The centre moves along a great circle on the globe and a
+  straight Mercator line on the map; heading goes the short way round.
+- **`flyTo` is MapLibre's van Wijk–Nuij curve** (`createFlightPath`: `curve`, `speed`, `screenSpeed`,
+  `minimumZoom`, `maximumDurationSeconds`), with the distance measured in Mercator pixels at the start zoom.
+  With nothing to fly over (only heading or pitch change) it eases, as MapLibre does.
+- **The end height is re-read every frame**: coarse quantized-mesh tiles sit up to 2 km below the ground (the
+  chord of a large tile), so a height read at the start left the camera kilometres off once Paris loaded
+  (the browser check caught zoom 12.9 instead of 11). Re-reading the terrain under the end centre each frame
+  lets the flight land on the tiles that load as it approaches.
+- **Promises, not events, report the end**: each animation returns `Promise<boolean>`, false when stopped by
+  `stop()`, `jumpTo`, another animation, a morph or user input. User input is the controls' own `start`
+  event (3DTilesRenderer fires it on drag, wheel and double tap), hooked in `EarthViewControls`, not in
+  `FlatMapControls`. `prefers-reduced-motion` turns every animation into a jump unless `essential`.
+  Animations called before the first frame wait for the camera.
+- **Padding slides the camera across its screen plane** instead of shifting the projection's principal
+  point: the target lands at the padded centre with heading and pitch untouched, no change to the
+  projection matrix (which R3F, the atmosphere and the controls also own). `getView` casts its ray through
+  the padded centre and measures distance along the camera's axis, so zoom keeps meaning the scale there.
+- **`cameraForBounds` fits on the map, then on screen**: the Web Mercator fit (MapLibre's maths, with
+  heading and uneven padding) is exact on the flat map seen from above; on the globe it is off by up to 6 px
+  for a 13°-wide box (Mercator's scale changes across the box), and tilted views are worse. Up to six steps
+  then place a copy of the camera, project the box's edges and correct zoom and centre, so the box touches
+  the padding within half a pixel on the globe too, tilted or not.
+- **Zoom / rotate / pitch events** come from the same per-frame comparison as `move`, on a cheap
+  ellipsoid-only view (no terrain raycast). `zoom` follows ground metres per pixel, not `getView().zoom`,
+  which changes with latitude on the globe while panning at a fixed altitude.
+- **Pointer events**: `earth.attachPointerEvents(element)` (`<Earth>` calls it) dispatches `click` (press and
+  release within 3 px, MapLibre's tolerance), `doubleclick`, `contextmenu` and `pointermove`. `geographic`
+  is a lazy getter, so `pointermove` costs no raycast unless a listener reads it.
+- Changed from the brief: no `rollDegrees` (nothing in the camera vocabulary uses it yet), the hash is
+  pure functions rather than a URL writer (the app owns `history`), and `animating` replaces MapLibre's
+  `isMoving` (movement is already the `movestart` / `moveend` pair).
+
+| Check (fixtures, SwiftShader) | Result |
+| --- | --- |
+| `flyTo` Tokyo → Paris, 4 s, globe and flat map | ends at the view within 10⁻¹² ° and 2·10⁻¹³ zoom; zooms out to about 2 |
+| Events during the flights | `movestart, zoomstart, rotatestart, zoomend, rotateend, moveend` |
+| Mouse wheel during a 20 s flight | promise resolves false |
+| `fitBounds` with 40 px padding, globe | corners inside the padding |
+| Click at the centre over the 3.9 km hill | exact position, height equals `queryTerrainElevation`; a drag is not a click |
+| Unit tests: `fitBounds` on both views, 5 boxes (city, uneven padding, antimeridian, rotated, view padding) | inside and snug within 0.5 px |
+
+Not done yet: `rollDegrees`, `around` for `zoomTo`, the `offset` option, animating `padding`.
 
 ## Vector map styles (`src/vector/`)
 

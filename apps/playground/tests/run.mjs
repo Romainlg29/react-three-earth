@@ -348,15 +348,11 @@ async function cameraAnimations() {
     const completed = await earth.camera.flyTo(target, { durationSeconds: 4, essential: true })
     const seconds = (performance.now() - startMilliseconds) / 1000
     const endView = earth.camera.getView()
-    const trail = []
-    const follow = () => trail.push(earth.camera.getView().zoom)
-    earth.addEventListener('move', follow)
     // The frame after the last one, so moveend has fired.
     await new Promise(resolve => setTimeout(resolve, 500))
-    earth.removeEventListener('move', follow)
     earth.removeEventListener('move', sample)
     for (const [type, listener] of listeners) earth.removeEventListener(type, listener)
-    return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), trail, events }
+    return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), events }
   }, { target: { ...PARIS, pitchDegrees } })
   const globe = await fly(-50)
   writeFileSync(new URL('fly-to-paris-3d.png', OUT), await page.screenshot())
