@@ -396,9 +396,11 @@ describe('MapStyleOverlay', () => {
   })
 
   it('skips ring tiles that labels cannot reach from', () => {
-    const overlay = overlayWithSource(14)
-    // A small region in the middle of tile (1, 1) of level 2: no neighbour is within a quarter tile.
-    expect(overlay.getRegionTiles([0.36, 0.6, 0.38, 0.62], 2).filter(tile => tile.textOnly)).toEqual([])
+    const overlay = overlayWithSource(2)
+    // A zoom 6 region in the middle of tile (1, 1) of level 2, overzoomed 16×: labels reach 1/32 of that tile.
+    const region = [0.37, 0.62, 0.38, 0.63]
+    expect(overlay.getRegionTiles(region, 6).filter(tile => tile.textOnly)).toEqual([])
+    expect(overlay.getRegionTiles(region, 2).filter(tile => tile.textOnly).length).toBeGreaterThan(0)
   })
 
   it('places the same tile at each wrapped column at zoom 0', () => {

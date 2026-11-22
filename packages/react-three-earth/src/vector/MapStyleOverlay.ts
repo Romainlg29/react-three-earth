@@ -238,8 +238,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       const fromRow = Math.max(0, Math.floor((1 - maximumY) * count + epsilon))
       const toRow = Math.min(count - 1, Math.floor((1 - minimumY) * count - epsilon))
       if (fromRow > toRow) continue
-      // Labels reach about a quarter of a tile beyond their own; ring tiles further from the region are skipped.
-      const reach = 0.25
+      // Labels reach up to about 256 px beyond their tile: half a tile, less when overzoomed. Ring tiles
+      // further from the region are skipped.
+      const reach = 0.5 / 2 ** (level - z)
       const regionLeft = minimumX * count
       const regionRight = maximumX * count
       const regionTop = (1 - maximumY) * count
@@ -322,6 +323,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       this.backgroundColor.set(background[0] / 255, background[1] / 255, background[2] / 255, background[3] / 255)
       scene.add(this.background)
     }
+    const placements = new Map<LoadedBucket, number>()
     tiles.forEach((tile, order) => {
       const loaded = buckets[order]
       if (loaded === null || loaded === undefined) return
@@ -329,7 +331,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       // Tile units (y down from the tile's north edge) to the region's 0 to 1 space (y up), in 64-bit here.
       const { z, y } = tile.request
       const tileSize = 1 / 2 ** z
-      const place = (mesh: Mesh, renderOrder: number) => {
+      // Near the antimeridian at low zooms, one bucket is placed at several columns: each needs its own Mesh.
+      const placement = placements.get(loaded) ?? 0
+      placements.set(loaded, placement + 1)
+      const place = (source: Mesh, renderOrder: number) => {
+        const mesh = loaded.meshes!.placement(source, placement)
         mesh.position.set((tile.column * tileSize - minimumX) / width, (1 - y * tileSize - minimumY) / height, 0)
         mesh.scale.set(tileSize / width / TILE_EXTENT, -tileSize / height / TILE_EXTENT, 1)
         mesh.renderOrder = renderOrder

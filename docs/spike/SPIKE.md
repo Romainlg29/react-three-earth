@@ -18,20 +18,25 @@ How it works:
   straight into the region's texture at its own resolution, with 4× MSAA in a shared scratch target, through the
   existing `ImageryCompositor` (same 2 ms budget and priorities as raster). One draw per tile and layer group;
   fragments outside the tile square are dropped so buffers never overdraw neighbours. A ring of neighbour tiles
-  adds only their labels, so labels crossing a tile edge are not cut.
+  adds only their labels (when within label reach of the region), so labels crossing a tile edge are not cut.
 - The style is evaluated at the region's zoom (512-pixel tiles, as MapLibre). Past the data's maximum zoom,
   tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
 - Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
 
 Not supported yet: icons and fill patterns (sprites), raster, hillshade and heatmap layers (skipped with one
 warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
-tiles, and symbol layers below shape layers (all labels draw on top).
+tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
+through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
+does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
+has a fixed size on the ground.
 
 | Check (fixtures: synthetic water, roads, places; SwiftShader) | Result |
 | --- | --- |
 | Overview, atmosphere off | water, roads and place labels drape on terrain; 106 regions composed, no errors |
 | Close-up, 9 km, 50° pitch | road names follow the roads upright, labels sharp at region resolution |
-| Unit tests | 26 new (style evaluation, tessellation areas, glyph PBF and atlas, shaping and placement, TileJSON, TMS, PMTiles range requests, caches, region tiles) |
+| WebGL2 fallback | same image as WebGPU |
+| Raster map checks | unchanged |
+| Unit tests | 32 new, 98 total (style evaluation, tessellation areas, glyph PBF and atlas, shaping and placement, TileJSON, TMS, PMTiles range requests, caches, region tiles, ring reach) |
 
 ![vector map](map-vector-overview.png) ![close-up](map-vector-close.png) ![with atmosphere](map-vector-atmosphere.png)
 

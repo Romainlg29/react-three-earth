@@ -176,6 +176,17 @@ export class BucketMeshes {
     }
   }
 
+  protected readonly copies = new Map<Mesh, Mesh[]>()
+
+  /** The mesh itself for the first placement in a draw, a lasting copy (same geometry) for each further one. */
+  placement(mesh: Mesh, index: number): Mesh {
+    if (index === 0) return mesh
+    let copies = this.copies.get(mesh)
+    if (copies === undefined) this.copies.set(mesh, (copies = []))
+    while (copies.length < index) copies.push(mesh.clone())
+    return copies[index - 1]!
+  }
+
   dispose(): void {
     for (const geometry of this.geometries) geometry.dispose()
   }
