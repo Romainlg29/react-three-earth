@@ -387,15 +387,17 @@ export class MapStyleProcessor {
     let entry = this.rawTiles.get(key)
     if (entry === undefined) {
       const controller = new AbortController()
+      const revalidate = this.revalidatedTiles.delete(key)
       const created: RawTileEntry = {
         x,
         y,
         z,
         controller,
         waiters: 0,
-        promise: fetcher.fetchTile(x, y, z, controller.signal, this.revalidatedTiles.delete(key)).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
+        promise: fetcher.fetchTile(x, y, z, controller.signal, revalidate).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
       }
       created.promise.catch(() => {
+        if (revalidate) this.revalidatedTiles.add(key) // an aborted or failed refetch must not use up the revalidation
         if (this.rawTiles.get(key) === created) this.rawTiles.delete(key) // retry next time
       })
       this.rawTiles.set(key, created)

@@ -113,8 +113,8 @@ export function LiveMap({ changes }: { changes: EventTarget }) {
 - No argument redraws everything. Bounds are `GeographicBounds` (`westDegrees`, `southDegrees`,
   `eastDegrees`, `northDegrees`); `westDegrees > eastDegrees` crosses the antimeridian.
 - Cached tiles in the bounds are fetched and processed again; textures that draw them redraw, including
-  neighbours whose labels reach in. Other tiles and textures are untouched. Their next request uses
-  `cache: 'no-cache'`, once, so the browser's HTTP cache revalidates them (a 304 when unchanged) instead
+  neighbours whose labels reach in. Other tiles and textures are untouched. For tiles fetched recently
+  (the last 4096), the next request uses `cache: 'no-cache'`, once, so the browser's HTTP cache revalidates them (a 304 when unchanged) instead
   of returning the old copy.
 - PMTiles: any `invalidate` also reads the archive's header and directories again, so a replaced
   `.pmtiles` file is read at its new offsets; its range requests revalidate with the server from then on.
