@@ -66,8 +66,9 @@ const expectations = {
     ['the pin is a labelled button', r.peakTagName === 'BUTTON' && r.peakLabel === 'Fixture peak'],
     ['React content renders in the marker', r.buriedText === 'sea level'],
     ['a marker under the hill fades (occluded, opacity 0.2)', r.buriedVisibility === 'occluded' && Number(r.buriedOpacity) === 0.2],
-    ['checked on every frame of the camera move', r.frames >= 35],
-    ['the marker is placed in the frame that draws (transform within 0.5 px of project)', r.maximumTransformErrorPixels <= 0.5],
+    ['checked on every frame of the camera move, the pin crossing the screen', r.frames >= 35 && r.travelPixels > 50],
+    // Rounded to whole pixels: at most half a pixel on each axis. A frame of lag would be several pixels here.
+    ['the marker is placed in the frame that draws (transform within pixel rounding of project)', r.maximumTransformErrorPixels <= Math.SQRT1_2 + 1e-6],
     ['the pin\'s tip stays within 1 px of its projected point while the camera moves', r.maximumElementErrorPixels <= 1],
     ['hidden behind the globe', r.behindHorizon.visibility === 'hidden' && r.behindHorizon.cssVisibility === 'hidden'],
     ['the popup opens on click, above the pin, with focus inside', r.popup.text.includes('Fixture peak') && r.popup.anchor === 'bottom' && r.popup.focusInside && Math.abs(r.popup.gapAbovePinPixels) <= 1 && r.popup.centreOffsetPixels <= 1],

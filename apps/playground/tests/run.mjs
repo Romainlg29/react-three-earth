@@ -351,24 +351,29 @@ async function markers() {
     const peak = window.markers.peak
     const errorsPixels = []
     const domErrorsPixels = []
+    const xs = []
+    const ys = []
     const check = () => {
       if (peak.visibility === 'hidden') return
       const projected = earth.project(peak.getPosition())
       const [x, y] = peak.element.style.transform.match(/-?[\d.]+/g).map(Number)
       errorsPixels.push(Math.hypot(x - projected.xPixels, y - projected.yPixels))
+      xs.push(x)
+      ys.push(y)
       const box = peak.element.getBoundingClientRect()
       const canvas = document.querySelector('canvas').getBoundingClientRect()
       domErrorsPixels.push(Math.hypot(box.left + box.width / 2 - canvas.left - projected.xPixels, box.bottom - canvas.top - projected.yPixels))
     }
     earth.addEventListener('update', check)
     const start = earth.camera.getView()
+    // Around a point beside the peak, so the pin travels across the screen.
     for (let frame = 0; frame < 40; frame++) {
-      earth.camera.jumpTo({ headingDegrees: start.headingDegrees + frame * 2, pitchDegrees: -30 - frame * 0.5 })
+      earth.camera.jumpTo({ longitudeDegrees: -89.98 + frame * 0.0012, latitudeDegrees: 0.02, headingDegrees: start.headingDegrees + frame * 2, pitchDegrees: -30 - frame * 0.5 })
       await new Promise(resolve => requestAnimationFrame(resolve))
     }
     await new Promise(resolve => requestAnimationFrame(resolve))
     earth.removeEventListener('update', check)
-    return { frames: errorsPixels.length, maximumTransformErrorPixels: Math.max(...errorsPixels), maximumElementErrorPixels: Math.max(...domErrorsPixels) }
+    return { frames: errorsPixels.length, travelPixels: Math.hypot(xs.at(-1) - xs[0], ys.at(-1) - ys[0]), maximumTransformErrorPixels: Math.max(...errorsPixels), maximumElementErrorPixels: Math.max(...domErrorsPixels) }
   })
 
   // From the far side of the globe the peak is behind the horizon.

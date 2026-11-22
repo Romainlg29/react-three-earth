@@ -235,8 +235,8 @@ const STYLE = `
   border-radius: var(--react-three-earth-popup-radius, 6px);
   box-shadow: var(--react-three-earth-popup-shadow, 0 1px 4px rgba(0, 0, 0, 0.3));
 }
+/* Focused only to bring screen readers into the popup: no ring around the whole box. */
 .react-three-earth-popup-content:focus { outline: none; }
-.react-three-earth-popup-content:focus-visible { outline: 2px solid #1a73e8; }
 .react-three-earth-popup[data-close-button] .react-three-earth-popup-content { padding-right: 28px; }
 .react-three-earth-popup-close {
   all: unset; position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; border-radius: 4px;

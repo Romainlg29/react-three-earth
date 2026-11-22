@@ -171,7 +171,8 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.earth = earth
     this.container = container
     this.openedAtMilliseconds = performance.now()
-    this.focusBeforeOpen = container.ownerDocument.activeElement
+    // On a marker, focus goes back to it: a press on the map may have kept it from taking focus.
+    this.focusBeforeOpen = this.marker?.element ?? container.ownerDocument.activeElement
     acquireScreenLayer(container).append(this.element)
     this.resizeObserver?.observe(this.element, { box: 'border-box' })
     container.addEventListener('pointerdown', this.onContainerPointerDown, true)
