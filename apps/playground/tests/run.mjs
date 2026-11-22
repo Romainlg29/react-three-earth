@@ -525,6 +525,10 @@ async function markers() {
     drag: { ...drag, movedPixels: end.x - start.x },
     strictMode: { ...strictMode, errors: strict.errors },
     selection,
+    errors,
+  })
+}
+
 /**
  * Camera animations and pointer events on fixture terrain: flyTo Tokyo → Paris in 3D and in 2D ends at the
  * requested view, user input stops a flight, fitBounds fits, and a click reports the position under it.
