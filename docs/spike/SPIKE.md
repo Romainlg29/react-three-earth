@@ -139,7 +139,7 @@ How it works:
   tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
 - Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
 
-Not supported yet: icons and fill patterns (sprites), raster, hillshade and heatmap layers (skipped with one
+Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
 warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
 tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
@@ -198,6 +198,47 @@ the foundation GeoJSON `setData`, style edits, feature-state and runtime images 
 | Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: of 106 regions held, 90 reach into the bounds and redraw once each; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
 
 ![before](map-vector-invalidate-before.png) ![after](map-vector-invalidate-after.png)
+
+### Sprites, image atlas and patterns (W5)
+
+`fill-pattern`, `line-pattern` and `background-pattern` draw images from the style's `sprite` (URL or MapLibre 3
+array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.addImage` / `updateImage` /
+`removeImage` / `hasImage` add runtime images, with `onStyleImageMissing` (MapLibre's `styleimagemissing`).
+
+- The worker (`worker/sprites.ts`) fetches the sprite JSON and PNG and decodes them with `createImageBitmap` +
+  `OffscreenCanvas`. Images are packed into an RGBA atlas (`worker/imageAtlas.ts`, a shelf packer like the glyph
+  atlas) **only when a tile or the background first uses them**, not the whole sheet. Entries are premultiplied
+  (so linear filtering does not darken transparent edges) and padded with a wrapped copy of their opposite edges
+  (so repeats filter seamlessly). Changes travel as `imageAtlas` on any worker result and are applied before it
+  resolves, as glyphs are; `MapStyleOverlay.imageAtlas` is the main-thread copy, public for plugins (W17).
+- **Patterns stay in the shape mesh, in style order.** A tile with any pattern gets two extra vertex attributes
+  (atlas rectangle as normalised 16-bit, image coordinates as floats) and a second shape material; tiles without
+  patterns keep the colour-only material and no extra bytes. The shader picks pattern or colour per vertex,
+  `fract`s the image coordinates into the rectangle, unpremultiplies and decodes sRGB; the vertex alpha carries the
+  opacity.
+- Fill coordinates are in image pixels anchored at the world's top-left corner; each tile's offset into the
+  repeating image is reduced modulo the image in 64-bit in the worker, so 32-bit vertex values stay small at zoom
+  20 and patterns continue across tiles and regions. Line coordinates run along the line (cumulative distance)
+  and across its width, with the image scaled so its height spans the width (MapLibre); mitre vertices use the
+  mean direction, stretched by the mitre, so the across coordinate stays on the edges. The background pattern is
+  a uniform-driven quad with the same world anchoring, offset reduced on the CPU.
+- **Image changes redraw only what uses them.** Buckets list the image ids they asked for (and which were missing).
+  The worker answers an image change with `rebuild`: false when the image was rewritten in place (same size and
+  pixel ratio), so regions drawing those buckets are only redrawn through F1's in-place redraw; true when it
+  appeared, disappeared or moved, so those buckets are re-tessellated from the worker's raw-tile cache (no
+  refetch). Buckets still processing during a change are rebuilt too. Label-ring placements are skipped (patterns
+  are shapes). The helpers are `rebuildTiles(matches)` and `redrawRegions(bucketKeys)`, names shared with W3.
+- Deviation from the brief: `updateImage` accepts another size (it rebuilds instead of throwing as MapLibre
+  does). Icon metadata (`sdf`, `stretchX/Y`, `content`) is parsed and kept for W6, which needs a transparent-padded
+  icon slot rather than the wrapped one.
+
+| Check (`?fixtures&map=patterns`, SwiftShader) | Result |
+| --- | --- |
+| WebGPU and WebGL2 | green checks (background) on 83 % of the view, blue stripes on the lakes, red and white dashes along primary roads; the lake using `hatch` (not in the sprite) draws nothing and is reported once |
+| `addImage('hatch')`, then `updateImage` (same size) | the lake turns magenta, then yellow; the update redrew 46 of 50 regions (the fixture lake's zoom 10 tile covers most of the view) with no re-tessellation |
+| Unit tests | 15 new: sprite URLs and index, atlas padding, premultiplication, in-place rewrite and slot reuse, fill and line pattern coordinates, cross-tile continuity, processor sprites (@2x, array sprites, fallback, failures, runtime images), redraw scope, missing-image reports, `MapStyleSource` image API |
+
+![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
 ## Attribution
 
