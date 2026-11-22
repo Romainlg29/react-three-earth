@@ -5,6 +5,7 @@ import {
   Earth,
   EarthControls,
   Imagery,
+  PerformanceStats,
   QuantizedMeshSource,
   RasterTileSource,
   Terrain,
@@ -18,6 +19,7 @@ const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? '/fixtures/terrain/' : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? '/fixtures/imagery/{z}/{x}/{y}.png' : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
+const showStatistics = params.get('stats') !== '0'
 const date = new Date(params.get('date') ?? '2026-11-22T07:00:00Z')
 
 /**
@@ -50,9 +52,10 @@ function InitialView() {
 export function MapDemo() {
   return (
     <>
-      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date}>
           <InitialView />
+          {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
             <QuantizedMeshSource url={terrainUrl} />
           </Terrain>
