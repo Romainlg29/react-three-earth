@@ -104,6 +104,10 @@ setCameraView(camera, {
 In React, call it in a `useLayoutEffect` with `useThree(state => state.camera)`, inside or beside
 `<Earth>`. `<EarthControls>` continues from wherever the camera is.
 
+To think in map terms instead (MapLibre zoom, the flat map as well as the globe, reading the view back,
+screen ↔ longitude / latitude), use `earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, zoom })`
+and `earth.camera.getView()`: see `camera-and-events`.
+
 ### Name things with their units
 
 Public names spell out SI units: `heightMeters`, `distanceMeters`, `memoryBudgetBytes`,

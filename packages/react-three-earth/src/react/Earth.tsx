@@ -47,6 +47,13 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, children }: Ea
     invalidate()
   }, [earth, view, viewTransitionSeconds, invalidate])
 
+  useLayoutEffect(() => {
+    // With frameloop="demand", changes made between frames (earth.camera.jumpTo) still get drawn.
+    const listener = () => invalidate()
+    earth.addEventListener('framerequest', listener)
+    return () => earth.removeEventListener('framerequest', listener)
+  }, [earth, invalidate])
+
   useLayoutEffect(() => () => earth.dispose(), [earth])
 
   useFrame(

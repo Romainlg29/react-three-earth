@@ -17,6 +17,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/EarthControls.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/events.ts'
 requires:
   - getting-started
 ---
@@ -40,7 +41,8 @@ export function LogOnce() {
 ```
 
 Everything the vanilla API offers is available from there: `earth.terrain`, `earth.atmosphere`,
-`earth.date`, `earth.inspect()`.
+`earth.date`, `earth.camera`, `earth.inspect()`. `useEarthCamera()` returns `earth.camera`, and
+`useEarthEvent('moveend', handler)` listens to the Earth's events (see `camera-and-events`).
 
 ### Show Earth state in the UI without re-rendering every frame
 
@@ -126,7 +128,9 @@ export function FlyNorth() {
 ### Render only when something changes
 
 `<Canvas frameloop="demand">` works: `<Terrain>` invalidates when tiles finish loading or imagery is
-still being composed, and `<Atmosphere>` invalidates once its lookup textures are ready. Call
+still being composed, `<Atmosphere>` invalidates once its lookup textures are ready, and `<Earth>`
+invalidates on `earth.camera.jumpTo` (the `framerequest` event) and for one more frame after the camera
+moves, so `moveend` fires. Call
 `useThree(state => state.invalidate)()` after your own changes (moving a marker, changing `earth.date`),
 and also after changing `<Earth date>`, `<Imagery opacity>` or `<Atmosphere exposure>`: those props
 update the vanilla objects without requesting a frame.
