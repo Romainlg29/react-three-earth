@@ -23,6 +23,7 @@ import { abs, clamp, exp, float, floor, If, int, ivec2, Loop, max, min, mix, mod
 import type { Node } from 'three/webgpu'
 
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
+import { DRY_AIR_GAS_CONSTANT, SEA_LEVEL_TEMPERATURE_KELVIN, STANDARD_ATMOSPHERE_LAYERS, STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED } from './standardAtmosphere.js'
 
 /** Metres per shader length unit. */
 export const LENGTH_UNIT_METERS = 1000
@@ -162,9 +163,57 @@ export class AtmosphereModel {
 
   // Density profiles: relative densities in [0, 1] at an altitude above the ground.
 
-  /** Relative air density (Rayleigh) at an altitude in kilometres. */
+  /** Relative air density (Rayleigh) at an altitude in kilometres. CPU mirror: `getRayleighDensity`. */
   rayleighDensity(altitude: FloatNode): FloatNode {
-    return clamp(exp(altitude.div(-this.rayleighScaleHeightKilometers)), 0, 1)
+    if (this.parameters.rayleighDensityProfile === 'exponential') {
+      return clamp(exp(altitude.div(-this.rayleighScaleHeightKilometers)), 0, 1)
+    }
+    return this.standardAtmosphereDensity(altitude)
+  }
+
+  /**
+   * The International Standard Atmosphere's density as a share of sea level's, with the day's temperature
+   * offset (see `getStandardAir`). Branch-free: the altitude's layer constants are selected, then one power
+   * and one exponential give the pressure (the power for layers with a lapse rate, the exponential for
+   * isothermal ones; the other evaluates to 1).
+   */
+  protected standardAtmosphereDensity(altitude: FloatNode): FloatNode {
+    const hydrostatic = STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED / DRY_AIR_GAS_CONSTANT
+    // Layers based above the top of the atmosphere are never reached.
+    const layers = STANDARD_ATMOSPHERE_LAYERS.filter(layer => layer.baseAltitudeMeters < this.parameters.topRadiusMeters - this.parameters.bottomRadiusMeters)
+    const height = max(altitude.mul(LENGTH_UNIT_METERS), 0).toConst()
+    const first = layers[0]!
+    const constants = (layer: (typeof layers)[number]): Record<'base' | 'lapse' | 'temperature' | 'pressure' | 'exponent' | 'isothermal', FloatNode> => {
+      const lapse = layer.lapseRateKelvinPerMeter
+      return {
+        base: float(layer.baseAltitudeMeters),
+        lapse: float(lapse),
+        temperature: float(layer.baseTemperatureKelvin),
+        pressure: float(layer.basePressureRatio),
+        exponent: float(lapse === 0 ? 0 : -hydrostatic / lapse),
+        isothermal: float(lapse === 0 ? hydrostatic / layer.baseTemperatureKelvin : 0),
+      }
+    }
+    let selected = constants(first)
+    for (const layer of layers.slice(1)) {
+      const next = constants(layer)
+      const above = height.greaterThanEqual(layer.baseAltitudeMeters)
+      selected = {
+        base: select(above, next.base, selected.base),
+        lapse: select(above, next.lapse, selected.lapse),
+        temperature: select(above, next.temperature, selected.temperature),
+        pressure: select(above, next.pressure, selected.pressure),
+        exponent: select(above, next.exponent, selected.exponent),
+        isothermal: select(above, next.isothermal, selected.isothermal),
+      }
+    }
+    const rise = height.sub(selected.base).toConst()
+    const temperature = selected.temperature.add(selected.lapse.mul(rise)).toConst()
+    const pressure = selected.pressure
+      .mul(temperature.div(selected.temperature).pow(selected.exponent))
+      .mul(exp(selected.isothermal.mul(rise).negate()))
+    const dayTemperature = max(temperature.add(this.parameters.temperatureOffsetKelvin), 1)
+    return pressure.mul(SEA_LEVEL_TEMPERATURE_KELVIN).div(dayTemperature)
   }
 
   /** Relative aerosol density (Mie) at an altitude in kilometres. */

@@ -1,7 +1,13 @@
 export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
 export { Terrain, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'
-export { Atmosphere, type AtmosphereOptions, type AerialPerspectiveOptions } from './core/Atmosphere.js'
+export {
+  Atmosphere,
+  type AtmosphereOptions,
+  type AerialPerspectiveOptions,
+  type AerialPerspectiveAlongRay,
+  type SceneBackdrop,
+} from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls } from './core/EarthControls.js'
 export {

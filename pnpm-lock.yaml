@@ -10,6 +10,12 @@ importers:
 
   apps/playground:
     dependencies:
+      '@aeronautic/afterburner':
+        specifier: 0.5.1
+        version: 0.5.1(@aeronautic/core@0.1.3(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0))(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0)
+      '@aeronautic/core':
+        specifier: 0.1.3
+        version: 0.1.3(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0)
       '@react-three/fiber':
         specifier: 10.0.0-alpha.6
         version: 10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0)
@@ -111,6 +117,31 @@ packages:
       react-dom:
         optional: true
       three:
+        optional: true
+
+  '@aeronautic/afterburner@0.5.1':
+    resolution: {integrity: sha512-5X/G0IsVSNAGE3yj1spVGsrMCtUrHBHLXeukwcorTaIeKrQYl+e8DP3EIKhCDudPzGzdX9XFzXLEvVTMEEc6YA==}
+    peerDependencies:
+      '@aeronautic/core': ^0.1.3
+      '@react-three/fiber': ^9.0.0 || ^10.0.0-alpha.0
+      react: ^19.0.0
+      three: '>=0.186.0 <0.187.0'
+    peerDependenciesMeta:
+      '@react-three/fiber':
+        optional: true
+      react:
+        optional: true
+
+  '@aeronautic/core@0.1.3':
+    resolution: {integrity: sha512-WqIZwHRJywS2PbSM+R/5LuwCftk0EryrBLjLCdBlOXW3c6bNOmeEwFyIDZ9jKbV5RnwbZi4+68aJu95Y+QqWBw==}
+    peerDependencies:
+      '@react-three/fiber': ^9.0.0 || ^10.0.0-alpha.0
+      react: ^19.0.0
+      three: '>=0.186.0 <0.187.0'
+    peerDependenciesMeta:
+      '@react-three/fiber':
+        optional: true
+      react:
         optional: true
 
   '@babel/runtime@7.29.15':
@@ -950,6 +981,21 @@ snapshots:
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
       three: 0.187.0
+
+  '@aeronautic/afterburner@0.5.1(@aeronautic/core@0.1.3(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0))(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0)':
+    dependencies:
+      '@aeronautic/core': 0.1.3(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0)
+      three: 0.187.0
+    optionalDependencies:
+      '@react-three/fiber': 10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0)
+      react: 19.3.1
+
+  '@aeronautic/core@0.1.3(@react-three/fiber@10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0))(react@19.3.1)(three@0.187.0)':
+    dependencies:
+      three: 0.187.0
+    optionalDependencies:
+      '@react-three/fiber': 10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0)
+      react: 19.3.1
 
   '@babel/runtime@7.29.15': {}
 

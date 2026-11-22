@@ -6,3 +6,8 @@ peerDependencyRules:
   allowedVersions:
     # 3d-tiles-renderer declares R3F ^8 || ^9 for its own r3f entry, which this library does not use
     3d-tiles-renderer>@react-three/fiber: '>=10.0.0-0'
+    # @aeronautic/* 0.x pins three 0.186.x (one minor per release, since TSL changes between minors). The
+    # playground runs them on our 0.187; checked in the browser (apps/playground/tests/run.mjs, afterburner).
+    # Remove once @aeronautic publishes a release for three 0.187.
+    '@aeronautic/core>three': '0.187'
+    '@aeronautic/afterburner>three': '0.187'
