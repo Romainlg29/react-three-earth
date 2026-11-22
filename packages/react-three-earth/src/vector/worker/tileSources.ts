@@ -1,5 +1,7 @@
 import { PMTiles, TileType } from 'pmtiles'
 
+import type { ResourceKind } from './types.js'
+
 /** Fetches the raw (decompressed) bytes of vector tiles of one style source. */
 export interface VectorTileFetcher {
   /** The attribution in the source's TileJSON or PMTiles metadata, when it has one. */
@@ -24,12 +26,17 @@ export interface VectorSourceSpecification {
   maxzoom?: number
   scheme?: 'xyz' | 'tms'
   attribution?: string
+  /** A property to use as the feature id (feature-state), for every source layer or per source layer. */
+  promoteId?: string | Record<string, string>
 }
+
+/** `fetch`, told what the request is for (for `transformRequest` and protocol loaders on the main thread). */
+export type ResourceFetch = (url: string, init: RequestInit, kind: ResourceKind) => Promise<Response>
 
 export interface FetcherContext {
   baseUrl: string
   requestHeaders: Record<string, string>
-  fetch: typeof fetch
+  fetch: ResourceFetch
 }
 
 /** Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. */
@@ -45,7 +52,7 @@ export async function createVectorTileFetcher(source: VectorSourceSpecification,
   if (source.tiles === undefined && source.url !== undefined) {
     // TileJSON: its own `tiles` resolve against its URL.
     const tileJsonUrl = resolveUrl(source.url, context.baseUrl)
-    const response = await context.fetch(tileJsonUrl, { headers: context.requestHeaders })
+    const response = await context.fetch(tileJsonUrl, { headers: context.requestHeaders }, 'Source')
     if (!response.ok) throw new Error(`MapStyleSource: TileJSON ${tileJsonUrl} answered ${response.status}.`)
     specification = { ...(await response.json()), ...withoutUndefined({ minzoom: source.minzoom, maxzoom: source.maxzoom, scheme: source.scheme }) }
     baseUrl = tileJsonUrl
@@ -100,7 +107,7 @@ export class XYZFetcher implements VectorTileFetcher {
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate = false): Promise<Uint8Array | null> {
     const init: RequestInit = { headers: this.context.requestHeaders, signal, ...(revalidate ? { cache: 'no-cache' as const } : {}) }
-    const response = await this.context.fetch(this.getUrl(x, y, z), init)
+    const response = await this.context.fetch(this.getUrl(x, y, z), init, 'Tile')
     if (response.status === 404 || response.status === 204) return null
     if (!response.ok) throw new Error(`MapStyleSource: tile ${z}/${x}/${y} answered ${response.status}.`)
     const bytes = new Uint8Array(await response.arrayBuffer())
@@ -153,7 +160,7 @@ export class PMTilesFetcher implements VectorTileFetcher {
         }
         const generation = options.generation
         const headers: Record<string, string> = { ...context.requestHeaders, range: `bytes=${offset}-${offset + length - 1}` }
-        const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) })
+        const response = await context.fetch(url, { headers, signal, ...(options.revalidate ? { cache: 'no-cache' as const } : {}) }, 'Tile')
         if (response.status !== 206 && !(response.status === 200 && offset === 0)) {
           throw new Error(`MapStyleSource: PMTiles ${url} answered ${response.status}; the server must support range requests.`)
         }

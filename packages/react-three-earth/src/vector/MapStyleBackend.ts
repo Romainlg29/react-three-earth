@@ -1,18 +1,46 @@
 import type { MapStyleProcessor } from './worker/MapStyleProcessor.js'
 import type { MercatorRectangle } from './worker/rectangles.js'
-import type { AtlasUpdate, MapStyleProcessorOptions, MapStyleSummary, TileBucket, TileRequest, WorkerRequest, WorkerResponse } from './worker/types.js'
+import type {
+  AtlasUpdate,
+  FeatureColorUpdate,
+  FeatureStateChange,
+  MapStyleProcessorOptions,
+  MapStyleSummary,
+  ResourceAnswer,
+  ResourceRequest,
+  StyleCommand,
+  StyleUpdateResult,
+  TileBucket,
+  TileRequest,
+  WorkerRequest,
+  WorkerResponse,
+} from './worker/types.js'
 
 /** Where a style's tiles are processed: a worker by default, the main thread as a fallback. */
 export interface MapStyleBackend {
   init(options: MapStyleProcessorOptions): Promise<MapStyleSummary>
+  /** Replaces the whole style (when no diff applies), keeping the glyph atlas and colour slots. */
+  reload(options: MapStyleProcessorOptions): Promise<MapStyleSummary>
   /** Resolves after the bucket's glyph atlas changes were handed to `onAtlasUpdate`. */
   processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket>
   /** Forgets cached raw tiles overlapping the rectangles (`null`: all); later `processTile` calls fetch again. */
   invalidate(rectangles: MercatorRectangle[] | null): void
+  /** Applies style commands; tiles requested after this call see them. */
+  updateStyle(commands: StyleCommand[]): Promise<StyleUpdateResult>
+  /** Applies feature-state changes; resolves after their slot colours were handed to `onFeatureColorUpdate`. */
+  updateFeatureStates(changes: FeatureStateChange[]): Promise<void>
   dispose(): void
 }
 
 export type AtlasUpdateListener = (update: AtlasUpdate) => void
+
+/** What a backend reports to, and asks of, the overlay. */
+export interface MapStyleBackendHost {
+  onAtlasUpdate: AtlasUpdateListener
+  onFeatureColorUpdate: (update: FeatureColorUpdate) => void
+  /** Resolves a request through `transformRequest` and protocols (requests the worker routes here). */
+  resolveResource?: (request: ResourceRequest, signal?: AbortSignal) => Promise<ResourceAnswer>
+}
 
 /**
  * Starts the vector tile worker shipped with the library. Bundlers that do not follow
@@ -32,13 +60,15 @@ interface Pending {
 export class WorkerMapStyleBackend implements MapStyleBackend {
   protected readonly worker: Worker
   protected readonly pending = new Map<number, Pending>()
+  /** Resource requests of the worker being resolved here, by the worker's id. */
+  protected readonly resources = new Map<number, AbortController>()
   protected nextId = 1
   /** Rejects when the worker script cannot start, so the caller can fall back to the main thread. */
   protected readonly failed: Promise<never>
 
   constructor(
     worker: Worker,
-    protected readonly onAtlasUpdate: AtlasUpdateListener,
+    protected readonly host: MapStyleBackendHost,
   ) {
     this.worker = worker
     let fail: (reason: unknown) => void = () => {}
@@ -56,6 +86,10 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
 
   init(options: MapStyleProcessorOptions): Promise<MapStyleSummary> {
     return Promise.race([this.call<MapStyleSummary>({ type: 'init', id: this.nextId++, options }), this.failed])
+  }
+
+  reload(options: MapStyleProcessorOptions): Promise<MapStyleSummary> {
+    return this.call<MapStyleSummary>({ type: 'reload', id: this.nextId++, options })
   }
 
   processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket> {
@@ -77,11 +111,21 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
     this.worker.postMessage({ type: 'invalidate', rectangles } satisfies WorkerRequest)
   }
 
+  updateStyle(commands: StyleCommand[]): Promise<StyleUpdateResult> {
+    return this.call<StyleUpdateResult>({ type: 'style', id: this.nextId++, commands })
+  }
+
+  async updateFeatureStates(changes: FeatureStateChange[]): Promise<void> {
+    await this.call<null>({ type: 'featureState', id: this.nextId++, changes })
+  }
+
   dispose(): void {
     this.worker.terminate()
     const error = new DOMException('MapStyleSource: disposed', 'AbortError')
     for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
+    for (const controller of this.resources.values()) controller.abort(error)
+    this.resources.clear()
   }
 
   protected call<T>(message: Extract<WorkerRequest, { id: number }>): Promise<T> {
@@ -92,10 +136,20 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
   }
 
   protected receive(response: WorkerResponse): void {
-    // Glyphs first, even for a request that was cancelled meanwhile: later buckets rely on them.
+    if (response.type === 'resource') {
+      this.resolveResource(response.id, response.request)
+      return
+    }
+    if (response.type === 'resource-cancel') {
+      this.resources.get(response.id)?.abort(new DOMException('cancelled', 'AbortError'))
+      this.resources.delete(response.id)
+      return
+    }
+    // Glyphs and slot colours first, even for a request that was cancelled meanwhile: later buckets rely on them.
+    if (response.featureColors !== undefined && response.featureColors !== null) this.host.onFeatureColorUpdate(response.featureColors)
     if (response.type === 'result') {
       const atlas = (response.value as Partial<TileBucket> | null)?.atlas
-      if (atlas !== undefined && atlas !== null) this.onAtlasUpdate(atlas)
+      if (atlas !== undefined && atlas !== null) this.host.onAtlasUpdate(atlas)
     }
     const pending = this.pending.get(response.id)
     if (pending === undefined) return
@@ -103,33 +157,86 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
     if (response.type === 'result') pending.resolve(response.value as never)
     else pending.reject(response.name === 'AbortError' ? new DOMException(response.message, 'AbortError') : new Error(response.message))
   }
+
+  protected resolveResource(id: number, request: ResourceRequest): void {
+    const controller = new AbortController()
+    this.resources.set(id, controller)
+    const resolve = this.host.resolveResource ?? (async ({ url, headers }: ResourceRequest) => ({ url, headers }))
+    resolve(request, controller.signal).then(
+      answer => {
+        if (this.resources.get(id) !== controller) return
+        this.resources.delete(id)
+        const transfer = 'data' in answer && answer.data !== null ? [answer.data.buffer as ArrayBuffer] : []
+        this.worker.postMessage({ type: 'resource', id, answer } satisfies WorkerRequest, transfer)
+      },
+      (error: unknown) => {
+        if (this.resources.get(id) !== controller) return
+        this.resources.delete(id)
+        this.worker.postMessage({ type: 'resource', id, answer: null, error: (error as Error)?.message ?? String(error) } satisfies WorkerRequest)
+      },
+    )
+  }
 }
 
 /** Runs the processor on the main thread: for environments without module workers, and tests. */
 export class InlineMapStyleBackend implements MapStyleBackend {
-  protected processor: MapStyleProcessor | null = null
+  protected processor: Promise<MapStyleProcessor> | null = null
 
-  constructor(protected readonly onAtlasUpdate: AtlasUpdateListener) {}
+  constructor(protected readonly host: MapStyleBackendHost) {}
 
-  async init(options: MapStyleProcessorOptions): Promise<MapStyleSummary> {
-    const { MapStyleProcessor } = await import('./worker/MapStyleProcessor.js')
-    this.processor = await MapStyleProcessor.create(options)
-    return this.processor.summary
+  init(options: MapStyleProcessorOptions): Promise<MapStyleSummary> {
+    return this.reload(options)
+  }
+
+  async reload(options: MapStyleProcessorOptions): Promise<MapStyleSummary> {
+    const previous = this.processor?.catch(() => undefined)
+    const resolveResource = this.host.resolveResource
+    this.processor = (async () => {
+      const [{ MapStyleProcessor }, old] = await Promise.all([import('./worker/MapStyleProcessor.js'), previous])
+      return MapStyleProcessor.create(options, resolveResource === undefined ? {} : { resolveResource }, old)
+    })()
+    const processor = await this.processor
+    this.flushFeatureColors(processor)
+    return processor.summary
   }
 
   async processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket> {
-    if (this.processor === null) throw new Error('MapStyleSource: tile requested before init')
-    const bucket = await this.processor.processTile(request, signal)
-    const atlas = this.processor.takeAtlasUpdate()
-    if (atlas !== null) this.onAtlasUpdate(atlas)
+    const processor = await this.requireProcessor()
+    const bucket = await processor.processTile(request, signal)
+    const atlas = processor.takeAtlasUpdate()
+    if (atlas !== null) this.host.onAtlasUpdate(atlas)
+    this.flushFeatureColors(processor)
     return bucket
   }
 
   invalidate(rectangles: MercatorRectangle[] | null): void {
-    this.processor?.invalidate(rectangles)
+    void this.processor?.then(processor => processor.invalidate(rectangles)).catch(() => {})
+  }
+
+  async updateStyle(commands: StyleCommand[]): Promise<StyleUpdateResult> {
+    const processor = await this.requireProcessor()
+    const result = await processor.applyCommands(commands)
+    this.flushFeatureColors(processor)
+    return result
+  }
+
+  async updateFeatureStates(changes: FeatureStateChange[]): Promise<void> {
+    const processor = await this.requireProcessor()
+    processor.applyFeatureStates(changes)
+    this.flushFeatureColors(processor)
   }
 
   dispose(): void {
     this.processor = null
+  }
+
+  protected requireProcessor(): Promise<MapStyleProcessor> {
+    if (this.processor === null) return Promise.reject(new DOMException('MapStyleSource: disposed, or tile requested before init', 'AbortError'))
+    return this.processor
+  }
+
+  protected flushFeatureColors(processor: MapStyleProcessor): void {
+    const update = processor.takeFeatureColorUpdate()
+    if (update !== null) this.host.onFeatureColorUpdate(update)
   }
 }

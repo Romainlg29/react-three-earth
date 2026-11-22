@@ -8,15 +8,36 @@ import {
   NoColorSpace,
   NormalBlending,
   RedFormat,
+  RGBAFormat,
   UnsignedByteType,
   Vector2,
   Vector4,
 } from 'three'
-import { attribute, Discard, float, Fn, fwidth, If, max, positionGeometry, smoothstep, sRGBTransferEOTF, texture, uniform, vec4 } from 'three/tsl'
+import {
+  attribute,
+  Discard,
+  float,
+  floor,
+  Fn,
+  fwidth,
+  If,
+  int,
+  ivec2,
+  max,
+  mod,
+  positionGeometry,
+  select,
+  smoothstep,
+  sRGBTransferEOTF,
+  texture,
+  uniform,
+  vec4,
+  vertexStage,
+} from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
 import { GLYPH_EDGE } from './worker/glyphs.js'
-import { TILE_EXTENT, type AtlasUpdate, type TileBucket } from './worker/types.js'
+import { TILE_EXTENT, type AtlasUpdate, type FeatureColorUpdate, type TileBucket } from './worker/types.js'
 
 /**
  * Colours arrive as sRGB bytes; three's materials work in linear space and the composite target encodes
@@ -34,17 +55,88 @@ function createMaterial(): MeshBasicNodeMaterial {
 /**
  * Fills, lines and circles: one colour per vertex. Fragments outside the tile square are dropped, so a
  * tile's buffer zone never paints over its neighbour, and each tile can be drawn as one mesh per layer group.
+ *
+ * With a feature colour table, vertices whose `colorSlot` is not 0 read their colour from the table instead
+ * (looked up per vertex): feature-state changes only update the table.
  */
-export function createShapeMaterial(): MeshBasicNodeMaterial {
+export function createShapeMaterial(colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
   const material = createMaterial()
+  const color =
+    colorTable === undefined
+      ? linearColor('color')
+      : (() => {
+          const slot = attribute<'float'>('colorSlot', 'float')
+          const width = float(colorTable.width)
+          const entry = colorTable.node.load(ivec2(int(mod(slot, width)), int(floor(slot.div(width))))) as unknown as Node<'vec4'>
+          const own = attribute<'vec4'>('color', 'vec4')
+          const chosen = vertexStage(select(slot.greaterThan(0.5), entry, own))
+          return vec4(sRGBTransferEOTF(chosen.rgb) as unknown as Node<'vec3'>, chosen.a)
+        })()
   material.colorNode = Fn(() => {
     const local = positionGeometry
     If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
       Discard()
     })
-    return linearColor('color')
+    return color
   })()
   return material
+}
+
+/**
+ * The main thread's copy of the worker's feature colour table: one RGBA texel per slot, `width` slots per row,
+ * straight-alpha sRGB. Grows by rows; changed slots are written in place and uploaded once per batch.
+ */
+export class FeatureColorTexture {
+  readonly width = 1024
+  texture: DataTexture
+  /** The texture node read by shape materials; its value follows `texture` when the table grows. */
+  readonly node: ReturnType<typeof texture>
+  protected data: Uint8Array
+  protected dirty = false
+
+  constructor() {
+    this.data = new Uint8Array(this.width * 4)
+    this.texture = this.createTexture(1)
+    this.node = texture(this.texture)
+  }
+
+  get rows(): number {
+    return this.texture.image.height
+  }
+
+  apply(update: FeatureColorUpdate): void {
+    if (update.height > this.rows) {
+      const data = new Uint8Array(this.width * update.height * 4)
+      data.set(this.data)
+      this.data = data
+      this.texture.dispose()
+      this.texture = this.createTexture(update.height)
+      this.node.value = this.texture
+    }
+    update.slots.forEach((slot, index) => this.data.set(update.colors.subarray(index * 4, index * 4 + 4), slot * 4))
+    this.dirty = true
+  }
+
+  /** Uploads the table if colours changed since the last upload. Call before drawing. */
+  upload(): void {
+    if (!this.dirty) return
+    this.texture.needsUpdate = true
+    this.dirty = false
+  }
+
+  dispose(): void {
+    this.texture.dispose()
+  }
+
+  protected createTexture(rows: number): DataTexture {
+    const table = new DataTexture(this.data, this.width, rows, RGBAFormat, UnsignedByteType)
+    table.colorSpace = NoColorSpace
+    table.generateMipmaps = false
+    table.flipY = false
+    table.name = 'MapStyleFeatureColors'
+    table.needsUpdate = true
+    return table
+  }
 }
 
 /** A single-colour quad over the whole composite; set `color` (straight-alpha sRGB, 0 to 1) before drawing. */
@@ -147,20 +239,23 @@ export class BucketMeshes {
   readonly text: Mesh | null = null
   protected readonly geometries: BufferGeometry[] = []
 
-  constructor(bucket: TileBucket, shapeMaterial: MeshBasicNodeMaterial, textMaterial: MeshBasicNodeMaterial) {
+  /** `slottedShapeMaterial` draws buckets with feature colour slots. */
+  constructor(bucket: TileBucket, shapeMaterial: MeshBasicNodeMaterial, textMaterial: MeshBasicNodeMaterial, slottedShapeMaterial: MeshBasicNodeMaterial = shapeMaterial) {
     const { shapes, text } = bucket
     if (shapes !== null) {
       const position = new BufferAttribute(toVector3(shapes.positions), 3)
       const color = new BufferAttribute(shapes.colors, 4, true)
+      const slots = shapes.colorSlots === null ? null : new BufferAttribute(shapes.colorSlots, 1)
       const index = new BufferAttribute(shapes.indices, 1)
       for (const { group, start, count } of shapes.groups) {
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', position)
         geometry.setAttribute('color', color)
+        if (slots !== null) geometry.setAttribute('colorSlot', slots)
         geometry.setIndex(index)
         geometry.setDrawRange(start, count)
         this.geometries.push(geometry)
-        this.shapes.push({ group, mesh: createMesh(geometry, shapeMaterial) })
+        this.shapes.push({ group, mesh: createMesh(geometry, slots === null ? shapeMaterial : slottedShapeMaterial) })
       }
     }
     if (text !== null) {
