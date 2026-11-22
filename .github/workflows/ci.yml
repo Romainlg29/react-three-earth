@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, unit tests, skills, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json's packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      # Frontmatter, size limits, links, and every TypeScript example in the skills typechecked against the source
+      - run: pnpm --filter react-three-earth validate:skills
+      - run: pnpm build
+
+  browser:
+    name: WebGPU browser checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PLAYWRIGHT_VERSION: 1.63.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # tests/run.mjs requires Playwright through NODE_PATH, like the dev sandbox, so it is not a workspace dependency
+      - name: Install Playwright and Chromium
+        run: |
+          npm install --global "playwright@$PLAYWRIGHT_VERSION"
+          npx --yes "playwright@$PLAYWRIGHT_VERSION" install --with-deps chromium
+          sudo apt-get install --yes --no-install-recommends xvfb
+      - name: Start the playground
+        run: |
+          pnpm dev > playground.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            curl --silent --fail http://localhost:5173 > /dev/null && exit 0
+            sleep 1
+          done
+          cat playground.log
+          exit 1
+      # Headed Chromium under xvfb on SwiftShader's Vulkan: headless Chromium drops the WebGPU device on present.
+      # SwiftShader is a CPU rasteriser, so these checks prove correctness, not frame times.
+      - name: Run the browser checks
+        run: NODE_PATH="$(npm root --global)" xvfb-run --auto-servernum node apps/playground/tests/run.mjs
+      - name: Assert the results
+        run: node apps/playground/tests/assert-results.mjs
+      - name: Upload screenshots and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-check-results
+          path: |
+            apps/playground/test-results/
+            playground.log
+          if-no-files-found: ignore

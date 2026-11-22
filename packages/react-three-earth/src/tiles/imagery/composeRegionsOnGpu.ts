@@ -161,6 +161,7 @@ export function composeRegionsOnGpu(
     if (exact !== null) {
       const texture = tiledImageSource.get(...exact)
       if (texture === null) return null
+      compositor.configureSampling(texture)
       ownItems.add(texture)
       compositor.retainTexture(texture)
       signal?.addEventListener('abort', () => compositor.releaseTexture(texture), { once: true })

@@ -1,5 +1,7 @@
 import { Vector2, Vector3 } from 'three'
 
+import { AEROSOL_PHASE_ASYMMETRY, getAirExtinction, getHazeForVisibility, getVisibilityMeters, type AirExtinction, type HazeOptions } from './air.js'
+
 /** Rec. 709 relative luminance of linear RGB. */
 const LUMINANCE_COEFFICIENTS = /*#__PURE__*/ new Vector3(0.2126, 0.7152, 0.0722)
 
@@ -25,13 +27,18 @@ export type AtmosphereParametersOverrides = Partial<{
   [Key in keyof AtmosphereParameters as AtmosphereParameters[Key] extends Function ? never : Key]: AtmosphereParameters[Key]
 }>
 
+/** How the density of air molecules falls with altitude. */
+export type RayleighDensityProfile = 'standardAtmosphere' | 'exponential'
+
 /**
  * The physical description of a planet's atmosphere, in SI units, for the Bruneton 2017 precomputed
  * scattering model. Spectral quantities are given at three wavelengths (red, green, blue; see
- * `wavelengthsNanometers`). The defaults describe Earth, following Bruneton's reference implementation.
+ * `wavelengthsNanometers`). The defaults describe Earth, following Bruneton's reference implementation,
+ * except that air molecules follow the International Standard Atmosphere (as @aeronautic/core's air does).
  *
- * Density profiles are exponential for air molecules (Rayleigh) and aerosols (Mie), and a tent centred on
- * `ozoneCenterAltitudeMeters` for ozone, which absorbs and does not scatter.
+ * Density profiles: the International Standard Atmosphere (or an exponential) for air molecules (Rayleigh),
+ * exponential for aerosols (Mie), and a tent centred on `ozoneCenterAltitudeMeters` for ozone, which
+ * absorbs and does not scatter. `AtmosphereParameters.fromVisibility` sets the haze from a visibility.
  *
  * Create with `new AtmosphereParameters()` and assign fields, or `AtmosphereParameters.create({ ... })`.
  * Parameters are compiled into the shaders: change them before handing them to an `Atmosphere`.
@@ -40,6 +47,30 @@ export class AtmosphereParameters {
   /** A new instance (of the subclass it is called on) with the given fields replaced. */
   static create<Instance extends AtmosphereParameters>(this: new () => Instance, overrides: AtmosphereParametersOverrides = {}): Instance {
     return Object.assign(new this(), overrides)
+  }
+
+  /**
+   * Earth's atmosphere with the haze of a day's visibility (meteorological optical range) at sea level, as
+   * @aeronautic/core works it out: Koschmieder's law at 550 nm, Ångström's spectral law, a single scattering
+   * albedo of 0.9 and a phase asymmetry of 0.7 (see `getHazeForVisibility`). 20 km is a hazy day, 50 km a
+   * clear one; the default parameters correspond to about 210 km. The haze thins with altitude over
+   * `mieScaleHeightMeters`.
+   *
+   * @param overrides Other fields, applied before the haze is worked out (the molecules' scattering and
+   *   `temperatureOffsetKelvin` change the haze's share of the extinction). The haze's own
+   *   `mieExtinctionPerMeter` and `mieScatteringPerMeter` come from the visibility and replace any given.
+   */
+  static fromVisibility<Instance extends AtmosphereParameters>(
+    this: new () => Instance,
+    visibilityMeters: number,
+    overrides: AtmosphereParametersOverrides = {},
+    hazeOptions: HazeOptions = {},
+  ): Instance {
+    const parameters = Object.assign(new this(), { miePhaseAsymmetry: AEROSOL_PHASE_ASYMMETRY }, overrides)
+    const haze = getHazeForVisibility(visibilityMeters, parameters, hazeOptions)
+    parameters.mieExtinctionPerMeter = haze.mieExtinctionPerMeter
+    parameters.mieScatteringPerMeter = haze.mieScatteringPerMeter
+    return parameters
   }
 
   /** Takes no arguments: use `AtmosphereParameters.create(overrides)` (or assign fields after construction). */
@@ -68,8 +99,20 @@ export class AtmosphereParameters {
 
   /** Rayleigh scattering coefficient at the ground. */
   rayleighScatteringPerMeter = new Vector3(5.802e-6, 13.558e-6, 33.1e-6)
-  /** Altitude over which air density falls by a factor e. */
+  /**
+   * How air density falls with altitude: `'standardAtmosphere'` follows the International Standard
+   * Atmosphere's layers (the same air as @aeronautic/core's `standard_atmosphere`), `'exponential'` falls
+   * by a factor e every `rayleighScaleHeightMeters` (Bruneton's reference).
+   */
+  rayleighDensityProfile: RayleighDensityProfile = 'standardAtmosphere'
+  /** Altitude over which air density falls by a factor e, for the `'exponential'` profile. */
   rayleighScaleHeightMeters = 8000
+  /**
+   * How much warmer the day is than the standard one, at every altitude, for the `'standardAtmosphere'`
+   * profile: warmer air at the same pressure is thinner, so the sky is a little less blue. Give flight
+   * effects the same offset (@aeronautic's `temperatureOffsetK`).
+   */
+  temperatureOffsetKelvin = 0
 
   /** Mie (aerosol) scattering coefficient at the ground. */
   mieScatteringPerMeter = new Vector3(3.996e-6, 3.996e-6, 3.996e-6)
@@ -119,6 +162,16 @@ export class AtmosphereParameters {
     scatteringViewZenith: 128,
     scatteringSunZenith: 32,
     scatteringViewSunAngle: 8,
+  }
+
+  /** Extinction of the air at an altitude, per metre (shaped like @aeronautic/core's `Extinction`). */
+  getAirExtinction(altitudeMeters: number, target?: AirExtinction): AirExtinction {
+    return getAirExtinction(this, altitudeMeters, target)
+  }
+
+  /** Horizontal visibility (meteorological optical range) at an altitude, from the haze and the air. */
+  getVisibilityMeters(altitudeMeters = 0): number {
+    return getVisibilityMeters(this, altitudeMeters)
   }
 
   /** Width, height and depth of the 3D scattering texture, in texels. */

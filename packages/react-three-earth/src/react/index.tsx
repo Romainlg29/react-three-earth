@@ -1,8 +1,9 @@
 export { Earth, type EarthProps } from './Earth.js'
 export { Terrain, type TerrainProps } from './Terrain.js'
 export { Imagery, type ImageryProps } from './Imagery.js'
-export { Atmosphere, type AtmosphereProps } from './Atmosphere.js'
+export { Atmosphere, useAtmosphere, type AtmosphereProps } from './Atmosphere.js'
 export { EarthControls, type EarthControlsProps } from './EarthControls.js'
+export { PerformanceStats, formatStatistics, type PerformanceStatsProps } from './PerformanceStats.js'
 export {
   MapStyleSource,
   QuantizedMeshSource,

@@ -7,7 +7,6 @@ import {
   If,
   isBackgroundDepth,
   logarithmicDepthToViewZ,
-  mix,
   perspectiveDepthToViewZ,
   smoothstep,
   uniform,
@@ -84,7 +83,7 @@ export class AerialPerspectiveNode extends Node {
 
       // The model's frame tilts the vertical by up to 0.19° (see correctPositionForEllipsoid): directions are
       // rotated to match at the camera, so the sky's horizon meets the terrain's and the sun sets on time.
-      const { positionKilometers: cameraPositionKilometers, atmospherePosition: cameraPosition, directionRotation } = cameraNodes
+      const { atmospherePosition: cameraPosition, directionRotation } = cameraNodes
       const viewDirectionModel = directionRotation.mul(worldDirection).toConst()
       const sunDirectionModel = directionRotation.mul(sunDirection).toConst()
       const luminance = vec3(0).toVar()
@@ -97,14 +96,9 @@ export class AerialPerspectiveNode extends Node {
         luminance.assign(sky.radiance.mul(skyLuminanceFactor).add(sun))
       }).Else(() => {
         const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
-        const distanceKilometers = viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS).toConst()
-        // Near the camera, the mapping is the camera's position plus the rotation, which is exact in double
-        // precision; far away, map the point itself (float32 rounding, under a metre, no longer matters).
-        const nearPoint = cameraPosition.add(viewDirectionModel.mul(distanceKilometers))
-        const farPoint = this.context.toAtmosphereFrame(cameraPositionKilometers.add(worldDirection.mul(distanceKilometers)))
-        const point = mix(nearPoint, farPoint, smoothstep(10, 20, distanceKilometers))
-        const between = model.getSkyRadianceToPoint(textures, cameraPosition, point, sunDirectionModel)
-        luminance.assign(colorNode.rgb.mul(between.transmittance).add(between.radiance.mul(skyLuminanceFactor)))
+        const distanceKilometers = viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS)
+        const between = this.context.getAerialPerspective(cameraNodes, worldDirection, distanceKilometers)
+        luminance.assign(colorNode.rgb.mul(between.transmittance).add(between.radiance))
       })
       // The sky covers every pixel the scene left empty, so the result is opaque. Keeping the scene's cleared
       // alpha (0) would show the page behind the canvas where the sky should be.

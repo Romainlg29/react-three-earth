@@ -1,13 +1,10 @@
 import { DirectionalLight } from 'three'
-import { cameraViewMatrix, cameraWorldMatrix, normalWorld, positionView, select, vec4 } from 'three/tsl'
+import { cameraViewMatrix, cameraWorldMatrix, normalWorld, positionView, vec4 } from 'three/tsl'
 import { AnalyticLightNode, type Node, type NodeBuilder } from 'three/webgpu'
 import type { DirectLightData } from 'three/src/nodes/lighting/LightsNode.js'
 
 import type { AtmosphereCameraNodes, AtmosphereContext } from './AtmosphereContext.js'
 import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
-
-/** Share of the unattenuated sunlight used as ambient light while the lookup textures are not ready. */
-const FALLBACK_AMBIENT_SHARE = 0.15
 
 /**
  * Shades an `AtmosphereLight`, per fragment: sun illuminance attenuated by the transmittance from the
@@ -38,7 +35,6 @@ export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
     const light = this.light
     if (light == null) return undefined
     const context = light.atmosphere
-    const { model, textures, sunDirection, texturesReady } = context
     context.prepare(builder.renderer)
     this.camera ??= context.createCameraNodes()
 
@@ -46,22 +42,13 @@ export class AtmosphereLightNode extends AnalyticLightNode<AtmosphereLight> {
     // from the 64-bit model-view matrix), rotated to world axes and added to the camera's ECEF position.
     const offsetWorld = cameraWorldMatrix.mul(vec4(positionView, 0)).xyz
     const positionKilometers = this.camera.positionKilometers.add(offsetWorld.div(LENGTH_UNIT_METERS)).toConst()
-    const position = context.toAtmosphereFrame(positionKilometers)
-    // Sun elevation and sky factor against the fragment's true (ellipsoid) vertical: normal and sun are
-    // world directions, untouched by the model's radial mapping.
-    const up = context.ellipsoidNormal(positionKilometers)
-    const { sun, sky } = model.getSunAndSkyIrradiance(textures, position, normalWorld, sunDirection, up)
-
-    const unattenuated = model.solarIrradianceWattsPerSquareMeterNanometer.mul(context.sunLuminanceFactor)
-    const ready = texturesReady.greaterThan(0.5)
-    const ambient = select(ready, sky.mul(context.skyLuminanceFactor), unattenuated.mul(FALLBACK_AMBIENT_SHARE))
-    const direct = select(ready, sun.mul(context.sunLuminanceFactor), unattenuated)
+    const { sun: direct, sky: ambient } = context.getSunAndSkyIlluminance(positionKilometers, normalWorld)
 
     const lighting = builder.context as unknown as { irradiance: { addAssign(node: unknown): void } }
     lighting.irradiance.addAssign(ambient.mul(this.colorNode))
 
     return {
-      lightDirection: cameraViewMatrix.mul(vec4(sunDirection, 0)).xyz.normalize(),
+      lightDirection: cameraViewMatrix.mul(vec4(context.sunDirection, 0)).xyz.normalize(),
       lightColor: direct.mul(this.colorNode),
     }
   }
