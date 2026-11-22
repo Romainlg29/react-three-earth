@@ -60,6 +60,53 @@ Not done yet:
 - The camera's lower limit in 2D uses the tile regions' maximum height, not the terrain itself.
 - The `Earth` must stay at the scene origin (as `setCameraView` and the controls already assume).
 
+## Map camera, project / unproject and events (`earth.camera`)
+
+```ts
+earth.camera.getView() // { longitudeDegrees, latitudeDegrees, heightMeters, zoom, headingDegrees, pitchDegrees, distanceMeters }
+earth.camera.jumpTo({ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 12 })
+earth.camera.getBounds(); earth.project(position); earth.unproject({ xPixels, yPixels }); earth.queryTerrainElevation(position)
+earth.addEventListener('moveend', …) // React: useEarthCamera(), useEarthEvent('moveend', …)
+```
+
+How it works (`src/core/EarthCamera.ts`, `events.ts`, `projection.ts`, `zoom.ts`):
+
+- **Zoom is MapLibre's** (512-pixel tiles), measured at the screen centre from the camera's distance to it
+  and its focal length in CSS pixels: on the globe from ground metres per pixel at the centre's latitude, on
+  the flat map from Web Mercator metres per pixel (the map's flat coordinates). At the morph anchor both
+  agree by construction, so a morph keeps centre, zoom and heading (the browser check measures 2·10⁻⁶ zoom).
+- **The centre and `unproject` follow the terrain**: a raycast on the loaded tiles (3DTilesRenderer's own
+  raycast, first hit only), the ellipsoid where none is loaded. On the flat map the screen ray is taken into
+  flat coordinates and settled on the relief in four fixed-point steps (plane at the height
+  `queryTerrainElevation` finds under the last guess), since the map's geometry only exists in the shader.
+- **`project` follows the morph exactly**: the tile shader mixes globe and flat positions linearly in the
+  Earth's frame, so the projected point is the same mix. Points beyond the ellipsoid's horizon are hidden
+  with Cesium's ellipsoidal occluder test; terrain does not hide points yet.
+- **Camera placement looks straight down without degenerating**: `placeCameraAround` builds the camera's
+  basis from heading and pitch instead of `lookAt`, and `setCameraView` now uses it.
+- **Events need no hooks in the controls**: `Earth.update` compares the camera's world matrix, field of view
+  and canvas size with the last frame, so controls, `jumpTo`, the morph and app code all produce
+  `movestart` / `move` / `moveend` (a running morph counts as one move). `idle` waits for the tileset root,
+  queued, downloading and parsing tiles, a pending `needs-update` from 3DTilesRenderer (a loaded tile not
+  yet shown), queued imagery compositions and the atmosphere's textures; `load` is the first `idle`.
+  `Earth.update` asks for one more frame after a move so `moveend` fires with `frameloop="demand"`, and
+  `jumpTo` dispatches `framerequest`, which `<Earth>` turns into `invalidate()`.
+- Changed from the brief: no edits to `EarthControls.ts` (motion is detected, not reported), and zoom
+  helpers live in `zoom.ts` for the 2D thread and later workstreams to share.
+
+| Check | Result |
+| --- | --- |
+| Fixture terrain (3.9 km hill), pitched camera: unproject → project | 3·10⁻⁸ px |
+| unproject height vs `queryTerrainElevation`; terrain point → screen → back | 0 m; 3 µm |
+| Flat map: unproject → project | 2·10⁻⁹ px |
+| `getView` before / after the morph (top-down) | same centre, zoom within 2·10⁻⁶ |
+| Morph events | `movestart`, `moveend`, `idle` |
+
+Not done yet (W1b): `easeTo` / `flyTo` / `fitBounds`, zoom / rotate / pitch events, pointer events with
+geography, `<Earth initialView>`. With relief under a pitched camera, the morph anchors on the ellipsoid
+point under the screen centre rather than the terrain point, so the centre shifts by the relief's parallax
+during a 3D→2D morph. `getBounds` samples the screen edges on the ellipsoid (or the map plane), not the terrain.
+
 ## Vector map styles (`src/vector/`)
 
 `<Imagery><MapStyleSource url="https://…/style.json" /></Imagery>` drapes a MapLibre style (version 8) on the

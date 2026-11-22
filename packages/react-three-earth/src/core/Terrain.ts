@@ -30,6 +30,9 @@ export interface TerrainOptions {
 }
 
 const MEGABYTE_BYTES = 2 ** 20
+/** 3DTilesRenderer's `rootLoadingState` values (its `UNLOADED` and `LOADING` constants). */
+const ROOT_UNLOADED = 0
+const ROOT_LOADING = 2
 
 /** 3DTilesRenderer events asking for another `update` or render. */
 const FRAME_REQUEST_EVENTS = ['needs-update', 'needs-render'] as const
@@ -46,6 +49,8 @@ export class Terrain {
   /** Lays the tiles on the flat map and morphs them (see `setView`). */
   readonly flatMap: FlatMapPlugin
   protected readonly imagery = new Set<Imagery>()
+  /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
+  protected updateRequested = false
 
   constructor({
     sources,
@@ -67,6 +72,10 @@ export class Terrain {
     if (fade) this.tiles.registerPlugin(new TilesFadePlugin())
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
+
+    ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('needs-update', () => {
+      this.updateRequested = true
+    })
 
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
@@ -110,6 +119,20 @@ export class Terrain {
   }
 
   /**
+   * True while the tileset's root or terrain tiles are queued, downloading or parsing, a loaded tile still waits for the next
+   * `update` to be shown, or imagery waits to be composed. `Earth` reads it for the `idle` event.
+   */
+  get loading(): boolean {
+    const { stats, rootLoadingState } = this.tiles as unknown as {
+      stats: { queued: number; downloading: number; parsing: number }
+      rootLoadingState: number
+    }
+    if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING) return true
+    const { queued, downloading, parsing } = stats
+    return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0
+  }
+
+  /**
    * Calls `listener` whenever the terrain needs another frame: tiles finished loading, or imagery is still
    * waiting to be composed. Hosts that render on demand (R3F `frameloop="demand"`) forward it to their
    * invalidate. Returns a function that removes the listener.
@@ -127,6 +150,7 @@ export class Terrain {
    * frame before rendering.
    */
   update(camera: Camera, renderer: WebGPURenderer): void {
+    this.updateRequested = false
     this.tiles.setCamera(camera)
     this.tiles.setResolutionFromRenderer(camera, renderer as never)
     this.tiles.update()
