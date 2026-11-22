@@ -78,6 +78,7 @@ export class ScreenOverlay {
   protected cursor = 0
   protected readonly lastCameraMatrix = new Float64Array(16)
   protected terrainWasLoading = false
+  protected lastTerrainTileCount = -1
   protected followUpTimer: ReturnType<typeof setTimeout> | null = null
 
   /** The overlay of an earth, created on first use. */
@@ -167,7 +168,10 @@ export class ScreenOverlay {
     }
   }
 
-  /** Bumps `sceneVersion` when the camera moved, the view morphs, or terrain is loading or just finished. */
+  /**
+   * Bumps `sceneVersion` when the camera moved, the view morphs, or the terrain's tiles changed (loaded, shown,
+   * or loading started or ended). Not on every frame a download is pending: nothing changed for a raycast then.
+   */
   protected updateSceneVersion(): void {
     const elements = this.frame.camera.matrixWorld.elements
     let changed = false
@@ -175,10 +179,15 @@ export class ScreenOverlay {
       if (elements[index] !== this.lastCameraMatrix[index]) changed = true
       this.lastCameraMatrix[index] = elements[index]!
     }
-    const loading = this.earth.terrain?.loading === true
-    const view = this.earth.view
-    if (changed || loading || this.terrainWasLoading || view.transitioning) this.frame.sceneVersion++
+    const terrain = this.earth.terrain
+    const loading = terrain?.loading === true
+    // Runtime fields 3DTilesRenderer's typings leave out.
+    const tiles = terrain?.tiles as { stats?: { loaded?: number }; visibleTiles?: Set<unknown> } | undefined
+    const tileCount = (tiles?.stats?.loaded ?? 0) * 100_003 + (tiles?.visibleTiles?.size ?? 0)
+    const tilesChanged = tileCount !== this.lastTerrainTileCount || loading !== this.terrainWasLoading
+    if (changed || tilesChanged || this.earth.view.transitioning) this.frame.sceneVersion++
     this.terrainWasLoading = loading
+    this.lastTerrainTileCount = tileCount
   }
 
   protected prepareFrame(): boolean {

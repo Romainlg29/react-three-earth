@@ -163,11 +163,6 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
         ? null
         : new ResizeObserver(() => {
             this.size = { widthPixels: this.element.offsetWidth, heightPixels: this.element.offsetHeight }
-            if (this.focusWhenContentArrives && this.contentElement.childNodes.length > 0) {
-              this.focusWhenContentArrives = false
-              this.focusPending = this.contentElement.querySelector(FOCUSABLE) !== null
-              if (!this.hidden) this.focusInside()
-            }
             // Content that arrives after opening (a React root renders later) may need the other side.
             if (this.earth !== null) ScreenOverlay.of(this.earth).refresh(this)
           })
@@ -199,8 +194,10 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     // the content, never away from what the user is typing in to an empty box. A tooltip never takes it.
     const mayFocus = this.focusAfterOpen && !this.trackingPointer
     this.focusPending = mayFocus && (focus || this.contentElement.querySelector(FOCUSABLE) !== null)
-    // Content rendered after opening (a React root renders later) gets one look for a control when it arrives.
-    this.focusWhenContentArrives = mayFocus && !this.focusPending && this.contentElement.childNodes.length === 0
+    // Content rendered after opening (a React root renders later) gets one look: see `focusContentControl`.
+    this.focusWhenContentArrives = mayFocus && !this.focusPending
+    // Only right after opening: content that changes later must not pull focus away from the user.
+    if (this.focusWhenContentArrives) setTimeout(() => (this.focusWhenContentArrives = false), 500)
     if (!this.hidden) this.focusInside()
     return this
   }
@@ -245,6 +242,19 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.closeButtonElement?.removeEventListener('click', this.onCloseButton)
     this.element.removeEventListener('pointerdown', stopPropagation)
     this.element.removeEventListener('keydown', this.onKeyDown)
+  }
+
+  /**
+   * For content put in after `addTo` (a React root renders later): moves focus to its first control, once per
+   * opening, when the popup opened without taking focus and `focusAfterOpen` allows it. `<Popup>` calls it.
+   */
+  focusContentControl(): this {
+    if (!this.focusWhenContentArrives || this.earth === null) return this
+    this.focusWhenContentArrives = false
+    if (this.contentElement.querySelector(FOCUSABLE) === null) return this
+    this.focusPending = true
+    if (!this.hidden) this.focusInside()
+    return this
   }
 
   isOpen(): boolean {

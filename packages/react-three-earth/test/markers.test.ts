@@ -227,6 +227,35 @@ describe('terrain checks', () => {
   })
 })
 
+describe('terrain checks while loading and hidden', () => {
+  it('do not ask for frames while a download is pending and nothing changed', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { earth, camera, container } = createMap()
+    ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: true, tiles: { stats: { loaded: 3 }, visibleTiles: new Set() }, update() {}, dispose() {} }
+    for (let index = 0; index < 5; index++) new Marker({ longitudeDegrees: index * 0.1, latitudeDegrees: 0 }).addTo(earth, container)
+    for (let round = 0; round < 5; round++) {
+      frames(earth, camera, 16)
+      vi.advanceTimersByTime(300)
+    }
+    let requests = 0
+    earth.addEventListener('framerequest', () => requests++)
+    frames(earth, camera, 16)
+    vi.advanceTimersByTime(300)
+    expect(requests).toBe(0)
+  })
+
+  it('keep reading the terrain under a hidden marker until a height is found', () => {
+    const { earth, camera, container } = createMap()
+    withEmptyTerrain(earth)
+    const marker = new Marker({ longitudeDegrees: 180, latitudeDegrees: 0 }).addTo(earth, container)
+    const reads = vi.spyOn(earth.camera, 'queryTerrainElevation')
+    frames(earth, camera, 40, frame => setCameraView(camera, { longitudeDegrees: frame * 1e-4, latitudeDegrees: 0, distanceMeters: 2_000_000, pitchDegrees: -90 }))
+    expect(marker.visibility).toBe('hidden')
+    // No tile there: read again at the interval (40 frames ≈ 0.67 s ≈ 3 reads), not once and never again.
+    expect(reads.mock.calls.length).toBeGreaterThanOrEqual(2)
+  })
+})
+
 describe('Popup', () => {
   it('opens beside its marker on click, and closes with Escape, giving focus back', () => {
     const { earth, container } = createMap()
@@ -302,6 +331,18 @@ describe('Popup', () => {
     expect(marker.getPopup()!.isOpen()).toBe(false)
     element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     expect(marker.getPopup()!.isOpen()).toBe(true)
+  })
+
+  it('moves focus to a control in content rendered after it opened, once', () => {
+    const { earth, container } = createMap()
+    const popup = new Popup({ longitudeDegrees: 0, latitudeDegrees: 0, heightMeters: 0 }).addTo(earth, container)
+    const button = document.createElement('button')
+    popup.contentElement.append(button)
+    popup.focusContentControl()
+    expect(document.activeElement).toBe(button)
+    button.blur()
+    popup.focusContentControl()
+    expect(document.activeElement).not.toBe(button)
   })
 
   it('does not take focus when the app opens it with nothing to focus, nor as a tooltip', () => {

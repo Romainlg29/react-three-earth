@@ -399,7 +399,7 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     let point = this.project(frame)
     // Behind the horizon or the camera: no terrain work for a marker nobody sees, except a first read of its
     // height, which may lift it above the horizon (a far summit seen from low down).
-    const neverRead = this.terrainHeightCheck.lastCheckSceneVersion === -1
+    const neverRead = this.heightOption === 'terrain' && this.terrainHeightMeters === null
     if (point === null && !neverRead) {
       this.setVisibility('hidden')
       return

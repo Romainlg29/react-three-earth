@@ -189,6 +189,18 @@ function PopupContent({
   // A standalone popup closes when it unmounts; on a marker, `setPopup(null)` above closes it.
   useLayoutEffect(() => () => void popup.remove(), [popup])
 
-  useDomRoot(popup.contentElement, children)
+  useDomRoot(
+    popup.contentElement,
+    <>
+      {children}
+      <ContentCommitted popup={popup} />
+    </>,
+  )
+  return null
+}
+
+/** Last in the content: once React has put the content in the DOM, focus may move to a control in it. */
+function ContentCommitted({ popup }: { popup: PopupImpl }) {
+  useLayoutEffect(() => void popup.focusContentControl())
   return null
 }
