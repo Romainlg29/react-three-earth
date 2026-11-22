@@ -8,15 +8,29 @@ import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import { MapStyle, type SequencedStyleChange } from './MapStyle.js'
 import { createVectorTileWorker, InlineMapStyleBackend, WorkerMapStyleBackend, type MapStyleBackend, type MapStyleBackendHost } from './MapStyleBackend.js'
 import { RefCountedCache, type Lease } from './RefCountedCache.js'
-import { BucketMeshes, createBackgroundMaterial, createShapeMaterial, createTextMaterial, FeatureColorTexture, GlyphAtlasTexture } from './VectorTileMeshes.js'
+import {
+  BucketMeshes,
+  createBackgroundMaterial,
+  createBackgroundPatternMaterial,
+  createPatternShapeMaterial,
+  createShapeMaterial,
+  createTextMaterial,
+  FeatureColorTexture,
+  GlyphAtlasTexture,
+  ImageAtlasTexture,
+  type ShapeMaterials,
+} from './VectorTileMeshes.js'
 import { boundsToMercatorRectangles, tileOverlaps } from './worker/rectangles.js'
 import {
   TILE_EXTENT,
   TILE_SIZE_PIXELS,
+  type BackgroundPattern,
   type FeatureState,
+  type ImageChange,
   type MapStyleProcessorOptions,
   type MapStyleSummary,
   type StyleCommand,
+  type StyleImage,
   type StyleUpdateResult,
   type TileBucket,
   type TileRequest,
@@ -39,8 +53,17 @@ export interface MapStyleOverlayOptions {
   createWorker?: (() => Worker) | null
   /** Unused processed tiles kept for reuse, in bytes. Default: 32 MB. */
   retainedTileBytes?: number
+  /** Sprite sheet to load: 2 for the `@2x` sheet. Default: 2 on high-density screens (`devicePixelRatio` > 1), else 1. */
+  spritePixelRatio?: number
+  /** Runtime images (`addImage`) known before the style loads. Later changes go through `setImage`. */
+  images?: ReadonlyMap<string, StyleImage>
   /** Called once the style is loaded and `summary` is set. */
   onLoad?: (summary: MapStyleSummary) => void
+  /**
+   * Called once per id when a tile asks for an image (a pattern) that neither the sprite nor the runtime
+   * images have. Adding it then redraws the tiles that asked for it.
+   */
+  onStyleImageMissing?: (imageId: string) => void
   /** Called after the style loaded and each time a style change gave a new summary (sources, attributions…). */
   onSummaryChange?: (summary: MapStyleSummary) => void
 }
@@ -98,11 +121,33 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   declare fetch: (url: string, options?: RequestInit) => Promise<Response>
   /** The style this overlay draws; its changes reach the overlay as they are made. */
   readonly mapStyle: MapStyle
-  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style'>> & { baseUrl: string | undefined }
+  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style' | 'images' | 'onStyleImageMissing'>> & {
+    baseUrl: string | undefined
+  }
   protected readonly onLoad: ((summary: MapStyleSummary) => void) | undefined
+  protected readonly onStyleImageMissing: ((imageId: string) => void) | undefined
+  /** Runtime images as last set; the worker's copy follows through `setImage`. */
+  protected readonly images: Map<string, StyleImage>
+  /** Whether a snapshot handed `images` to the backend: later changes are sent as messages. */
+  protected imagesSent = false
+  /** Settles when the backend is ready (or failed): image changes queue behind it, in order. */
+  protected imageQueue: Promise<unknown>
+  protected resolveBackendReady: () => void = () => {}
+  /**
+   * Bucket keys that used each image id, recorded when buckets load and kept after they leave the cache, so
+   * an image change still finds regions whose buckets were evicted. Pruned to tiles of held regions.
+   */
+  protected readonly imageUsers = new Map<string, Set<string>>()
+  /** Missing image ids already reported, so each is reported once until it is added. */
+  protected readonly reportedMissingImages = new Set<string>()
+  /** The main thread copy of the worker's image atlas (patterns now, icons later), for custom layers that sample style images. */
+  readonly imageAtlas = new ImageAtlasTexture()
+  /** Shape materials by bucket kind: with or without patterns, with or without colour slots. */
+  protected readonly shapeMaterials: ShapeMaterials
+  protected readonly backgroundPattern: ReturnType<typeof createBackgroundPatternMaterial>
+  protected readonly backgroundPatternMesh: Mesh
   protected readonly onSummaryChange: ((summary: MapStyleSummary) => void) | undefined
   protected readonly featureColors = new FeatureColorTexture()
-  protected readonly slottedShapeMaterial: MeshBasicNodeMaterial
   /** Loaded buckets drawing each feature with colour slots (redraw on a state change) or baked (process again). */
   protected readonly featureBuckets = { colors: new Map<string, Set<LoadedBucket>>(), rebuild: new Map<string, Set<LoadedBucket>>() }
   /** Feature-state messages sent to the backend so far, and when each feature last changed (in that count). */
@@ -116,7 +161,6 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected backend: MapStyleBackend | null = null
   protected resolution = 256
   protected readonly atlas = new GlyphAtlasTexture()
-  protected readonly shapeMaterial = createShapeMaterial()
   protected readonly textMaterial: MeshBasicNodeMaterial
   protected readonly backgroundColor: Vector4
   protected readonly backgroundMaterial: MeshBasicNodeMaterial
@@ -146,22 +190,38 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     maximumZoom = 20,
     createWorker = createVectorTileWorker,
     retainedTileBytes = 32 * MEGABYTE_BYTES,
+    spritePixelRatio = defaultSpritePixelRatio(),
+    images,
     onLoad,
     onSummaryChange,
+    onStyleImageMissing,
   }: MapStyleOverlayOptions) {
     super({ url: 'map-style://{z}/{x}/{y}', levels: maximumZoom + 1, tileDimension: TILE_SIZE_PIXELS, projection: 'EPSG:3857', opacity })
     this.onLoad = onLoad
     this.onSummaryChange = onSummaryChange
-    this.options = { baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, retainedTileBytes }
+    this.onStyleImageMissing = onStyleImageMissing
+    this.options = { baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, retainedTileBytes, spritePixelRatio }
+    this.images = new Map(images)
+    this.imageQueue = new Promise<void>(resolve => (this.resolveBackendReady = resolve))
     this.mapStyle = style instanceof MapStyle ? style : new MapStyle({ style, requestHeaders, ...(baseUrl !== undefined ? { baseUrl } : {}) })
-    this.slottedShapeMaterial = createShapeMaterial(this.featureColors)
     this.textMaterial = createTextMaterial(this.atlas)
+    this.shapeMaterials = {
+      plain: createShapeMaterial(),
+      slotted: createShapeMaterial(this.featureColors),
+      patterned: createPatternShapeMaterial(this.imageAtlas),
+      slottedPatterned: createPatternShapeMaterial(this.imageAtlas, this.featureColors),
+    }
+    this.backgroundPattern = createBackgroundPatternMaterial(this.imageAtlas)
+    this.backgroundPatternMesh = new Mesh(new PlaneGeometry(1, 1), this.backgroundPattern.material)
+    this.backgroundPatternMesh.position.set(0.5, 0.5, 0)
+    this.backgroundPatternMesh.renderOrder = -1
+    this.backgroundPatternMesh.frustumCulled = false
     const background = createBackgroundMaterial()
     this.backgroundMaterial = background.material
     this.backgroundColor = background.color
     this.background = new Mesh(new PlaneGeometry(1, 1), this.backgroundMaterial)
     this.background.position.set(0.5, 0.5, 0)
-    this.background.renderOrder = -1
+    this.background.renderOrder = -2
     this.background.frustumCulled = false
     this.scene.matrixWorldAutoUpdate = true
 
@@ -174,6 +234,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
           if (stale && attempt < 3) continue
           const loaded: LoadedBucket = { key, bucket, meshes: null }
           this.indexFeatures(loaded, true)
+          this.recordImageUsers(key, bucket.images)
+          this.reportMissingImages(bucket.missingImages)
           return loaded
         }
       },
@@ -200,12 +262,27 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
 
   // Upstream `TiledImageOverlay._init` would create a region source over the (unused) XYZ image source.
   async _init(): Promise<void> {
+    try {
+      await this.initBackend()
+    } finally {
+      this.resolveBackendReady()
+    }
+    if (this.disposed || this.summary === null) return
+    await this.imageSource.init()
+    if (this.disposed) return
+    this.reportMissingImages(this.summary.missingBackgroundImages)
+    this.onLoad?.(this.summary)
+    this.onSummaryChange?.(this.summary)
+  }
+
+  protected async initBackend(): Promise<void> {
     await this.mapStyle.load(typeof this.fetch === 'function' ? (url, init) => this.fetch(String(url), init) : undefined)
     if (this.disposed) return
     this.unsubscribe = this.mapStyle.subscribe(this.receiveStyleChanges)
     const host: MapStyleBackendHost = {
       onAtlasUpdate: update => this.atlas.apply(update),
       onFeatureColorUpdate: update => this.featureColors.apply(update),
+      onImageAtlasUpdate: update => this.imageAtlas.apply(update),
       resolveResource: (request, signal) => this.mapStyle.resolveResource(request, signal),
     }
     const { createWorker } = this.options
@@ -215,6 +292,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
         this.backend = backend
         this.summary = await backend.init(this.takeSnapshot())
       } catch (error) {
+        if (this.disposed) return
         console.warn(`MapStyleSource: the vector tile worker did not start, tiles are processed on the main thread. ${(error as Error).message}`)
         this.backend?.dispose()
         this.backend = null
@@ -226,18 +304,17 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       // A fresh snapshot: changes sent to a worker that failed are in it
       this.summary = await backend.init(this.takeSnapshot())
     }
+    if (this.disposed) return
     if (this.summary.skippedLayers.length > 0) {
       console.warn(`MapStyleSource: ${this.summary.skippedLayers.length} style layers are not supported yet and are skipped: ${this.summary.skippedLayers.join(', ')}`)
     }
-    await this.imageSource.init()
-    this.onLoad?.(this.summary)
-    this.onSummaryChange?.(this.summary)
   }
 
   /** The style as it is now, for the backend; changes made after it are sent as they come. */
   protected takeSnapshot(): MapStyleProcessorOptions {
     const snapshot = this.mapStyle.snapshot()
     this.snapshotSequence = this.mapStyle.sequence
+    this.imagesSent = true
     return {
       style: snapshot.style,
       baseUrl: snapshot.baseUrl,
@@ -247,6 +324,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       featureStateVersion: this.featureStateVersion,
       globalState: snapshot.globalState,
       transformsRequests: snapshot.transformsRequests,
+      spritePixelRatio: this.options.spritePixelRatio,
+      images: [...this.images],
     }
   }
 
@@ -293,7 +372,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const sources = new Set(result.rebuiltSources)
     if (sources.size > 0) this.rebuildTiles(request => sources.has(request.sourceId))
     const changed = (pick: (summary: MapStyleSummary) => unknown) => previous === null || JSON.stringify(pick(previous)) !== JSON.stringify(pick(result.summary))
-    if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
+    if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.backgroundPatternByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
+    this.reportMissingImages(result.summary.missingBackgroundImages)
     this.onSummaryChange?.(result.summary)
   }
 
@@ -310,7 +390,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
         for (const loaded of this.featureBuckets.rebuild.get(key) ?? []) rebuild.add(loaded.key)
       }
       if (rebuild.size > 0) this.rebuildTiles(request => rebuild.has(bucketKey(request)))
-      if (redraw.size > 0) this.redrawRegions(redraw)
+      if (redraw.size > 0) this.redrawRegions(redraw, true)
     })
   }
 
@@ -355,7 +435,12 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const summary = this.summary
     if (summary === null) return false
     const level = this.calculateLevel(range)
-    return (summary.backgroundByZoom[Math.min(level, summary.backgroundByZoom.length - 1)] ?? null) !== null || summary.sources.some(source => level >= source.minimumZoom)
+    const zoom = Math.min(level, summary.backgroundByZoom.length - 1)
+    return (
+      (summary.backgroundByZoom[zoom] ?? null) !== null ||
+      (summary.backgroundPatternByZoom[zoom] ?? null) !== null ||
+      summary.sources.some(source => level >= source.minimumZoom)
+    )
   }
 
   lockTexture(range: number[]): Promise<Texture> {
@@ -404,21 +489,25 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
    * Discards the processed tiles that `matches` selects (in flight included), so they are processed again (from the
    * worker's raw tiles: nothing is fetched unless the worker forgot them), and redraws the regions drawing them.
    */
-  protected rebuildTiles(matches: (request: TileRequest) => boolean): void {
+  protected rebuildTiles(matches: (request: TileRequest) => boolean, shapesOnly = false): void {
     if (this.disposed) return
     for (const key of [...this.buckets.keys()]) if (matches(parseBucketKey(key))) this.buckets.discard(key)
     this.markRegionsStale(key => {
       const { range, level } = parseRegionKey(key)
-      return this.getRegionTiles(range, level).some(({ request }) => matches(request))
+      return this.getRegionTiles(range, level).some(tile => matches(tile.request) && !(shapesOnly && tile.textOnly))
     })
   }
 
-  /** Redraws the regions whose shapes come from these buckets, with no processing (feature colours changed). */
-  protected redrawRegions(bucketKeys: ReadonlySet<string>): void {
-    if (this.disposed) return
+  /**
+   * Redraws, with no processing, the regions that draw any of these buckets. `shapesOnly`: the change is in the
+   * buckets' shapes (feature colours, images), so regions that draw them for labels only (their outer ring) are
+   * skipped.
+   */
+  protected redrawRegions(bucketKeys: ReadonlySet<string>, shapesOnly = false): void {
+    if (this.disposed || bucketKeys.size === 0) return
     this.markRegionsStale(key => {
       const { range, level } = parseRegionKey(key)
-      return this.getRegionTiles(range, level).some(tile => !tile.textOnly && bucketKeys.has(tile.key))
+      return this.getRegionTiles(range, level).some(tile => bucketKeys.has(tile.key) && !(shapesOnly && tile.textOnly))
     })
   }
 
@@ -432,6 +521,93 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       else if (this.regions.get(key) !== null || this.regions.isLoading(key)) this.staleRegions.add(key)
     }
     if (this.staleRegions.size > 0) this.compositor?.runBeforeNextRender(this.startRecompositions)
+  }
+
+  /** Whether an image of this id exists: added at runtime, or in the style's sprites once loaded. */
+  hasImage(id: string): boolean {
+    return this.images.has(id) || (this.summary?.spriteImageIds.includes(id) ?? false)
+  }
+
+  /**
+   * Adds, replaces (`image`) or removes (`null`) a runtime image, and redraws what uses it: regions whose tiles
+   * use it (rebuilt when it appeared, disappeared or changed size, only redrawn otherwise), or every region when
+   * the background pattern does. Resolves once the change is applied in the worker.
+   */
+  setImage(id: string, image: StyleImage | null): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    if (image === null) this.images.delete(id)
+    else this.images.set(id, image)
+    this.reportedMissingImages.delete(id)
+    if (!this.imagesSent) return Promise.resolve() // the first snapshot sends the current images
+    const run = this.imageQueue.then(async () => {
+      const backend = this.backend
+      if (backend === null || this.disposed || this.summary === null) return
+      const backgroundBefore = this.summary.backgroundPatternByZoom
+      const change = await backend.setImage(id, image)
+      if (this.disposed) return
+      this.applyImageChange(id, change, backgroundBefore)
+    })
+    this.imageQueue = run.catch(() => {})
+    return run
+  }
+
+  protected applyImageChange(id: string, change: ImageChange, backgroundBefore: ReadonlyArray<BackgroundPattern | null>): void {
+    if (this.summary !== null) {
+      this.summary.backgroundPatternByZoom = change.backgroundPatternByZoom
+      this.summary.missingBackgroundImages = change.missingBackgroundImages
+    }
+    this.reportMissingImages(change.missingBackgroundImages)
+    const usesId = (patterns: ReadonlyArray<BackgroundPattern | null>) => patterns.some(pattern => pattern?.imageId === id)
+    if (usesId(backgroundBefore) || usesId(change.backgroundPatternByZoom)) {
+      this.markRegionsStale(() => true)
+      if (!change.rebuild) return
+    }
+    this.pruneImageUsers()
+    // Every bucket that used the image, cached or evicted, and buckets still processing: they may have read
+    // the image before the change.
+    const affected = new Set(this.imageUsers.get(id))
+    for (const key of this.buckets.keys()) if (this.buckets.isPending(key)) affected.add(key)
+    if (change.rebuild) for (const key of affected) this.buckets.discard(key)
+    // Patterns are shapes: regions that draw these tiles for their labels only are unaffected.
+    this.redrawRegions(affected, true)
+  }
+
+  protected recordImageUsers(bucketKey: string, images: readonly string[]): void {
+    for (const users of this.imageUsers.values()) users.delete(bucketKey)
+    for (const id of images) {
+      let users = this.imageUsers.get(id)
+      if (users === undefined) this.imageUsers.set(id, (users = new Set()))
+      users.add(bucketKey)
+    }
+  }
+
+  /**
+   * Forgets users that no held region draws and the bucket cache no longer holds, so the record stays the size
+   * of the view. Cached buckets stay: a region can take one back without loading it (and recording it) again.
+   */
+  protected pruneImageUsers(): void {
+    const drawn = new Set<string>(this.buckets.keys())
+    for (const key of this.regions.keys()) {
+      const { range, level } = parseRegionKey(key)
+      for (const tile of this.getRegionTiles(range, level)) drawn.add(tile.key)
+    }
+    for (const [id, users] of this.imageUsers) {
+      for (const key of users) if (!drawn.has(key)) users.delete(key)
+      if (users.size === 0) this.imageUsers.delete(id)
+    }
+  }
+
+  /** Reports image ids not reported since they were last added. */
+  protected reportMissingImages(ids: readonly string[]): void {
+    for (const id of ids) {
+      if (this.reportedMissingImages.has(id) || this.images.has(id)) continue
+      this.reportedMissingImages.add(id)
+      try {
+        this.onStyleImageMissing?.(id)
+      } catch (error) {
+        console.error(error)
+      }
+    }
   }
 
   /** Regions waiting to be redrawn after `invalidate`, or being redrawn. `Earth.inspect()` reports the sum. */
@@ -457,8 +633,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.backend = null
     this.scratch?.dispose()
     this.atlas.dispose()
-    this.shapeMaterial.dispose()
-    this.slottedShapeMaterial.dispose()
+    this.imageAtlas.dispose()
+    for (const material of Object.values(this.shapeMaterials)) material?.dispose()
+    this.backgroundPattern.material.dispose()
+    this.backgroundPatternMesh.geometry.dispose()
     this.featureColors.dispose()
     this.textMaterial.dispose()
     this.backgroundMaterial.dispose()
@@ -631,17 +809,24 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const scene = this.scene
     this.atlas.upload()
     this.featureColors.upload()
+    this.imageAtlas.upload()
     const backgrounds = this.summary?.backgroundByZoom ?? []
     const background = backgrounds[Math.min(level, backgrounds.length - 1)] ?? null
+    const patterns = this.summary?.backgroundPatternByZoom ?? []
+    const pattern = patterns[Math.min(level, patterns.length - 1)] ?? null
     if (background !== null) {
       this.backgroundColor.set(background[0] / 255, background[1] / 255, background[2] / 255, background[3] / 255)
       scene.add(this.background)
+    }
+    if (pattern !== null) {
+      this.setBackgroundPattern(pattern, range, level)
+      scene.add(this.backgroundPatternMesh)
     }
     const placements = new Map<LoadedBucket, number>()
     tiles.forEach((tile, order) => {
       const loaded = buckets[order]
       if (loaded === null || loaded === undefined) return
-      loaded.meshes ??= new BucketMeshes(loaded.bucket, this.shapeMaterial, this.textMaterial, this.slottedShapeMaterial)
+      loaded.meshes ??= new BucketMeshes(loaded.bucket, this.shapeMaterials, this.textMaterial)
       // Tile units (y down from the tile's north edge) to the region's 0 to 1 space (y up), in 64-bit here.
       const { z, y } = tile.request
       const tileSize = 1 / 2 ** z
@@ -673,6 +858,20 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     }
   }
 
+  /**
+   * Points the background pattern at a region: `pixelRatio` image pixels per map pixel at the region's zoom,
+   * anchored to the world's top-left corner like fill patterns. The offset is reduced in 64-bit here.
+   */
+  protected setBackgroundPattern({ rectangle, opacity }: BackgroundPattern, range: readonly number[], level: number): void {
+    const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
+    const imagePixelsAcrossWorld = TILE_SIZE_PIXELS * 2 ** level * rectangle.pixelRatio
+    const modulo = (value: number, modulus: number) => ((value % modulus) + modulus) % modulus
+    this.backgroundPattern.rectangle.set(rectangle.x, rectangle.y, rectangle.width, rectangle.height)
+    this.backgroundPattern.origin.set(modulo(minimumX * imagePixelsAcrossWorld, rectangle.width), modulo((1 - maximumY) * imagePixelsAcrossWorld, rectangle.height))
+    this.backgroundPattern.span.set((maximumX - minimumX) * imagePixelsAcrossWorld, (maximumY - minimumY) * imagePixelsAcrossWorld)
+    this.backgroundPattern.opacity.value = opacity
+  }
+
   /** The multisampled target regions are drawn into, then resolved into their own single-sample texture. */
   protected getScratch(resolution: number): RenderTarget {
     if (this.scratch !== null && this.scratch.width === resolution) return this.scratch
@@ -688,6 +887,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.scratch.texture.name = 'MapStyleScratch'
     return this.scratch
   }
+}
+
+/** `@2x` sprites on high-density screens, as MapLibre does. */
+function defaultSpritePixelRatio(): number {
+  return typeof devicePixelRatio === 'number' && devicePixelRatio > 1 ? 2 : 1
 }
 
 function regionKey(range: readonly number[], level: number): string {

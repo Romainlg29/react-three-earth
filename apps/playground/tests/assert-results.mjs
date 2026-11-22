@@ -60,6 +60,15 @@ const expectations = {
     ['feature-state reads back', r.featureState.hover === true],
     ['a hover redraws regions without processing tiles again', r.tilesProcessedDuringHover === 0 && r.hover.regionsRedrawn > 0],
   ],
+  ...Object.fromEntries(['webgpu', 'webgl2'].map(name => [`vector map style with fixtures, patterns, ${name}`, r => [
+    ['background-pattern covers the land (green checks)', r.sprite.meadowShare > 0.5],
+    ['fill-pattern stripes the lakes, dark and light', r.sprite.darkBlueShare > 0.004 && r.sprite.lightBlueShare > 0.003],
+    ['line-pattern dashes the primary roads', r.sprite.redShare > 0.008],
+    ['the image the sprite lacks draws nothing and is reported once', r.sprite.magentaShare === 0 && JSON.stringify(r.missing) === '["hatch"]'],
+    ['addImage draws it', r.added.magentaShare > 0.001],
+    ['updateImage replaces it', r.updated.magentaShare < r.added.magentaShare * 0.1 && r.updated.yellowShare > r.added.yellowShare + 0.001],
+    ['the other patterns stay', r.updated.darkBlueShare > r.sprite.darkBlueShare * 0.8 && r.updated.redShare > r.sprite.redShare * 0.8],
+  ]])),
   'camera and events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     return [

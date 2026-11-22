@@ -50,7 +50,7 @@ export function RasterTileSource({ url, levels, tileDimensionPixels, projection,
 }
 
 export interface MapStyleSourceProps extends MapStyleSourceOptions {
-  /** Receives the vanilla `MapStyleSource`: the runtime style API (`setFeatureState`, `setPaintProperty`…) and `invalidate(bounds)`. */
+  /** Receives the vanilla `MapStyleSource`: the runtime style API (`setFeatureState`, `setPaintProperty`…), `addImage` for patterns and `invalidate(bounds)`. */
   ref?: Ref<MapStyleSourceImpl>
   /** `<StyleLayer>` elements: layers the app adds to the style. */
   children?: ReactNode
@@ -72,6 +72,8 @@ export function MapStyleSource({
   maximumZoom,
   createWorker,
   attribution,
+  spritePixelRatio,
+  onStyleImageMissing,
   transformRequest,
   protocols,
   children,
@@ -83,6 +85,9 @@ export function MapStyleSource({
     latestTransform.current = transformRequest
   })
   const hasTransform = transformRequest !== undefined
+  // The latest handler, without reloading the source when an inline arrow changes.
+  const onStyleImageMissingRef = useRef(onStyleImageMissing)
+  useLayoutEffect(() => void (onStyleImageMissingRef.current = onStyleImageMissing))
   const source = useMemo(
     () => {
       const stableTransform: TransformRequest = (requestUrl, kind) => latestTransform.current?.(requestUrl, kind)
@@ -97,11 +102,13 @@ export function MapStyleSource({
         ...(attribution !== undefined ? { attribution } : {}),
         ...(hasTransform ? { transformRequest: stableTransform } : {}),
         ...(protocols !== undefined ? { protocols } : {}),
+        ...(spritePixelRatio !== undefined ? { spritePixelRatio } : {}),
+        onStyleImageMissing: imageId => onStyleImageMissingRef.current?.(imageId),
       })
     },
     // url and style are applied below with setStyle; attribution by useAttribution
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols],
+    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio],
   )
   const applied = useRef<{ source: MapStyleSourceImpl; style: unknown } | null>(null)
   useEffect(() => {

@@ -427,7 +427,7 @@ class StyleTestOverlay extends MapStyleOverlay {
   constructor(style: MapStyle) {
     super({ style, createWorker: null })
     this.compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
-    const summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }, { id: 'other', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [] }
+    const summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }, { id: 'other', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [] }
     const backend: MapStyleBackend = {
       init: async () => summary,
       reload: async () => summary,
@@ -436,7 +436,7 @@ class StyleTestOverlay extends MapStyleOverlay {
         this.processed.push(key)
         const hot = request.sourceId === 'base' && request.x === 2 && request.y === 1
         const wide = request.sourceId === 'base' && request.x === 0 && request.y === 3
-        return { shapes: null, text: null, atlas: null, featureStateKeys: hot ? ['hot'] : [], rebuildFeatureKeys: wide ? ['wide'] : [], featureStateVersion: this.featureStateVersion, byteLength: 1 }
+        return { shapes: null, text: null, atlas: null, images: [], missingImages: [], featureStateKeys: hot ? ['hot'] : [], rebuildFeatureKeys: wide ? ['wide'] : [], featureStateVersion: this.featureStateVersion, byteLength: 1 }
       },
       invalidate: () => {},
       updateStyle: async commands => {
@@ -444,6 +444,7 @@ class StyleTestOverlay extends MapStyleOverlay {
         return { summary, rebuiltSources: this.rebuiltSources, errors: [] }
       },
       updateFeatureStates: async changes => void this.sentStates.push(changes),
+      setImage: async () => ({ rebuild: false, backgroundPatternByZoom: [], missingBackgroundImages: [] }),
       dispose: () => {},
     }
     this.backend = backend

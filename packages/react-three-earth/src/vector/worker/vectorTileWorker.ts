@@ -1,10 +1,12 @@
 /// <reference lib="webworker" />
 // The vector tile worker: loads one MapLibre style and tessellates its tiles off the main thread.
 import { MapStyleProcessor, type MapStyleProcessorHooks } from './MapStyleProcessor.js'
-import { collectTransferables, type ResourceAnswer, type TileBucket, type WorkerRequest, type WorkerResponse } from './types.js'
+import { collectImageAtlasTransferables, collectTransferables, type ResourceAnswer, type TileBucket, type WorkerRequest, type WorkerResponse } from './types.js'
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
 let processor: Promise<MapStyleProcessor> | null = null
+/** The last processor that loaded: a reload after a failed one still keeps its atlases and slots. */
+let loaded: MapStyleProcessor | undefined
 const controllers = new Map<number, AbortController>()
 
 /** Requests waiting for the main thread's `resource` answer. */
@@ -30,8 +32,18 @@ const hooks: MapStyleProcessorHooks = {
     }),
 }
 
-/** Posts a result with the colour slots changed since the last post, so they always arrive before what uses them. */
+/**
+ * Posts a result with the image atlas changes and colour slots made since the last post, so they always arrive
+ * before what uses them.
+ */
 function post(created: MapStyleProcessor | null, response: WorkerResponse, transfer: Transferable[] = []): void {
+  if (created !== null && response.type === 'result') {
+    const imageAtlas = created.takeImageAtlasUpdate()
+    if (imageAtlas !== null) {
+      response.imageAtlas = imageAtlas
+      transfer.push(...collectImageAtlasTransferables(imageAtlas))
+    }
+  }
   if (created !== null && (response.type === 'result' || response.type === 'error')) {
     const featureColors = created.takeFeatureColorUpdate()
     if (featureColors !== null) {
@@ -56,10 +68,13 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
     case 'init':
     case 'reload': {
       // A reload keeps the glyph atlas and colour slots of the processor it replaces: buckets still drawn use them.
-      const previous = data.type === 'reload' ? processor?.catch(() => undefined) : undefined
-      processor = (previous ?? Promise.resolve(undefined)).then(old => MapStyleProcessor.create(data.options, hooks, old))
+      const previous = data.type === 'reload' ? (processor?.catch(() => loaded) ?? Promise.resolve(loaded)) : Promise.resolve(undefined)
+      processor = previous.then(old => MapStyleProcessor.create(data.options, hooks, old))
       processor.then(
-        created => post(created, { type: 'result', id: data.id, value: created.summary }),
+        created => {
+          loaded = created
+          post(created, { type: 'result', id: data.id, value: created.summary })
+        },
         error => fail(data.id, error),
       )
       return
@@ -81,6 +96,13 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
         })
         .catch(error => fail(data.id, error))
       return
+    case 'image': {
+      const { id, imageId, image } = data
+      requireProcessor()
+        .then(created => post(created, { type: 'result', id, value: created.setImage(imageId, image) }))
+        .catch(error => fail(id, error))
+      return
+    }
     case 'resource': {
       const pending = resourceRequests.get(data.id)
       if (pending === undefined) return

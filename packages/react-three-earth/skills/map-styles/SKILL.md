@@ -3,9 +3,10 @@ name: map-styles
 description: >
   Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
-  fonts, changing the style at runtime (setPaintProperty, setFilter, addLayer, setStyle diff, StyleLayer),
-  feature-state for hover and selection, global-state, transformRequest and addProtocol, and redrawing after
-  tile data changed on the server with invalidate(bounds).
+  fonts, sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
+  updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
+  setFilter, addLayer, setStyle diff, StyleLayer), feature-state for hover and selection, global-state,
+  transformRequest and addProtocol, and redrawing after tile data changed on the server with invalidate(bounds).
 metadata:
   purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, feature-state, invalidate and what is not supported yet.'
   type: core
@@ -19,6 +20,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/sprites.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/styleImageInput.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/camera.ts'
 requires:
   - terrain-and-imagery-sources
@@ -289,6 +292,57 @@ export function LiveMap({ changes }: { changes: EventTarget }) {
 
 Vanilla: keep the `MapStyleSource` you passed to `new Imagery` and call `source.invalidate(bounds)`.
 
+### Patterns from the sprite, and runtime images
+
+`fill-pattern`, `line-pattern` and `background-pattern` draw images from the style's `sprite` (a URL, or
+MapLibre 3's array of `{ id, url }`: images of a sprite other than `default` are named `id:name`). The `@2x`
+sheet loads on high-density screens; set `spritePixelRatio` (1 or 2) to choose. Images the sprite lacks can
+be added at runtime, as with MapLibre's `addImage`:
+
+```tsx
+import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { useRef } from 'react'
+
+/** A 4 × 4 checker as raw RGBA pixels (straight alpha, sRGB, rows from the top). */
+function checker(): { width: number; height: number; data: Uint8Array } {
+  const data = new Uint8Array(4 * 4 * 4)
+  for (let index = 0; index < 16; index++) data.set((index + (index >> 2)) % 2 === 0 ? [230, 40, 220, 255] : [20, 20, 20, 255], index * 4)
+  return { width: 4, height: 4, data }
+}
+
+export function PatternedMap() {
+  const source = useRef<MapStyleSourceInstance>(null)
+  return (
+    <Imagery>
+      <MapStyleSource
+        ref={source}
+        url="https://example.com/style.json"
+        // A tile asked for an image nobody has: provide it, and the tiles that asked redraw with it.
+        onStyleImageMissing={imageId => {
+          if (imageId === 'hatch') source.current?.addImage('hatch', checker(), { pixelRatio: 1 })
+        }}
+      />
+    </Imagery>
+  )
+}
+```
+
+- `addImage(id, image, { pixelRatio, sdf, stretchX, stretchY, content })` takes raw pixels
+  (`{ width, height, data }`), `ImageData`, an `ImageBitmap`, a canvas or a loaded `<img>` (`await
+  image.decode()` first). An existing id throws: use `updateImage`. A runtime image hides a sprite image of
+  the same id; `removeImage` uncovers it again. `hasImage(id)` covers both.
+- `updateImage(id, image)` at the same size only rewrites the atlas pixels and redraws the textures that
+  use it (no re-tessellation), so it is cheap enough to animate a few times a second. Another size
+  re-tessellates those tiles.
+- Only textures whose tiles use the image redraw; a background pattern redraws everything. A
+  `background-pattern` draws over the `background-color` layer below it.
+- Patterns follow MapLibre: `pixelRatio` image pixels per map pixel, aligned across tiles; a line pattern
+  is scaled so its height spans the line's width and repeats along the line; a patterned fill has no
+  outline; dashes do not combine with `line-pattern`; a missing image draws nothing (and calls
+  `onStyleImageMissing` once per id until it is added).
+- Vanilla: `new MapStyleSource({ url, onStyleImageMissing })`, then `source.addImage(…)`.
+
 ## Common Mistakes
 
 ### HIGH: Expecting `invalidate` to change the style
@@ -322,10 +376,20 @@ server can still answer with the old tile. Purge it, or serve changing tiles wit
 `southDegrees` greater than `northDegrees` throws and says to swap them. Longitudes need no order: 170 to
 -170 is the 20° across the antimeridian.
 
+### HIGH: Adding an image from an `<img>` that has not loaded
+
+`addImage` reads the pixels immediately and throws on an image element that has not loaded. `await
+image.decode()` first, or pass `{ width, height, data }`.
+
+### MEDIUM: Expecting icons
+
+The sprite is loaded and its images can be patterns, but `icon-image` is not drawn yet (screen-space
+symbols come later). Labels still draw.
+
 ### MEDIUM: Unsupported layers
 
-Icons and fill patterns (sprites), raster, hillshade and heatmap layers are skipped with one console
-warning listing them. `fill-extrusion` draws flat; labels do not collide across tiles.
+Raster, hillshade and heatmap layers are skipped with one console warning listing them. `fill-extrusion`
+draws flat; labels do not collide across tiles.
 
 ## Completion
 
@@ -334,4 +398,6 @@ warning listing them. `fill-extrusion` draws flat; labels do not collide across 
 - After `invalidate` or a style change, `imageryRecompositionsPending` is above 0, then returns to 0 with the
   new content shown.
 - `source.getStyle()` shows the change; `source.getFeatureState(feature)` returns what was set.
-- The console shows no `MapStyleSource:` error; a warning lists skipped layers, if any.
+- The console shows no `MapStyleSource:` error; a warning lists skipped layers, if any. A sprite that cannot
+  load warns once, naming its URL.
+- `source.hasImage('name')` is true for sprite images once the style has loaded.

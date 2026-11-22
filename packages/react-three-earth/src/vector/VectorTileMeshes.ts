@@ -12,6 +12,7 @@ import {
   UnsignedByteType,
   Vector2,
   Vector4,
+  type PixelFormat,
 } from 'three'
 import {
   attribute,
@@ -19,25 +20,30 @@ import {
   float,
   floor,
   Fn,
+  fract,
   fwidth,
   If,
   int,
   ivec2,
   max,
+  mix,
   mod,
   positionGeometry,
   select,
   smoothstep,
   sRGBTransferEOTF,
+  step,
   texture,
   uniform,
+  uv,
+  vec2,
   vec4,
   vertexStage,
 } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
 import { GLYPH_EDGE } from './worker/glyphs.js'
-import { TILE_EXTENT, type AtlasUpdate, type FeatureColorUpdate, type TileBucket } from './worker/types.js'
+import { TILE_EXTENT, type AtlasUpdate, type FeatureColorUpdate, type ImageAtlasUpdate, type TileBucket } from './worker/types.js'
 
 /**
  * Colours arrive as sRGB bytes; three's materials work in linear space and the composite target encodes
@@ -61,25 +67,31 @@ function createMaterial(): MeshBasicNodeMaterial {
  */
 export function createShapeMaterial(colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
   const material = createMaterial()
-  const color =
-    colorTable === undefined
-      ? linearColor('color')
-      : (() => {
-          const slot = attribute<'float'>('colorSlot', 'float')
-          const width = float(colorTable.width)
-          const entry = colorTable.node.load(ivec2(int(mod(slot, width)), int(floor(slot.div(width))))) as unknown as Node<'vec4'>
-          const own = attribute<'vec4'>('color', 'vec4')
-          const chosen = vertexStage(select(slot.greaterThan(0.5), entry, own))
-          return vec4(sRGBTransferEOTF(chosen.rgb) as unknown as Node<'vec3'>, chosen.a)
-        })()
+  const color = shapeColor(colorTable)
   material.colorNode = Fn(() => {
-    const local = positionGeometry
-    If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
-      Discard()
-    })
+    discardOutsideTile()
     return color
   })()
   return material
+}
+
+/** The linear vertex colour of a shape, or its slot's colour in the table when it has one. */
+function shapeColor(colorTable: FeatureColorTexture | undefined): Node<'vec4'> {
+  if (colorTable === undefined) return linearColor('color') as unknown as Node<'vec4'>
+  const slot = attribute<'float'>('colorSlot', 'float')
+  const width = float(colorTable.width)
+  const entry = colorTable.node.load(ivec2(int(mod(slot, width)), int(floor(slot.div(width))))) as unknown as Node<'vec4'>
+  const own = attribute<'vec4'>('color', 'vec4')
+  const chosen = vertexStage(select(slot.greaterThan(0.5), entry, own))
+  return vec4(sRGBTransferEOTF(chosen.rgb) as unknown as Node<'vec3'>, chosen.a) as unknown as Node<'vec4'>
+}
+
+/** Drops fragments outside the tile square. Call inside `Fn`. */
+function discardOutsideTile(): void {
+  const local = positionGeometry
+  If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
+    Discard()
+  })
 }
 
 /**
@@ -148,28 +160,45 @@ export function createBackgroundMaterial(): { material: MeshBasicNodeMaterial; c
   return { material, color }
 }
 
-/** The main thread's copy of the worker's glyph atlas: one channel of signed distance, 1024 wide. */
-export class GlyphAtlasTexture {
+/** A rectangle of new pixels for a mirrored atlas, rows from the top, tightly packed. */
+interface AtlasPixels {
+  x: number
+  y: number
+  width: number
+  height: number
+  data: Uint8Array
+}
+
+/**
+ * The main thread's copy of an atlas the worker packs (glyphs, images): it grows when the worker's does,
+ * keeping what it holds, and uploads once per batch of changes.
+ */
+export class MirroredAtlasTexture {
   texture: DataTexture
-  /** Atlas size in pixels, to turn glyph pixel coordinates into texture coordinates. */
+  /** Atlas size in pixels, to turn pixel coordinates into texture coordinates. */
   readonly size = uniform(new Vector2(1, 1))
-  /** The texture node read by text materials; its value follows `texture` when the atlas grows. */
+  /** The texture node read by materials; its value follows `texture` when the atlas grows. */
   readonly node: ReturnType<typeof texture>
   protected data = new Uint8Array(1)
   protected dirty = false
 
-  constructor() {
+  constructor(
+    protected readonly channels: 1 | 4,
+    protected readonly name: string,
+  ) {
+    this.data = new Uint8Array(channels)
     this.texture = this.createTexture(1, 1)
     this.node = texture(this.texture)
   }
 
-  apply(update: AtlasUpdate): void {
-    const { width, height } = update
+  protected applyPixels(width: number, height: number, entries: readonly AtlasPixels[]): void {
+    const channels = this.channels
     if (width !== this.texture.image.width || height !== this.texture.image.height) {
-      const data = new Uint8Array(width * height)
+      const data = new Uint8Array(width * height * channels)
       const previousWidth = this.texture.image.width
+      const rowBytes = Math.min(previousWidth, width) * channels
       for (let row = 0; row < Math.min(this.texture.image.height, height); row++) {
-        data.set(this.data.subarray(row * previousWidth, row * previousWidth + Math.min(previousWidth, width)), row * width)
+        data.set(this.data.subarray(row * previousWidth * channels, row * previousWidth * channels + rowBytes), row * width * channels)
       }
       this.data = data
       this.texture.dispose()
@@ -177,15 +206,16 @@ export class GlyphAtlasTexture {
       this.node.value = this.texture
       this.size.value.set(width, height)
     }
-    for (const glyph of update.glyphs) {
-      for (let row = 0; row < glyph.height; row++) {
-        this.data.set(glyph.data.subarray(row * glyph.width, (row + 1) * glyph.width), (glyph.y + row) * width + glyph.x)
+    for (const entry of entries) {
+      const entryRowBytes = entry.width * channels
+      for (let row = 0; row < entry.height; row++) {
+        this.data.set(entry.data.subarray(row * entryRowBytes, (row + 1) * entryRowBytes), ((entry.y + row) * width + entry.x) * channels)
       }
     }
-    if (update.glyphs.length > 0) this.dirty = true
+    if (entries.length > 0) this.dirty = true
   }
 
-  /** Uploads the atlas if glyphs arrived since the last upload. Call before drawing text: one upload per batch. */
+  /** Uploads the atlas if pixels arrived since the last upload. Call before drawing: one upload per batch. */
   upload(): void {
     if (!this.dirty) return
     this.texture.needsUpdate = true
@@ -197,18 +227,91 @@ export class GlyphAtlasTexture {
   }
 
   protected createTexture(width: number, height: number): DataTexture {
-    if (this.data.length !== width * height) this.data = new Uint8Array(width * height)
-    const atlas = new DataTexture(this.data, width, height, RedFormat, UnsignedByteType)
+    if (this.data.length !== width * height * this.channels) this.data = new Uint8Array(width * height * this.channels)
+    const format: PixelFormat = this.channels === 1 ? RedFormat : RGBAFormat
+    const atlas = new DataTexture(this.data, width, height, format, UnsignedByteType)
     atlas.colorSpace = NoColorSpace
     atlas.minFilter = LinearFilter
     atlas.magFilter = LinearFilter
     atlas.generateMipmaps = false
     atlas.flipY = false
-    atlas.unpackAlignment = 1
-    atlas.name = 'MapStyleGlyphAtlas'
+    atlas.unpackAlignment = this.channels === 1 ? 1 : 4
+    atlas.name = this.name
     atlas.needsUpdate = true
     return atlas
   }
+}
+
+/** The main thread's copy of the worker's glyph atlas: one channel of signed distance, 1024 wide. */
+export class GlyphAtlasTexture extends MirroredAtlasTexture {
+  constructor() {
+    super(1, 'MapStyleGlyphAtlas')
+  }
+
+  apply(update: AtlasUpdate): void {
+    this.applyPixels(update.width, update.height, update.glyphs)
+  }
+}
+
+/** The main thread's copy of the worker's image atlas (patterns): RGBA, sRGB, premultiplied. */
+export class ImageAtlasTexture extends MirroredAtlasTexture {
+  constructor() {
+    super(4, 'MapStyleImageAtlas')
+  }
+
+  apply(update: ImageAtlasUpdate): void {
+    this.applyPixels(update.width, update.height, update.images)
+  }
+}
+
+/**
+ * The colour of a repeated pattern image: `rectangle` is its place in the atlas (x, y, width, height in atlas
+ * pixels), `coordinates` the position in the repeated image, in image pixels. Straight alpha, linear.
+ */
+function samplePattern(atlas: ImageAtlasTexture, rectangle: Node<'vec4'>, coordinates: Node<'vec2'>) {
+  const size = max(rectangle.zw, vec2(1, 1))
+  const texel = rectangle.xy.add(fract(coordinates.div(size)).mul(size))
+  const sample = atlas.node.sample(texel.div(atlas.size)) as unknown as Node<'vec4'>
+  const straight = sample.rgb.div(max(sample.a, float(1 / 255)))
+  return vec4(sRGBTransferEOTF(straight) as unknown as Node<'vec3'>, sample.a)
+}
+
+/**
+ * Fills, lines and circles of a tile that has patterns: like `createShapeMaterial`, and vertices with a
+ * pattern rectangle take the pattern's colour, times the vertex colour's alpha (the opacity).
+ */
+export function createPatternShapeMaterial(atlas: ImageAtlasTexture, colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
+  const material = createMaterial()
+  const shape = shapeColor(colorTable)
+  material.colorNode = Fn(() => {
+    discardOutsideTile()
+    const color = shape as unknown as ReturnType<typeof linearColor>
+    // Normalised 16-bit attribute: back to atlas pixels.
+    const rectangle = attribute<'vec4'>('pattern', 'vec4').mul(65535)
+    const pattern = samplePattern(atlas, rectangle, attribute<'vec2'>('patternCoordinates', 'vec2'))
+    return mix(color, vec4(pattern.rgb, pattern.a.mul(color.a)), step(0.5, rectangle.z))
+  })()
+  return material
+}
+
+/**
+ * `background-pattern` over the whole composite. Set the uniforms before drawing: `rectangle` (atlas pixels),
+ * `origin` (image pixels at the composite's top-left corner, reduced into the image), `span` (image pixels
+ * across the composite) and `opacity`.
+ */
+export function createBackgroundPatternMaterial(atlas: ImageAtlasTexture) {
+  const rectangle = new Vector4()
+  const origin = new Vector2()
+  const span = new Vector2()
+  const opacity = uniform(1)
+  const material = createMaterial()
+  material.colorNode = Fn(() => {
+    // The composite's y grows to the north; image rows grow to the south.
+    const coordinates = uniform(origin).add(vec2(uv().x, uv().y.oneMinus()).mul(uniform(span)))
+    const pattern = samplePattern(atlas, uniform(rectangle), coordinates)
+    return vec4(pattern.rgb, pattern.a.mul(opacity))
+  })()
+  return { material, rectangle, origin, span, opacity }
 }
 
 /**
@@ -233,29 +336,50 @@ export function createTextMaterial(atlas: GlyphAtlasTexture): MeshBasicNodeMater
   return material
 }
 
+/** The shape materials a bucket picks from: with or without patterns, with or without feature colour slots. */
+export interface ShapeMaterials {
+  plain: MeshBasicNodeMaterial
+  slotted?: MeshBasicNodeMaterial
+  patterned?: MeshBasicNodeMaterial
+  slottedPatterned?: MeshBasicNodeMaterial
+}
+
+function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slotted: boolean): MeshBasicNodeMaterial {
+  if (patterned && slotted) return materials.slottedPatterned ?? materials.patterned ?? materials.slotted ?? materials.plain
+  if (patterned) return materials.patterned ?? materials.plain
+  if (slotted) return materials.slotted ?? materials.plain
+  return materials.plain
+}
+
 /** A bucket's GPU objects: one shape mesh per layer group (sharing buffers) and one text mesh. */
 export class BucketMeshes {
   readonly shapes: Array<{ group: number; mesh: Mesh }> = []
   readonly text: Mesh | null = null
   protected readonly geometries: BufferGeometry[] = []
 
-  /** `slottedShapeMaterial` draws buckets with feature colour slots. */
-  constructor(bucket: TileBucket, shapeMaterial: MeshBasicNodeMaterial, textMaterial: MeshBasicNodeMaterial, slottedShapeMaterial: MeshBasicNodeMaterial = shapeMaterial) {
+  constructor(bucket: TileBucket, shapeMaterials: ShapeMaterials, textMaterial: MeshBasicNodeMaterial) {
     const { shapes, text } = bucket
     if (shapes !== null) {
       const position = new BufferAttribute(toVector3(shapes.positions), 3)
       const color = new BufferAttribute(shapes.colors, 4, true)
-      const slots = shapes.colorSlots === null ? null : new BufferAttribute(shapes.colorSlots, 1)
+      const slots = shapes.colorSlots == null ? null : new BufferAttribute(shapes.colorSlots, 1)
       const index = new BufferAttribute(shapes.indices, 1)
+      const patterned = shapes.patterns != null && shapes.patternCoordinates != null
+      const pattern = patterned ? new BufferAttribute(shapes.patterns!, 4, true) : null
+      const patternCoordinates = patterned ? new BufferAttribute(shapes.patternCoordinates!, 2) : null
       for (const { group, start, count } of shapes.groups) {
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', position)
         geometry.setAttribute('color', color)
         if (slots !== null) geometry.setAttribute('colorSlot', slots)
+        if (pattern !== null && patternCoordinates !== null) {
+          geometry.setAttribute('pattern', pattern)
+          geometry.setAttribute('patternCoordinates', patternCoordinates)
+        }
         geometry.setIndex(index)
         geometry.setDrawRange(start, count)
         this.geometries.push(geometry)
-        this.shapes.push({ group, mesh: createMesh(geometry, slots === null ? shapeMaterial : slottedShapeMaterial) })
+        this.shapes.push({ group, mesh: createMesh(geometry, chooseShapeMaterial(shapeMaterials, patterned, slots !== null)) })
       }
     }
     if (text !== null) {

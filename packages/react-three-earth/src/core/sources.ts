@@ -9,6 +9,8 @@ import type { StyleLayer } from '../vector/StyleLayer.js'
 import type { FeatureIdentifier } from '../vector/worker/featureState.js'
 import type { StyleDocument, StyleDocumentLayer } from '../vector/worker/styleDocument.js'
 import type { FeatureState } from '../vector/worker/types.js'
+import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../vector/styleImageInput.js'
+import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
 
 /** Anything that can feed a `Terrain`: a root URL plus the 3DTilesRenderer plugins that read it. */
@@ -169,6 +171,17 @@ export interface MapStyleSourceOptions {
   transformRequest?: TransformRequest
   /** Loaders for custom URL schemes, by scheme: `{ offline: loader }` serves `offline://…`. More with `addProtocol`. */
   protocols?: Record<string, ProtocolLoader>
+  /**
+   * Sprite sheet resolution: 2 loads the style's `@2x` sprite, 1 the plain one. Default: 2 on high-density
+   * screens (`devicePixelRatio` > 1), else 1.
+   */
+  spritePixelRatio?: number
+  /**
+   * Called once per image id when a tile asks for an image (a `fill-pattern`, for example) that neither the
+   * style's sprite nor `addImage` provide: MapLibre's `styleimagemissing`. Call `addImage` from it to fill the
+   * gap; the tiles that asked are redrawn with it.
+   */
+  onStyleImageMissing?: (imageId: string) => void
 }
 
 /**
@@ -176,9 +189,9 @@ export interface MapStyleSourceOptions {
  * TileJSON or PMTiles).
  *
  * Tiles are decoded and tessellated in a worker, then drawn on the GPU straight into each terrain tile's
- * texture, at that texture's resolution, with 4× multisampling. Not supported yet: icons and patterns
- * (sprites), raster, hillshade and heatmap layers, right-to-left and complex scripts, 3D extrusion (drawn
- * flat).
+ * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
+ * `background-pattern`) come from the style's sprite and from `addImage`. Not supported yet: icons, raster,
+ * hillshade and heatmap layers, right-to-left and complex scripts, 3D extrusion (drawn flat).
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.
@@ -198,6 +211,10 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   protected readonly mapStyle: MapStyle
   /** Overlays created for `Imagery` layers, live until disposed. */
   protected readonly overlays = new Set<MapStyleOverlay>()
+  /** Images added with `addImage`, handed to every overlay, including those created later. */
+  protected readonly images = new Map<string, StyleImage>()
+  /** Missing image ids reported to `onStyleImageMissing`, once across overlays until added. */
+  protected readonly reportedMissingImages = new Set<string>()
 
   constructor(options: MapStyleSourceOptions) {
     super(options.attribution)
@@ -216,12 +233,14 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   }
 
   createOverlay({ opacity }: { opacity: number }): MapStyleOverlay {
-    const { url: _url, style: _style, attribution: _attribution, transformRequest: _transformRequest, protocols: _protocols, ...rest } = this.options
+    const { url: _url, style: _style, attribution: _attribution, transformRequest: _transformRequest, protocols: _protocols, onStyleImageMissing: _onStyleImageMissing, ...rest } = this.options
     const overlay = new MapStyleOverlay({
       ...rest,
       style: this.mapStyle,
       opacity,
+      images: this.images,
       onSummaryChange: summary => this.setLoadedAttributions(summary.attributions),
+      onStyleImageMissing: imageId => this.reportMissingImage(imageId),
     })
     this.pruneDisposedOverlays()
     this.overlays.add(overlay)
@@ -238,6 +257,60 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   invalidate(bounds?: GeographicBounds): void {
     this.pruneDisposedOverlays()
     for (const overlay of this.overlays) overlay.invalidate(bounds)
+  }
+
+  /**
+   * Adds an image the style can use by id: as a pattern (`fill-pattern`, `line-pattern`, `background-pattern`),
+   * like an image of the style's sprite. An image of the same id in the sprite is hidden by it. Tiles that use
+   * the id are redrawn.
+   * @example
+   * const image = new Image()
+   * image.src = '/stripes.png'
+   * await image.decode()
+   * source.addImage('stripes', image, { pixelRatio: 2 })
+   */
+  addImage(id: string, image: StyleImageInput, options: StyleImageOptions = {}): void {
+    if (this.images.has(id)) throw new Error(`MapStyleSource.addImage: an image named "${id}" already exists; call updateImage("${id}", image) to replace it.`)
+    this.setImage(id, toStyleImage(id, image, options))
+  }
+
+  /**
+   * Replaces an image added with `addImage`, keeping its options unless new ones are given. Regions that use it
+   * are redrawn; at the same size they are not even rebuilt (only the atlas pixels change), so it is cheap
+   * enough to animate.
+   */
+  updateImage(id: string, image: StyleImageInput, options?: StyleImageOptions): void {
+    const previous = this.images.get(id)
+    if (previous === undefined) throw new Error(`MapStyleSource.updateImage: no image named "${id}"; call addImage("${id}", image) first.`)
+    const { pixelRatio, sdf, stretchX, stretchY, content } = previous
+    this.setImage(id, toStyleImage(id, image, options ?? { pixelRatio, sdf, ...(stretchX ? { stretchX } : {}), ...(stretchY ? { stretchY } : {}), ...(content ? { content } : {}) }))
+  }
+
+  /** Removes an image added with `addImage`; a sprite image of the same id shows again. Does nothing for other ids. */
+  removeImage(id: string): void {
+    if (!this.images.delete(id)) return
+    this.reportedMissingImages.delete(id)
+    this.pruneDisposedOverlays()
+    for (const overlay of this.overlays) overlay.setImage(id, null).catch(warnUnlessAborted)
+  }
+
+  /** Whether an image of this id exists: added with `addImage`, or in the style's sprite once it has loaded. */
+  hasImage(id: string): boolean {
+    this.pruneDisposedOverlays()
+    return this.images.has(id) || [...this.overlays].some(overlay => overlay.hasImage(id))
+  }
+
+  protected setImage(id: string, image: StyleImage): void {
+    this.images.set(id, image)
+    this.reportedMissingImages.delete(id)
+    this.pruneDisposedOverlays()
+    for (const overlay of this.overlays) overlay.setImage(id, image).catch(warnUnlessAborted)
+  }
+
+  protected reportMissingImage(imageId: string): void {
+    if (this.reportedMissingImages.has(imageId) || this.images.has(imageId)) return
+    this.reportedMissingImages.add(imageId)
+    this.options.onStyleImageMissing?.(imageId)
   }
 
   /** Regions waiting to be redrawn after `invalidate`, over every layer using this source. */
@@ -396,4 +469,10 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
 
 function isStyleLayer(layer: object): layer is StyleLayer {
   return typeof (layer as Partial<StyleLayer>).addTo === 'function' && typeof (layer as Partial<StyleLayer>).toSpecification === 'function'
+}
+
+/** Image changes cut short by `dispose` are expected; anything else is worth a warning. */
+function warnUnlessAborted(error: unknown): void {
+  if ((error as Error | undefined)?.name === 'AbortError') return
+  console.warn(`MapStyleSource: an image change failed; call updateImage again to retry. ${(error as Error).message}`)
 }

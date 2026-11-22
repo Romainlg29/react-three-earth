@@ -1,4 +1,5 @@
 import { encodeVectorTile, type EncodedFeature } from '../../../packages/react-three-earth/test/helpers/encodeVectorTile.ts'
+import { encodePngRgba } from './png.ts'
 
 /** Synthetic map data around Mount Fuji, in longitude and latitude degrees. */
 const LAKES = [
@@ -70,6 +71,73 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
     { name: 'roads', features: roadFeatures },
     { name: 'places', features: places },
   ])
+}
+
+type Rgba = [number, number, number, number]
+
+/** Fixture sprite images at pixel ratio 1, as functions of the pixel: placed side by side in the sheet. */
+const SPRITE_IMAGES: Array<{ name: string; width: number; height: number; pixel: (x: number, y: number) => Rgba }> = [
+  // Green checks for the background
+  { name: 'meadow', width: 8, height: 8, pixel: (x, y) => ((x >> 2) + (y >> 2)) % 2 === 0 ? [80, 170, 60, 255] : [170, 225, 120, 255] },
+  // Dark and light blue stripes for the lakes
+  { name: 'waves', width: 8, height: 8, pixel: (_x, y) => (y < 4 ? [20, 70, 200, 255] : [140, 200, 255, 255]) },
+  // Red and white dashes along the primary roads, transparent at the edges
+  { name: 'arrows', width: 16, height: 8, pixel: (x, y) => (y === 0 || y === 7 ? [0, 0, 0, 0] : x < 8 ? [225, 30, 30, 255] : [255, 255, 255, 255]) },
+]
+
+/** The fixture sprite sheet and index at a pixel ratio (1 or 2; the @2x images are the 1x ones doubled). */
+export function fixtureSprite(pixelRatio: 1 | 2): { json: object; png: Uint8Array } {
+  const json: Record<string, object> = {}
+  let x = 0
+  for (const image of SPRITE_IMAGES) {
+    json[image.name] = { x: x * pixelRatio, y: 0, width: image.width * pixelRatio, height: image.height * pixelRatio, pixelRatio }
+    x += image.width
+  }
+  const width = x * pixelRatio
+  const height = Math.max(...SPRITE_IMAGES.map(image => image.height)) * pixelRatio
+  const png = encodePngRgba(width, height, (px, py) => {
+    let left = 0
+    for (const image of SPRITE_IMAGES) {
+      const localX = Math.floor(px / pixelRatio) - left
+      if (localX < image.width) return Math.floor(py / pixelRatio) < image.height ? image.pixel(localX, Math.floor(py / pixelRatio)) : [0, 0, 0, 0]
+      left += image.width
+    }
+    return [0, 0, 0, 0]
+  })
+  return { json, png }
+}
+
+/**
+ * The fixture style with patterns: a `background-pattern`, lakes and primary roads drawn with sprite images,
+ * and Lake Motosu with an image (`hatch`) the sprite lacks, for `addImage` and `onStyleImageMissing`.
+ */
+export function fixturePatternStyle(): object {
+  const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
+  const layers = base.layers.flatMap(layer => {
+    if (layer.id === 'background') return [{ id: 'background', type: 'background', paint: { 'background-pattern': 'meadow' } }]
+    if (layer.id === 'water') {
+      return [
+        { id: 'water', type: 'fill', source: 'fixture', 'source-layer': 'water', filter: ['!=', ['get', 'name'], 'Lake Motosu'], paint: { 'fill-pattern': 'waves' } },
+        { id: 'water-runtime', type: 'fill', source: 'fixture', 'source-layer': 'water', filter: ['==', ['get', 'name'], 'Lake Motosu'], paint: { 'fill-pattern': 'hatch' } },
+      ]
+    }
+    if (layer.id === 'road') {
+      return [
+        layer,
+        {
+          id: 'road-pattern',
+          type: 'line',
+          source: 'fixture',
+          'source-layer': 'roads',
+          filter: ['==', ['get', 'class'], 'primary'],
+          layout: { 'line-join': 'round' },
+          paint: { 'line-pattern': 'arrows', 'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 8, 4, 16, 24] },
+        },
+      ]
+    }
+    return [layer]
+  })
+  return { ...base, sprite: '/fixtures/sprite', layers }
 }
 
 /**
