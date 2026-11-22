@@ -194,9 +194,9 @@ The browser checks load Playwright through `NODE_PATH` (it is not a workspace de
 Copy `apps/playground/.env.example` to `.env` to point the playground at your own terrain, imagery or
 map style. `.env` is git-ignored.
 
-CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs all of the above on every pull request,
-including the browser checks in a headed Chromium on SwiftShader's Vulkan backend under xvfb; screenshots
-are uploaded as a workflow artifact. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.
+CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs typecheck, unit tests, the skill checks
+and the build on every pull request. The WebGPU browser checks are local only: run them before pushing
+rendering changes. Contributors and coding agents: read [AGENTS.md](AGENTS.md) first.
 
 ## License
 
