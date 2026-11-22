@@ -29,7 +29,7 @@ export {
 export { ImageOverlayPlugin } from './tiles/ImageOverlayPlugin.js'
 export { TilesFadePlugin } from './tiles/TilesFadePlugin.js'
 export { QuantizedMeshVersionPlugin } from './tiles/QuantizedMeshVersionPlugin.js'
-export { ImageryCompositor, type CompositeDraw } from './tiles/imagery/ImageryCompositor.js'
+export { ImageryCompositor, type CompositeDraw, type CompositionPriority, type CompositionRenderer } from './tiles/imagery/ImageryCompositor.js'
 export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/ImageryStatistics.js'
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'

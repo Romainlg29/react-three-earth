@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { prefersWebGLBackend, setCameraView, type CameraView, type Earth as EarthImpl, type ViewMode } from 'react-three-earth'
+import { prefersWebGLBackend, setCameraView, type CameraView, type Earth as EarthImpl, type MapStyleSource as MapStyleSourceImpl, type ViewMode } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
@@ -22,8 +22,11 @@ const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` 
 const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
 const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
-// `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery.
-const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? '/fixtures/style.json' : import.meta.env.VITE_MAP_STYLE_URL) : undefined
+// `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery. `?test=invalidate` (with
+// `?fixtures&map=vector`) reads tiles whose lake colour the browser check changes on the server, then redraws
+// them through `window.mapStyleSource.invalidate(bounds)`.
+const liveFixtures = useFixtures && params.get('test') === 'invalidate'
+const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? `/fixtures/style.json${liveFixtures ? '?live' : ''}` : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
 // The atmosphere's lookup textures are cached between page loads, in dev too: the cache key holds
 // ATMOSPHERE_PRECOMPUTE_VERSION, which a unit test makes you bump when the generating shaders change.
@@ -59,6 +62,7 @@ declare global {
   interface Window {
     earth?: EarthImpl
     setView?: (view: ViewMode) => void
+    mapStyleSource?: MapStyleSourceImpl | null
   }
 }
 
@@ -119,7 +123,7 @@ export function MapDemo() {
             <QuantizedMeshSource url={terrainUrl} />
           </Terrain>
           <Imagery>
-            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />}
+            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />}
           </Imagery>
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />

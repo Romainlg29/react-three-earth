@@ -48,8 +48,9 @@ export function report(earth: Earth) {
 | `tilesLoaded`, `tilesVisible` | tiles in memory, tiles drawn this frame |
 | `tilesDownloading`, `tilesParsing` | work in flight; both 0 means the view is settled |
 | `memoryUsedBytes`, `memoryBudgetBytes` | tile cache use against `memoryBudgetBytes` |
-| `imageryTilesComposited`, `imageryMainThreadMilliseconds` | imagery GPU composition over the last frame |
+| `imageryTilesComposited`, `imageryMainThreadMilliseconds` | imagery GPU composition over the last frame (redraws after `invalidate` included) |
 | `imageryCompositionsPending` | compositions waiting for a later frame's budget |
+| `imageryRecompositionsPending` | textures still to redraw after `MapStyleSource.invalidate` (see `map-styles`) |
 | `imageryLayers` | `<Imagery>` layers with at least one source |
 | `atmosphere` | null without `<Atmosphere>`; `ready` turns true once lookup textures exist |
 | `camera` | `earth.camera.getView()`: centre, MapLibre `zoom`, heading, pitch (null before the first frame) |

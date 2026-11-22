@@ -2,11 +2,13 @@ import { XYZTilesOverlay } from '3d-tiles-renderer/three/plugins'
 import { LinearFilter, Mesh, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, SRGBColorSpace, Vector4, type Texture } from 'three'
 import type { MeshBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
 
+import type { GeographicBounds } from '../core/camera.js'
 import type { ImageryCompositor } from '../tiles/imagery/ImageryCompositor.js'
 import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import { createVectorTileWorker, InlineMapStyleBackend, WorkerMapStyleBackend, type MapStyleBackend } from './MapStyleBackend.js'
-import { RefCountedCache } from './RefCountedCache.js'
+import { RefCountedCache, type Lease } from './RefCountedCache.js'
 import { BucketMeshes, createBackgroundMaterial, createShapeMaterial, createTextMaterial, GlyphAtlasTexture } from './VectorTileMeshes.js'
+import { boundsToMercatorRectangles, tileOverlaps, type MercatorRectangle } from './worker/rectangles.js'
 import { TILE_EXTENT, TILE_SIZE_PIXELS, type MapStyleSummary, type TileBucket, type TileRequest } from './worker/types.js'
 
 export interface MapStyleOverlayOptions {
@@ -43,6 +45,16 @@ interface LoadedBucket {
   meshes: BucketMeshes | null
 }
 
+/** A region load or redraw in flight. An invalidation that reaches it marks it stale: it redraws once more after. */
+interface RegionWork {
+  stale: boolean
+}
+
+interface Recomposition extends RegionWork {
+  target: RenderTarget
+  controller: AbortController
+}
+
 const MEGABYTE_BYTES = 2 ** 20
 
 /**
@@ -52,6 +64,9 @@ const MEGABYTE_BYTES = 2 ** 20
  * each terrain tile's region, the covering vector tiles are drawn straight into the region's texture, at the
  * region's own resolution (so text stays sharp), with 4× multisampling, through the shared
  * `ImageryCompositor`, under its per-frame budget.
+ *
+ * `invalidate` redraws regions whose content changed, in place: each keeps showing its previous texture until
+ * the new one is drawn over it in one pass, so there is no flicker and no hole.
  *
  * Extends 3DTilesRenderer's `XYZTilesOverlay` only for its Web Mercator tiling; its image source is never
  * fetched from.
@@ -81,6 +96,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly regions: RefCountedCache<RenderTarget>
   protected readonly queuedTargets = new Map<string, RenderTarget>()
   protected readonly waitedRegions = new Set<string>()
+  /** First loads in flight, by region key. */
+  protected readonly loadingRegions = new Map<string, RegionWork>()
+  /** Redraws in flight, by region key. */
+  protected readonly recompositions = new Map<string, Recomposition>()
+  /** Loaded regions to redraw at the start of the next compositor frame. */
+  protected readonly staleRegions = new Set<string>()
+  protected readonly startRecompositions = (): void => this.recomposeStaleRegions()
+  protected disposed = false
 
   constructor({
     style,
@@ -115,7 +138,15 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     })
     this.regions = new RefCountedCache<RenderTarget>({
       load: (key, signal) => this.loadRegion(key, signal),
-      dispose: target => target.dispose(),
+      dispose: (target, key) => {
+        const recomposition = this.recompositions.get(key)
+        if (recomposition?.target === target) {
+          recomposition.controller.abort(new DOMException('MapStyleSource: region released', 'AbortError'))
+          this.recompositions.delete(key)
+        }
+        this.staleRegions.delete(key)
+        target.dispose()
+      },
     })
   }
 
@@ -190,8 +221,46 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.resolution = resolution
   }
 
+  /**
+   * Redraws the regions whose content may have changed within `bounds` (no argument: everywhere), for tiles
+   * whose data changed on the server, for example. Cached tiles there are fetched and processed again, and
+   * regions whose labels reach into the bounds redraw too. Each region keeps its current texture until the
+   * new one replaces it. Calls within a frame are coalesced; redraws share the compositor's per-frame budget,
+   * after first textures of visible tiles.
+   */
+  invalidate(bounds?: GeographicBounds): void {
+    if (this.disposed) return
+    const rectangles = bounds === undefined ? null : boundsToMercatorRectangles(bounds)
+    this.backend?.invalidate(rectangles)
+    for (const key of [...this.buckets.keys()]) {
+      const { x, y, z } = parseBucketKey(key)
+      if (tileOverlaps(x, y, z, rectangles)) this.buckets.discard(key)
+    }
+    for (const key of this.regions.keys()) {
+      if (!this.regionReaches(key, rectangles)) continue
+      const work = this.loadingRegions.get(key) ?? this.recompositions.get(key)
+      if (work !== undefined) work.stale = true
+      // Loaded, or between the end of its load and the cache marking it loaded: redraw next frame.
+      else if (this.regions.get(key) !== null || this.regions.isLoading(key)) this.staleRegions.add(key)
+    }
+    if (this.staleRegions.size > 0) this.compositor?.runBeforeNextRender(this.startRecompositions)
+  }
+
+  /** Regions waiting to be redrawn after `invalidate`, or being redrawn. `Earth.inspect()` reports the sum. */
+  get recompositionsPending(): number {
+    let staleLoads = 0
+    for (const work of this.loadingRegions.values()) if (work.stale) staleLoads++
+    return this.staleRegions.size + this.recompositions.size + staleLoads
+  }
+
+  /** Whether `dispose` was called. */
+  get isDisposed(): boolean {
+    return this.disposed
+  }
+
   /** Stops the worker and frees every texture and mesh. Call after removing the layer. */
   dispose(): void {
+    this.disposed = true
     this.regions.dispose()
     this.buckets.dispose()
     this.backend?.dispose()
@@ -270,14 +339,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected async loadRegion(key: string, signal: AbortSignal): Promise<RenderTarget> {
     const { range, level } = parseRegionKey(key)
     const tiles = this.getRegionTiles(range, level)
-    // A missing tile (404) is an empty bucket. Any other failure fails the region, so 3DTilesRenderer reports
-    // a load error and retries it, rather than caching a hole.
-    const keys = [...new Set(tiles.map(tile => tile.key))]
-    const locks = new Map(keys.map(bucketKeyToLock => [bucketKeyToLock, this.buckets.lock(bucketKeyToLock)]))
-    for (const lock of locks.values()) lock.catch(() => {}) // handled through Promise.all below
-    const loads = tiles.map(tile => locks.get(tile.key)!)
+    const work: RegionWork = { stale: false }
+    this.loadingRegions.set(key, work)
+    const leases = this.acquireBuckets(tiles)
     try {
-      const buckets = await abortable(Promise.all(loads), signal)
+      const buckets = await abortable(Promise.all(tiles.map(tile => leases.get(tile.key)!.promise)), signal)
       const compositor = this.compositor
       if (compositor === null) throw new Error('MapStyleSource: needs the GPU compositor of ImageOverlayPlugin (add it through Terrain).')
       const target = compositor.createTarget(this.resolution)
@@ -288,18 +354,94 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
           target,
           (renderer, output) => this.drawRegion(renderer, compositor, output, range, level, tiles, buckets),
           signal,
-          this.waitedRegions.has(key),
+          this.waitedRegions.has(key) ? 'waited' : 'preload',
         )
-        return target
       } catch (error) {
         target.dispose()
         throw error
       } finally {
         this.queuedTargets.delete(key)
       }
+      // Invalidated while loading: show what was drawn now, and redraw it next frame.
+      if (work.stale) {
+        this.staleRegions.add(key)
+        compositor.runBeforeNextRender(this.startRecompositions)
+      }
+      return target
     } finally {
+      if (this.loadingRegions.get(key) === work) this.loadingRegions.delete(key)
       this.waitedRegions.delete(key)
-      for (const key of keys) this.buckets.release(key)
+      for (const lease of leases.values()) lease.release()
+    }
+  }
+
+  /**
+   * Locks the region's buckets, one lease per distinct tile. A missing tile (404) is an empty bucket. Any
+   * other failure fails the region, so 3DTilesRenderer reports a load error and retries it, rather than
+   * caching a hole. Leases, not keys, so an `invalidate` meanwhile cannot make a release hit the new entry.
+   */
+  protected acquireBuckets(tiles: readonly RegionTile[]): Map<string, Lease<LoadedBucket>> {
+    const leases = new Map<string, Lease<LoadedBucket>>()
+    for (const tile of tiles) if (!leases.has(tile.key)) leases.set(tile.key, this.buckets.acquire(tile.key))
+    return leases
+  }
+
+  /** Whether any tile a region draws (labels of its ring included) overlaps the rectangles; `null`: everywhere. */
+  protected regionReaches(key: string, rectangles: readonly MercatorRectangle[] | null): boolean {
+    if (rectangles === null) return true
+    const { range, level } = parseRegionKey(key)
+    return this.getRegionTiles(range, level).some(({ request }) => tileOverlaps(request.x, request.y, request.z, rectangles))
+  }
+
+  protected recomposeStaleRegions(): void {
+    const compositor = this.compositor
+    const keys = [...this.staleRegions]
+    this.staleRegions.clear()
+    if (compositor === null || this.disposed) return
+    for (const key of keys) {
+      const target = this.regions.get(key)
+      if (target === null) {
+        // Its load just ended and the cache marks it loaded within microtasks: try again next frame.
+        if (this.regions.isLoading(key) && !this.loadingRegions.has(key)) {
+          this.staleRegions.add(key)
+          compositor.runBeforeNextRender(this.startRecompositions)
+        }
+        continue // otherwise released meanwhile
+      }
+      void this.recomposeRegion(key, target, compositor)
+    }
+  }
+
+  /** Redraws a loaded region into its own target, in place, with freshly processed tiles. */
+  protected async recomposeRegion(key: string, target: RenderTarget, compositor: ImageryCompositor): Promise<void> {
+    const work: Recomposition = { stale: false, target, controller: new AbortController() }
+    this.recompositions.set(key, work)
+    const { signal } = work.controller
+    const { range, level } = parseRegionKey(key)
+    const tiles = this.getRegionTiles(range, level)
+    const leases = this.acquireBuckets(tiles)
+    try {
+      const buckets = await abortable(Promise.all(tiles.map(tile => leases.get(tile.key)!.promise)), signal)
+      await compositor.enqueueRender(
+        target,
+        (renderer, output) => this.drawRegion(renderer, compositor, output, range, level, tiles, buckets),
+        signal,
+        'recomposition',
+      )
+    } catch (error) {
+      if (!signal.aborted) {
+        console.warn(`MapStyleSource: a region could not be redrawn after invalidate() and keeps its previous content; call invalidate() again to retry. ${(error as Error).message}`)
+      }
+    } finally {
+      for (const lease of leases.values()) lease.release()
+      if (this.recompositions.get(key) === work) this.recompositions.delete(key)
+      if (work.stale && !signal.aborted && !this.disposed) {
+        this.staleRegions.add(key)
+        compositor.runBeforeNextRender(this.startRecompositions)
+      } else if (this.recompositionsPending === 0) {
+        // The last redraw settled after its frame: ask for one more, so `loading` turns false (and `idle` fires) on demand-driven hosts.
+        compositor.onQueued?.()
+      }
     }
   }
 
