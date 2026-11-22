@@ -16,7 +16,8 @@ and (optionally) React and R3F, and it makes no network request of its own.
 - Transmittance and irradiance are always 32-bit (half floats flush grazing-ray transmittance to zero and give
   NaNs near the horizon on phones). Scattering is 32-bit where the device can filter and blend it, half float
   otherwise. Memory: 8 MB (half) or 16 MB (float) kept, plus 24 / 48 MB transient during generation.
-- Positions are corrected per fragment so the model's altitude equals the height above WGS84: exact on the
+- Positions are corrected per fragment so the model's altitude equals the height above WGS84 (view and sun
+  directions are rotated to match, so the sky horizon meets the terrain within 0.01°): exact on the
   ground at every latitude, within 27 m above ground even from 20,000 km.
 - Sun light is a `DirectionalLight` registered with `Light.registerNode` (r187's replacement for `addLight`):
   sunlight attenuated at each fragment plus sky irradiance as ambient. Stock `MeshStandardNodeMaterial` works.
@@ -50,7 +51,7 @@ nothing about phones. Measuring it on a Pixel and an iPhone is the first on-devi
 | Map, atmosphere on | sky, horizon glow, haze, sunlit terrain (92 % sky or haze, 0 % black) |
 | WebGL2 fallback | same images |
 | Console and Vite startup | no warnings or errors |
-| Unit tests | 60 pass |
+| Unit tests | 66 pass |
 
 ![map with atmosphere](map-atmosphere-on.png) ![from orbit](map-orbit.png)
 
