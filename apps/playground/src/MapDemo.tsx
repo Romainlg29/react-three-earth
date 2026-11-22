@@ -5,6 +5,7 @@ import {
   Earth,
   EarthControls,
   Imagery,
+  MapStyleSource,
   PerformanceStats,
   QuantizedMeshSource,
   RasterTileSource,
@@ -19,6 +20,9 @@ const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
+// `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery.
+const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? '/fixtures/style.json' : import.meta.env.VITE_MAP_STYLE_URL) : undefined
+if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
 // `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device. The
 // dev server never caches them, so that edits to the atmosphere's shaders always show.
 const atmosphereCache = import.meta.env.PROD && !params.has('nocache')
@@ -82,7 +86,7 @@ function AtmosphereStatus() {
 export function MapDemo() {
   return (
     <>
-      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: params.has('webgl'), trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
@@ -90,7 +94,7 @@ export function MapDemo() {
             <QuantizedMeshSource url={terrainUrl} />
           </Terrain>
           <Imagery>
-            <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />
+            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} />}
           </Imagery>
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />
@@ -105,7 +109,11 @@ export function MapDemo() {
       </Canvas>
       {withAtmosphere && <AtmosphereStatus />}
       <div style={{ position: 'absolute', bottom: 8, right: 8, opacity: 0.7 }}>
-        {useFixtures ? 'Synthetic test tiles' : 'Terrain: Re:Earth Terrain, Mapterhorn. Imagery: © OpenStreetMap contributors'}
+        {useFixtures
+          ? 'Synthetic test tiles'
+          : mapStyleUrl !== undefined
+            ? 'Terrain: Re:Earth Terrain, Mapterhorn. Map: see the style\'s attribution'
+            : 'Terrain: Re:Earth Terrain, Mapterhorn. Imagery: © OpenStreetMap contributors'}
       </div>
     </>
   )

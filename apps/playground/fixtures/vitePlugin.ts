@@ -3,10 +3,12 @@ import type { Plugin } from 'vite'
 
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
+import { fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
- * Serves synthetic terrain at /fixtures/terrain/ and imagery at /fixtures/imagery/{z}/{x}/{y}.png, so the
- * playground runs with no network.
+ * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
+ * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
+ * no network.
  */
 export function fixtureTiles(): Plugin {
   return {
@@ -31,6 +33,18 @@ export function fixtureTiles(): Plugin {
           const [, z, x, y] = imagery.map(Number)
           res.setHeader('Content-Type', 'image/png')
           res.end(Buffer.from(imageryTile(z ?? 0, x ?? 0, y ?? 0)))
+          return
+        }
+        if (url === '/fixtures/style.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixtureStyle()))
+          return
+        }
+        const vector = /^\/fixtures\/vector\/(\d+)\/(\d+)\/(\d+)\.pbf$/.exec(url)
+        if (vector) {
+          const [, z, x, y] = vector.map(Number)
+          res.setHeader('Content-Type', 'application/x-protobuf')
+          res.end(Buffer.from(vectorTile(z ?? 0, x ?? 0, y ?? 0)))
           return
         }
         next()

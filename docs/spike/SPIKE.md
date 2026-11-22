@@ -1,5 +1,45 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
+## Vector map styles (`src/vector/`)
+
+`<Imagery><MapStyleSource url="https://…/style.json" /></Imagery>` drapes a MapLibre style (version 8) on the
+terrain. Vector sources can be XYZ `tiles`, a TileJSON `url`, or a PMTiles archive (`pmtiles://https://…`).
+Vanilla: `new Imagery({ sources: [new MapStyleSource({ url })] })`, and `imagery.dispose()` after removing it.
+
+How it works:
+
+- A module worker (`vector-worker.js` in the build) fetches tiles, decodes MVT, evaluates the style's filters and
+  properties with `@maplibre/maplibre-gl-style-spec` (the same expression engine as MapLibre), tessellates
+  fills, lines (joins, caps, dashes, gap width, offset) and circles, and lays out text labels: SDF glyphs from the
+  style's `glyphs` server, or drawn locally with TinySDF when there is none; point and line placement, wrapping,
+  anchors, halos, per-tile collision with `symbol-sort-key` and top layers first. It returns typed arrays,
+  transferred, not copied. If the worker cannot start, tiles are processed on the main thread with a warning.
+- The main thread never rasterises tiles. For each terrain tile's region, the covering vector tiles are drawn
+  straight into the region's texture at its own resolution, with 4× MSAA in a shared scratch target, through the
+  existing `ImageryCompositor` (same 2 ms budget and priorities as raster). One draw per tile and layer group;
+  fragments outside the tile square are dropped so buffers never overdraw neighbours. A ring of neighbour tiles
+  adds only their labels (when within label reach of the region), so labels crossing a tile edge are not cut.
+- The style is evaluated at the region's zoom (512-pixel tiles, as MapLibre). Past the data's maximum zoom,
+  tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
+- Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
+
+Not supported yet: icons and fill patterns (sprites), raster, hillshade and heatmap layers (skipped with one
+warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
+tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
+through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
+does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
+has a fixed size on the ground.
+
+| Check (fixtures: synthetic water, roads, places; SwiftShader) | Result |
+| --- | --- |
+| Overview, atmosphere off | water, roads and place labels drape on terrain; 106 regions composed, no errors |
+| Close-up, 9 km, 50° pitch | road names follow the roads upright, labels sharp at region resolution |
+| WebGL2 fallback | same image as WebGPU |
+| Raster map checks | unchanged |
+| Unit tests | 32 new, 98 total (style evaluation, tessellation areas, glyph PBF and atlas, shaping and placement, TileJSON, TMS, PMTiles range requests, caches, region tiles, ring reach) |
+
+![vector map](map-vector-overview.png) ![close-up](map-vector-close.png) ![with atmosphere](map-vector-atmosphere.png)
+
 ## Atmosphere and @aeronautic effects
 
 @aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one

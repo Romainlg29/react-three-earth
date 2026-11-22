@@ -108,6 +108,36 @@ async function map(atmosphere) {
   results.push({ check: `map with fixtures, atmosphere ${atmosphere ? 'on' : 'off'}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, tilesVisible: inspection.terrain.tilesVisible, errors })
 }
 
+/** A MapLibre style (synthetic vector tiles: water, roads, places) draped through the GPU compositor. */
+async function vectorMap(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector${query}`)
+  const warnings = []
+  page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-vector-${name}.png`, OUT), png)
+  const inspection = await page.evaluate(() => window.earth.inspect())
+  const stats = await analyse(page, png, `
+    // By hue, since the terrain is lit: water is blue, primary roads orange, land a warm grey.
+    let water = 0, road = 0, land = 0, dark = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (b > r * 1.5 && b > g * 1.1 && b > 60) water++
+      else if (r > b * 1.6 && r > g * 1.15 && r > 60) road++
+      else if (r >= g && g >= b && r - b < 30 && r > 50) land++
+      if (r + g + b < 60) dark++
+    }
+    const n = px.length / 4
+    return { waterShare: +(water / n).toFixed(3), primaryRoadShare: +(road / n).toFixed(4), landShare: +(land / n).toFixed(3), darkShare: +(dark / n).toFixed(4) }
+  `)
+  await page.close()
+  results.push({ check: `vector map style with fixtures, ${name}`, ...stats, tilesLoaded: inspection.terrain.tilesLoaded, imageryTilesCompositedTotal: inspection.terrain.imageryTilesCompositedTotal, errors, warnings })
+}
+
 async function afterburner(plume) {
   const { page, errors } = await open(`/?test=afterburner&fixtures&plume=${plume ? 1 : 0}`)
   await page.waitForFunction(() => {
@@ -161,6 +191,11 @@ try {
   if (!only || only === 'map') {
     await map(false)
     await map(true)
+  }
+  if (!only || only === 'vector') {
+    await vectorMap('overview', '')
+    await vectorMap('close', '&camera=,,,9000,,-50')
+    await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
   }
   if (!only || only === 'afterburner') await afterburnerChecks()
 } finally {
