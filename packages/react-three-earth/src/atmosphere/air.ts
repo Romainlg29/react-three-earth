@@ -1,7 +1,10 @@
 import { Vector3 } from 'three'
 
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
-import { getStandardAir } from './standardAtmosphere.js'
+import { getStandardAir, type StandardAir } from './standardAtmosphere.js'
+
+/** Reused by `getRayleighDensity`, which the CPU transmittance integral calls 501 times a lookup. */
+const standardAirScratch: Partial<StandardAir> = {}
 
 // The optics of the air, shared with flight effects. @aeronautic/core describes haze by the day's
 // visibility (Koschmieder), with Ångström's spectral law, a single scattering albedo and a Henyey-Greenstein
@@ -24,7 +27,7 @@ export function getRayleighDensity(parameters: AtmosphereParameters, altitudeMet
   if (parameters.rayleighDensityProfile === 'exponential') {
     return Math.min(Math.max(Math.exp(-altitudeMeters / parameters.rayleighScaleHeightMeters), 0), 1)
   }
-  return getStandardAir(altitudeMeters, parameters.temperatureOffsetKelvin).densityRatio
+  return getStandardAir(altitudeMeters, parameters.temperatureOffsetKelvin, standardAirScratch).densityRatio
 }
 
 /** Relative aerosol density at an altitude (CPU mirror of `AtmosphereModel.mieDensity`). */

@@ -37,6 +37,8 @@ export interface EarthInspection {
   atmosphere: {
     /** True once the lookup textures are generated; until then the scene renders without haze or sky. */
     ready: boolean
+    /** True once the skylight is copied to the CPU too (`Atmosphere.getSunAndSkyIlluminance`), shortly after `ready`. */
+    skylightOnCpu: boolean
     generationTimeMilliseconds: number | null
   } | null
 }
@@ -142,6 +144,7 @@ export class Earth extends Group {
           ? null
           : {
               ready: this.atmosphere.context.texturesReady.value === 1,
+              skylightOnCpu: this.atmosphere.illuminance.skyAvailable,
               generationTimeMilliseconds: this.atmosphere.generationTimeMilliseconds,
             },
     }

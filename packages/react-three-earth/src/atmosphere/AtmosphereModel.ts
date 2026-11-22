@@ -23,7 +23,7 @@ import { abs, clamp, exp, float, floor, If, int, ivec2, Loop, max, min, mix, mod
 import type { Node } from 'three/webgpu'
 
 import type { AtmosphereParameters } from './AtmosphereParameters.js'
-import { DRY_AIR_GAS_CONSTANT, SEA_LEVEL_TEMPERATURE_KELVIN, STANDARD_ATMOSPHERE_LAYERS, STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED } from './standardAtmosphere.js'
+import { DRY_AIR_GAS_CONSTANT_JOULES_PER_KILOGRAM_KELVIN, SEA_LEVEL_TEMPERATURE_KELVIN, STANDARD_ATMOSPHERE_LAYERS, STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED } from './standardAtmosphere.js'
 
 /** Metres per shader length unit. */
 export const LENGTH_UNIT_METERS = 1000
@@ -178,7 +178,7 @@ export class AtmosphereModel {
    * isothermal ones; the other evaluates to 1).
    */
   protected standardAtmosphereDensity(altitude: FloatNode): FloatNode {
-    const hydrostatic = STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED / DRY_AIR_GAS_CONSTANT
+    const hydrostatic = STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED / DRY_AIR_GAS_CONSTANT_JOULES_PER_KILOGRAM_KELVIN
     // Layers based above the top of the atmosphere are never reached.
     const layers = STANDARD_ATMOSPHERE_LAYERS.filter(layer => layer.baseAltitudeMeters < this.parameters.topRadiusMeters - this.parameters.bottomRadiusMeters)
     const height = max(altitude.mul(LENGTH_UNIT_METERS), 0).toConst()

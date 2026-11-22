@@ -5,7 +5,7 @@ import { Afterburner, AfterburnerBatch, type AfterburnerBatchHandle } from '@aer
 import { Canvas, useThree } from '@react-three/fiber'
 import { useFrame } from '@react-three/fiber/extension'
 import { useRenderPipeline } from '@react-three/tsl'
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { AtmosphereParameters, setCameraView, toCartesian, type Earth as EarthImpl } from 'react-three-earth'
 import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, useAtmosphere, useEarth } from 'react-three-earth/react'
 import { FloatType, RenderTarget, Vector3 } from 'three'
@@ -99,6 +99,14 @@ function VolumePipeline({ children }: { children: ReactNode }) {
   useRenderPipeline(({ renderPipeline }) => {
     renderPipeline.outputNode = split.output as never
   })
+  // The pass owns two render targets (the scene and the volumes) besides the backdrop's
+  useEffect(
+    () => () => {
+      split.scenePass.dispose()
+      split.volumePass.dispose()
+    },
+    [split],
+  )
   return <VolumePassContext value={split}>{children}</VolumePassContext>
 }
 

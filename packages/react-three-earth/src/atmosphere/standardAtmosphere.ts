@@ -6,15 +6,15 @@
 export const SEA_LEVEL_TEMPERATURE_KELVIN = 288.15
 /** Standard sea-level pressure. */
 export const SEA_LEVEL_PRESSURE_PASCALS = 101_325
-/** Specific gas constant of dry air, J/(kg·K). */
-export const DRY_AIR_GAS_CONSTANT = 287.05
+/** Specific gas constant of dry air. */
+export const DRY_AIR_GAS_CONSTANT_JOULES_PER_KILOGRAM_KELVIN = 287.05
 /** Standard gravity. */
 export const STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED = 9.806_65
 /** Highest altitude the layers describe; above it the air is taken as isothermal. */
 export const STANDARD_ATMOSPHERE_CEILING_METERS = 86_000
 
 /** g / R, kelvin per metre: the hydrostatic constant of every layer. */
-const HYDROSTATIC_KELVIN_PER_METER = STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED / DRY_AIR_GAS_CONSTANT
+const HYDROSTATIC_KELVIN_PER_METER = STANDARD_GRAVITY_METERS_PER_SECOND_SQUARED / DRY_AIR_GAS_CONSTANT_JOULES_PER_KILOGRAM_KELVIN
 
 /** One layer: its base altitude and temperature lapse rate (positive when warming upwards). */
 export interface StandardAtmosphereLayer {
@@ -95,6 +95,6 @@ export function getStandardAir(altitudeMeters: number, temperatureOffsetKelvin =
   result.pressurePascals = pressureRatio * SEA_LEVEL_PRESSURE_PASCALS
   result.pressureRatio = pressureRatio
   result.densityRatio = densityRatio
-  result.densityKilogramsPerCubicMeter = (densityRatio * SEA_LEVEL_PRESSURE_PASCALS) / (DRY_AIR_GAS_CONSTANT * SEA_LEVEL_TEMPERATURE_KELVIN)
+  result.densityKilogramsPerCubicMeter = (densityRatio * SEA_LEVEL_PRESSURE_PASCALS) / (DRY_AIR_GAS_CONSTANT_JOULES_PER_KILOGRAM_KELVIN * SEA_LEVEL_TEMPERATURE_KELVIN)
   return result
 }

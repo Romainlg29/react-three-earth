@@ -4,7 +4,12 @@
 //   (`atmosphere.getSunAndSkyIlluminance`), converted to @aeronautic's radiance unit.
 // - Haze: the plume is seen through the air between it and the camera (`createAerialPerspectiveAlongRay`),
 //   as the terrain behind it is (the volume pass's backdrop is `atmosphere.createBackdropNode`).
-// - Air: the plume's altitude and day come from the same standard atmosphere as the sky's density.
+// - Air: the plume's altitude and day come from the same standard atmosphere as the sky's density. For an
+//   effect that takes the air's extinction (@aeronautic's `Extinction`), pass
+//   `atmosphere.parameters.getAirExtinction(altitudeMeters)`, not `extinction(visibility, …)`: the sky's haze
+//   thins with altitude, @aeronautic's visibility-based haze does not.
+// - Units: one-point CPU lighting suits a nozzle; an effect kilometres long (a contrail) should read
+//   `atmosphere.getSunAndSkyIlluminanceNode` per sample, with the same unit conversion.
 import type { AfterburnerHooks, AfterburnerProfile } from '@aeronautic/afterburner'
 import type { Atmosphere, SunAndSkyIlluminance } from 'react-three-earth'
 import { Vector3 } from 'three'
@@ -19,7 +24,7 @@ export const AERONAUTIC_RADIANCE_UNIT_CANDELAS_PER_SQUARE_METER = 4.65e5
 const LUMINANCE = new Vector3(0.2126, 0.7152, 0.0722)
 
 /** What an afterburner batch's profile takes from the atmosphere. */
-export type AfterburnerLighting = Pick<AfterburnerProfile, 'exposure' | 'sunLight' | 'skyLight' | 'altitudeM' | 'temperatureOffsetK'> & {
+export type AfterburnerLighting = Pick<AfterburnerProfile, 'exposure' | 'adaptation' | 'sunLight' | 'skyLight' | 'altitudeM' | 'temperatureOffsetK'> & {
   sunDirection: [number, number, number]
 }
 
@@ -35,8 +40,11 @@ const up = new Vector3()
  *   isotropic phase function (@aeronautic normalises its phase to 1 for isotropic scattering).
  * - `skyLight` is the mean radiance of the sky dome and the lit ground below (albedo from the atmosphere).
  *
- * Both are luminances: @aeronautic's smoke takes one grey value, so a sunset's colour reaches the smoke
- * only through its brightness.
+ * - `adaptation` is 0: a physical exposure has no per-flame metering.
+ *
+ * Both lights are luminances: @aeronautic's smoke takes one grey value, so a sunset's colour reaches the
+ * smoke only through its brightness. Until the atmosphere is ready the skylight is 0 (see
+ * `Atmosphere.getSunAndSkyIlluminance`).
  */
 export function getAfterburnerLighting(atmosphere: Atmosphere, positionMeters: Vector3, target: Partial<AfterburnerLighting> = {}): AfterburnerLighting {
   const parameters = atmosphere.parameters
@@ -51,6 +59,8 @@ export function getAfterburnerLighting(atmosphere: Atmosphere, positionMeters: V
 
   const result = target as AfterburnerLighting
   result.exposure = sceneUnitsPerRadianceUnit
+  // No auto-exposure for a dim burner: it would brighten the flame (and its lit smoke) above the scene.
+  result.adaptation = 0
   result.sunLight = sunLuminance / (4 * Math.PI * sceneUnitsPerRadianceUnit)
   result.skyLight = (skyLuminance + groundLuminance) / (2 * Math.PI * sceneUnitsPerRadianceUnit)
   result.sunDirection = [sunDirection.x, sunDirection.y, sunDirection.z]

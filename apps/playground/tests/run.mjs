@@ -112,7 +112,7 @@ async function afterburner(plume) {
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain
-    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && inspection?.atmosphere?.ready === true
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && inspection?.atmosphere?.skylightOnCpu === true
   }, null, { timeout: 240_000, polling: 500 })
   await page.waitForTimeout(4000) // overlays compose, tiles fade in, the burner lights
   const png = await page.screenshot()

@@ -1,5 +1,30 @@
 # Spike: terrain, imagery and atmosphere on R3F v10 WebGPU
 
+## Atmosphere and @aeronautic effects
+
+@aeronautic's effects (afterburner today; contrails and wing vapour later) render inside the atmosphere with one
+sun, one air and one haze. Playground: `/?test=afterburner&fixtures`.
+
+- **Pipeline.** `<Atmosphere renderPipeline={false}>` leaves the render pipeline to its children (`useAtmosphere()`).
+  `atmosphere.createBackdropNode(camera)` is the `backdropNode` of @aeronautic/core's `volume_pass`: the opaque
+  scene gets aerial perspective and the sky, and the plumes are composited over it at half resolution.
+- **Haze on effects.** `atmosphere.createAerialPerspectiveAlongRay()` gives transmittance and in-scattered light
+  for any distance (and optionally direction) in a shader; the playground's afterburner `radiance` hook applies
+  it premultiplied.
+- **Light.** `atmosphere.getSunAndSkyIlluminance(ecef)` (CPU) and `getSunAndSkyIlluminanceNode(ecefKm)` (TSL)
+  give sunlight and skylight anywhere. They agree to 0.02 % in the browser check. The bridge
+  (`apps/playground/src/aeronautic/atmosphereBridge.ts`) converts them to @aeronautic's units: its radiance unit
+  is a 2000 K blackbody's luminance, 4.65 × 10⁵ cd/m².
+- **Air.** Air molecules now follow the International Standard Atmosphere by default (as @aeronautic's
+  `standard_atmosphere`), with `temperatureOffsetKelvin`. `AtmosphereParameters.fromVisibility(m)` sets the
+  haze the way @aeronautic's `extinction()` does, and `parameters.getAirExtinction(altitude)` hands effects the
+  sky's own air in @aeronautic's `Extinction` shape. This changes every sky slightly: the Rayleigh column goes
+  from 8.0 to 8.43 km of sea-level air. `rayleighDensityProfile: 'exponential'` restores Bruneton's profile.
+- **three 0.187.** @aeronautic 0.x pins three 0.186.x. A pnpm `peerDependencyRules` entry lets the playground
+  run it on 0.187, and it works in the browser check. The proper fix is an @aeronautic release for 0.187.
+
+![afterburner over terrain](afterburner-on.png)
+
 ## Round 2: our own atmosphere, GPU imagery, takram removed
 
 Romain's call after round 1: drop takram and write our own atmosphere, and move imagery composition to the GPU.

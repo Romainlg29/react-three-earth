@@ -49,7 +49,6 @@ export class AtmosphereParameters {
     return Object.assign(new this(), overrides)
   }
 
-  /** Takes no arguments: use `AtmosphereParameters.create(overrides)` (or assign fields after construction). */
   /**
    * Earth's atmosphere with the haze of a day's visibility (meteorological optical range) at sea level, as
    * @aeronautic/core works it out: Koschmieder's law at 550 nm, Ångström's spectral law, a single scattering
@@ -58,7 +57,8 @@ export class AtmosphereParameters {
    * `mieScaleHeightMeters`.
    *
    * @param overrides Other fields, applied before the haze is worked out (the molecules' scattering and
-   *   `temperatureOffsetKelvin` change the haze's share of the extinction).
+   *   `temperatureOffsetKelvin` change the haze's share of the extinction). The haze's own
+   *   `mieExtinctionPerMeter` and `mieScatteringPerMeter` come from the visibility and replace any given.
    */
   static fromVisibility<Instance extends AtmosphereParameters>(
     this: new () => Instance,
@@ -73,6 +73,7 @@ export class AtmosphereParameters {
     return parameters
   }
 
+  /** Takes no arguments: use `AtmosphereParameters.create(overrides)` (or assign fields after construction). */
   constructor(...unexpected: never[]) {
     if (unexpected.length > 0) {
       throw new TypeError('AtmosphereParameters: the constructor takes no overrides; use AtmosphereParameters.create({ ... }).')

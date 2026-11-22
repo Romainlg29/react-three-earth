@@ -1,5 +1,5 @@
-import type { Camera, Vector3 } from 'three'
-import { cameraProjectionMatrixInverse, cameraWorldMatrix, float, getViewPosition, screenUV, vec4 } from 'three/tsl'
+import { Matrix4, type Camera, type Vector3 } from 'three'
+import { cameraProjectionMatrixInverse, cameraWorldMatrix, float, getViewPosition, screenUV, uniform, vec4 } from 'three/tsl'
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { AerialPerspectiveNode } from '../atmosphere/AerialPerspectiveNode.js'
@@ -39,7 +39,7 @@ export interface SceneBackdrop {
  * The air between the camera and points along the rendered pixel's ray (see
  * `Atmosphere.createAerialPerspectiveAlongRay`). Call it inside a material's shader.
  */
-export type AerialPerspectiveAlongRay = (distanceMeters: Node<'float'>) => AerialPerspectiveNodes
+export type AerialPerspectiveAlongRay = (distanceMeters: Node<'float'>, worldDirection?: Node<'vec3'>) => AerialPerspectiveNodes
 
 let warnedAboutDepthBuffer = false
 
@@ -116,16 +116,13 @@ export class Atmosphere {
       this.context.texturesReady.value = 1
       // The skylight's CPU copy (4 KB). Sunlight on the CPU needs no texture. A failure here leaves the
       // rendering intact: only `getSunAndSkyIlluminance` goes without skylight.
+      if (signal.aborted) return false
       try {
-        await this.illuminance.readBack(renderer, this.context)
+        await this.illuminance.readBack(renderer, this.context, signal)
       } catch (error) {
         console.warn('Atmosphere: reading the skylight back to the CPU failed; getSunAndSkyIlluminance has no skylight.', error)
       }
-      if (signal.aborted) {
-        this.illuminance.reset()
-        return false
-      }
-      return true
+      return !signal.aborted
     } catch (error) {
       console.error('Atmosphere: generating the lookup textures failed.', error)
       return false
@@ -176,18 +173,24 @@ export class Atmosphere {
    * `transmittance`, plus `radiance` scattered in between. For premultiplied colour (`rgb`, coverage `a`):
    * `rgb * transmittance + radiance * a`.
    *
-   * The ray is the rendered pixel's (`screenUV`) for the camera being rendered, so it works in any pass
-   * drawn with the scene camera, such as @aeronautic's volume pass.
+   * The ray defaults to the rendered pixel's (`screenUV`). Pass `worldDirection` (unit, ECEF axes) when the
+   * effect knows its own ray, for example per sample of a march over kilometres; it may be called inside
+   * loops.
    *
-   * @param camera The camera the effect is drawn with. Default: the camera being rendered.
+   * @param camera The camera the effect is seen from. Default: the camera being rendered (right for any
+   *   pass drawn with the scene camera, such as @aeronautic's volume pass).
    */
   createAerialPerspectiveAlongRay(camera?: Camera): AerialPerspectiveAlongRay {
     let cameraNodes: AtmosphereCameraNodes | null = null
-    return distanceMeters => {
+    // With a given camera, the pixel's ray comes from that camera too, not from whichever is being rendered.
+    const projectionMatrixInverse =
+      camera === undefined ? cameraProjectionMatrixInverse : uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.projectionMatrixInverse))
+    const worldMatrix = camera === undefined ? cameraWorldMatrix : uniform(new Matrix4()).onRenderUpdate((_, self) => void self.value.copy(camera.matrixWorld))
+    return (distanceMeters, worldDirection) => {
       cameraNodes ??= this.context.createCameraNodes(camera)
-      const viewDirection = getViewPosition(screenUV, float(0.5), cameraProjectionMatrixInverse).normalize()
-      const worldDirection = cameraWorldMatrix.mul(vec4(viewDirection, 0)).xyz.normalize()
-      return this.context.getAerialPerspective(cameraNodes, worldDirection, distanceMeters.div(LENGTH_UNIT_METERS))
+      const direction =
+        worldDirection ?? worldMatrix.mul(vec4(getViewPosition(screenUV, float(0.5), projectionMatrixInverse).normalize(), 0)).xyz.normalize()
+      return this.context.getAerialPerspective(cameraNodes, direction, distanceMeters.div(LENGTH_UNIT_METERS))
     }
   }
 
@@ -195,6 +198,10 @@ export class Atmosphere {
    * Sunlight and skylight at an ECEF point, on the CPU, with the sun of the last `update`: in the scene's
    * scaled units (divide by `parameters.getLuminanceScale()` for lux). Sunlight is available at once;
    * skylight once `ready` has settled (`skyAvailable`). Cheap: a few thousand flops.
+   *
+   * Before the lookup textures are ready the shaders light with unattenuated sunlight and a fallback
+   * skylight (`FALLBACK_SKY_SHARE`), while this already gives the attenuated sunlight and no skylight: an
+   * effect lit from here matches the terrain once `ready` has settled.
    *
    * @param positionMeters ECEF position.
    */
