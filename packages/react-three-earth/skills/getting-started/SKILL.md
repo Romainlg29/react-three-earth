@@ -60,7 +60,7 @@ export function App() {
           <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
         </Terrain>
         <Imagery>
-          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" levels={19} />
+          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
         </Imagery>
         <Atmosphere />
         <EarthControls />
@@ -111,7 +111,7 @@ scene.add(earth)
 
 const terrain = new Terrain({ sources: [new QuantizedMeshSource({ url: 'https://terrain.reearth.land/cesium-mesh/ellipsoid/' })] })
 earth.setTerrain(terrain)
-earth.addImagery(new Imagery({ sources: [new RasterTileSource({ url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', levels: 19 })] }))
+earth.addImagery(new Imagery({ sources: [new RasterTileSource({ url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' })] }))
 
 const atmosphere = new Atmosphere()
 atmosphere.install(renderer)

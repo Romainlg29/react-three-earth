@@ -37,18 +37,30 @@ and `three@0.187.0`.
 ## Quick start (React Three Fiber)
 
 ```tsx
-import { Canvas } from '@react-three/fiber'
+import { Canvas, useThree } from '@react-three/fiber'
+import { setCameraView } from 'react-three-earth'
 import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
+import { useLayoutEffect } from 'react'
+
+/** Starts the camera over Mount Fuji. R3F's default camera sits at the centre of the Earth. */
+function InitialView() {
+  const camera = useThree(state => state.camera)
+  useLayoutEffect(() => {
+    setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 2000, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
+  }, [camera])
+  return null
+}
 
 export function App() {
   return (
     <Canvas renderer={{ antialias: true, reversedDepthBuffer: true }} camera={{ near: 1, far: 1e8 }} dpr={[1, 2]}>
       <Earth date={new Date('2026-11-22T07:00:00Z')}>
+        <InitialView />
         <Terrain>
           <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
         </Terrain>
         <Imagery>
-          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" levels={19} />
+          <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
         </Imagery>
         <Atmosphere />
         <EarthControls />
@@ -58,15 +70,7 @@ export function App() {
 }
 ```
 
-Point the camera somewhere with `setCameraView` from the root entry:
-
-```ts
-import { setCameraView } from 'react-three-earth'
-
-setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 2000, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
-```
-
-Show the attribution your tile providers require (OpenStreetMap: "© OpenStreetMap contributors").
+The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Show the attribution your tile providers require (OpenStreetMap: "© OpenStreetMap contributors").
 
 ## Quick start (vanilla three.js)
 
@@ -91,7 +95,7 @@ scene.add(earth)
 
 const terrain = new Terrain({ sources: [new QuantizedMeshSource({ url: 'https://terrain.reearth.land/cesium-mesh/ellipsoid/' })] })
 earth.setTerrain(terrain)
-earth.addImagery(new Imagery({ sources: [new RasterTileSource({ url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', levels: 19 })] }))
+earth.addImagery(new Imagery({ sources: [new RasterTileSource({ url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png' })] }))
 
 const atmosphere = new Atmosphere()
 atmosphere.install(renderer)

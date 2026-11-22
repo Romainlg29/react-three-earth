@@ -117,13 +117,20 @@ rule in code built on the library, so an agent reading a call site never has to 
 At 6.4e6 m a 32-bit float resolves only about 0.5 m, so vertices jitter and nearby objects collapse
 into one. `Earth.connect` (and `<Earth>`) sets `renderer.highPrecision = true`: model-view matrices are
 computed in 64-bit on the CPU relative to the camera. The playground's precision check shows 1 cm =
-128 px with it on, and two cubes 1 cm apart merging with it off.
+128 px with it on, and two cubes 1 cm apart collapsing or vanishing with it off.
 
 ### HIGH: Building geometry with absolute ECEF vertex positions
 
 `highPrecision` fixes the object's matrix, not its vertices. Put the ECEF position on `object.position`
 (or a parent group) and keep vertex coordinates small and local. A `BufferGeometry` whose vertices are
 millions of metres from its origin still jitters.
+
+### HIGH: `InstancedMesh` or `SkinnedMesh` under `<Earth>`
+
+three's 64-bit precision mode does not support `InstancedMesh` or `SkinnedMesh` (three r187
+`Renderer`): at ECEF distances they jitter or misplace. Use separate meshes, or put the instances in a
+local frame: a parent `Group` at the ECEF position (`toCartesian`) and instance matrices in metres
+relative to it, kept small.
 
 ### HIGH: Treating scene +Y as up
 

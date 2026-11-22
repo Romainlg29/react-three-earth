@@ -127,7 +127,9 @@ export function FlyNorth() {
 
 `<Canvas frameloop="demand">` works: `<Terrain>` invalidates when tiles finish loading or imagery is
 still being composed, and `<Atmosphere>` invalidates once its lookup textures are ready. Call
-`useThree(state => state.invalidate)()` after your own changes (moving a marker, changing `earth.date`).
+`useThree(state => state.invalidate)()` after your own changes (moving a marker, changing `earth.date`),
+and also after changing `<Earth date>`, `<Imagery opacity>` or `<Atmosphere exposure>`: those props
+update the vanilla objects without requesting a frame.
 
 `<EarthControls>` does not request frames on pointer input yet, so with `frameloop="demand"` dragging
 does nothing until something else invalidates. Use demand mode for static or scripted views, and keep the

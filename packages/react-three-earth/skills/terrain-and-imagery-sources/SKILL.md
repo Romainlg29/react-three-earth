@@ -44,7 +44,7 @@ import { QuantizedMeshSource, Terrain } from 'react-three-earth/react'
 
 export function Ground() {
   return (
-    <Terrain memoryBudgetBytes={300 * 2 ** 20} errorTargetPixels={6}>
+    <Terrain memoryBudgetBytes={300 * 2 ** 20} errorTargetPixels={4}>
       <QuantizedMeshSource url="https://terrain.reearth.land/cesium-mesh/ellipsoid/" />
     </Terrain>
   )
@@ -64,15 +64,16 @@ import { Imagery, RasterTileSource } from 'react-three-earth/react'
 export function Basemap() {
   return (
     <Imagery>
-      <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" levels={19} />
+      <RasterTileSource url="https://tile.openstreetmap.org/{z}/{x}/{y}.png" />
     </Imagery>
   )
 }
 ```
 
 - `url` must contain `{z}`, `{x}` and `{y}`; otherwise the constructor throws and says so.
-- `levels`: how many zoom levels the server has (default 20). Set it to the provider's real maximum
-  zoom + 1, or tiles past it 404.
+- `levels`: how many zoom levels the server has, z0 to z(levels - 1); default 20, which fits
+  OpenStreetMap's z0 to z19. Set it to the provider's maximum zoom + 1: higher requests tiles that 404,
+  lower drops the sharpest zoom.
 - `tileDimensionPixels`: 256 by default; 512 for "@2x" or MapTiler-style 512 px tiles.
 - `projection`: `'EPSG:3857'` (Web Mercator, default, what XYZ servers use) or `'EPSG:4326'`.
 
@@ -89,7 +90,7 @@ export function Layers() {
   return (
     <>
       <Imagery>
-        <RasterTileSource url="https://example.com/satellite/{z}/{x}/{y}.jpg" levels={19} />
+        <RasterTileSource url="https://example.com/satellite/{z}/{x}/{y}.jpg" levels={20} />
       </Imagery>
       <Imagery opacity={labelsOpacity}>
         <RasterTileSource url="https://example.com/labels/{z}/{x}/{y}.png" />
@@ -99,8 +100,10 @@ export function Layers() {
 }
 ```
 
-Several `<Imagery>` layers stack in mount order, the last on top, up to 10 sources in total. Changing `opacity` costs nothing (no
-reload, no shader rebuild). Changing a source prop (`url`, `levels`…) rebuilds that layer.
+Several `<Imagery>` layers stack in mount order, the last on top. At most 10 imagery sources in total, counted across all `<Imagery>` layers: an 11th
+throws a TypeError while building the tile shader. Changing `opacity` costs nothing (no
+reload, no shader rebuild). Changing a source prop (`url`, `levels`…) rebuilds that layer and moves it to the top of the
+stack, above layers that mounted after it.
 
 Vanilla: `const labels = new Imagery({ sources: [...], opacity: 0.8 })`, `earth.addImagery(labels)`,
 `labels.opacity = 0.5`, `earth.removeImagery(labels)`.

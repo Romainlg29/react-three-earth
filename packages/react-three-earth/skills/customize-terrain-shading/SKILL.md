@@ -70,7 +70,8 @@ export const createSlopeMaterial = () => {
 ```
 
 Pass `createSlopeMaterial` as `createMaterial`. Free slots on `MeshStandardNodeMaterial` include
-`emissiveNode`, `roughnessNode`, `metalnessNode`, `normalNode` and `opacityNode`.
+`emissiveNode`, `roughnessNode`, `metalnessNode`, `normalNode` and `opacityNode`. The library owns
+`colorNode` (imagery) and, with `fade` on (the default), `outputNode` (tile cross-fades).
 
 ### Debug tile boundaries
 

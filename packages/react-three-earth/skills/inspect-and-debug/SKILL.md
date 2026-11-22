@@ -77,7 +77,7 @@ In React, get the Earth with `useEarth()`; for a HUD use `useEarthState` (see
 
 | Knob | Where | Effect |
 | --- | --- | --- |
-| `errorTargetPixels` (default 6) | `<Terrain>` | higher loads fewer, coarser tiles; 8 to 12 on phones |
+| `errorTargetPixels` (default 2, from 3d-tiles-renderer's recommended quantized-mesh settings) | `<Terrain>` | higher loads fewer, coarser tiles; try 4 to 8 on phones |
 | `memoryBudgetBytes` (default 300 MB) | `<Terrain>` | tile cache ceiling; lower on low-memory phones |
 | `imageryCompositionBudgetMilliseconds` (default 2) | `<Terrain>` | main-thread time per frame for imagery composition; lower smooths panning, higher fills imagery faster |
 | `dpr={[1, 2]}` | `<Canvas>` | caps pixel ratio; 3x phones otherwise render 2.25 times the pixels |
