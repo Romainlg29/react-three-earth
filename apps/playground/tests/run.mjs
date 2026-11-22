@@ -260,6 +260,89 @@ async function vectorInvalidate() {
   })
 }
 
+/**
+ * The runtime style API on fixture tiles: a paint change recolours the lakes, hiding the layer removes them, and
+ * feature-state highlights one lake through an added layer, by redrawing regions without processing tiles again.
+ */
+async function vectorStyleRuntime() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&map=vector')
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 100 })
+  const shot = async name => {
+    await settled()
+    await page.waitForTimeout(1500) // tile fades
+    const png = await page.screenshot()
+    writeFileSync(new URL(`map-vector-style-${name}.png`, OUT), png)
+    return analyse(page, png, LAKE_COLOURS)
+  }
+  // Waits for the change to reach the regions: pending recompositions appear, then settle
+  const change = async script => {
+    const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+    const startMilliseconds = await page.evaluate(script)
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 30_000, polling: 'raf' }).catch(() => {})
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending === 0, null, { timeout: 120_000, polling: 'raf' })
+    const settledMilliseconds = await page.evaluate(start => performance.now() - start, startMilliseconds)
+    const composedAfter = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+    return { settledMilliseconds, regionsRedrawn: composedAfter - composedBefore }
+  }
+  await settled()
+  const before = await shot('before')
+  const recolour = await change(() => {
+    window.mapStyleSource.setPaintProperty('water', 'fill-color', '#e0457b')
+    return performance.now()
+  })
+  const recoloured = await shot('recoloured')
+  await change(() => {
+    window.mapStyleSource.setLayerVisibility('water', false)
+    return performance.now()
+  })
+  const hidden = await shot('hidden')
+  await change(() => {
+    const source = window.mapStyleSource
+    source.setLayerVisibility('water', true)
+    source.setPaintProperty('water', 'fill-color', '#5fa8e8')
+    source.addLayer({ id: 'water-hover', type: 'fill', source: 'fixture', 'source-layer': 'water', paint: { 'fill-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#e0457b', 'rgba(0, 0, 0, 0)'] } }, 'road-casing')
+    return performance.now()
+  })
+  const restored = await shot('restored')
+  // Hover: Lake Kawaguchi (id 1) only
+  // Counts tiles sent for processing from here (the backend is protected, wrapped for the check only)
+  await page.evaluate(() => {
+    window.tilesProcessed = 0
+    for (const overlay of window.mapStyleSource.overlays) {
+      const backend = overlay.backend
+      const processTile = backend.processTile.bind(backend)
+      backend.processTile = (...args) => {
+        window.tilesProcessed++
+        return processTile(...args)
+      }
+    }
+  })
+  const hover = await change(() => {
+    window.mapStyleSource.setFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }, { hover: true })
+    return performance.now()
+  })
+  const hovered = await shot('hover')
+  const featureState = await page.evaluate(() => window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }))
+  const tilesProcessedDuringHover = await page.evaluate(() => window.tilesProcessed)
+  await page.close()
+  results.push({
+    check: 'vector map style with fixtures, runtime style',
+    before,
+    recoloured,
+    hidden,
+    restored,
+    hovered,
+    recolour,
+    hover,
+    featureState,
+    tilesProcessedDuringHover,
+    errors,
+  })
+}
+
 const PATTERN_COLOURS = `
   // By hue, since the terrain is lit: the sprite's green checks (background), dark and light blue stripes
   // (lakes), red dashes (primary roads), and the runtime image's magenta, then yellow, hatch (Lake Motosu).
@@ -713,6 +796,7 @@ try {
   }
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
+  if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
   if (!only || only === 'markers') await markers()

@@ -3,7 +3,12 @@ import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
 import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import type { GeographicBounds } from './camera.js'
+import { MapStyle, type MapStyleEventMap, type ProtocolLoader, type TransformRequest } from '../vector/MapStyle.js'
 import { MapStyleOverlay } from '../vector/MapStyleOverlay.js'
+import type { StyleLayer } from '../vector/StyleLayer.js'
+import type { FeatureIdentifier } from '../vector/worker/featureState.js'
+import type { StyleDocument, StyleDocumentLayer } from '../vector/worker/styleDocument.js'
+import type { FeatureState } from '../vector/worker/types.js'
 import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../vector/styleImageInput.js'
 import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
@@ -160,6 +165,13 @@ export interface MapStyleSourceOptions {
    */
   attribution?: string | readonly string[]
   /**
+   * Rewrites requests (style, TileJSON, tiles, glyphs) before they are made: another URL, extra headers. Runs on the
+   * main thread; when set, the worker asks it about every request. `requestHeaders` stays the shortcut for fixed headers.
+   */
+  transformRequest?: TransformRequest
+  /** Loaders for custom URL schemes, by scheme: `{ offline: loader }` serves `offline://…`. More with `addProtocol`. */
+  protocols?: Record<string, ProtocolLoader>
+  /**
    * Sprite sheet resolution: 2 loads the style's `@2x` sprite, 1 the plain one. Default: 2 on high-density
    * screens (`devicePixelRatio` > 1), else 1.
    */
@@ -185,10 +197,18 @@ export interface MapStyleSourceOptions {
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.
  *
  * When tile data changes on the server, `invalidate(bounds)` redraws what it covers, with no flicker.
+ *
+ * The style can change at runtime, as in MapLibre: `setPaintProperty`, `setLayoutProperty`, `setFilter`,
+ * `setLayerZoomRange`, `setLayerVisibility`, `addLayer`, `removeLayer`, `moveLayer`, `addSource`, `removeSource`,
+ * `setStyle` (diffed), `setGlobalStateProperty`, and `setFeatureState` for paint driven by app state (hover,
+ * selection). Only the tiles a change touches are processed again; feature-state colour changes only redraw.
+ * Changes made before the style has loaded apply once it has. Events: `styledata`, `sourcedata`, `error`.
  */
 export class MapStyleSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
   readonly options: MapStyleSourceOptions
+  /** The style model every `Imagery` layer using this source draws. */
+  protected readonly mapStyle: MapStyle
   /** Overlays created for `Imagery` layers, live until disposed. */
   protected readonly overlays = new Set<MapStyleOverlay>()
   /** Images added with `addImage`, handed to every overlay, including those created later. */
@@ -202,16 +222,24 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
       throw new Error('MapStyleSource: pass either `url` (a style URL) or `style` (a style document).')
     }
     this.options = options
+    const { url, style, baseUrl, requestHeaders, transformRequest, protocols } = options
+    this.mapStyle = new MapStyle({
+      style: (url ?? style)!,
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(requestHeaders !== undefined ? { requestHeaders } : {}),
+      ...(transformRequest !== undefined ? { transformRequest } : {}),
+      ...(protocols !== undefined ? { protocols } : {}),
+    })
   }
 
   createOverlay({ opacity }: { opacity: number }): MapStyleOverlay {
-    const { url, style, attribution: _attribution, onStyleImageMissing: _onStyleImageMissing, ...rest } = this.options
+    const { url: _url, style: _style, attribution: _attribution, transformRequest: _transformRequest, protocols: _protocols, onStyleImageMissing: _onStyleImageMissing, ...rest } = this.options
     const overlay = new MapStyleOverlay({
       ...rest,
-      style: (url ?? style)!,
+      style: this.mapStyle,
       opacity,
       images: this.images,
-      onLoad: summary => this.setLoadedAttributions(summary.attributions),
+      onSummaryChange: summary => this.setLoadedAttributions(summary.attributions),
       onStyleImageMissing: imageId => this.reportMissingImage(imageId),
     })
     this.pruneDisposedOverlays()
@@ -295,6 +323,152 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   protected pruneDisposedOverlays(): void {
     for (const overlay of this.overlays) if (overlay.isDisposed) this.overlays.delete(overlay)
   }
+
+  // Runtime style API (MapLibre's names). Each checks its arguments against the loaded style and throws an error
+  // that states the fix; changes made before the style has loaded are checked when it loads (`error` event).
+
+  /** A copy of the style as it is now, with every change applied; null before it has loaded. */
+  getStyle(): StyleDocument | null {
+    return this.mapStyle.getStyle()
+  }
+
+  /** A copy of a layer, or undefined. */
+  getLayer(layerId: string): StyleDocumentLayer | undefined {
+    return this.mapStyle.getLayer(layerId)
+  }
+
+  /** Layer ids, bottom first. */
+  getLayerIds(): string[] {
+    return this.mapStyle.getLayerIds()
+  }
+
+  getSource(sourceId: string): object | undefined {
+    return this.mapStyle.getSource(sourceId)
+  }
+
+  getPaintProperty(layerId: string, name: string): unknown {
+    return this.mapStyle.getPaintProperty(layerId, name)
+  }
+
+  getLayoutProperty(layerId: string, name: string): unknown {
+    return this.mapStyle.getLayoutProperty(layerId, name)
+  }
+
+  getFilter(layerId: string): unknown {
+    return this.mapStyle.getFilter(layerId)
+  }
+
+  /** @example source.setPaintProperty('water', 'fill-color', '#2a6fdb') */
+  setPaintProperty(layerId: string, name: string, value: unknown): void {
+    this.mapStyle.setPaintProperty(layerId, name, value)
+  }
+
+  setLayoutProperty(layerId: string, name: string, value: unknown): void {
+    this.mapStyle.setLayoutProperty(layerId, name, value)
+  }
+
+  /** `null` removes the filter. @example source.setFilter('roads', ['==', ['get', 'class'], 'motorway']) */
+  setFilter(layerId: string, filter: unknown): void {
+    this.mapStyle.setFilter(layerId, filter)
+  }
+
+  /** Minimum inclusive, maximum exclusive, as in MapLibre; `undefined` removes a bound. */
+  setLayerZoomRange(layerId: string, minimumZoom: number | undefined, maximumZoom: number | undefined): void {
+    this.mapStyle.setLayerZoomRange(layerId, minimumZoom, maximumZoom)
+  }
+
+  setLayerVisibility(layerId: string, visible: boolean): void {
+    this.mapStyle.setLayerVisibility(layerId, visible)
+  }
+
+  /**
+   * Adds a layer below `beforeId` (on top without it): a MapLibre layer object, or a `StyleLayer` (which then
+   * forwards its updates).
+   */
+  addLayer(layer: object | StyleLayer, beforeId?: string): void {
+    if (isStyleLayer(layer)) layer.addTo(this, beforeId)
+    else this.mapStyle.addLayer(layer, beforeId)
+  }
+
+  removeLayer(layerId: string): void {
+    this.mapStyle.removeLayer(layerId)
+  }
+
+  /** Moves a layer below `beforeId`, or on top. */
+  moveLayer(layerId: string, beforeId?: string): void {
+    this.mapStyle.moveLayer(layerId, beforeId)
+  }
+
+  /** Adds a source (MapLibre source object; `vector` sources draw, with `promoteId` for feature-state ids). */
+  addSource(sourceId: string, source: object): void {
+    this.mapStyle.addSource(sourceId, source)
+  }
+
+  /** Removes a source; remove the layers reading it first. */
+  removeSource(sourceId: string): void {
+    this.mapStyle.removeSource(sourceId)
+  }
+
+  /**
+   * Replaces the style: a URL or a document. With `diff` (the default) only what differs is applied, as in MapLibre;
+   * layers added with `StyleLayer` are kept. Resolves once the change is handed to the renderer.
+   */
+  setStyle(style: string | object, options?: { diff?: boolean }): Promise<void> {
+    return this.mapStyle.setStyle(style, options)
+  }
+
+  /** Sets a value read by `['global-state', name]`; `undefined` returns it to the style root `state` default. */
+  setGlobalStateProperty(name: string, value: unknown): void {
+    this.mapStyle.setGlobalStateProperty(name, value)
+  }
+
+  getGlobalState(): Record<string, unknown> {
+    return this.mapStyle.getGlobalState()
+  }
+
+  /**
+   * Merges `state` into a feature's state; paint properties read it with `['feature-state', name]`. Colour and opacity
+   * changes of fills, lines and circles only redraw (fast enough for hover); other paint processes the feature's tiles.
+   * @example source.setFeatureState({ source: 'base', sourceLayer: 'buildings', id: 42 }, { hover: true })
+   */
+  setFeatureState(feature: FeatureIdentifier, state: FeatureState): void {
+    this.mapStyle.setFeatureState(feature, state)
+  }
+
+  /** Removes one key, a feature's whole state (no `key`), or every state of the source (no `id`). */
+  removeFeatureState(feature: Omit<FeatureIdentifier, 'id'> & { id?: string | number }, key?: string): void {
+    this.mapStyle.removeFeatureState(feature, key)
+  }
+
+  getFeatureState(feature: FeatureIdentifier): FeatureState {
+    return this.mapStyle.getFeatureState(feature)
+  }
+
+  /** Serves `scheme://…` URLs of this style with `loader` (offline packs, custom stores). */
+  addProtocol(scheme: string, loader: ProtocolLoader): void {
+    this.mapStyle.addProtocol(scheme, loader)
+  }
+
+  removeProtocol(scheme: string): void {
+    this.mapStyle.removeProtocol(scheme)
+  }
+
+  addEventListener<T extends keyof MapStyleEventMap>(type: T, listener: (event: MapStyleEventMap[T] & { type: T }) => void): void {
+    this.mapStyle.addEventListener(type, listener as never)
+  }
+
+  removeEventListener<T extends keyof MapStyleEventMap>(type: T, listener: (event: MapStyleEventMap[T] & { type: T }) => void): void {
+    this.mapStyle.removeEventListener(type, listener as never)
+  }
+
+  /** The style model, for `StyleLayer`. */
+  getMapStyle(): MapStyle {
+    return this.mapStyle
+  }
+}
+
+function isStyleLayer(layer: object): layer is StyleLayer {
+  return typeof (layer as Partial<StyleLayer>).addTo === 'function' && typeof (layer as Partial<StyleLayer>).toSpecification === 'function'
 }
 
 /** Image changes cut short by `dispose` are expected; anything else is worth a warning. */

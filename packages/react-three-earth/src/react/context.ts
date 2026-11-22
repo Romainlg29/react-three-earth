@@ -18,6 +18,8 @@ export interface SourceRegistry<T> {
 
 export const TerrainSourceContext = createContext<SourceRegistry<import('../core/sources.js').TerrainSource> | null>(null)
 export const ImagerySourceContext = createContext<SourceRegistry<import('../core/sources.js').ImagerySource> | null>(null)
+/** The vanilla `MapStyleSource` of the nearest `<MapStyleSource>`, for `<StyleLayer>`. */
+export const MapStyleSourceContext = createContext<import('../core/sources.js').MapStyleSource | null>(null)
 
 /** A registry whose `onChange` receives the sources in mount order. */
 export function useSourceRegistry<T>(onChange: (sources: T[]) => void): SourceRegistry<T> {
