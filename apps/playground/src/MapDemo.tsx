@@ -32,7 +32,8 @@ const atmosphereCache = !params.has('nocache')
 // `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
 const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 const showStatistics = params.get('stats') !== '0'
-// WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU.
+// WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
+// (`?webgl` wins if both are given).
 const forceWebGL = params.has('webgl') || (!params.has('webgpu') && prefersWebGLBackend())
 const defaultDate = new Date('2026-11-22T07:00:00Z')
 const requestedDate = new Date(params.get('date') ?? Number.NaN)

@@ -11,11 +11,16 @@ const android = 'Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KH
 
 describe('prefersWebGLBackend', () => {
   it('picks WebGL 2 in Safari and every iOS browser', () => {
-    expect(prefersWebGLBackend(safari)).toBe(true)
-    expect(prefersWebGLBackend(iphoneChrome)).toBe(true)
+    expect(prefersWebGLBackend(safari, 0)).toBe(true)
+    expect(prefersWebGLBackend(iphoneChrome, 5)).toBe(true)
+    // iPadOS reports a Mac: Chrome and Safari on an iPad, told apart from a Mac by the touch screen
+    const ipadChrome = chrome.replace('Chrome/142.0.0.0', 'CriOS/142.0.0.0')
+    expect(prefersWebGLBackend(ipadChrome, 5)).toBe(true)
+    expect(prefersWebGLBackend(safari, 5)).toBe(true)
+    expect(prefersWebGLBackend(chrome, 0)).toBe(false)
   })
 
   it('keeps WebGPU in Chromium browsers and Firefox', () => {
-    for (const userAgent of [chrome, edge, firefox, android, '']) expect(prefersWebGLBackend(userAgent)).toBe(false)
+    for (const userAgent of [chrome, edge, firefox, android, '']) expect(prefersWebGLBackend(userAgent, 0)).toBe(false)
   })
 })
