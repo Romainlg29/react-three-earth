@@ -338,7 +338,8 @@ async function markers() {
       buriedVisibility: buried.visibility,
       buriedOpacity: getComputedStyle(buried.element).opacity,
       buriedText: buried.element.textContent,
-      peakTagName: peak.element.tagName,
+      peakRole: peak.element.getAttribute('role'),
+      peakTabIndex: peak.element.tabIndex,
       peakLabel: peak.element.getAttribute('aria-label'),
     }
   })
@@ -429,6 +430,20 @@ async function markers() {
   }, viewBefore)
   const end = await handle.boundingBox()
   await page.close()
+
+  // Under StrictMode (every effect twice): one root per marker, content and pins in place, no React errors.
+  const strict = await open('/?fixtures&stats=0&atmosphere=0&markers&strict&camera=-90,0,3900,40000,-40,-30')
+  await strict.page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
+  await strict.page.waitForTimeout(500)
+  await strict.page.click('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await strict.page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  const strictMode = await strict.page.evaluate(() => ({
+    markerElements: document.querySelectorAll('.react-three-earth-marker').length,
+    pinsShown: [...document.querySelectorAll('.react-three-earth-marker-fallback-pin')].filter(pin => getComputedStyle(pin).display !== 'none').length,
+    buriedText: window.markers.buried.element.textContent,
+    popupText: document.querySelector('.react-three-earth-popup')?.textContent ?? '',
+  }))
+  await strict.page.close()
   results.push({
     check: 'markers and popups with fixtures',
     ...initial,
@@ -437,6 +452,7 @@ async function markers() {
     popup,
     afterEscape,
     drag: { ...drag, movedPixels: end.x - start.x },
+    strictMode: { ...strictMode, errors: strict.errors },
     errors,
   })
 }

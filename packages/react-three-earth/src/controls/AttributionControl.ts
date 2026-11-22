@@ -71,6 +71,7 @@ export class AttributionControl {
   protected expanded = false
   protected containerWidthPixels: number
   protected readonly onChange = () => this.update()
+  protected disposed = false
 
   constructor({ earth, container, compact, customAttribution }: AttributionControlOptions) {
     const document = container.ownerDocument
@@ -162,6 +163,8 @@ export class AttributionControl {
 
   /** Removes the DOM and the listeners. */
   dispose(): void {
+    if (this.disposed) return
+    this.disposed = true
     this.earth.removeEventListener('attributionchange', this.onChange)
     this.toggleButton.removeEventListener('click', this.onToggle)
     this.resizeObserver?.disconnect()

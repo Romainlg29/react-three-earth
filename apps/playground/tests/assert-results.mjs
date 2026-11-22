@@ -63,7 +63,7 @@ const expectations = {
   },
   'markers and popups with fixtures': r => [
     ['the pin sits on the hill (terrain height within 50 m of 3900 m)', Math.abs(r.peakHeightMeters - 3900) < 50],
-    ['the pin is a labelled button', r.peakTagName === 'BUTTON' && r.peakLabel === 'Fixture peak'],
+    ['the pin is a labelled button', r.peakRole === 'button' && r.peakTabIndex === 0 && r.peakLabel === 'Fixture peak'],
     ['React content renders in the marker', r.buriedText === 'sea level'],
     ['a marker under the hill fades (occluded, opacity 0.2)', r.buriedVisibility === 'occluded' && Number(r.buriedOpacity) === 0.2],
     ['checked on every frame of the camera move, the pin crossing the screen', r.frames >= 35 && r.travelPixels > 50],
@@ -74,6 +74,7 @@ const expectations = {
     ['the popup opens on click, above the pin, with focus inside', r.popup.text.includes('Fixture peak') && r.popup.anchor === 'bottom' && r.popup.focusInside && Math.abs(r.popup.gapAbovePinPixels) <= 1 && r.popup.centreOffsetPixels <= 1],
     ['Escape closes the popup and gives focus back to the marker', !r.afterEscape.open && r.afterEscape.focusOnMarker],
     ['dragging moves the marker, fires dragend once, and leaves the map still', r.drag.dragEnds === 1 && r.drag.movedPixels > 60 && r.drag.cameraMovedMeters < 1],
+    ['under StrictMode: three markers, two pins, content and popup render, no errors', r.strictMode.markerElements === 3 && r.strictMode.pinsShown === 2 && r.strictMode.buriedText === 'sea level' && r.strictMode.popupText.includes('Fixture peak') && r.strictMode.errors.length === 0],
   ],
 }
 

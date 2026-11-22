@@ -13,12 +13,20 @@ export function useDomRoot(element: HTMLElement | null, children: ReactNode): vo
 
   useLayoutEffect(() => {
     if (element === null) return
-    const created = createRoot(element)
+    // A fresh host per run: under StrictMode the effect runs again before the last root's deferred unmount,
+    // and two roots must never share an element. `display: contents` keeps it out of the layout.
+    const host = element.ownerDocument.createElement('div')
+    host.style.display = 'contents'
+    element.append(host)
+    const created = createRoot(host)
     root.current = created
     return () => {
       root.current = null
       // Not during this commit: React refuses to unmount a root synchronously while it renders another.
-      queueMicrotask(() => created.unmount())
+      queueMicrotask(() => {
+        created.unmount()
+        host.remove()
+      })
     }
   }, [element])
 

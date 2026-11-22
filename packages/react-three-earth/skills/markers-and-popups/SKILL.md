@@ -68,9 +68,10 @@ export function Peak() {
 }
 ```
 
-Without children of its own a marker shows the default pin (27 × 41 px, anchored at its bottom tip;
-`color` sets its colour). `<Popup>` as a direct child of `<Marker>` opens on click, Enter or Space and
-closes on the × button, `Escape`, a click on the map or another click on the marker.
+Without an element of its own a marker shows the default pin (27 × 41 px, anchored at its bottom tip;
+`color` sets its colour). A `<Popup>` anywhere inside `<Marker>` (wrapped in your own component too)
+opens on click, Enter or Space and closes on the × button, `Escape`, a click on the map or another
+click on the marker. The React layer renders through `react-dom`, which the app must have installed.
 
 ### Content of your own
 
@@ -171,7 +172,9 @@ export function Tooltip() {
 
 Outside a `<Marker>` a popup needs `longitudeDegrees` and `latitudeDegrees` (or `trackPointer`) and opens
 when it mounts unless `open` is set. With `open`, always give `onClose`: the user closes it (×, `Escape`,
-a click on the map) and your state must follow. Props: `anchor` (`'auto'` opens above or wherever it
+a click on the map) and your state must follow. On a marker with `open` set, a click on the marker calls
+`onOpen` instead of opening the popup (set your state there), and closes it when open. A click closes a
+popup only when it lands on the map (the canvas or a marker), not on a control or another popup. Props: `anchor` (`'auto'` opens above or wherever it
 fits), `offsetPixels` (a distance, or `{ xPixels, yPixels }`), `closeOnClick` (default true),
 `closeOnMove` (default false), `closeButton`, `maximumWidthPixels` (default 240), `label`, `onOpen`.
 
@@ -248,10 +251,13 @@ with variables on any ancestor, or override the classes `react-three-earth-marke
 
 ### Keyboard and focus
 
-The default pin is a `<button>`; custom content gets `role="button"` and `tabindex="0"`. Enter and Space
-click the marker, which toggles its popup (`aria-haspopup`, `aria-expanded` follow). A popup is a
-`role="dialog"` named by `label`; opening it moves focus inside (`focusAfterOpen`), `Escape` closes it and
-returns focus to the marker. Keys and presses inside a popup do not reach the map controls.
+Markers are focusable buttons: the vanilla default pin is a `<button>`, other elements (and every React
+marker) get `role="button"` and `tabindex="0"`. Enter and Space on the marker itself click it, which
+toggles its popup (`aria-haspopup`, `aria-expanded` follow); keys typed in its content stay there. A popup
+is a `role="dialog"` named by `label`. Opened from its marker, it moves focus inside (`focusAfterOpen`);
+opened by the app, it takes focus only when its content has a control, and a `trackPointer` tooltip never
+does. `Escape` closes it and returns focus to the marker. Keys and presses inside a popup do not reach the
+map controls.
 
 ### Visibility and the `update` event
 
@@ -275,22 +281,24 @@ export function followScreen(earth: Earth, element: HTMLElement) {
 ```
 
 All markers and popups of an earth share one overlay with a budget of 4 terrain raycasts a frame (height
-reads and occlusion tests); each marker re-checks every 250 ms, so a marker can show for a quarter of a
-second after terrain starts to hide it.
+reads and occlusion tests), served in turn so every marker gets its checks however many there are; each
+marker re-checks at most every 250 ms, and only after the camera moved or tiles loaded. With
+`frameloop="demand"` the overlay asks for a frame when a check had to wait, so answers settle after the
+camera stops. A marker can show for a quarter of a second after terrain starts to hide it.
 
 ## Common Mistakes
 
 ### HIGH: Not storing the dragged position
 
 `<Marker>` is controlled by its props. If `onDragEnd` does not update the state behind `longitudeDegrees`
-and `latitudeDegrees`, the next render puts the marker back where the props say. Store the position (see
+and `latitudeDegrees`, the marker stays where it was dropped only until a prop changes, then jumps back
+where the props say. Store the position (see
 the draggable example).
 
-### HIGH: Wrapping `<Popup>` in another component inside `<Marker>`
+### MEDIUM: Text alone as a marker's content
 
-`<Marker>` picks out `<Popup>` elements among its direct children; anything else, a `<MyPopup>` that
-renders a `<Popup>` included, is the marker's content, and the popup then sits inside the pin. Put
-`<Popup>` directly in `<Marker>`, or control a standalone popup with `open`.
+The default pin shows while the marker has no element of its own, and text nodes are not elements:
+`<Marker>Paris</Marker>` shows the pin and the text. Wrap text in an element (`<span>Paris</span>`).
 
 ### HIGH: The wrong container (vanilla)
 

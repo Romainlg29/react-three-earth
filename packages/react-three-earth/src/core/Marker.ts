@@ -22,7 +22,9 @@ import {
   releaseScreenLayer,
   sceneToScreen,
   ScreenOverlay,
-  takeRaycast,
+  staleTerrainCheck,
+  startTerrainCheck,
+  TERRAIN_CHECK_INTERVAL_MILLISECONDS,
   type ScreenOverlayFrame,
   type ScreenOverlayItem,
   type ScreenVisibility,
@@ -85,7 +87,8 @@ export interface MarkerEventMap {
   click: object
 }
 
-const PIN_SVG =
+/** The default pin's drawing, 27 × 41: a constant, safe for `innerHTML`. */
+export const PIN_SVG =
   '<svg viewBox="0 0 27 41" aria-hidden="true" focusable="false">' +
   '<ellipse cx="13.5" cy="38.6" rx="6.5" ry="2.4" fill="rgba(0,0,0,0.22)"/>' +
   '<path d="M13.5 0.5C6.32 0.5 0.5 6.32 0.5 13.5c0 9.7 13 25.5 13 25.5s13-15.8 13-25.5C26.5 6.32 20.68 0.5 13.5 0.5z" fill="currentColor" stroke="rgba(0,0,0,0.25)"/>' +
@@ -109,12 +112,17 @@ const scenePoint = new Vector3()
 export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOverlayItem {
   /** The marker's root element (the `element` option, or the default pin). */
   readonly element: HTMLElement
+  /**
+   * Whether a click (or Enter, Space) opens and closes the popup. Turn it off to decide yourself in a `click`
+   * listener, as `<Popup open>` does.
+   */
+  togglePopupOnClick = true
   /** Whether the marker shows, as of the last frame. */
   visibility: ScreenVisibility = 'hidden'
   /** Where the anchor sits on the screen, in CSS pixels from the container's top-left corner, as of the last frame. */
   readonly screenPosition = { xPixels: 0, yPixels: 0 }
   /** Milliseconds between two reads of the terrain under the marker, and between two terrain occlusion tests. */
-  terrainCheckIntervalMilliseconds = 250
+  terrainCheckIntervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS
 
   protected earth: Earth | null = null
   protected container: HTMLElement | null = null
@@ -132,8 +140,8 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
   protected occludedOpacity: number
   protected popup: Popup | null = null
   protected occludedByTerrain = false
-  protected lastTerrainHeightCheckMilliseconds = -Infinity
-  protected lastOcclusionCheckMilliseconds = -Infinity
+  protected terrainHeightCheck = staleTerrainCheck()
+  protected occlusionCheck = staleTerrainCheck()
   protected lastTransform = ''
   protected lastOpacity = ''
   /** The element's size, kept current by a ResizeObserver; null until measured. */
@@ -173,9 +181,11 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     this.resizeObserver =
       typeof ResizeObserver === 'undefined'
         ? null
-        : new ResizeObserver(([entry]) => {
-            const box = entry?.borderBoxSize?.[0]
-            this.elementSize = box ? { widthPixels: box.inlineSize, heightPixels: box.blockSize } : null
+        : new ResizeObserver(() => {
+            // Read once per resize, never per frame (Safari before 15.4 has no `borderBoxSize`).
+            this.elementSize = { widthPixels: this.element.offsetWidth, heightPixels: this.element.offsetHeight }
+            // An open popup opens beside the new box.
+            if (this.popup?.isOpen() === true && this.earth !== null) ScreenOverlay.of(this.earth).refresh(this.popup)
           })
   }
 
@@ -196,14 +206,17 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
 
   /** Takes the marker (and its open popup) off the map. It can be added again. */
   remove(): this {
-    this.popup?.remove()
-    if (this.earth === null || this.container === null) return this
-    ScreenOverlay.of(this.earth).delete(this)
-    this.resizeObserver?.unobserve(this.element)
-    this.element.remove()
-    releaseScreenLayer(this.container)
+    const earth = this.earth
+    const container = this.container
+    // Off the map first, so the popup's `close` below can tell it closes because the marker went.
     this.earth = null
     this.container = null
+    this.popup?.remove()
+    if (earth === null || container === null) return this
+    ScreenOverlay.of(earth).delete(this)
+    this.resizeObserver?.unobserve(this.element)
+    this.element.remove()
+    releaseScreenLayer(container)
     this.visibility = 'hidden'
     this.element.dataset.visibility = 'hidden'
     this.lastTransform = ''
@@ -246,9 +259,10 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     const moved = longitudeDegrees !== this.longitudeDegrees || latitudeDegrees !== this.latitudeDegrees
     this.longitudeDegrees = longitudeDegrees
     this.latitudeDegrees = latitudeDegrees
+    const heightChanged = heightMeters !== undefined && heightMeters !== this.heightOption
     if (heightMeters !== undefined) this.heightOption = heightMeters
-    // A new place needs its own terrain height: read it on the next frame with budget.
-    if (moved) this.lastTerrainHeightCheckMilliseconds = -Infinity
+    // A new place needs its own terrain height and occlusion: on the next frame with budget.
+    if (moved || heightChanged) this.markTerrainChecksStale()
     this.refresh()
     return this
   }
@@ -359,7 +373,7 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     const popup = this.popup
     if (popup === null || this.earth === null || this.container === null) return this
     if (popup.isOpen()) popup.remove()
-    else popup.addTo(this.earth, this.container)
+    else popup.addTo(this.earth, this.container, { focus: true })
     return this
   }
 
@@ -382,24 +396,25 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
   updateScreen(frame: ScreenOverlayFrame): void {
     const earth = this.earth
     if (earth === null) return
-    const now = frame.timeMilliseconds
-    const dueForTerrain = now - this.lastTerrainHeightCheckMilliseconds >= this.terrainCheckIntervalMilliseconds
-    if (this.heightOption === 'terrain' && earth.terrain !== null && !this.dragging && dueForTerrain && takeRaycast(frame)) {
-      this.lastTerrainHeightCheckMilliseconds = now
-      // Where no tile is loaded yet, keep the last height rather than dropping to the ellipsoid.
-      this.terrainHeightMeters = earth.camera.queryTerrainElevation({ longitudeDegrees: this.longitudeDegrees, latitudeDegrees: this.latitudeDegrees }) ?? this.terrainHeightMeters
-    }
-
-    const position = { longitudeDegrees: this.longitudeDegrees, latitudeDegrees: this.latitudeDegrees, heightMeters: this.resolvedHeightMeters }
-    const point = earth.camera.toScenePosition(position, scenePoint)
-    const inFront = sceneToScreen(frame, point, this.screenPosition)
-    const hidden = !inFront || isBehindHorizon(frame, point)
-    if (hidden) {
+    let point = this.project(frame)
+    // Behind the horizon or the camera: no terrain work for a marker nobody sees.
+    if (point === null) {
       this.setVisibility('hidden')
       return
     }
-    if (now - this.lastOcclusionCheckMilliseconds >= this.terrainCheckIntervalMilliseconds && takeRaycast(frame)) {
-      this.lastOcclusionCheckMilliseconds = now
+    if (this.heightOption === 'terrain' && earth.terrain !== null && !this.dragging && startTerrainCheck(frame, this.terrainHeightCheck, this.terrainCheckIntervalMilliseconds)) {
+      // Where no tile is loaded yet, keep the last height rather than dropping to the ellipsoid.
+      const heightMeters = earth.camera.queryTerrainElevation({ longitudeDegrees: this.longitudeDegrees, latitudeDegrees: this.latitudeDegrees }) ?? this.terrainHeightMeters
+      if (heightMeters !== this.terrainHeightMeters) {
+        this.terrainHeightMeters = heightMeters
+        point = this.project(frame)
+        if (point === null) {
+          this.setVisibility('hidden')
+          return
+        }
+      }
+    }
+    if (startTerrainCheck(frame, this.occlusionCheck, this.terrainCheckIntervalMilliseconds)) {
       const distanceMeters = point.distanceTo(frame.cameraPosition)
       // The marker's own ground, read at the level of detail loaded, must not hide it.
       this.occludedByTerrain = isBehindTerrain(frame, point, Math.max(5, distanceMeters * 0.002))
@@ -417,6 +432,20 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
       this.element.style.transform = transform
       this.lastTransform = transform
     }
+  }
+
+  /** The scene point of the marker (screen position written), or null behind the camera or the globe's horizon. */
+  protected project(frame: ScreenOverlayFrame): Vector3 | null {
+    const position = { longitudeDegrees: this.longitudeDegrees, latitudeDegrees: this.latitudeDegrees, heightMeters: this.resolvedHeightMeters }
+    const point = frame.earth.camera.toScenePosition(position, scenePoint)
+    const inFront = sceneToScreen(frame, point, this.screenPosition)
+    return !inFront || isBehindHorizon(frame, point) ? null : point
+  }
+
+  /** The next frame with budget re-reads the terrain height and re-tests occlusion. */
+  protected markTerrainChecksStale(): void {
+    this.terrainHeightCheck = staleTerrainCheck()
+    this.occlusionCheck = staleTerrainCheck()
   }
 
   protected setVisibility(visibility: ScreenVisibility): void {
@@ -518,6 +547,7 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     this.suppressNextClick = Math.hypot(event.clientX - down.clientX, event.clientY - down.clientY) > CLICK_TOLERANCE_PIXELS
     if (!this.dragging) return
     this.dragging = false
+    this.markTerrainChecksStale()
     this.element.removeAttribute('data-dragging')
     this.dispatchEvent({ type: 'dragend', ...this.dragEvent() })
   }
@@ -528,10 +558,12 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
       return
     }
     this.dispatchEvent({ type: 'click' })
-    this.togglePopup()
+    if (this.togglePopupOnClick) this.togglePopup()
   }
 
   protected onKeyDown = (event: KeyboardEvent): void => {
+    // Keys typed in the marker's own content (an input, a button) are theirs.
+    if (event.target !== this.element) return
     if (event.key === 'Escape' && this.popup?.isOpen() === true) {
       event.stopPropagation()
       this.popup.remove()

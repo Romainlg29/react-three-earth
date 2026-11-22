@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-import { PerspectiveCamera } from 'three'
+import { Group, PerspectiveCamera } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { setCameraView } from '../src/core/camera.js'
 import { Earth } from '../src/core/Earth.js'
@@ -35,7 +35,26 @@ function createMap() {
 
 afterEach(() => {
   document.body.replaceChildren()
+  vi.restoreAllMocks()
+  vi.useRealTimers()
 })
+
+/** A terrain with no tiles: raycasts find nothing, but markers following it still spend their budget. */
+function withEmptyTerrain(earth: Earth): void {
+  ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: false, update() {}, dispose() {} }
+}
+
+/** Runs earth.update with the clock moved on by a 60 fps frame each time. */
+function frames(earth: Earth, camera: PerspectiveCamera, count: number, move: (frame: number) => void = () => {}) {
+  let now = performance.now()
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => now)
+  for (let frame = 0; frame < count; frame++) {
+    now += 1000 / 60
+    move(frame)
+    earth.update(camera, renderer, 1 / 60)
+  }
+  clock.mockRestore()
+}
 
 describe('anchors and offsets', () => {
   it('puts each anchor of the box on the point', () => {
@@ -172,6 +191,42 @@ describe('Marker', () => {
   })
 })
 
+describe('terrain checks', () => {
+  it('serve every marker in turn, however many share the per-frame budget', () => {
+    const { earth, camera, container } = createMap()
+    withEmptyTerrain(earth)
+    const markers = Array.from({ length: 100 }, (_, index) =>
+      new Marker({ longitudeDegrees: (index % 10) * 0.5 - 2.5, latitudeDegrees: Math.floor(index / 10) * 0.5 - 2.5 }).addTo(earth, container),
+    )
+    const checked = () => markers.filter(marker => (marker as unknown as { occlusionCheck: { lastCheckSceneVersion: number } }).occlusionCheck.lastCheckSceneVersion !== -1).length
+    // 100 markers, 2 raycasts each, 4 a frame: 50 frames while the camera keeps moving.
+    frames(earth, camera, 60, frame => setCameraView(camera, { longitudeDegrees: frame * 1e-4, latitudeDegrees: 0, distanceMeters: 2_000_000, pitchDegrees: -90 }))
+    expect(checked()).toBe(100)
+  })
+
+  it('ask for a later frame when a stale check had to wait, and stop once all are settled', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { earth, camera, container } = createMap()
+    withEmptyTerrain(earth)
+    for (let index = 0; index < 10; index++) new Marker({ longitudeDegrees: index * 0.1, latitudeDegrees: 0 }).addTo(earth, container)
+    let requests = 0
+    earth.addEventListener('framerequest', () => requests++)
+    frames(earth, camera, 1)
+    requests = 0
+    vi.advanceTimersByTime(300)
+    expect(requests).toBe(1)
+    // Enough frames, spread over time, to check them all: no more requests after that.
+    for (let round = 0; round < 10; round++) {
+      frames(earth, camera, 16)
+      vi.advanceTimersByTime(300)
+    }
+    requests = 0
+    frames(earth, camera, 16)
+    vi.advanceTimersByTime(300)
+    expect(requests).toBe(0)
+  })
+})
+
 describe('Popup', () => {
   it('opens beside its marker on click, and closes with Escape, giving focus back', () => {
     const { earth, container } = createMap()
@@ -225,8 +280,39 @@ describe('Popup', () => {
     expect(popup.isOpen()).toBe(true)
     popup.contentElement.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     expect(popup.isOpen()).toBe(true)
+    // A control in the same container (the attribution button) is not the map.
+    const control = document.createElement('button')
+    container.append(control)
+    control.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+    control.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(popup.isOpen()).toBe(true)
     click(10, 11)
     expect(popup.isOpen()).toBe(false)
+  })
+
+  it('leaves keys typed in a marker\'s content to the content', () => {
+    const { earth, container } = createMap()
+    const element = document.createElement('div')
+    const input = document.createElement('input')
+    element.append(input)
+    const marker = new Marker({ longitudeDegrees: 0, latitudeDegrees: 0, element, popup: new Popup({ content: 'x' }) }).addTo(earth, container)
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    input.dispatchEvent(space)
+    expect(space.defaultPrevented).toBe(false)
+    expect(marker.getPopup()!.isOpen()).toBe(false)
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(marker.getPopup()!.isOpen()).toBe(true)
+  })
+
+  it('does not take focus when the app opens it with nothing to focus, nor as a tooltip', () => {
+    const { earth, container } = createMap()
+    const search = document.createElement('input')
+    document.body.append(search)
+    search.focus()
+    new Popup({ longitudeDegrees: 0, latitudeDegrees: 0, heightMeters: 0, content: 'text only' }).addTo(earth, container)
+    expect(document.activeElement).toBe(search)
+    new Popup({ content: 'tip' }).trackPointer().addTo(earth, container)
+    expect(document.activeElement).toBe(search)
   })
 
   it('points at its own position, hides behind the globe, and closes on move when asked', () => {

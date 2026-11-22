@@ -27,6 +27,24 @@ export interface ScreenOverlayFrame {
   timeMilliseconds: number
   /** Terrain raycasts left this frame, shared by every marker on the earth. Take one with `takeRaycast`. */
   raycastsLeft: number
+  /**
+   * Goes up whenever terrain checks may give a new answer: the camera moved, the view morphed, or terrain tiles
+   * loaded. A marker checked at the current version needs no new check.
+   */
+  sceneVersion: number
+  /** Set by an item whose terrain check is stale but had to wait: the overlay asks for a later frame. */
+  followUpNeeded: boolean
+}
+
+/** When an item last read the terrain: see `startTerrainCheck`. */
+export interface TerrainCheckState {
+  lastCheckMilliseconds: number
+  lastCheckSceneVersion: number
+}
+
+/** A state that checks on the next frame with budget: for a new item, or one that moved. */
+export function staleTerrainCheck(): TerrainCheckState {
+  return { lastCheckMilliseconds: -Infinity, lastCheckSceneVersion: -1 }
 }
 
 /** Something drawn over the canvas at a place on the earth, updated once per frame by `ScreenOverlay`. */
@@ -40,16 +58,24 @@ export const TERRAIN_RAYCASTS_PER_FRAME = 4
 
 const overlays = new WeakMap<Earth, ScreenOverlay>()
 
+/** Milliseconds between two terrain checks of one item, and the delay of a follow-up frame. */
+export const TERRAIN_CHECK_INTERVAL_MILLISECONDS = 250
+
 /**
  * Updates the markers and popups of one `Earth` at the end of each `earth.update`, once the camera is final
  * for the frame about to be drawn, so they never lag behind the map. Shares per-frame work (camera vectors, the
  * terrain raycast budget) between them. `Marker` and `Popup` register themselves; apps rarely touch it.
  */
 export class ScreenOverlay {
-  protected readonly markers = new Set<ScreenOverlayItem>()
-  protected readonly popups = new Set<ScreenOverlayItem>()
+  protected readonly markers: ScreenOverlayItem[] = []
+  protected readonly popups: ScreenOverlayItem[] = []
   protected readonly frame: ScreenOverlayFrame
   protected readonly onUpdate = () => this.update()
+  /** The marker served first next frame: the one after the last that got a raycast, so all get their turn. */
+  protected cursor = 0
+  protected readonly lastCameraMatrix = new Float64Array(16)
+  protected terrainWasLoading = false
+  protected followUpTimer: ReturnType<typeof setTimeout> | null = null
 
   /** The overlay of an earth, created on first use. */
   static of(earth: Earth): ScreenOverlay {
@@ -73,34 +99,83 @@ export class ScreenOverlay {
       onFlatMap: false,
       timeMilliseconds: 0,
       raycastsLeft: 0,
+      sceneVersion: 0,
+      followUpNeeded: false,
     }
   }
 
   add(item: ScreenOverlayItem, kind: 'marker' | 'popup'): void {
-    if (this.markers.size + this.popups.size === 0) this.earth.addEventListener('update', this.onUpdate)
-    ;(kind === 'marker' ? this.markers : this.popups).add(item)
-    // Placed at once when the earth has drawn a frame, so a marker added between frames shows in place.
-    if (this.prepareFrame()) item.updateScreen(this.frame)
+    const list = kind === 'marker' ? this.markers : this.popups
+    if (list.includes(item)) return
+    if (this.markers.length + this.popups.length === 0) this.earth.addEventListener('update', this.onUpdate)
+    list.push(item)
+    // Placed at once when the earth has drawn a frame, so a marker added between frames shows in place; its
+    // terrain checks wait for the next frame's budget, which it asks for.
+    this.refresh(item)
+    this.earth.requestFrame()
   }
 
   delete(item: ScreenOverlayItem): void {
-    if (!this.markers.delete(item) && !this.popups.delete(item)) return
-    if (this.markers.size + this.popups.size === 0) this.earth.removeEventListener('update', this.onUpdate)
+    const list = this.markers.includes(item) ? this.markers : this.popups
+    const index = list.indexOf(item)
+    if (index === -1) return
+    list.splice(index, 1)
+    if (this.markers.length + this.popups.length > 0) return
+    this.earth.removeEventListener('update', this.onUpdate)
+    if (this.followUpTimer !== null) clearTimeout(this.followUpTimer)
+    this.followUpTimer = null
   }
 
   /** Places one item now, from the last frame's camera. False before the earth's first `update`. */
   refresh(item: ScreenOverlayItem): boolean {
     if (!this.prepareFrame()) return false
+    // Between frames there is no raycast budget: terrain checks wait for the next frame.
+    this.frame.raycastsLeft = 0
     item.updateScreen(this.frame)
     return true
   }
 
   /** Places every marker, then every popup. Called for you at the end of every `earth.update`. */
   update(): void {
+    const frame = this.frame
     if (!this.prepareFrame()) return
-    this.frame.raycastsLeft = TERRAIN_RAYCASTS_PER_FRAME
-    for (const marker of this.markers) marker.updateScreen(this.frame)
-    for (const popup of this.popups) popup.updateScreen(this.frame)
+    this.updateSceneVersion()
+    frame.raycastsLeft = TERRAIN_RAYCASTS_PER_FRAME
+    frame.followUpNeeded = false
+    // Round robin: start where the budget ran out last frame, so every marker gets its checks however many there are.
+    const count = this.markers.length
+    const start = count === 0 ? 0 : this.cursor % count
+    let next = -1
+    for (let offset = 0; offset < count; offset++) {
+      const index = (start + offset) % count
+      this.markers[index]!.updateScreen(frame)
+      if (next === -1 && frame.raycastsLeft === 0) next = (index + 1) % count
+    }
+    if (next !== -1) this.cursor = next
+    // Popups are few: they always get a raycast of their own.
+    frame.raycastsLeft = Math.max(frame.raycastsLeft, 1)
+    for (const popup of this.popups) popup.updateScreen(frame)
+    // With on-demand rendering no frame may come: ask for one when a stale check had to wait.
+    if (frame.followUpNeeded && this.followUpTimer === null) {
+      this.followUpTimer = setTimeout(() => {
+        this.followUpTimer = null
+        this.earth.requestFrame()
+      }, TERRAIN_CHECK_INTERVAL_MILLISECONDS)
+    }
+  }
+
+  /** Bumps `sceneVersion` when the camera moved, the view morphs, or terrain is loading or just finished. */
+  protected updateSceneVersion(): void {
+    const elements = this.frame.camera.matrixWorld.elements
+    let changed = false
+    for (let index = 0; index < 16; index++) {
+      if (elements[index] !== this.lastCameraMatrix[index]) changed = true
+      this.lastCameraMatrix[index] = elements[index]!
+    }
+    const loading = this.earth.terrain?.loading === true
+    const view = this.earth.view
+    if (changed || loading || this.terrainWasLoading || view.transitioning) this.frame.sceneVersion++
+    this.terrainWasLoading = loading
   }
 
   protected prepareFrame(): boolean {
@@ -119,6 +194,22 @@ export class ScreenOverlay {
     frame.timeMilliseconds = performance.now()
     return true
   }
+}
+
+/**
+ * True when an item should read the terrain now: its last check is older than the scene and the interval, and
+ * the frame's budget has a raycast left (taken). When the check is stale but must wait, asks for a follow-up
+ * frame, so the answer settles after the camera stops even with on-demand rendering.
+ */
+export function startTerrainCheck(frame: ScreenOverlayFrame, state: TerrainCheckState, intervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS): boolean {
+  if (state.lastCheckSceneVersion === frame.sceneVersion) return false
+  if (frame.timeMilliseconds - state.lastCheckMilliseconds < intervalMilliseconds || !takeRaycast(frame)) {
+    frame.followUpNeeded = true
+    return false
+  }
+  state.lastCheckMilliseconds = frame.timeMilliseconds
+  state.lastCheckSceneVersion = frame.sceneVersion
+  return true
 }
 
 /** Takes one terrain raycast from the frame's budget. False when the budget is spent: try next frame. */
@@ -221,7 +312,12 @@ const STYLE = `
   border: 0; background: none; font: inherit; cursor: inherit;
   color: var(--react-three-earth-marker-color, #3fb1ce);
 }
-.react-three-earth-marker-pin svg { display: block; width: 100%; height: 100%; }
+.react-three-earth-marker-pin svg, .react-three-earth-marker-fallback-pin svg { display: block; width: 100%; height: 100%; }
+/* The pin a React <Marker> shows while it has no content of its own (popups render nothing in it). */
+.react-three-earth-marker-fallback-pin {
+  display: block; width: 27px; height: 41px; color: var(--react-three-earth-marker-color, #3fb1ce);
+}
+.react-three-earth-marker-fallback-pin:not(:only-child) { display: none; }
 .react-three-earth-popup {
   position: absolute; left: 0; top: 0; z-index: 3; display: flex; pointer-events: auto; will-change: transform;
   font: var(--react-three-earth-popup-font, 13px / 1.4 system-ui, sans-serif);

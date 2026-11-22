@@ -252,8 +252,8 @@ HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/cor
 `src/react/domRoot.tsx`).
 
 - **API.** Vanilla `Marker` and `Popup` (three `EventDispatcher`s) with `addTo(earth, container)`, and React `<Marker>` and
-  `<Popup>`. A `<Popup>` that is a direct child of `<Marker>` attaches to it and opens on click, Enter or Space; any other
-  child is the marker's content. `<Popup>` outside a marker points at a position, follows the pointer (`trackPointer`) or
+  `<Popup>`. A `<Popup>` anywhere inside `<Marker>` attaches to it through context and opens on click, Enter or Space;
+  everything renders in the marker's element, with a fallback pin that CSS shows only while it is the sole element. `<Popup>` outside a marker points at a position, follows the pointer (`trackPointer`) or
   is controlled with `open` and `onClose`. Markers take `heightMeters` (a number, or `'terrain'`, the default), `anchor`,
   `offsetPixels`, `rotationDegrees`, `rotationAlignment` and `pitchAlignment`, `draggable`, `occludedOpacity` and a
   `label` for screen readers.
@@ -263,7 +263,10 @@ HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/cor
 - **Placement.** Every marker and popup of an earth shares one `ScreenOverlay`, which listens to the new Earth `update`
   event, fired at the end of `earth.update`, so the DOM is placed from the camera, morph and tiles of the frame that draws
   (no lag behind the map). The overlay gives each frame a budget of 4 terrain raycasts, spent on terrain height reads
-  (`heightMeters: 'terrain'`) and occlusion tests; each marker re-checks every 250 ms.
+  (`heightMeters: 'terrain'`) and occlusion tests, served round robin from where the budget ran out (a unit test
+  checks 100 markers all get theirs). Each marker re-checks at most every 250 ms, and only when the scene changed
+  (camera, morph, tiles loading); a check that had to wait asks for a frame 250 ms later, for `frameloop="demand"`.
+  Hidden markers spend nothing.
 - **Visibility.** `'visible'`, `'occluded'` (faded to `occludedOpacity`) or `'hidden'` (behind the camera or the globe's
   horizon). Terrain occlusion runs only on the globe at rest: on the flat map the tiles are moved on the GPU, so the meshes
   the raycast sees do not match what is drawn.
@@ -278,6 +281,11 @@ Changed from the brief:
   a per-anchor offset table.
 - New Earth `update` event (see above), so markers are placed in the frame that draws.
 - Terrain occlusion only on the globe at rest (see above).
+- Focus: a popup opened from its marker takes focus; one the app opens takes it only when its content has a control;
+  a pointer-tracking tooltip never does. `closeOnClick` closes only on clicks on the map (canvas or markers), not on
+  controls or other popups. With `<Popup open>` on a marker, a marker click calls `onOpen` (`marker.togglePopupOnClick`).
+- Each React root renders into a fresh `display: contents` host per effect run, so StrictMode never puts two roots on one
+  element (a browser check runs the markers under `?strict`).
 - A popup on a marker restores focus to the marker when it closes (a press on the map can keep the marker from taking
   focus), and `aria-expanded` follows it.
 - A shared `containerPosition` helper (`holdContainerPosition`, `releaseContainerPosition`) makes a static container

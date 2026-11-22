@@ -17,7 +17,8 @@ export interface PopupProps {
   heightMeters?: MarkerHeight
   /**
    * Whether the popup is open. Leave it out and a popup inside a `<Marker>` opens on click, while one outside
-   * opens when it mounts. Set it to control the popup yourself, with `onClose` to follow the user closing it.
+   * opens when it mounts. Set it to control the popup yourself: on a marker, a click then calls `onOpen` instead
+   * of opening it, and `onClose` follows the user closing it.
    */
   open?: boolean
   /** Follows the pointer over the canvas instead of a place, as a tooltip. Default: false. */
@@ -40,8 +41,9 @@ export interface PopupProps {
   className?: string
   /** The accessible name of the dialog. Default: 'Map popup'. */
   label?: string
+  /** The popup opened; controlled with `open`, the user asked to open it (clicked its marker). */
   onOpen?: () => void
-  /** The popup closed: its close button, `Escape`, a click on the map, a camera move, or its marker. */
+  /** The user closed the popup: its close button, `Escape`, a click on the map or its marker, or a camera move. */
   onClose?: () => void
   /** Where the popup's DOM goes, outside a `<Marker>`. Default: the element around the canvas. */
   container?: HTMLElement | null
@@ -129,23 +131,46 @@ function PopupContent({
   useLayoutEffect(() => {
     handlers.current = { onOpen, onClose }
   })
+  const controlled = open !== undefined
   useLayoutEffect(() => {
-    const opened = () => handlers.current.onOpen?.()
-    const closed = () => handlers.current.onClose?.()
+    // Controlled, the app opens it: `onOpen` is the user's request (a marker click), not the opening itself.
+    const opened = () => {
+      if (!controlled) handlers.current.onOpen?.()
+    }
+    const closed = () => {
+      // Closed because its marker left the map (unmounting, moving): not the user's doing.
+      if (marker !== null && marker.getEarth() === null) return
+      handlers.current.onClose?.()
+    }
     popup.addEventListener('open', opened)
     popup.addEventListener('close', closed)
     return () => {
       popup.removeEventListener('open', opened)
       popup.removeEventListener('close', closed)
     }
-  }, [popup])
+  }, [popup, marker, controlled])
+
+  // Controlled on a marker: a click asks the app (`onOpen`) to open it, or closes it (`onClose`).
+  useLayoutEffect(() => {
+    if (marker === null || !controlled) return
+    marker.togglePopupOnClick = false
+    const clicked = () => {
+      if (popup.isOpen()) popup.remove()
+      else handlers.current.onOpen?.()
+    }
+    marker.addEventListener('click', clicked)
+    return () => {
+      marker.togglePopupOnClick = true
+      marker.removeEventListener('click', clicked)
+    }
+  }, [marker, popup, controlled])
 
   // A passive effect, so a `<Marker>` around it (whose layout effect runs after this component's) is on the map.
   const shouldOpen = open ?? (marker === null ? true : undefined)
   useEffect(() => {
     if (shouldOpen === undefined) return
     const target = marker === null ? { earth, container: parent } : { earth: marker.getEarth(), container: marker.getContainer() }
-    if (shouldOpen && !popup.isOpen() && target.earth !== null && target.container !== null) popup.addTo(target.earth, target.container)
+    if (shouldOpen && !popup.isOpen() && target.earth !== null && target.container !== null) popup.addTo(target.earth, target.container, { focus: marker !== null })
     if (!shouldOpen && popup.isOpen()) popup.remove()
   }, [popup, shouldOpen, marker, earth, parent])
   // A standalone popup closes when it unmounts; on a marker, `setPopup(null)` above closes it.

@@ -10,7 +10,9 @@ import {
   releaseScreenLayer,
   sceneToScreen,
   ScreenOverlay,
-  takeRaycast,
+  staleTerrainCheck,
+  startTerrainCheck,
+  TERRAIN_CHECK_INTERVAL_MILLISECONDS,
   type ScreenOverlayFrame,
   type ScreenOverlayItem,
 } from './ScreenOverlay.js'
@@ -85,7 +87,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
   protected position: { longitudeDegrees: number; latitudeDegrees: number } | null
   protected heightOption: MarkerHeight
   protected terrainHeightMeters: number | null = null
-  protected lastTerrainHeightCheckMilliseconds = -Infinity
+  protected terrainHeightCheck = staleTerrainCheck()
   protected anchorOption: ScreenAnchor | 'auto'
   protected offsetOption: number | ScreenOffset
   protected closeOnClick: boolean
@@ -103,8 +105,10 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
   protected pointerDownPosition: { clientX: number; clientY: number } | null = null
   protected openedAtMilliseconds = 0
   protected focusBeforeOpen: Element | null = null
+  /** Focus moves in at the first frame the popup shows (an element hidden with `visibility` cannot take it). */
+  protected focusPending = false
   /** Milliseconds between two reads of the terrain under the popup's position. */
-  terrainCheckIntervalMilliseconds = 250
+  terrainCheckIntervalMilliseconds = TERRAIN_CHECK_INTERVAL_MILLISECONDS
 
   constructor(options: PopupOptions = {}) {
     super()
@@ -156,9 +160,10 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.resizeObserver =
       typeof ResizeObserver === 'undefined'
         ? null
-        : new ResizeObserver(([entry]) => {
-            const box = entry?.borderBoxSize?.[0]
-            this.size = box ? { widthPixels: box.inlineSize, heightPixels: box.blockSize } : null
+        : new ResizeObserver(() => {
+            this.size = { widthPixels: this.element.offsetWidth, heightPixels: this.element.offsetHeight }
+            // Content that arrives after opening (a React root renders later) may need the other side.
+            if (this.earth !== null) ScreenOverlay.of(this.earth).refresh(this)
           })
   }
 
@@ -166,7 +171,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
    * Opens the popup over an earth's canvas. `container` is the element the canvas fills (its parent in a
    * React Three Fiber `<Canvas>`). On a marker, prefer `marker.togglePopup()`, which passes its own.
    */
-  addTo(earth: Earth, container: HTMLElement): this {
+  addTo(earth: Earth, container: HTMLElement, { focus = false }: { focus?: boolean } = {}): this {
     if (this.earth !== null) this.remove()
     this.earth = earth
     this.container = container
@@ -183,7 +188,10 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     ScreenOverlay.of(earth).add(this, 'popup')
     earth.requestFrame()
     this.dispatchEvent({ type: 'open' })
-    if (this.focusAfterOpen) this.focusInside()
+    // Opened by the user (a marker click): focus moves in. Opened by the app: focus moves only to a control in
+    // the content, never away from what the user is typing in to an empty box. A tooltip never takes it.
+    this.focusPending = this.focusAfterOpen && !this.trackingPointer && (focus || this.contentElement.querySelector(FOCUSABLE) !== null)
+    if (!this.hidden) this.focusInside()
     return this
   }
 
@@ -213,6 +221,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
       if (back?.isConnected === true && typeof back.focus === 'function') back.focus({ preventScroll: true })
     }
     this.focusBeforeOpen = null
+    this.focusPending = false
     this.dispatchEvent({ type: 'close' })
     return this
   }
@@ -246,7 +255,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     const moved = this.position?.longitudeDegrees !== longitudeDegrees || this.position?.latitudeDegrees !== latitudeDegrees
     this.position = { longitudeDegrees, latitudeDegrees }
     if (heightMeters !== undefined) this.heightOption = heightMeters
-    if (moved) this.lastTerrainHeightCheckMilliseconds = -Infinity
+    if (moved) this.terrainHeightCheck = staleTerrainCheck()
     if (this.trackingPointer) {
       this.trackingPointer = false
       this.element.removeAttribute('data-tracking-pointer')
@@ -366,14 +375,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
   protected project(frame: ScreenOverlayFrame): ScreenPosition | null {
     const earth = frame.earth
     const position = this.position!
-    const now = frame.timeMilliseconds
-    if (
-      this.heightOption === 'terrain' &&
-      earth.terrain !== null &&
-      now - this.lastTerrainHeightCheckMilliseconds >= this.terrainCheckIntervalMilliseconds &&
-      takeRaycast(frame)
-    ) {
-      this.lastTerrainHeightCheckMilliseconds = now
+    if (this.heightOption === 'terrain' && earth.terrain !== null && startTerrainCheck(frame, this.terrainHeightCheck, this.terrainCheckIntervalMilliseconds)) {
       this.terrainHeightMeters = earth.camera.queryTerrainElevation(position) ?? this.terrainHeightMeters
     }
     const heightMeters = this.heightOption === 'terrain' ? (this.terrainHeightMeters ?? 0) : this.heightOption
@@ -386,6 +388,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     if (hidden === this.hidden) return
     this.hidden = hidden
     this.element.dataset.visibility = hidden ? 'hidden' : 'visible'
+    if (!hidden && this.focusPending) this.focusInside()
   }
 
   protected refresh(): this {
@@ -397,6 +400,8 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
 
   /** Focuses the first control in the content, or the content box, so screen readers read it. */
   protected focusInside(): void {
+    if (!this.focusPending) return
+    this.focusPending = false
     const target = this.contentElement.querySelector<HTMLElement>(FOCUSABLE) ?? this.boxElement
     target.focus({ preventScroll: true })
   }
@@ -431,8 +436,12 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     if (!this.closeOnClick) return
     // The click that opened the popup (on the map or a marker) is still on its way up: not a click to close.
     if (event.timeStamp < this.openedAtMilliseconds) return
-    const target = event.target as Node | null
-    if (target !== null && (this.element.contains(target) || this.marker?.element.contains(target) === true)) return
+    const target = event.target as Element | null
+    if (target === null || this.marker?.element.contains(target) === true) return
+    // Only clicks on the map close it: the canvas, or another marker. Not this popup or another, nor a control.
+    if (target.closest?.('.react-three-earth-popup') != null) return
+    const onMap = target instanceof HTMLCanvasElement || target.closest?.('.react-three-earth-markers') != null
+    if (!onMap) return
     const down = this.pointerDownPosition
     if (down !== null && Math.hypot(event.clientX - down.clientX, event.clientY - down.clientY) > CLICK_TOLERANCE_PIXELS) return
     this.remove()

@@ -1,14 +1,13 @@
 import { useThree } from '@react-three/fiber/extension'
 import { FiberProvider } from 'its-fine'
-import { Children, isValidElement, use, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
+import { use, useImperativeHandle, useLayoutEffect, useMemo, useRef, type ReactNode, type Ref } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import type { GeographicPosition } from '../core/camera.js'
-import { Marker as MarkerImpl, type MarkerHeight } from '../core/Marker.js'
+import { Marker as MarkerImpl, PIN_SVG, type MarkerHeight } from '../core/Marker.js'
 import type { MarkerAlignment, ScreenAnchor, ScreenOffset } from '../core/markerLayout.js'
 import { MarkerContext, useEarth } from './context.js'
 import { useDomRoot } from './domRoot.js'
-import { Popup } from './Popup.js'
 
 /** The vanilla `Marker` of the nearest `<Marker>`, or null outside one. Works in a marker's content too. */
 export function useMarker(): MarkerImpl | null {
@@ -44,13 +43,16 @@ export interface MarkerProps {
   onClick?: () => void
   onDragStart?: (position: GeographicPosition & { heightMeters: number }) => void
   onDrag?: (position: GeographicPosition & { heightMeters: number }) => void
-  /** The user let go: the marker's new place. Store it, or the next render puts the marker back at its props. */
+  /**
+   * The user let go: the marker's new place. Store it in your state: the marker stays where it was dropped, but
+   * jumps back to its props the next time they change.
+   */
   onDragEnd?: (position: GeographicPosition & { heightMeters: number }) => void
   /** Where the marker's DOM goes. Default: the element around the canvas. */
   container?: HTMLElement | null
   /**
-   * What the marker shows (HTML, rendered in the page's DOM), and `<Popup>`s it opens on click. Without content
-   * of its own, it shows the default pin.
+   * What the marker shows (HTML, rendered in the page's DOM), and `<Popup>`s it opens on click, anywhere inside.
+   * Without an element of its own (text alone counts as none), it shows the default pin.
    */
   children?: ReactNode
   ref?: Ref<MarkerImpl>
@@ -100,26 +102,12 @@ function MarkerContent({
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const parent = container ?? renderer.domElement.parentElement
 
-  // `<Popup>`s stay in this tree and attach to the marker; everything else is the marker's own content.
-  const popups: ReactNode[] = []
-  const content: ReactNode[] = []
-  Children.forEach(children, child => {
-    if (isValidElement(child) && child.type === Popup) popups.push(child)
-    else if (child !== null && child !== undefined && typeof child !== 'boolean') content.push(child)
-  })
-  const hasContent = content.length > 0
-
-  // A new vanilla marker only when the element changes kind (default pin or content of your own).
+  // One element for the marker's life: React renders its content (and `<Popup>`s, which render nothing there)
+  // into it, with a fallback pin that shows while there is no content of its own.
   const marker = useMemo(
-    () =>
-      new MarkerImpl({
-        longitudeDegrees,
-        latitudeDegrees,
-        heightMeters,
-        element: hasContent ? document.createElement('div') : undefined,
-      }),
+    () => new MarkerImpl({ longitudeDegrees, latitudeDegrees, heightMeters, element: document.createElement('div'), anchor: anchor ?? 'bottom' }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasContent],
+    [],
   )
   useImperativeHandle(ref, () => marker, [marker])
 
@@ -131,7 +119,9 @@ function MarkerContent({
   // Not `dispose`: under StrictMode React runs this cleanup and then the effects again on the same marker.
 
   useLayoutEffect(() => void marker.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters }), [marker, longitudeDegrees, latitudeDegrees, heightMeters])
-  useLayoutEffect(() => void marker.setAnchor(anchor ?? (hasContent ? 'center' : 'bottom')), [marker, anchor, hasContent])
+  useLayoutEffect(() => {
+    if (anchor !== undefined) marker.setAnchor(anchor)
+  }, [marker, anchor])
   const offsetX = offsetPixels?.xPixels ?? 0
   const offsetY = offsetPixels?.yPixels ?? 0
   useLayoutEffect(() => void marker.setOffset({ xPixels: offsetX, yPixels: offsetY }), [marker, offsetX, offsetY])
@@ -172,7 +162,28 @@ function MarkerContent({
     }
   }, [marker])
 
-  useDomRoot(hasContent ? marker.element : null, <MarkerContext value={marker}>{content}</MarkerContext>)
+  useDomRoot(
+    marker.element,
+    <MarkerContext value={marker}>
+      {children}
+      <FallbackPin marker={marker} anchor={anchor} />
+    </MarkerContext>,
+  )
+  return null
+}
 
-  return <MarkerContext value={marker}>{popups}</MarkerContext>
+/**
+ * The default pin, shown by CSS only while it is the marker's sole element. After each render it tells whether
+ * it shows, so the default anchor follows: 'bottom' on the pin, 'center' on content of your own.
+ */
+function FallbackPin({ marker, anchor }: { marker: MarkerImpl; anchor: ScreenAnchor | undefined }) {
+  const element = useRef<HTMLSpanElement>(null)
+  useLayoutEffect(() => {
+    const pin = element.current
+    if (pin === null) return
+    const showsPin = pin.parentElement?.childElementCount === 1
+    marker.element.classList.toggle('react-three-earth-marker-has-pin', showsPin)
+    if (anchor === undefined) marker.setAnchor(showsPin ? 'bottom' : 'center')
+  })
+  return <span ref={element} className="react-three-earth-marker-fallback-pin" aria-hidden="true" dangerouslySetInnerHTML={{ __html: PIN_SVG }} />
 }

@@ -9,8 +9,9 @@ const holders = new WeakMap<HTMLElement, number>()
 export function holdContainerPosition(container: HTMLElement): void {
   const count = holders.get(container) ?? 0
   const position = count === 0 ? container.ownerDocument.defaultView?.getComputedStyle(container).position : undefined
-  // Some DOM implementations report an unset position as '' rather than 'static'.
-  if (position === 'static' || position === '') {
+  // A detached container computes '' in browsers: its style is unknown, so it is left alone. Some DOM
+  // implementations report an attached, unset position as '' too.
+  if (position === 'static' || (position === '' && container.isConnected)) {
     container.style.position = 'relative'
     container.setAttribute(POSITIONED_ATTRIBUTE, '')
   }
