@@ -55,6 +55,18 @@ export class GenerationPacer {
   }
 
   /**
+   * Estimated GPU time of the units from `first` to the end, in milliseconds, or Infinity before any
+   * measurement.
+   */
+  estimateRemaining(weights: readonly number[], first: number): number {
+    const perWeight = this.millisecondsPerWeight
+    if (perWeight === null) return Infinity
+    let weight = 0
+    for (let index = first; index < weights.length; index++) weight += weights[index]!
+    return weight * perWeight
+  }
+
+  /**
    * Records that a batch of the given total weight took `milliseconds` of GPU time. The estimate follows
    * a costlier measurement at once (a long frame is what the budget guards against) and a cheaper one
    * gradually, since passes differ in cost per weight and one cheap batch says little about the next.

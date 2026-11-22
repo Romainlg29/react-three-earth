@@ -30,6 +30,7 @@ export function PerformanceStats({ refreshesPerSecond = 4, corner = 'top-left' }
 
   // No ids: the scheduler generates unique ones, so several overlays can coexist.
   useFrame(() => monitor.beginFrame(), { phase: 'start' })
+  useFrame(() => monitor.markRenderStart(), { phase: 'update', after: 'earth:update' })
   useFrame(() => monitor.endFrame(), { phase: 'finish' })
 
   useLayoutEffect(() => {
@@ -80,7 +81,10 @@ export function formatStatistics(sample: PerformanceSample, inspection: EarthIns
     `${sample.framesPerSecond.toFixed(0)} fps   worst gap ${milliseconds(sample.frameIntervalMillisecondsWorst)}   long tasks ${sample.longTasks}`,
     `CPU ${milliseconds(sample.cpuFrameMillisecondsAverage)} (worst ${milliseconds(sample.cpuFrameMillisecondsWorst)})   ` +
       `GPU ${sample.gpuFrameMilliseconds === null ? 'n/a' : milliseconds(sample.gpuFrameMilliseconds)}`,
-    `earth.update ${milliseconds(inspection.updateMilliseconds)}`,
+    (sample.cpuUpdateMillisecondsAverage === null || sample.cpuRenderMillisecondsAverage === null
+      ? ''
+      : `CPU split: update ${milliseconds(sample.cpuUpdateMillisecondsAverage)}, render ${milliseconds(sample.cpuRenderMillisecondsAverage)}   `) +
+      `earth.update ${milliseconds(inspection.updateMilliseconds)}`,
     `draws ${sample.drawCalls}   triangles ${(sample.triangles / 1000).toFixed(0)}k`,
     `GPU memory ${megabytes(sample.gpuMemoryBytes)}   textures ${sample.textures}   geometries ${sample.geometries}` +
       (sample.javascriptHeapBytes === null ? '' : `   JS heap ${megabytes(sample.javascriptHeapBytes)}`),
@@ -96,7 +100,7 @@ export function formatStatistics(sample: PerformanceSample, inspection: EarthIns
   if (atmosphere !== null) {
     lines.push(
       atmosphere.ready
-        ? `atmosphere ready (${((atmosphere.generationTimeMilliseconds ?? 0) / 1000).toFixed(1)} s to generate)`
+        ? `atmosphere ready (${atmosphere.loadedFromCache ? 'loaded from cache' : 'generated'} in ${((atmosphere.generationTimeMilliseconds ?? 0) / 1000).toFixed(1)} s, ${atmosphere.generationFrames} frames)`
         : 'atmosphere generating…',
     )
   }

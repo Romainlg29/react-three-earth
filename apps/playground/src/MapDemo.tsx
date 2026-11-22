@@ -1,5 +1,5 @@
 import { Canvas } from '@react-three/fiber'
-import { setCameraView, type CameraView, type Earth as EarthImpl, type MapStyleSource as MapStyleSourceImpl, type ViewMode } from 'react-three-earth'
+import { prefersWebGLBackend, setCameraView, type CameraView, type Earth as EarthImpl, type MapStyleSource as MapStyleSourceImpl, type ViewMode } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
@@ -28,12 +28,16 @@ const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 const liveFixtures = useFixtures && params.get('test') === 'invalidate'
 const mapStyleUrl = params.get('map') === 'vector' ? (useFixtures ? `/fixtures/style.json${liveFixtures ? '?live' : ''}` : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
-// `?nocache` always generates the atmosphere's lookup textures, for timing generation on a device. The
-// dev server never caches them, so that edits to the atmosphere's shaders always show.
-const atmosphereCache = import.meta.env.PROD && !params.has('nocache')
+// The atmosphere's lookup textures are cached between page loads, in dev too: the cache key holds
+// ATMOSPHERE_PRECOMPUTE_VERSION, which a unit test makes you bump when the generating shaders change.
+// `?nocache` always generates them, for timing generation on a device.
+const atmosphereCache = !params.has('nocache')
 // `?atmosphereBudget=<milliseconds>` (or Infinity) sets the GPU time per frame spent generating them.
 const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atmosphereBudget')) : undefined
 const showStatistics = params.get('stats') !== '0'
+// WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
+// (`?webgl` wins if both are given).
+const forceWebGL = params.has('webgl') || (!params.has('webgpu') && prefersWebGLBackend())
 const defaultDate = new Date('2026-11-22T07:00:00Z')
 const requestedDate = new Date(params.get('date') ?? Number.NaN)
 const date = Number.isNaN(requestedDate.getTime()) ? defaultDate : requestedDate
@@ -111,7 +115,7 @@ export function MapDemo() {
   window.setView = setView // tests switch the view like the button does
   return (
     <>
-      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: params.has('webgl'), trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
+      <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: forceWebGL, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date} view={view}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
