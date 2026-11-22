@@ -1,6 +1,7 @@
 import {
   Color,
   LinearFilter,
+  LinearMipmapLinearFilter,
   Mesh,
   NoBlending,
   OrthographicCamera,
@@ -109,14 +110,25 @@ export class ImageryCompositor {
     return this.waitedQueue.length + this.preloadQueue.length
   }
 
-  /** Allocates a composite target: sRGB 8-bit, no depth, no mipmaps, like the canvas it replaces. */
+  /**
+   * Anisotropic filtering applied to composite textures, capped by the device. Terrain near the horizon is
+   * seen at grazing angles, where plain trilinear filtering blurs and anisotropic filtering keeps detail.
+   */
+  anisotropy = 8
+
+  /**
+   * Allocates a composite target: sRGB 8-bit, no depth, with mipmaps (three regenerates them after each
+   * composition). Without mipmaps, imagery near the horizon or the planet's limb shimmers as the camera moves.
+   * Mipmaps add a third to the memory, which the tile cache counts.
+   */
   createTarget(resolutionPixels: number): RenderTarget {
     const target = new RenderTarget(resolutionPixels, resolutionPixels, {
       colorSpace: SRGBColorSpace,
       depthBuffer: false,
-      generateMipmaps: false,
-      minFilter: LinearFilter,
+      generateMipmaps: true,
+      minFilter: LinearMipmapLinearFilter,
       magFilter: LinearFilter,
+      anisotropy: this.anisotropy,
     })
     target.texture.name = 'ImageryComposite'
     return target
