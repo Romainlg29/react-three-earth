@@ -178,6 +178,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `coordinates-and-units` | placing objects or the camera at a longitude, latitude and height |
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, `easeTo` / `flyTo` / `fitBounds`, padding, bounds, project / unproject, clicks with their position, `initialView`, URL hash, events |
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
+| `map-controls` | zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle, translated labels, phone use |
 | `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, `invalidate` after data changes |
 | `query-features-and-layer-events` | `queryRenderedFeatures`, `querySourceFeatures`, layer click / enter / leave events, cursor, hover feature-state |

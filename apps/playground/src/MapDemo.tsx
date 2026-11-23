@@ -13,15 +13,20 @@ import {
 import {
   Atmosphere,
   AttributionControl,
+  Controls,
   Earth,
   EarthControls,
+  FullscreenControl,
+  GeolocateControl,
   Imagery,
   MapStyleSource,
   Marker,
+  NavigationControl,
   PerformanceStats,
   Popup,
   QuantizedMeshSource,
   RasterTileSource,
+  ScaleControl,
   StyleLayer,
   Terrain,
   useEarth,
@@ -29,6 +34,7 @@ import {
   useEarthFrame,
   useHoverFeatureState,
   useLayerCursor,
+  ViewControl,
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
@@ -302,19 +308,21 @@ export function MapDemo() {
           )}
           <EarthControls />
           <AttributionControl />
+          <Controls position="top-right">
+            <NavigationControl visualizePitch />
+            <ViewControl onViewChange={setView} />
+            <GeolocateControl trackUser />
+            <FullscreenControl />
+          </Controls>
+          <Controls position="bottom-left">
+            <ScaleControl />
+          </Controls>
           {showMarkers ? <Markers /> : null}
           {showSdfShapes ? <SdfShapes /> : null}
           {showHover && mapStyleUrl !== undefined ? <FeatureInteractions /> : null}
         </Earth>
       </Canvas>
-      <button
-        type="button"
-        onClick={() => setView(view === '3d' ? '2d' : '3d')}
-        style={{ position: 'absolute', top: 8, right: 8, padding: '6px 12px', font: 'inherit', cursor: 'pointer' }}
-      >
-        {view === '3d' ? 'Flat map (2D)' : 'Globe (3D)'}
-      </button>
-      <a href={`${import.meta.env.BASE_URL}examples.html`} style={{ position: 'absolute', bottom: 28, left: 8, color: '#fff', opacity: 0.85 }}>Examples</a>
+      <a href={`${import.meta.env.BASE_URL}examples.html`} style={{ position: 'absolute', top: 8, left: 8, color: '#fff', opacity: 0.85 }}>Examples</a>
       {withAtmosphere && <AtmosphereStatus />}
     </>
   )
