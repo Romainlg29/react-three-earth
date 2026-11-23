@@ -199,6 +199,8 @@ How it works:
   tiles are overzoomed (widths and text keep their pixel size); terrain tiles split up to `maximumZoom` (20).
 - Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
 
+GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
+
 Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
 warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
 tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
@@ -439,6 +441,68 @@ pointer (as in MapLibre).
 | Unit tests | 33 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, visible regions only, layer events (scoping, enter / leave, one query in flight, tolerance per listener, cleanup), hover state (cleared on dispose), cursor, a whole globe inside a box |
 
 ![hover](map-vector-query-hover.png)
+
+### GeoJSON sources, clustering and line gradients (W2)
+
+`geojson` sources draw like vector sources: in a style (`data` as an object or a URL), at runtime with
+`addSource`, or from the app with `GeoJsonSource` / `<GeoJsonSource>` (inside `<MapStyleSource>`, holding the
+`<StyleLayer>`s that read it). `setData` replaces the data and `updateData` changes features by id (MapLibre's
+`GeoJSONSourceDiff`); `getClusterExpansionZoom`, `getClusterChildren` and `getClusterLeaves` answer from the worker.
+
+- **One source interface in the worker.** `worker/tileProviders.ts` defines `VectorTileProvider` (decoded tiles
+  shaped like `@mapbox/vector-tile`'s, plus zoom range and attribution) and `TILE_PROVIDER_FACTORIES` maps a style
+  source type to its factory: `vector` wraps the existing fetchers (XYZ, TileJSON, PMTiles), `geojson` is
+  `worker/geoJsonSource.ts`. The per-tile pipeline (filters, tessellation, labels, feature-state, plugins) is
+  unchanged and reads both the same way; a GeoJSON tile has one layer (`_geojsonTileLayer`, MapLibre's name) that
+  every layer of the source reads whatever its `source-layer`. W7 and W14 add raster and image sources as providers.
+- **Tiling as MapLibre does**: geojson-vt (shapes) or supercluster (points, `cluster: true`), both ISC, with
+  MapLibre's defaults converted to this renderer's 4096-unit tiles: `buffer` 128 px, `tolerance` 0.375 px, `maxzoom`
+  18, `clusterRadius` 50 px, `clusterMaxZoom` = `maxzoom` − 1, `clusterMinPoints` 2. `clusterProperties` compile to
+  supercluster `map` / `reduce` with the style-spec expression engine, as MapLibre's worker does. The source
+  `filter` runs before tiling. `promoteId` goes through the processor's existing promotion; feature-state keys of
+  GeoJSON sources have no source layer.
+- **Data changes are style commands**, so they share W3's ordering, batching and replay: `setGeoJSONSourceData` (the
+  style-spec `diff` emits it, so `setStyle` with new data no longer reloads), `updateGeoJSONSourceData` and
+  `setSource` (add, or replace while layers keep reading it) are runtime-only. Data objects are kept by reference on
+  the main thread (no JSON clone; `snapshot()` still copies), and changes run one after another in the worker.
+- **Only regions near the change redraw.** The worker answers each data change with `rebuiltAreas`: rectangles of
+  the old and the new data (`setData`), of the changed features before and after (`updateData`), or of the whole old
+  and new data when clustered (a cluster sits inside its points' box, so this is exact without tracking clusters).
+  The overlay rebuilds tiles overlapping them, each tile widened by the buffer at its own zoom (by the cluster
+  radius when larger, since supercluster pads tiles by it) (`tileOverlapsWithMargin`), and F1 redraws the regions drawing those tiles in place. Deviation from the brief: no
+  global `invalidate`; raw-tile caches are dropped per source and nothing is fetched again.
+- **Cluster queries** go through `MapStyle.querySource`: the first overlay whose backend is ready answers, after every
+  change made before the call (queued behind the microtask that hands changes to the overlays, and behind a pending
+  `setStyle`).
+- **`updateData` cost.** Each diff is applied up to three times on the main thread (the `GeoJsonSource`, the
+  `MapStyle` document, and the processor's document on the inline backend), so `applyGeoJsonDiff` keeps the id
+  index of the list it returns and the next diff on that list reuses it: lookups cost O(changes), and only the copy
+  of the feature list is O(features). Feature-state on a geojson source ignores `sourceLayer`, as in MapLibre (once the source is in the style: a state set with a `sourceLayer` before that keeps it, so leave `sourceLayer` out for geojson sources).
+- **`line-gradient`** (with `lineMetrics`): geojson-vt adds `mapbox_clip_start` / `mapbox_clip_end` to each clipped
+  line. The ramp is sampled 256 times per layer and zoom (MapLibre's texture width) and cached; `ShapeBuilder`
+  splits the line into pieces of at most 1/128 of its progress and colours every vertex, so the gradient continues
+  across tiles with no shader change and no extra vertex attribute. Deviation from the brief: no gradient lookup in
+  the line shader; colours are baked like every other line colour. Without line metrics the layer draws with
+  `line-color` and warns once.
+- **Feature queries** (W4, merged first) read GeoJSON sources too: a style layer's tile layer is the source's single
+  layer, state keys have no source layer, and GeoJSON tile features answer `bbox()` and `toGeoJSON()` like decoded
+  vector tile features.
+- React: `<GeoJsonSource>` mounts its children only once the source is in the style, so their `addLayer` finds it,
+  and removes the source a microtask after unmounting, once its layers are gone (React unmounts parents first). A
+  source still read by the style's own layers stays with its last data.
+
+Not supported yet: `updateData` on URL data (the main thread does not hold it), `getData`, clustering lines and
+polygons (dropped, as in MapLibre), and `line-gradient` with `line-dasharray`.
+
+| Check (`?fixtures&map=vector&geojson`, SwiftShader) | Result |
+| --- | --- |
+| WebGPU, WebGL2 and StrictMode | magenta area, red-to-cyan route, a cluster of 12 labelled `12`, lone stations; at 6 km the cluster splits into 2, 2, 4, 4 |
+| A new `data` prop | the area moves east; the route and clusters are unchanged |
+| `setData` 20 km from a close view | 0 of 16 detailed regions in view redrawn (50 of 66 held regions are coarser ancestors spanning both places) |
+| `updateData` on the clustered source, cluster query with a wrong id | regions redrawn; the worker's error states the fix |
+| Unit tests | 31 new: feature queries on a GeoJSON source, diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal, `update` after `updateData`, query order behind `setStyle`, MultiPoint clusters, cluster-radius margins |
+
+![GeoJSON sources](geojson-sources.png) ![clusters close up](geojson-clusters-close.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 

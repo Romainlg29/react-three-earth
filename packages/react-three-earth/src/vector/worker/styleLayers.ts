@@ -155,6 +155,11 @@ export class CompiledStyleLayer {
     return toRgba(this.evaluate<Color | undefined>('paint', name, zoom, feature, featureState), opacity)
   }
 
+  /** `line-gradient` at a line progress (0 at the line's start, 1 at its end), times an opacity. */
+  evaluateLineGradient(zoom: number, progress: number, opacity = 1): Rgba {
+    return toRgba(this.compile('paint', 'line-gradient').evaluate({ zoom, lineProgress: progress } as never) as Color | undefined, opacity)
+  }
+
   /** The layer as written in the style. */
   get layerSpecification(): StyleLayerSpecification {
     return this.specification

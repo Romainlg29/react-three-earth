@@ -1,3 +1,6 @@
+import type { GeoJSON } from 'geojson'
+
+import { applyGeoJsonDiff, toFeatures } from './geoJsonData.js'
 import type { StyleCommand } from './types.js'
 
 /** The parts of a style layer the style API reads and edits. */
@@ -117,7 +120,7 @@ export function applyStyleCommand(document: StyleDocument, command: StyleCommand
         throw new Error(`MapStyleSource.addSource: a source "${sourceId}" already exists. Pick another id, or removeSource it first.`)
       }
       if (typeof source !== 'object' || source === null || typeof (source as { type?: unknown }).type !== 'string') {
-        throw new Error(`MapStyleSource.addSource: source "${sourceId}" needs a \`type\` ('vector' for vector tiles), as in a MapLibre style.`)
+        throw new Error(`MapStyleSource.addSource: source "${sourceId}" needs a \`type\` ('vector' for vector tiles, 'geojson' for GeoJSON), as in a MapLibre style.`)
       }
       document.sources[sourceId] = source as StyleDocument['sources'][string]
       return
@@ -128,6 +131,31 @@ export function applyStyleCommand(document: StyleDocument, command: StyleCommand
       const users = layers.filter(layer => layer.source === sourceId).map(layer => layer.id)
       if (users.length > 0) throw new Error(`MapStyleSource.removeSource: layers ${users.map(id => `"${id}"`).join(', ')} still read source "${sourceId}"; removeLayer them first.`)
       delete document.sources[sourceId]
+      return
+    }
+    case 'setGeoJSONSourceData': {
+      const [sourceId, data] = command.args
+      const source = findGeoJsonSource(document, sourceId, 'setGeoJsonSourceData')
+      document.sources[sourceId] = { ...source, data }
+      return
+    }
+    case 'updateGeoJSONSourceData': {
+      const [sourceId, diff] = command.args
+      const source = findGeoJsonSource(document, sourceId, 'updateGeoJsonSourceData')
+      if (typeof source.data === 'string') {
+        throw new Error(`MapStyleSource.updateGeoJsonSourceData: source "${sourceId}" loads its data from a URL, which only the worker holds. Fetch the GeoJSON in the app and pass it with setGeoJsonSourceData, then update it by id.`)
+      }
+      const promoteId = typeof source.promoteId === 'string' ? source.promoteId : undefined
+      const { features } = applyGeoJsonDiff(toFeatures(source.data as GeoJSON | undefined), diff, promoteId, sourceId)
+      document.sources[sourceId] = { ...source, data: { type: 'FeatureCollection', features } }
+      return
+    }
+    case 'setSource': {
+      const [sourceId, source] = command.args
+      if (typeof source !== 'object' || source === null || typeof (source as { type?: unknown }).type !== 'string') {
+        throw new Error(`MapStyleSource.setSource: source "${sourceId}" needs a \`type\` ('vector' or 'geojson'), as in a MapLibre style.`)
+      }
+      document.sources[sourceId] = source as StyleDocument['sources'][string]
       return
     }
     case 'setGlobalState':
@@ -142,6 +170,13 @@ export function applyStyleCommand(document: StyleDocument, command: StyleCommand
   }
 }
 
+function findGeoJsonSource(document: StyleDocument, sourceId: string, method: string): StyleDocument['sources'][string] {
+  const source = document.sources[sourceId]
+  if (source === undefined) throw new Error(`MapStyleSource.${method}: there is no source "${sourceId}"; add it first (addSource or a GeoJsonSource).`)
+  if (source.type !== 'geojson') throw new Error(`MapStyleSource.${method}: source "${sourceId}" is a ${source.type} source; only geojson sources take data.`)
+  return source
+}
+
 /** Style commands the renderer can apply in place; any other difference reloads the style. */
 export const APPLICABLE_COMMANDS: ReadonlySet<string> = new Set<StyleCommand['command']>([
   'setPaintProperty',
@@ -153,6 +188,7 @@ export const APPLICABLE_COMMANDS: ReadonlySet<string> = new Set<StyleCommand['co
   'moveLayer',
   'addSource',
   'removeSource',
+  'setGeoJSONSourceData',
   'setGlobalState',
 ])
 

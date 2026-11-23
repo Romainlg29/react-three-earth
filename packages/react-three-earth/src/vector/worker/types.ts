@@ -3,7 +3,10 @@
  * the typed arrays are transferred, not copied.
  */
 
+import type { GeoJSON } from 'geojson'
+
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
+import type { GeoJsonSourceDiff } from './geoJsonData.js'
 import type { MercatorRectangle } from './rectangles.js'
 
 /** Vector tile coordinates are rescaled to this extent, whatever the source layer's own extent. */
@@ -80,6 +83,12 @@ export type StyleCommand =
   | { command: 'moveLayer'; args: [layerId: string, beforeId: string | undefined] }
   | { command: 'addSource'; args: [sourceId: string, source: object] }
   | { command: 'removeSource'; args: [sourceId: string] }
+  /** Replaces a `geojson` source's data: GeoJSON, or a URL. The style specification's `diff` emits it. */
+  | { command: 'setGeoJSONSourceData'; args: [sourceId: string, data: GeoJSON | string] }
+  /** Changes a `geojson` source's features by id (MapLibre's `updateData`); runtime-only. */
+  | { command: 'updateGeoJSONSourceData'; args: [sourceId: string, diff: GeoJsonSourceDiff] }
+  /** Adds a source, or replaces the one of that id while layers keep reading it (`GeoJsonSource`); runtime-only. */
+  | { command: 'setSource'; args: [sourceId: string, source: object] }
   /** Replaces the style root `state` (the defaults of `global-state`). */
   | { command: 'setGlobalState'; args: [state: Record<string, { default?: unknown }>] }
   /** Sets one `global-state` value at runtime; `undefined` returns it to the style's default. */
@@ -92,7 +101,29 @@ export interface StyleUpdateResult {
   rebuiltSources: string[]
   /** Commands the worker could not apply (an expression that does not compile, a source that does not load). */
   errors: string[]
+  /**
+   * Areas of sources whose tiles must be processed again (GeoJSON data changes): tiles overlapping `rectangles`
+   * widened by `marginTiles` tiles at their own zoom. Null rectangles: every tile of the source.
+   */
+  rebuiltAreas?: SourceArea[]
 }
+
+/** An area of one source's tiles. */
+export interface SourceArea {
+  sourceId: string
+  rectangles: MercatorRectangle[] | null
+  /** How far a tile's data reaches past its edges, in tiles of its own zoom. */
+  marginTiles: number
+}
+
+/** A question about a `geojson` source's clusters, answered by the worker. */
+export type GeoJsonSourceQuery =
+  /** Answers the zoom at which the cluster splits into several features. */
+  | { kind: 'clusterExpansionZoom'; clusterId: number }
+  /** Answers the cluster's children one zoom deeper (clusters and points), as GeoJSON features. */
+  | { kind: 'clusterChildren'; clusterId: number }
+  /** Answers the points of the cluster, `limit` of them from `offset`, as GeoJSON features. */
+  | { kind: 'clusterLeaves'; clusterId: number; limit: number; offset: number }
 
 /** A feature-state change, as the worker receives it: the feature's whole new state, null once removed. */
 export interface FeatureStateChange {
@@ -396,6 +427,8 @@ export type WorkerRequest =
    * `StyleUpdateResult` whose `rebuiltSources` hold the layers of types that came or went.
    */
   | { type: 'layerTypes'; id: number; layerTypes: WorkerLayerTypeDescriptor[] }
+  /** Asks a source a question (clusters of a `geojson` source); answers what the query says. */
+  | { type: 'sourceQuery'; id: number; sourceId: string; query: GeoJsonSourceQuery }
   /** Hit-tests features under a point or polygon; answers `RenderedSourceFeature[]`, top-most first. */
   | { type: 'queryRendered'; id: number; query: RenderedFeatureQuery }
   /** Reads the features of a source's tiles; answers `SourceFeature[]`. */

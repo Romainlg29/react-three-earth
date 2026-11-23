@@ -75,10 +75,13 @@
     "@mapbox/tiny-sdf": "^2.3.0",
     "@mapbox/vector-tile": "^2.0.5",
     "@maplibre/maplibre-gl-style-spec": "^26.9.0",
+    "@types/geojson": "^7946.0.16",
     "earcut": "^3.2.4",
+    "geojson-vt": "^5.0.4",
     "its-fine": "^2.1.1",
     "pbf": "^4.0.2",
-    "pmtiles": "^4.5.0"
+    "pmtiles": "^4.5.0",
+    "supercluster": "^9.1.0"
   },
   "peerDependencies": {
     "@react-three/fiber": "^10.0.0-alpha.6",

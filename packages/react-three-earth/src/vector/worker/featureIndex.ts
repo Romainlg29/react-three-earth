@@ -3,10 +3,10 @@
  * Worker-safe: no three.js. Coordinates are tile units (0 to `TILE_EXTENT` across the tile, y down).
  */
 import { classifyRings } from '@maplibre/maplibre-gl-style-spec'
-import type { VectorTile, VectorTileLayer } from '@mapbox/vector-tile'
 
 import type { Box } from './labels.js'
 import type { Point } from './ShapeBuilder.js'
+import type { VectorTileLayerLike, VectorTileLike } from './tileProviders.js'
 import type { CompiledStyleLayer, StyleFeature } from './styleLayers.js'
 import { TILE_EXTENT, type FeatureState } from './types.js'
 
@@ -34,7 +34,7 @@ export class TileFeatureIndex {
   protected readonly marks: Uint32Array
   protected queryCount = 0
 
-  constructor(layer: VectorTileLayer) {
+  constructor(layer: VectorTileLayerLike) {
     const factor = TILE_EXTENT / layer.extent
     this.marks = new Uint32Array(layer.length)
     for (let index = 0; index < layer.length; index++) {
@@ -68,10 +68,10 @@ export class TileFeatureIndex {
 }
 
 /** Feature indices by tile, kept as long as the worker keeps the decoded tile. */
-const indices = new WeakMap<VectorTile, Map<string, TileFeatureIndex>>()
+const indices = new WeakMap<VectorTileLike, Map<string, TileFeatureIndex>>()
 
 /** The feature index of a tile's source layer, built on first use. */
-export function getTileFeatureIndex(tile: VectorTile, sourceLayer: string): TileFeatureIndex | null {
+export function getTileFeatureIndex(tile: VectorTileLike, sourceLayer: string): TileFeatureIndex | null {
   const layer = tile.layers[sourceLayer]
   if (layer === undefined) return null
   let byLayer = indices.get(tile)
