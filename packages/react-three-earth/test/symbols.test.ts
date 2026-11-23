@@ -71,6 +71,20 @@ function labelTile() {
 }
 
 describe('labels facing the viewer, in the worker', () => {
+  it('keeps the feature each label belongs to, and answers feature queries for labels hit on the screen', async () => {
+    const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
+    const processor = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
+    const symbols = (await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })).symbols!
+    expect(symbols.sourceLayers).toEqual(['places', 'places'])
+    expect([...symbols.featureIndices]).toEqual([0, 1])
+    const hit = { sourceId: 'base', x: 1, y: 2, z: 10, layerId: 'places', sourceLayer: 'places', featureIndex: 0 }
+    const features = await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: null, filter: null, tolerancePixels: 0, screenLabels: [hit] })
+    expect(features.map(feature => [feature.layer.id, feature.properties.name])).toEqual([['places', 'Fuji']])
+    // Layer and filter options apply to them too.
+    expect(await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: ['roads'], filter: null, tolerancePixels: 0, screenLabels: [hit] })).toEqual([])
+    expect(await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: null, filter: ['==', ['get', 'rank'], 1], tolerancePixels: 0, screenLabels: [hit] })).toEqual([])
+  })
+
   it('lays out point labels around their anchor for symbol requests, with sizes at the tile zoom and the next', async () => {
     const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
     const processor = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })

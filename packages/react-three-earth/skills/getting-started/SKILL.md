@@ -93,7 +93,7 @@ What each piece does:
 - `<Atmosphere>` takes over the render pipeline: sky, sunlight and aerial perspective, with AgX tone
   mapping at `exposure={10}` by default (see `atmosphere-and-sun`). Without it, add
   your own lights (`<ambientLight>`, `<directionalLight>`), or the terrain renders black.
-- `<EarthControls>`: orbit, pan and zoom with mouse or touch.
+- `<EarthControls>`: orbit, pan and zoom with mouse or touch. On touch screens it works like Apple Maps: one finger pans, and two fingers pinch, twist and pan together, with the ground staying under them. A two-finger drag up or down tilts the globe.
 - `<AttributionControl>`: the credit line, compact (a "ⓘ" button) on containers narrower than 640 px.
 
 ### Render the same globe in vanilla three.js

@@ -1,9 +1,10 @@
-import { classifyRings, Formatted, type Color } from '@maplibre/maplibre-gl-style-spec'
+import { classifyRings, featureFilter, Formatted, type Color, type FeatureFilter } from '@maplibre/maplibre-gl-style-spec'
 import { VectorTile, type VectorTileFeature } from '@mapbox/vector-tile'
 import Pbf from 'pbf'
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
 import { createCustomLayerBuilder, loadLayerTypes, type CustomLayerBuilder, type LoadedLayerType } from './customLayers.js'
+import { clipQueryToTile, featureHitTesters, getTileFeatureIndex, MAXIMUM_QUERY_RADIUS_PIXELS, polygonIntersectsBoxes, queryBounds, type QueryGeometry } from './featureIndex.js'
 import { FeatureColorTable, featureKey } from './featureState.js'
 import { GlyphProvider, type Glyph } from './glyphs.js'
 import {
@@ -43,6 +44,12 @@ import {
   type StyleImage,
   type StyleUpdateResult,
   type CustomLayerMesh,
+  type FeatureGeometry,
+  type QueryTile,
+  type RenderedFeatureQuery,
+  type RenderedSourceFeature,
+  type SourceFeature,
+  type SourceFeatureQuery,
   type TileBucket,
   type TileRequest,
 } from './types.js'
@@ -74,6 +81,10 @@ export interface TilePlacement {
 
 /** Raw tiles kept for reuse (overzoomed levels and neighbouring regions read the same tile). */
 const RAW_TILE_CACHE_SIZE = 128
+/** Tiles whose placed label boxes are kept for `queryRenderedFeatures`; others are laid out again when queried. */
+const PLACED_LABEL_CACHE_SIZE = 256
+/** Features `querySourceFeatures` returns at most, so a careless query cannot flood the main thread. */
+const MAXIMUM_SOURCE_FEATURES = 100_000
 const MAXIMUM_ZOOM = 24
 const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
 /** Layer types MapLibre defines; a style layer of another type needs a plugin. */
@@ -82,6 +93,9 @@ const MAPLIBRE_LAYER_TYPES = new Set(['background', 'fill', 'line', 'symbol', 'c
 interface SymbolCandidate {
   layer: CompiledStyleLayer
   feature: StyleFeature
+  /** Where the feature is in the tile, to read it again when a query hits its label. */
+  sourceLayer: string
+  featureIndex: number
   state: FeatureState
   type: VectorTileFeature['type']
   geometry: Point[][]
@@ -97,6 +111,31 @@ interface RawTileEntry {
   promise: Promise<VectorTile | null>
   waiters: number
   controller: AbortController
+}
+
+/** A label drawn in a tile: its boxes, in tile units, and the feature it labels. */
+interface PlacedLabel {
+  layerId: string
+  sourceLayer: string
+  featureIndex: number
+  boxes: Box[]
+}
+
+/** The labels a tile placed, with what they were placed from: they are stale once the tile or the layers change. */
+interface TileLabels {
+  /** The decoded tile's serial (`tileSerial`): a refetched tile gets another. Not the tile, so the cache keeps no tile alive. */
+  tileSerial: number
+  layers: readonly CompiledStyleLayer[]
+  labels: PlacedLabel[]
+}
+
+/** A feature a query hit, with what orders it among the others. */
+interface QueryHit {
+  feature: RenderedSourceFeature
+  /** Labels draw above every shape layer. */
+  label: boolean
+  layerIndex: number
+  order: number
 }
 
 /** What one tile's processing learns about feature-state, for its bucket. */
@@ -155,6 +194,8 @@ export class MapStyleProcessor {
    * cache cannot hand back the tile from before the change.
    */
   protected readonly revalidatedTiles = new Set<string>()
+  /** Labels each recently processed tile placed, by bucket key, most recent last, for `queryRenderedFeatures`. */
+  protected readonly placedLabels = new Map<string, TileLabels>()
   /** Fetches through `transformRequest` and protocols when the main thread asks for it. */
   readonly fetchResource: ResourceFetch = (url, init, kind) => this.resolveAndFetch(url, init, kind)
 
@@ -517,12 +558,14 @@ export class MapStyleProcessor {
         const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
         if (custom !== null) custom.addFeature(feature, state, geometry)
         else if (layer.type === 'symbol') {
-          const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length)
+          const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length, layer.sourceLayer!, index)
           if (candidate !== null) symbols.push(candidate)
         } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images, key, state, uses)
       }
     }
-    const text = await this.layoutLabels(symbols, zoom, unitsPerPixel, signal)
+    const placed: PlacedLabel[] = []
+    const text = await this.layoutLabels(symbols, zoom, unitsPerPixel, signal, placed)
+    this.rememberLabels(bucketKeyOf(request), { tileSerial: tileSerial(tile), layers, labels: placed })
     const shapeMesh = shapes.build()
     const customMeshes = customBuilders.flatMap(builder => builder.finish() ?? []) as CustomLayerMesh[]
     const byteLength =
@@ -569,7 +612,7 @@ export class MapStyleProcessor {
         const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
         // Text paint is baked in the tile: a state change processes it again.
         if (key !== undefined) rebuildKeys.add(key)
-        const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, scaleGeometry(vectorFeature.loadGeometry(), factor), zoom, symbols.length)
+        const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, scaleGeometry(vectorFeature.loadGeometry(), factor), zoom, symbols.length, layer.sourceLayer!, index)
         if (candidate !== null) symbols.push(candidate)
       }
     }
@@ -615,6 +658,8 @@ export class MapStyleProcessor {
         haloColor,
         haloWidthPixels: layer.evaluate<number>('paint', 'text-halo-width', zoom, feature, state),
         key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}`,
+        sourceLayer: symbol.sourceLayer,
+        featureIndex: symbol.featureIndex,
       })
     }
     const mesh = builder.build()
@@ -815,6 +860,8 @@ export class MapStyleProcessor {
     geometry: Point[][],
     zoom: number,
     order: number,
+    sourceLayer: string,
+    featureIndex: number,
   ): SymbolCandidate | null {
     const field = layer.evaluate<Formatted | string | undefined>('layout', 'text-field', zoom, feature)
     if (field === undefined || field === null) return null
@@ -835,14 +882,14 @@ export class MapStyleProcessor {
       }))
     if (sections.length === 0) return null
     const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    return { layer, feature, state, type, geometry, sections, sortKey, order }
+    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, sections, sortKey, order }
   }
 
   /**
    * Places labels, top-most style layer first (as MapLibre does), then by `symbol-sort-key`, skipping those
    * that collide with labels already placed in this tile.
    */
-  protected async layoutLabels(symbols: SymbolCandidate[], zoom: number, unitsPerPixel: number, signal?: AbortSignal) {
+  protected async layoutLabels(symbols: SymbolCandidate[], zoom: number, unitsPerPixel: number, signal?: AbortSignal, placed?: PlacedLabel[]) {
     if (symbols.length === 0) return null
     await this.loadGlyphs(symbols)
     signal?.throwIfAborted()
@@ -873,6 +920,7 @@ export class MapStyleProcessor {
         if (!allowOverlap && collisions.overlaps(boxes)) return
         if (!ignorePlacement) collisions.insert(boxes)
         text.addLabel(quads, paint, textScale)
+        placed?.push({ layerId: layer.id, sourceLayer: symbol.sourceLayer, featureIndex: symbol.featureIndex, boxes })
       }
 
       if (placement === 'point') {
@@ -916,6 +964,171 @@ export class MapStyleProcessor {
       }
     }
     return text.build()
+  }
+
+  /** Keeps a tile's placed labels, dropping the least recently processed past `PLACED_LABEL_CACHE_SIZE`. */
+  protected rememberLabels(key: string, labels: TileLabels): void {
+    this.placedLabels.delete(key)
+    this.placedLabels.set(key, labels)
+    if (this.placedLabels.size > PLACED_LABEL_CACHE_SIZE) this.placedLabels.delete(this.placedLabels.keys().next().value!)
+  }
+
+  /**
+   * The labels a tile placed, as drawn. Laid out again when the tile was processed too long ago, or before its raw
+   * tile or the style changed (the boxes would no longer match what a fresh bucket draws).
+   */
+  protected async getPlacedLabels(request: TileRequest, tile: VectorTile, layers: readonly CompiledStyleLayer[]): Promise<PlacedLabel[]> {
+    const key = bucketKeyOf(request)
+    const serial = tileSerial(tile)
+    const known = this.placedLabels.get(key)
+    if (known !== undefined && known.tileSerial === serial && known.layers === layers) return known.labels
+    await this.processTile(request)
+    const laidOut = this.placedLabels.get(key)
+    // Laid out from another tile or style (it changed meanwhile): the caller starts the query again.
+    return laidOut !== undefined && laidOut.tileSerial === serial && laidOut.layers === layers ? laidOut.labels : []
+  }
+
+  /**
+   * The features drawn under a point or polygon, top-most first: labels (they draw above every shape), then
+   * shapes from the top style layer down, as MapLibre orders them. Features with an id are listed once per layer
+   * even when several tiles hold them.
+   */
+  async queryRenderedFeatures(query: RenderedFeatureQuery, attempt = 1): Promise<RenderedSourceFeature[]> {
+    const layers = this.layers
+    const wanted = query.layers === null ? null : new Set(query.layers)
+    const filter = compileQueryFilter(query.filter)
+    const hits: QueryHit[] = []
+    const seen = new Set<string>()
+    const add = (layer: CompiledStyleLayer, tileRequest: QueryTile, tile: VectorTile, sourceLayer: string, index: number, label: boolean): void => {
+      const vectorFeature = tile.layers[sourceLayer]?.feature(index)
+      if (vectorFeature === undefined) return
+      const id = this.featureId(tileRequest.sourceId, sourceLayer, vectorFeature)
+      if (id !== undefined) {
+        const key = `${layer.id}\u0000${String(id)}`
+        if (seen.has(key)) return
+        seen.add(key)
+      }
+      const feature = this.toSourceFeature(tileRequest, sourceLayer, vectorFeature, id) as RenderedSourceFeature
+      feature.layer = layer.layerSpecification as RenderedSourceFeature['layer']
+      hits.push({ feature, label, layerIndex: layer.index, order: hits.length })
+    }
+    // Labels facing the viewer, hit on the screen by the main thread: above everything the tiles draw.
+    for (const hit of query.screenLabels ?? []) {
+      if (wanted !== null && !wanted.has(hit.layerId)) continue
+      const layer = layers.find(candidate => candidate.id === hit.layerId)
+      const tile = layer === undefined ? null : await this.getRawTile(hit.sourceId, hit.x, hit.y, hit.z)
+      if (layer === undefined || tile === null) continue
+      const tileRequest: QueryTile = { sourceId: hit.sourceId, x: hit.x, y: hit.y, z: hit.z, zoom: hit.z, column: hit.x, labelsOnly: true }
+      if (filter !== null) {
+        const vectorFeature = tile.layers[hit.sourceLayer]?.feature(hit.featureIndex)
+        if (vectorFeature === undefined) continue
+        const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id: this.featureId(hit.sourceId, hit.sourceLayer, vectorFeature) }
+        if (!filter.filter({ zoom: hit.z }, feature)) continue
+      }
+      add(layer, tileRequest, tile, hit.sourceLayer, hit.featureIndex, true)
+    }
+    for (const tileRequest of query.tiles) {
+      const { zoom, z } = tileRequest
+      const labelLayers = new Map(layers.filter(layer => layer.type === 'symbol' && layer.source === tileRequest.sourceId && layer.isVisibleAtZoom(zoom) && (wanted === null || wanted.has(layer.id))).map(layer => [layer.id, layer]))
+      if (tileRequest.labelsOnly && labelLayers.size === 0) continue
+      const tile = await this.getRawTile(tileRequest.sourceId, tileRequest.x, tileRequest.y, tileRequest.z)
+      if (tile === null) continue
+      const scale = 2 ** z
+      const inTile: QueryGeometry = query.geometry.map(point => ({ x: (point.x * scale - tileRequest.column) * TILE_EXTENT, y: ((1 - point.y) * scale - tileRequest.y) * TILE_EXTENT }))
+      const unitsPerPixel = TILE_EXTENT / (TILE_SIZE_PIXELS * 2 ** (zoom - z))
+      const toleranceUnits = query.tolerancePixels * unitsPerPixel
+      const accepts = (layer: CompiledStyleLayer, feature: StyleFeature) => layer.accepts(zoom, feature) && (filter === null || filter.filter({ zoom }, feature))
+
+      // Labels: the boxes the tile placed (ring tiles too: their labels reach into the region)
+      if (labelLayers.size > 0) {
+        for (const placed of await this.getPlacedLabels(tileRequest, tile, layers)) {
+          const layer = labelLayers.get(placed.layerId)
+          if (layer === undefined || !polygonIntersectsBoxes(inTile, placed.boxes, toleranceUnits)) continue
+          if (filter !== null) {
+            const vectorFeature = tile.layers[placed.sourceLayer]?.feature(placed.featureIndex)
+            if (vectorFeature === undefined) continue
+            const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id: this.featureId(tileRequest.sourceId, placed.sourceLayer, vectorFeature) }
+            if (!filter.filter({ zoom }, feature)) continue
+          }
+          add(layer, tileRequest, tile, placed.sourceLayer, placed.featureIndex, true)
+        }
+      }
+      if (tileRequest.labelsOnly) continue
+
+      // Shapes: only what the tile draws, inside its square
+      const clipped = clipQueryToTile(inTile)
+      if (clipped.length === 0) continue
+      for (let position = layers.length - 1; position >= 0; position--) {
+        const layer = layers[position]!
+        const hitTest = featureHitTesters.get(layer.type)
+        if (hitTest === undefined || layer.custom !== null || layer.source !== tileRequest.sourceId || layer.sourceLayer === undefined) continue
+        if (!layer.isVisibleAtZoom(zoom) || (wanted !== null && !wanted.has(layer.id))) continue
+        const index = getTileFeatureIndex(tile, layer.sourceLayer)
+        if (index === null) continue
+        const sourceLayer = tile.layers[layer.sourceLayer]!
+        const margin = toleranceUnits + (layer.type === 'line' || layer.type === 'circle' ? MAXIMUM_QUERY_RADIUS_PIXELS * unitsPerPixel : 0)
+        const factor = TILE_EXTENT / sourceLayer.extent
+        for (const featureIndex of index.query(...queryBounds(clipped, margin))) {
+          const vectorFeature = sourceLayer.feature(featureIndex)
+          const id = this.featureId(tileRequest.sourceId, layer.sourceLayer, vectorFeature)
+          const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
+          if (!accepts(layer, feature)) continue
+          const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tileRequest.sourceId, layer.sourceLayer, id)) ?? NO_STATE)
+          const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
+          if (hitTest({ layer, feature, state, type: vectorFeature.type, geometry, query: clipped, zoom, unitsPerPixel, toleranceUnits })) add(layer, tileRequest, tile, layer.sourceLayer, featureIndex, false)
+        }
+      }
+    }
+    // The style changed while tiles loaded: the answer would mix two styles. Ask again, once or twice.
+    if (this.layers !== layers && attempt < 3) return this.queryRenderedFeatures(query, attempt + 1)
+    hits.sort((a, b) => Number(b.label) - Number(a.label) || b.layerIndex - a.layerIndex || a.order - b.order)
+    return hits.map(hit => hit.feature)
+  }
+
+  /**
+   * Every feature of a source in the given tiles (MapLibre's `querySourceFeatures`), whether drawn or not, in tile
+   * order. A feature crossing tiles is listed once per tile, clipped to each, as in MapLibre.
+   */
+  async querySourceFeatures(query: SourceFeatureQuery): Promise<SourceFeature[]> {
+    const filter = compileQueryFilter(query.filter)
+    const features: SourceFeature[] = []
+    for (const { x, y, z } of query.tiles) {
+      const tile = await this.getRawTile(query.sourceId, x, y, z)
+      if (tile === null) continue
+      const names = query.sourceLayer === null ? Object.keys(tile.layers) : [query.sourceLayer]
+      for (const name of names) {
+        const layer = tile.layers[name]
+        if (layer === undefined) continue
+        for (let index = 0; index < layer.length; index++) {
+          const vectorFeature = layer.feature(index)
+          const id = this.featureId(query.sourceId, name, vectorFeature)
+          if (filter !== null && !filter.filter({ zoom: z }, { type: vectorFeature.type, properties: vectorFeature.properties, id })) continue
+          features.push(this.toSourceFeature({ sourceId: query.sourceId, x, y, z }, name, vectorFeature, id))
+          if (features.length >= MAXIMUM_SOURCE_FEATURES) return features
+        }
+      }
+    }
+    return features
+  }
+
+  /** The feature's id: its own, or the property `promoteId` names. */
+  protected featureId(sourceId: string, sourceLayer: string, feature: VectorTileFeature): string | number | undefined {
+    const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
+    const promoted = typeof promoteId === 'string' ? promoteId : promoteId?.[sourceLayer]
+    return promoted === undefined ? feature.id : asFeatureId(feature.properties[promoted])
+  }
+
+  protected toSourceFeature(tile: { sourceId: string; x: number; y: number; z: number }, sourceLayer: string, feature: VectorTileFeature, id: string | number | undefined): SourceFeature {
+    const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tile.sourceId, sourceLayer, id)) ?? NO_STATE)
+    return {
+      type: 'Feature',
+      id,
+      geometry: feature.toGeoJSON(tile.x, tile.y, tile.z).geometry as FeatureGeometry,
+      properties: { ...feature.properties },
+      source: tile.sourceId,
+      sourceLayer,
+      state: { ...state },
+    }
   }
 
   /**
@@ -996,6 +1209,31 @@ export class MapStyleProcessor {
         shared.waiters--
       }
     })
+  }
+}
+
+const tileSerials = new WeakMap<VectorTile, number>()
+let nextTileSerial = 1
+
+/** A number naming a decoded tile, without keeping it alive. */
+function tileSerial(tile: VectorTile): number {
+  let serial = tileSerials.get(tile)
+  if (serial === undefined) tileSerials.set(tile, (serial = nextTileSerial++))
+  return serial
+}
+
+/** The same key as `bucketKey` on the main thread. */
+function bucketKeyOf({ sourceId, x, y, z, zoom }: TileRequest): string {
+  return `${zoom}/${z}/${x}/${y}/${sourceId}`
+}
+
+/** A query's `filter` option, compiled; null without one. Throws, stating the problem, when it does not compile. */
+function compileQueryFilter(filter: unknown): FeatureFilter | null {
+  if (filter === null || filter === undefined) return null
+  try {
+    return featureFilter(filter as never, 'filter')
+  } catch (error) {
+    throw new Error(`MapStyleSource: the query's \`filter\` is not a valid MapLibre filter expression; check it against the style specification. ${(error as Error).message}`)
   }
 }
 

@@ -8,6 +8,10 @@ import type { GeographicPosition } from './camera.js'
 import { EarthCamera, type MapView, type MapViewChange } from './EarthCamera.js'
 import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type EarthPointerEvent, type ViewSample } from './events.js'
 import type { Imagery } from './Imagery.js'
+import { screenToMercatorQuery, type RenderedFeature, type RenderedFeatureQueryOptions, type ScreenQueryGeometry } from './featureQuery.js'
+import { LayerEvents } from './LayerEvents.js'
+import type { MapStyleSource } from './sources.js'
+import type { MercatorPoint, RenderedSourceFeature } from '../vector/worker/types.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
 import type { ScreenSymbolsInspection } from '../vector/symbols/ScreenSymbols.js'
@@ -21,6 +25,11 @@ import { RenderPassRegistry, type RenderPassInspection } from '../plugins/render
 /** Terrain height reads for labels per frame, and the time they may take. */
 const SYMBOL_ELEVATION_READS_PER_FRAME = 512
 const SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME = 1
+
+/** An imagery overlay that can answer feature queries (`MapStyleOverlay`). */
+interface QueryableOverlay {
+  queryRenderedFeatures(geometry: readonly MercatorPoint[], options: RenderedFeatureQueryOptions, screenBox?: readonly [number, number, number, number]): Promise<RenderedSourceFeature[]>
+}
 
 /** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
 const CLICK_TOLERANCE_PIXELS = 3
@@ -129,6 +138,13 @@ export class Earth extends Group<EarthEventMap> {
   readonly renderPasses = new RenderPassRegistry()
   /** Layers plugins drape above every imagery layer (`context.registerDrapedLayer`), drawn by the terrain. */
   readonly drapedLayers = new DrapedLayerRegistry()
+  /**
+   * Pointer events scoped to style layers (`click`, `pointerenter`, `pointerleave`…), a pointer cursor over
+   * layers, and hover feature-state. See `LayerEvents`.
+   */
+  readonly layerEvents: LayerEvents = new LayerEvents(this)
+  /** Layer ids `queryRenderedFeatures` warned about, so each is reported once. */
+  protected readonly unknownQueryLayers = new Set<string>()
   /** Anchors made by `createGeographicAnchor`, placed for the morph every frame. */
   protected readonly anchors = new Set<GeographicAnchor>()
   protected readonly events = new EarthEventTracker()
@@ -162,7 +178,7 @@ export class Earth extends Group<EarthEventMap> {
     this.detachPointerEvents()
     /** Where the primary pointer went down, for telling clicks from drags. */
     let down: { x: number; y: number } | null = null
-    const dispatch = (type: 'click' | 'doubleclick' | 'contextmenu' | 'pointermove', originalEvent: MouseEvent) => {
+    const dispatch = (type: 'click' | 'doubleclick' | 'contextmenu' | 'pointermove' | 'pointerout', originalEvent: MouseEvent) => {
       // Nothing to measure without a listener (pointermove fires constantly; the rectangle can force a layout).
       if (!this.hasListeners(type)) return
       const rectangle = canvas.getBoundingClientRect()
@@ -192,7 +208,9 @@ export class Earth extends Group<EarthEventMap> {
     const onDoubleClick = (event: MouseEvent) => dispatch('doubleclick', event)
     const onContextMenu = (event: MouseEvent) => dispatch('contextmenu', event)
     const onPointerMove = (event: PointerEvent) => dispatch('pointermove', event)
+    const onPointerLeave = (event: PointerEvent) => dispatch('pointerout', event)
     element.addEventListener('pointerdown', onPointerDown)
+    element.addEventListener('pointerleave', onPointerLeave)
     element.addEventListener('click', onClick)
     element.addEventListener('dblclick', onDoubleClick)
     element.addEventListener('contextmenu', onContextMenu)
@@ -205,6 +223,7 @@ export class Earth extends Group<EarthEventMap> {
         element.removeEventListener('dblclick', onDoubleClick)
         element.removeEventListener('contextmenu', onContextMenu)
         element.removeEventListener('pointermove', onPointerMove)
+        element.removeEventListener('pointerleave', onPointerLeave)
       },
     }
   }
@@ -213,6 +232,11 @@ export class Earth extends Group<EarthEventMap> {
   protected hasListeners(type: string): boolean {
     const listeners = (this as unknown as { _listeners?: Record<string, unknown[] | undefined> })._listeners
     return (listeners?.[type]?.length ?? 0) > 0
+  }
+
+  /** The element `attachPointerEvents` listens to, or null. `layerEvents.addCursor` sets its cursor. */
+  get pointerEventsElement(): HTMLElement | null {
+    return this.pointerTarget?.element ?? null
   }
 
   /** Stops listening to pointer input. */
@@ -363,8 +387,10 @@ export class Earth extends Group<EarthEventMap> {
     this.updateAnchors()
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
-      // The sky, haze and sunlight belong to the globe: they fade out on the flat map.
+      // The sky and haze belong to the globe: they fade out on the flat map.
       this.atmosphere.opacity = 1 - this.view.morph
+      // The sun keeps lighting the ground the unroll has not reached yet; the flat map is unlit.
+      this.atmosphere.light.intensity = this.view.morph < 1 ? 1 : 0
       this.atmosphere.update(camera, this.date)
     }
     const symbolsNeedFrame = this.updateSymbols(camera, delta, now)
@@ -457,6 +483,62 @@ export class Earth extends Group<EarthEventMap> {
     return this.camera.unproject(screen)
   }
 
+  /**
+   * The features drawn at a screen point, or in a screen box (two opposite corners), or on the whole screen (no
+   * geometry), in every `MapStyleSource`: MapLibre's `queryRenderedFeatures`. Top-most first: the top imagery
+   * layer first, and within a style, labels (they draw above every shape) then shapes from the top style layer
+   * down. Hits follow what is drawn: line widths, circle radii, placed label boxes, the zoom the terrain is
+   * textured at there. Asynchronous: the vector worker answers. A box is followed on the ground along its outline;
+   * its parts on the sky are left out.
+   * @example
+   * const [feature] = await earth.queryRenderedFeatures(event.screen, { layers: ['countries'] })
+   * if (feature) feature.mapStyleSource.setFeatureState(feature, { selected: true })
+   */
+  async queryRenderedFeatures(geometry?: ScreenQueryGeometry, options: RenderedFeatureQueryOptions = {}): Promise<RenderedFeature[]> {
+    if (!this.camera.ready) return []
+    const screen = geometry ?? ([{ xPixels: 0, yPixels: 0 }, { xPixels: this.viewportSize.x, yPixels: this.viewportSize.y }] as const)
+    const mercator = screenToMercatorQuery(screen, position => this.camera.unproject(position))
+    if (mercator === null) return []
+    // Where the query lies on the screen: labels facing the viewer are hit there.
+    const corners = 'xPixels' in screen ? [screen, screen] : screen
+    const screenBox = [
+      Math.min(corners[0].xPixels, corners[1].xPixels),
+      Math.min(corners[0].yPixels, corners[1].yPixels),
+      Math.max(corners[0].xPixels, corners[1].xPixels),
+      Math.max(corners[0].yPixels, corners[1].yPixels),
+    ] as const
+    const queries: Array<Promise<RenderedFeature[]>> = []
+    const styles: MapStyleSource[] = []
+    // Top-most first: imagery layers stack in the order they were added, and sources within a layer bottom to top.
+    for (const imagery of [...this.imagery].reverse()) {
+      for (let index = imagery.sources.length - 1; index >= 0; index--) {
+        const overlay = imagery.overlays[index] as Partial<QueryableOverlay> | undefined
+        if (typeof overlay?.queryRenderedFeatures !== 'function') continue
+        const source = imagery.sources[index] as MapStyleSource
+        styles.push(source)
+        if (imagery.opacity <= 0) continue // not drawn
+        const answer = overlay.queryRenderedFeatures(mercator, options, screenBox).then(features => features.map(feature => Object.assign(feature, { mapStyleSource: source })))
+        // A source disposed meanwhile (its layer unmounted, a style swap) answers nothing rather than failing the rest.
+        queries.push(answer.catch((error: unknown) => {
+          if ((error as Error)?.name === 'AbortError') return []
+          throw error
+        }))
+      }
+    }
+    this.warnUnknownQueryLayers(options.layers, styles)
+    return (await Promise.all(queries)).flat()
+  }
+
+  /** Warns once per id that no loaded style has, as MapLibre reports layers it cannot query. */
+  protected warnUnknownQueryLayers(layers: readonly string[] | undefined, styles: readonly MapStyleSource[]): void {
+    if (layers === undefined || styles.length === 0 || styles.some(style => style.getStyle() === null)) return
+    for (const id of layers) {
+      if (this.unknownQueryLayers.has(id) || styles.some(style => style.getLayer(id) !== undefined)) continue
+      this.unknownQueryLayers.add(id)
+      console.warn(`Earth.queryRenderedFeatures: no style has a layer "${id}"; check the id against source.getLayerIds().`)
+    }
+  }
+
   /** Height of the loaded terrain at a position, or null where none is loaded. See `EarthCamera.queryTerrainElevation`. */
   queryTerrainElevation(position: GeographicPosition): number | null {
     return this.camera.queryTerrainElevation(position)
@@ -510,6 +592,7 @@ export class Earth extends Group<EarthEventMap> {
   }
 
   override dispose(): void {
+    this.layerEvents.dispose()
     this.plugins.clear()
     for (const anchor of this.anchors) anchor.dispose()
     this.anchors.clear()

@@ -30,6 +30,9 @@ export interface ScreenLabel {
   haloWidthPixels: number
   /** Same text in the same layer: the main thread matches labels across tiles and zooms with it (fades, duplicates). */
   key: string
+  /** The feature it labels: its source layer and index there (feature queries resolve hits with it). */
+  sourceLayer: string
+  featureIndex: number
 }
 
 /**
@@ -46,6 +49,8 @@ export class SymbolBuilder {
   protected readonly layerIndices: number[] = []
   protected readonly sortKeys: number[] = []
   protected readonly keys: string[] = []
+  protected readonly sourceLayers: string[] = []
+  protected readonly featureIndices: number[] = []
   protected readonly corners: number[] = []
   protected readonly uvs: number[] = []
   protected readonly labelIndices: number[] = []
@@ -71,6 +76,8 @@ export class SymbolBuilder {
     this.layerIndices.push(label.layerIndex)
     this.sortKeys.push(label.sortKey)
     this.keys.push(label.key)
+    this.sourceLayers.push(label.sourceLayer)
+    this.featureIndices.push(label.featureIndex)
     for (const { corners, glyph } of quads) {
       const first = this.labelIndices.length
       const width = glyph.width + GLYPH_BUFFER * 2
@@ -100,6 +107,8 @@ export class SymbolBuilder {
       layerIndices: new Uint16Array(this.layerIndices),
       sortKeys: new Float32Array(this.sortKeys),
       keys: this.keys,
+      sourceLayers: this.sourceLayers,
+      featureIndices: new Uint32Array(this.featureIndices),
       corners: new Float32Array(this.corners),
       uvs: new Float32Array(this.uvs),
       labelIndices: new Float32Array(this.labelIndices),
@@ -114,12 +123,12 @@ export class SymbolBuilder {
 /** Bytes a symbol mesh holds, for cache budgets. */
 export function symbolMeshByteLength(mesh: SymbolMesh | null): number {
   if (mesh === null) return 0
-  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
-  return arrays.reduce((sum, array) => sum + array.byteLength, 0) + mesh.keys.reduce((sum, key) => sum + key.length * 2, 0)
+  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
+  return arrays.reduce((sum, array) => sum + array.byteLength, 0) + [...mesh.keys, ...mesh.sourceLayers].reduce((sum, key) => sum + key.length * 2, 0)
 }
 
 /** Typed arrays of a symbol mesh, to transfer. */
 export function symbolMeshBuffers(mesh: SymbolMesh | null): ArrayBufferLike[] {
   if (mesh === null) return []
-  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
+  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
 }

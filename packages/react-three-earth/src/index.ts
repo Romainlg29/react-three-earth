@@ -55,6 +55,33 @@ export {
   type AttributionSegment,
 } from './core/attribution.js'
 export { AttributionControl, type AttributionControlOptions } from './controls/AttributionControl.js'
+export {
+  geographicToMercator,
+  screenToMercatorQuery,
+  type FeatureGeometry,
+  type MercatorPoint,
+  type RenderedFeature,
+  type RenderedFeatureQueryOptions,
+  type RenderedSourceFeature,
+  type ScreenQueryGeometry,
+  type SourceFeature,
+  type SourceFeatureQueryOptions,
+} from './core/featureQuery.js'
+export { LayerEvents, type LayerEventListener, type LayerEventOptions, type LayerEventType, type LayerPointerEvent } from './core/LayerEvents.js'
+export { Controls, MapControl, type ControlPosition, type ControlsItem, type ControlsOptions } from './controls/Controls.js'
+export { NavigationControl, type NavigationControlOptions } from './controls/NavigationControl.js'
+export { ScaleControl, type ScaleControlOptions } from './controls/ScaleControl.js'
+export {
+  GeolocateControl,
+  type GeolocateControlOptions,
+  type GeolocateEventMap,
+  type GeolocateState,
+} from './controls/GeolocateControl.js'
+export { FullscreenControl, fullscreenSupported, type FullscreenControlOptions } from './controls/FullscreenControl.js'
+export { ViewControl, type ViewControlEventMap, type ViewControlOptions } from './controls/ViewControl.js'
+export { DEFAULT_CONTROLS_LOCALE, resolveLocale, type ControlsLocale } from './controls/locale.js'
+export { computeScaleBar, formatScaleBar, roundScaleLength, type ScaleBar, type ScaleUnit } from './controls/scale.js'
+export { compassIsReset, compassRotation, compassTransform } from './controls/navigation.js'
 export { Marker, type MarkerDragEvent, type MarkerEventMap, type MarkerHeight, type MarkerOptions } from './core/Marker.js'
 export { Popup, type PopupEventMap, type PopupOptions } from './core/Popup.js'
 export {
@@ -96,6 +123,7 @@ export {
 } from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls, EarthViewControls, FlatMapControls } from './core/EarthControls.js'
+export { TouchGestures, type TwoFingerFrame } from './core/TouchGestures.js'
 export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
 export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'

@@ -5,7 +5,7 @@
 // Ported to TSL from: https://github.com/NASA-AMMOS/3DTilesRendererJS/blob/v0.4.14/src/three/plugins/fade/wrapFadeMaterial.js
 
 import { Discard, Fn, If, output, screenCoordinate, uniform } from 'three/tsl'
-import type { NodeFrame, NodeMaterial } from 'three/webgpu'
+import type { Node, NodeFrame, NodeMaterial } from 'three/webgpu'
 
 import type { FadeParams } from './FadeMaterialManager.js'
 
@@ -48,7 +48,30 @@ const fadeOut = uniform(0).onObjectUpdate((frame, self) => {
   self.value = params?.fadeOut.value ?? 0
 })
 
-const outputNode = Fn(() => {
+const FADE_OUTPUT_BASE = Symbol('FADE_OUTPUT_BASE')
+
+/**
+ * The output a material shows when it is not fading, in place of three's own (`output`): set by other
+ * wrappers (the flat map's unroll), which the fade then dithers instead of replacing.
+ */
+export function setBaseOutputNode(material: NodeMaterial, node: Node): void {
+  ;(material as { [FADE_OUTPUT_BASE]?: Node })[FADE_OUTPUT_BASE] = node
+  const fading = (material as FadeParamsHost).defines?.FEATURE_FADE === 1
+  material.outputNode = fading ? getFadeOutputNode(node) : node
+  material.needsUpdate = true
+}
+
+const fadeOutputs = new Map<Node | null, Node>()
+function getFadeOutputNode(base: Node | null): Node {
+  let node = fadeOutputs.get(base)
+  if (node === undefined) {
+    node = createFadeOutputNode(base)
+    fadeOutputs.set(base, node)
+  }
+  return node
+}
+
+const createFadeOutputNode = (base: Node | null) => Fn(() => {
   const bayerValue = bayerDither4x4(screenCoordinate.xy.mod(4).floor())
   const bayerBins = 16
   const dither = bayerValue.add(0.5).div(bayerBins)
@@ -59,7 +82,7 @@ const outputNode = Fn(() => {
   If(dither.lessThan(fadeOut), () => {
     Discard()
   })
-  return output
+  return base ?? output
 })()
 
 export function wrapFadeNodeMaterial(
@@ -91,7 +114,8 @@ export function wrapFadeNodeMaterial(
     set(value: number) {
       if (value !== featureFade) {
         featureFade = value
-        material.outputNode = value === 1 ? outputNode : null
+        const base = (material as { [FADE_OUTPUT_BASE]?: Node })[FADE_OUTPUT_BASE] ?? null
+        material.outputNode = value === 1 ? getFadeOutputNode(base) : base
       }
     },
   })

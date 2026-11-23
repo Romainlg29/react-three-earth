@@ -9,7 +9,7 @@ import { computeCameraTilePyramid, horizonCap, tileRowToLatitude } from '../Came
 import type { Lease } from '../RefCountedCache.js'
 import type { GlyphAtlasTexture } from '../VectorTileMeshes.js'
 import { SYMBOL_ALLOW_OVERLAP, SYMBOL_IGNORE_PLACEMENT } from '../worker/symbols.js'
-import { TILE_EXTENT, type MapStyleSummary, type SymbolMesh, type TileBucket, type TileRequest } from '../worker/types.js'
+import { TILE_EXTENT, type MapStyleSummary, type ScreenLabelHit, type SymbolMesh, type TileBucket, type TileRequest } from '../worker/types.js'
 import { SymbolPlacement, type PlacementCandidate, type SymbolFade } from './SymbolPlacement.js'
 import { createSymbolMaterial, createSymbolTileMesh, SymbolStateTexture, type SymbolMeshUserData } from './symbolMaterial.js'
 
@@ -186,6 +186,31 @@ export class ScreenSymbols {
    * The labels on the screen as of the last frame (fading in or shown): text (`key` without its layer), anchor and
    * collision box in CSS pixels, opacity. For tests and devtools.
    */
+  /**
+   * The labels shown on the screen whose box meets this screen box (CSS pixels: left, top, right, bottom, widened
+   * by `tolerancePixels`), top style layer first, as feature query hits.
+   */
+  hitScreenLabels(box: readonly [number, number, number, number], tolerancePixels = 0): ScreenLabelHit[] {
+    const [left, top, right, bottom] = box
+    const hits: Array<ScreenLabelHit & { layerIndex: number }> = []
+    for (const tile of this.tiles.values()) {
+      const symbols = tile.symbols
+      if (!tile.drawn || symbols === null) continue
+      for (let index = 0; index < symbols.keys.length; index++) {
+        const fade = tile.fades[index]
+        if (fade == null || fade.opacity <= 0 || tile.projected[index] === 0) continue
+        const candidate = tile.candidates[index]!
+        if (candidate.maximumXPixels < left - tolerancePixels || candidate.minimumXPixels > right + tolerancePixels) continue
+        if (candidate.maximumYPixels < top - tolerancePixels || candidate.minimumYPixels > bottom + tolerancePixels) continue
+        const { sourceId, x, y, z } = tile.request
+        const key = symbols.keys[index]!
+        hits.push({ sourceId, x, y, z, layerId: key.slice(0, key.indexOf('\u0000')), sourceLayer: symbols.sourceLayers[index]!, featureIndex: symbols.featureIndices[index]!, layerIndex: candidate.layerIndex })
+      }
+    }
+    hits.sort((a, b) => b.layerIndex - a.layerIndex)
+    return hits.map(({ layerIndex: _, ...hit }) => hit)
+  }
+
   getScreenLabels(): ScreenLabelInspection[] {
     const labels: ScreenLabelInspection[] = []
     for (const tile of this.tiles.values()) {

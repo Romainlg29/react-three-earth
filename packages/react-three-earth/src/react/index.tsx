@@ -17,6 +17,21 @@ export {
 } from './sources.js'
 export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
 export { MarkerContext, useEarth } from './context.js'
-export { useEarthCamera, useEarthEvent, useEarthFrame, useEarthState, usePlugin } from './hooks.js'
+export { useEarthCamera, useEarthEvent, useEarthFrame, useEarthState, useHoverFeatureState, useLayerCursor, usePlugin } from './hooks.js'
 export { Marker, useMarker, type MarkerProps } from './Marker.js'
 export { Popup, type PopupProps } from './Popup.js'
+export {
+  Controls,
+  FullscreenControl,
+  GeolocateControl,
+  NavigationControl,
+  ScaleControl,
+  useControls,
+  ViewControl,
+  type ControlsProps,
+  type FullscreenControlProps,
+  type GeolocateControlProps,
+  type NavigationControlProps,
+  type ScaleControlProps,
+  type ViewControlProps,
+} from './controls.js'

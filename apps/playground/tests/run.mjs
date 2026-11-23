@@ -191,6 +191,115 @@ async function attribution() {
   })
 }
 
+/** The map controls: zoom, compass, view, scale, geolocate and fullscreen, on a desktop and on a phone-sized touch screen. */
+async function controls() {
+  const openIn = async (contextOptions, size) => {
+    const context = await browser.newContext({ viewport: size, ...contextOptions })
+    const page = await context.newPage()
+    const errors = []
+    page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+    page.on('pageerror', e => errors.push(String(e)))
+    await page.goto(BASE + '/?fixtures&stats=0&atmosphere=0')
+    await page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('.react-three-earth-control-button'), null, { timeout: 120_000 })
+    return { page, context, errors }
+  }
+  const buttonSelector = label => `button[aria-label="${label}"]`
+  const view = page => page.evaluate(() => ({ ...window.earth.camera.getView(), mode: window.earth.view.mode }))
+  // Idle includes loading: terrain tiles arriving under the centre change the zoom, which is measured from the ground
+  const settle = page => page.waitForFunction(() => !window.earth.camera.animating && !window.earth.view.transitioning && window.earth.idle, null, { timeout: 120_000 })
+
+  // Desktop, with a position to find
+  const desktop = await openIn({ permissions: ['geolocation'], geolocation: { longitude: -90, latitude: 0.02, accuracy: 60 } }, { width: 1000, height: 640 })
+  const { page } = desktop
+  const result = {}
+  result.labels = await page.evaluate(() => [...document.querySelectorAll('.react-three-earth-controls button')].map(b => b.getAttribute('aria-label')))
+  result.corner = await page.evaluate(() => {
+    const box = document.querySelector('.react-three-earth-controls[data-position="top-right"]').getBoundingClientRect()
+    return { right: Math.round(innerWidth - box.right), top: Math.round(box.top) }
+  })
+
+  await settle(page)
+  const startZoom = (await view(page)).zoom
+  await page.click(buttonSelector('Zoom in'))
+  await settle(page)
+  result.zoomInDelta = (await view(page)).zoom - startZoom
+  await page.click(buttonSelector('Zoom out'))
+  await page.click(buttonSelector('Zoom out'))
+  await settle(page)
+  result.zoomOutDelta = (await view(page)).zoom - startZoom
+
+  await page.evaluate(() => window.earth.camera.jumpTo({ headingDegrees: 45, pitchDegrees: -50 }))
+  await page.waitForFunction(() => document.querySelector('.react-three-earth-compass-needle')?.style.transform.includes('rotateZ(-45'), null, { timeout: 10_000 })
+  result.compassTurned = await page.evaluate(() => document.querySelector('.react-three-earth-compass-needle').style.transform)
+  await page.click(buttonSelector('Reset bearing to north and look straight down'))
+  await settle(page)
+  const reset = await view(page)
+  result.resetHeading = reset.headingDegrees
+  result.resetPitch = reset.pitchDegrees
+
+  result.scaleText = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.textContent ?? null)
+  result.scaleWidth = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.getBoundingClientRect().width ?? 0)
+  const scaleBefore = result.scaleText
+  await page.click(buttonSelector('Zoom in'))
+  await page.click(buttonSelector('Zoom in'))
+  await settle(page)
+  await page.waitForFunction(before => document.querySelector('.react-three-earth-scale')?.textContent !== before, scaleBefore, { timeout: 10_000 })
+  result.scaleAfterZoom = await page.evaluate(() => document.querySelector('.react-three-earth-scale').textContent)
+
+  await page.click(buttonSelector('Switch to the flat map'))
+  await settle(page)
+  result.flat = { mode: (await view(page)).mode, text: await page.textContent(buttonSelector('Switch to the globe')) }
+  await page.click(buttonSelector('Switch to the globe'))
+  await settle(page)
+  result.globe = { mode: (await view(page)).mode, text: await page.textContent(buttonSelector('Switch to the flat map')) }
+
+  // A press on a control is not a click on the map
+  await page.evaluate(() => { window.mapClicks = 0; window.earth.addEventListener('click', () => window.mapClicks++) })
+  await page.click(buttonSelector('Zoom out'))
+  result.mapClicksFromControls = await page.evaluate(() => window.mapClicks)
+
+  // Geolocate: follows the user, dot on the map, a second press stops
+  await page.click(buttonSelector('Show my location'))
+  await page.waitForFunction(() => document.querySelector('.react-three-earth-user-dot') !== null, null, { timeout: 20_000 })
+  await settle(page)
+  const found = await view(page)
+  result.geolocate = {
+    longitude: found.longitudeDegrees,
+    latitude: found.latitudeDegrees,
+    pressed: await page.getAttribute('.react-three-earth-control-button[aria-label="Stop following my location"]', 'aria-pressed'),
+    circle: await page.evaluate(() => document.querySelector('.react-three-earth-accuracy-circle') !== null),
+  }
+  await page.click(buttonSelector('Stop following my location'))
+  result.geolocate.dotAfterStop = await page.evaluate(() => document.querySelector('.react-three-earth-user-dot') !== null)
+  writeFileSync(new URL('controls-desktop.png', OUT), await page.screenshot())
+
+  // Fullscreen (a user gesture is needed, a click is one)
+  await page.click(buttonSelector('Enter fullscreen'))
+  await page.waitForFunction(() => document.fullscreenElement !== null || document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
+  result.fullscreen = await page.evaluate(() => ({ native: document.fullscreenElement !== null, pseudo: document.querySelector('.react-three-earth-pseudo-fullscreen') !== null, pressed: document.querySelector('button[aria-label="Exit fullscreen"]')?.getAttribute('aria-pressed') }))
+  await page.click(buttonSelector('Exit fullscreen'))
+  await page.waitForFunction(() => document.fullscreenElement === null && !document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
+  result.fullscreenExited = true
+  await desktop.context.close()
+
+  // A phone: touch, 390 × 700. Buttons are 44 pixels and a tap works
+  const phone = await openIn({ isMobile: true, hasTouch: true, deviceScaleFactor: 3 }, { width: 390, height: 700 })
+  result.phone = await phone.page.evaluate(() => {
+    const sizes = [...document.querySelectorAll('.react-three-earth-controls button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
+    const inside = [...document.querySelectorAll('.react-three-earth-controls')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
+    return { sizes, inside }
+  })
+  await settle(phone.page)
+  const phoneStart = (await view(phone.page)).zoom
+  await phone.page.tap(buttonSelector('Zoom in'))
+  await settle(phone.page)
+  result.phone.zoomInDelta = (await view(phone.page)).zoom - phoneStart
+  writeFileSync(new URL('controls-phone.png', OUT), await phone.page.screenshot())
+  await phone.context.close()
+
+  results.push({ check: 'map controls', ...result, errors: [...desktop.errors, ...phone.errors] })
+}
+
 const LAKE_COLOURS = `
   // Lakes start blue (the style's colour) and turn pink once their tiles change and are redrawn.
   let blue = 0, pink = 0
@@ -339,6 +448,87 @@ async function vectorStyleRuntime() {
     hover,
     featureState,
     tilesProcessedDuringHover,
+    errors,
+  })
+}
+
+/**
+ * Feature querying and layer events on fixture tiles (`?hover`): `queryRenderedFeatures` at the screen position of
+ * a lake and of a road returns them, a real mouse click reaches a layer `click` listener with the lake, hovering
+ * the lake sets its feature-state (it turns pink) and the pointer cursor, leaving clears both, and a whole-screen
+ * query and `querySourceFeatures` list the lakes.
+ */
+async function featureQueries() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&map=vector&hover')
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 200 })
+  await settled()
+  await page.waitForTimeout(3000) // tile fades
+  const lakeShare = async name => {
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending === 0, null, { timeout: 120_000, polling: 'raf' })
+    await page.waitForTimeout(500)
+    const png = await page.screenshot()
+    writeFileSync(new URL(`map-vector-query-${name}.png`, OUT), png)
+    return analyse(page, png, LAKE_COLOURS)
+  }
+  const before = await lakeShare('before')
+  // Screen positions of a point of Lake Kawaguchi (id 1) and of East Road 6, on the terrain
+  const screenOf = (longitudeDegrees, latitudeDegrees) => page.evaluate(([longitudeDegrees, latitudeDegrees]) => {
+    const heightMeters = window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0
+    return window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
+  }, [longitudeDegrees, latitudeDegrees])
+  const lake = await screenOf(138.76, 35.515)
+  const road = await screenOf(138.6, 35.3575)
+  const lakeQuery = await page.evaluate(async screen => (await window.earth.queryRenderedFeatures(screen)).map(feature => ({ layer: feature.layer.id, id: feature.id ?? null, name: feature.properties.name ?? null, geometry: feature.geometry.type })), lake)
+  const roadQuery = await page.evaluate(async screen => (await window.earth.queryRenderedFeatures(screen, { tolerancePixels: 3 })).map(feature => ({ layer: feature.layer.id, name: feature.properties.name ?? null })), road)
+
+  await page.mouse.click(lake.xPixels, lake.yPixels)
+  await page.waitForFunction(() => (window.layerClicks?.length ?? 0) > 0, null, { timeout: 30_000 }).catch(() => {})
+  const clicked = await page.evaluate(() => (window.layerClicks ?? []).map(features => features.map(feature => ({ layer: feature.layer.id, id: feature.id ?? null }))))
+
+  // The click left the pointer on the lake: it is hovered
+  await page.waitForFunction(() => window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }).hover === true, null, { timeout: 30_000 }).catch(() => {})
+  await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 10_000, polling: 'raf' }).catch(() => {})
+  const hovered = await lakeShare('hover')
+  const hover = await page.evaluate(() => ({
+    state: window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }),
+    cursor: window.earth.pointerEventsElement?.style.cursor ?? null,
+    entered: (window.hoveredFeatures ?? []).map(feature => feature.id),
+  }))
+  // Leave the lake for a spot with no lake and no road
+  await page.mouse.move(5, 5)
+  await page.waitForFunction(() => window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }).hover === false, null, { timeout: 30_000 }).catch(() => {})
+  await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 10_000, polling: 'raf' }).catch(() => {})
+  const left = await lakeShare('left')
+  const leave = await page.evaluate(() => ({
+    state: window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }),
+    cursor: window.earth.pointerEventsElement?.style.cursor ?? null,
+    entered: (window.hoveredFeatures ?? []).map(feature => feature.id),
+  }))
+  const screenLakes = await page.evaluate(async () => [...new Set((await window.earth.queryRenderedFeatures(undefined, { layers: ['water'] })).map(feature => feature.id))].sort())
+  const sourceLakes = await page.evaluate(async () => [...new Set((await window.mapStyleSource.querySourceFeatures('fixture', { sourceLayer: 'water' })).map(feature => feature.id))].sort())
+  // Timing of a point query on the CPU rasteriser's machine (worker round trip and hit test), for the record
+  const queryMilliseconds = await page.evaluate(async screen => {
+    const start = performance.now()
+    for (let index = 0; index < 20; index++) await window.earth.queryRenderedFeatures(screen)
+    return +((performance.now() - start) / 20).toFixed(2)
+  }, lake)
+  await page.close()
+  results.push({
+    check: 'vector map style with fixtures, feature queries and layer events',
+    lake: { screen: lake, features: lakeQuery },
+    road: { screen: road, features: roadQuery },
+    clicked,
+    before,
+    hovered,
+    left,
+    hover,
+    leave,
+    screenLakes,
+    sourceLakes,
+    queryMilliseconds,
     errors,
   })
 }
@@ -1021,6 +1211,13 @@ async function screenSymbols(name, query) {
       inspection: symbols,
     }
   })
+  // A feature query at a label shown on the screen answers its town (labels facing the viewer hit by their box).
+  result.queryAtLabel = await page.evaluate(async () => {
+    const label = window.earth.terrain.getScreenLabels().find(l => l.text.startsWith('Town'))
+    if (label === undefined) return null
+    const features = await window.earth.queryRenderedFeatures({ xPixels: label.xPixels, yPixels: label.yPixels }, { layers: ['town-label'] })
+    return { text: label.text, names: features.map(feature => feature.properties.name) }
+  })
   // Dark text with a white halo: pixels of the text colour (#4a3b22) on the lit ground.
   const stats = await analyse(page, png, `
     let text = 0
@@ -1058,8 +1255,10 @@ try {
     await vectorPatterns('webgl2', '&webgl')
   }
   if (!only || only === 'attribution') await attribution()
+  if (!only || only === 'controls') await controls()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
+  if (!only || only === 'vector' || only === 'query') await featureQueries()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
   if (!only || only === 'markers') await markers()
