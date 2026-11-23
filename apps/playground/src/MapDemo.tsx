@@ -18,6 +18,7 @@ import {
   EarthControls,
   FullscreenControl,
   GeolocateControl,
+  ImageSource,
   Imagery,
   MapStyleSource,
   Marker,
@@ -34,6 +35,7 @@ import {
   useEarthFrame,
   useHoverFeatureState,
   useLayerCursor,
+  VideoSource,
   ViewControl,
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
@@ -105,6 +107,16 @@ const styleLayerTypePlugins = [sdfGlow(), stripedFill()]
 // leaves them out: the browser check installs and removes them at runtime.
 const showEffects = params.has('effects')
 const effectPlugins = { vignette: vignette(), selectionGlow: selectionGlow() }
+// `?georef=image` (or `video`) drapes a picture (or video) from public/georef/ over a skewed quad near (-90°, 0°), above the
+// imagery. The browser check reads `window.georefCorners` and `window.videoSource`.
+const georef = params.get('georef')
+const georefCorners = [
+  [-90.02, 0.02],
+  [-89.99, 0.025],
+  [-89.985, -0.005],
+  [-90.025, -0.01],
+] as const
+if (georef !== null) Object.assign(window, { georefCorners })
 const plugins = [
   ...(showSdfShapes ? [sdfShapesPlugin] : []),
   ...(showStyleLayerTypes && params.get('glow') !== 'late' ? styleLayerTypePlugins : []),
@@ -146,6 +158,7 @@ declare global {
     setView?: (view: ViewMode) => void
     camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
+    videoSource?: import('react-three-earth').VideoSource | null
     markers?: Record<string, MarkerImpl | null>
     dragEnds?: GeographicPosition[]
     selectedPlace?: string | null
@@ -321,6 +334,16 @@ export function MapDemo() {
               </MapStyleSource>
             ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
           </Imagery>
+          {georef === 'image' ? (
+            <Imagery>
+              <ImageSource url={`${import.meta.env.BASE_URL}georef/quadrants.png`} coordinates={georefCorners} />
+            </Imagery>
+          ) : null}
+          {georef === 'video' ? (
+            <Imagery>
+              <VideoSource urls={[`${import.meta.env.BASE_URL}georef/hue.webm`]} coordinates={georefCorners} ref={source => void (window.videoSource = source)} />
+            </Imagery>
+          ) : null}
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />
           ) : (

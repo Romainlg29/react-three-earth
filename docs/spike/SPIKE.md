@@ -1015,6 +1015,30 @@ sun, one air and one haze. Playground: `/?test=afterburner&fixtures`.
 
 ![afterburner over terrain](afterburner-on.png)
 
+## W14: image and video sources
+
+`ImageSource` and `VideoSource` (`<ImageSource url coordinates>`, `<VideoSource urls coordinates>` inside
+`<Imagery>`) drape a picture or a video over four `[longitudeDegrees, latitudeDegrees]` corners, MapLibre's
+`image` and `video` sources.
+
+- **One path for both.** `GeoreferencedImageOverlay` extends `DrapedLayerOverlay`: it reuses the region cache,
+  the compositor's per-frame budget and the redraw-in-place of plugins' draped layers, and takes a layer slot
+  like any imagery overlay (`ImageOverlayPlugin` orders it with the imagery, not above it). Each region draws one
+  quad. The corners go through Heckbert's `squareToQuad` into the region's own space, computed in 64-bit on the
+  CPU, and the fragment shader applies the inverse homography per pixel, so the picture is exact in Web
+  Mercator at every zoom and edge. A picture across the antimeridian is unwrapped from its first corner.
+- **Deviation from the brief for video.** The brief suggested sampling a `VideoTexture` live in the terrain material
+  to avoid recomposition. That needs a material hook plus a texture slot and per-vertex projective UVs that the
+  overlay pipeline does not have. Instead each decoded frame invalidates the regions the video covers (nothing
+  while paused), and a frame is skipped while the previous one is still being drawn. The cost is one quad per
+  covered region per frame; a video covering the whole screen at 30 fps would redraw every visible region 30
+  times a second, which a live material sample would avoid. Measured on SwiftShader only (it follows the
+  compositor at a few frames per second there); a real GPU is the thing to measure if full-screen video matters.
+- **Browser check** (`run.mjs georef`): a four-colour picture on a skewed quad lands in its corners and ends at
+  its edge (WebGPU and WebGL 2), and the video colour changes over time.
+- Not supported yet: `image` and `video` entries inside a `MapStyleSource` style, `canvas` sources, video
+  controls beyond `play()` / `pause()` and the element.
+
 ## Round 3: faster atmosphere startup
 
 Lookup-texture generation was the slowest part of startup and caused long frames while it ran. Three changes:

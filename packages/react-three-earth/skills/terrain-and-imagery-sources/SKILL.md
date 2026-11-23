@@ -17,6 +17,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/ImageOverlayPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/imagery/XYZImageryOverlay.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/imagery/GeoreferencedImageOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Imagery.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
@@ -34,7 +35,7 @@ source object with the layer around them, so the JSX tree reads like the data fl
 | Layer | Sources | Rule |
 | --- | --- | --- |
 | `<Terrain>` / `new Terrain({ sources })` | `QuantizedMeshSource` | exactly one (more logs a warning; only the first is used) |
-| `<Imagery>` / `new Imagery({ sources })` | `RasterTileSource` | stacked bottom to top |
+| `<Imagery>` / `new Imagery({ sources })` | `RasterTileSource`, `ImageSource`, `VideoSource` (and `MapStyleSource`, see map-styles) | stacked bottom to top |
 
 The library makes no network request of its own: every URL comes from you.
 
@@ -92,6 +93,43 @@ export function Basemap() {
   sources and their TileJSON or PMTiles metadata after loading.
 
 Tiles decode off the main thread and are composed onto each terrain tile on the GPU.
+
+### Drape a picture or a video over four corners
+
+```tsx
+import { ImageSource, Imagery, VideoSource } from 'react-three-earth/react'
+
+// Top-left, top-right, bottom-right, bottom-left, each [longitudeDegrees, latitudeDegrees].
+const survey = [[-90.02, 0.02], [-89.99, 0.025], [-89.985, -0.005], [-90.025, -0.01]] as const
+
+export function Overlays() {
+  return (
+    <>
+      <Imagery opacity={0.8}>
+        <ImageSource url="/survey.png" coordinates={survey} attribution="Survey © Example" />
+      </Imagery>
+      <Imagery>
+        <VideoSource urls={['/radar.mp4', '/radar.webm']} coordinates={survey} />
+      </Imagery>
+    </>
+  )
+}
+```
+
+MapLibre's `image` and `video` sources. The corners need not form a rectangle in longitude and latitude: the
+picture is stretched with a projective map in Web Mercator, so it lines up with the map at every zoom, across
+the antimeridian too. It is drawn only into the terrain regions it covers, through the imagery compositor's
+budget, and takes one terrain layer slot like any imagery source. New `coordinates` (compared by value) move it
+and a new `url` swaps it, both redrawing only the terrain they touch; the old picture stays until the new one
+loaded. Vanilla: `new ImageSource({ url, coordinates })`, `setUrl`, `setCoordinates`; `new VideoSource({ urls,
+coordinates, autoplay, loop })` has `play()`, `pause()` and its `video` element. A `<VideoSource ref>` gives the
+vanilla source.
+
+The video is muted (browsers block unmuted autoplay) and is redrawn once per decoded frame, skipping frames while
+the previous one is still drawing, so a video over a few regions is cheap and one over the whole screen runs at
+the rate the compositor can draw. Pictures and videos on another origin need CORS headers. Not supported yet:
+`image` and `video` entries inside a `MapStyleSource` style (use these components next to it), and `canvas`
+sources.
 
 ### Stack and fade layers
 
@@ -177,6 +215,12 @@ is planned, not available.
 
 `RasterTileSource` only understands `{z}`, `{x}`, `{y}` and `{-y}` (TMS). Replace `{s}` with one subdomain,
 and convert WMTS to its REST tile template. A TileJSON URL goes in `tileJsonUrl`, not `url`.
+
+### MEDIUM: Corners in the wrong order or with swapped coordinates
+
+`coordinates` is clockwise from the top-left and each corner is `[longitudeDegrees, latitudeDegrees]`, longitude
+first (as GeoJSON and MapLibre). Latitude first puts the picture in the wrong place; counter-clockwise order
+mirrors it.
 
 ### MEDIUM: Imagery without terrain
 

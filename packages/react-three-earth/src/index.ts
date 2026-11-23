@@ -129,9 +129,14 @@ export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
 export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE } from './tiles/FlatMapPlugin.js'
 export {
+  ImageSource,
   MapStyleSource,
   QuantizedMeshSource,
   RasterTileSource,
+  VideoSource,
+  type GeoreferencedCorners,
+  type ImageSourceOptions,
+  type VideoSourceOptions,
   type MapStyleSourceOptions,
   type QuantizedMeshSourceOptions,
   type RasterTileSourceOptions,
@@ -145,6 +150,7 @@ export { ImageryCompositor, type CompositeDraw, type CompositionPriority, type C
 export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/ImageryStatistics.js'
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
 export { DrapedLayerOverlay } from './tiles/imagery/DrapedLayerOverlay.js'
+export { GeoreferencedImageOverlay } from './tiles/imagery/GeoreferencedImageOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'
 export {
   placeCameraAround,
