@@ -79,6 +79,7 @@ export class ScreenOverlay {
   protected readonly lastCameraMatrix = new Float64Array(16)
   protected terrainWasLoading = false
   protected lastTerrainTileCount = -1
+  protected lastTerrainExaggeration = 1
   protected followUpTimer: ReturnType<typeof setTimeout> | null = null
 
   /** The overlay of an earth, created on first use. */
@@ -184,7 +185,9 @@ export class ScreenOverlay {
     // Runtime fields 3DTilesRenderer's typings leave out.
     const tiles = terrain?.tiles as { stats?: { loaded?: number }; visibleTiles?: Set<unknown> } | undefined
     const tileCount = (tiles?.stats?.loaded ?? 0) * 100_003 + (tiles?.visibleTiles?.size ?? 0)
-    const tilesChanged = tileCount !== this.lastTerrainTileCount || loading !== this.terrainWasLoading
+    const exaggeration = terrain?.exaggeration ?? 1
+    const tilesChanged = tileCount !== this.lastTerrainTileCount || loading !== this.terrainWasLoading || exaggeration !== this.lastTerrainExaggeration
+    this.lastTerrainExaggeration = exaggeration
     if (changed || tilesChanged || this.earth.view.transitioning) this.frame.sceneVersion++
     this.terrainWasLoading = loading
     this.lastTerrainTileCount = tileCount

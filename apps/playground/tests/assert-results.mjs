@@ -76,6 +76,30 @@ const expectations = {
     ['hillshade lights and shades the hills', r.lightShare > 0.02 && r.shadedShare > 0.005],
     ['no warnings', r.warnings.length === 0],
   ]])),
+  // Terrain from Terrarium tiles of the quantized-mesh fixture's heights.
+  'raster-dem terrain, heights': r => [
+    ['every point of the grid has a height', r.heightErrorsMeters?.count === 49],
+    ['over hills 500 m high or more', r.heightErrorsMeters?.heightRangeMeters >= 500],
+    ['heights match the fixture within 3 m (measured: under 2 m; quantized-mesh: under 5 m)', r.heightErrorsMeters?.maximum < 3],
+  ],
+  'raster-dem terrain, heights, quantized-mesh for comparison': r => [['every point of the grid has a height', r.heightErrorsMeters?.count === 49]],
+  ...Object.fromEntries(['pitched', 'pitched webgl2'].map(name => [`raster-dem terrain, ${name}`, r => [
+    ['imagery drapes on the terrain (over 50 % checker pixels)', r.greenShare > 0.5],
+    ['the terrain credit shows', r.attributions?.[0] === 'Synthetic test elevation'],
+  ]])),
+  'raster-dem terrain, north pole': r => [['no hole at the pole (no black at the centre)', r.centreBlackShare === 0]],
+  'raster-dem terrain, 2d': r => [
+    ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
+    ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
+  ],
+  // `<Terrain exaggeration={2}>`, then 1, on both terrain kinds and on the flat map.
+  ...Object.fromEntries(['raster-dem', 'quantized-mesh', '2d'].map(name => [`terrain exaggeration, ${name}`, r => [
+    ['every point of the grid has a height', r.exaggerated?.count === 49 && r.plain?.count === 49],
+    ['at 2, heights read twice the fixture\'s (within 8 m)', r.exaggerated?.maximum < 8],
+    ['back at 1, heights read the fixture\'s (within 5 m)', r.plain?.maximum < 5],
+    ['the change redraws the relief (over 2 % of pixels change)', r.changedShare > 0.02],
+    ['without rebuilding the terrain', r.sameTerrain === true],
+  ]])),
   'relief style with fixtures, 3d': r => [
     ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
     ['no warnings', r.warnings.length === 0],
@@ -232,6 +256,18 @@ const expectations = {
     ['setData far from the view leaves the detailed regions in view as they are', r.detailedRegionsHeld >= 4 && r.detailedRegionsRedrawn === 0 && r.regionsRedrawnFarFromView < r.regionsHeldClose],
     ['a cluster query reaches the worker and states the fix', /has no cluster 987654.*use a `cluster_id`/.test(r.clusterQuery)],
   ]])),
+  // Heatmap layers (`?heatmap`): MapLibre's default ramp over points straddling a tile edge, and a magenta ramp.
+  ...Object.fromEntries(['2d', '2d webgl2', '3d'].map(name => [`heatmap layers, ${name}`, r => {
+    const webgpu = results.find(other => other.check === 'heatmap layers, 2d')
+    return [
+      ['the quake heatmap draws, with its red core', r.heatShare > 0.02 && r.redShare > (name === '3d' ? 0.0001 : 0.005)],
+      ['the sensor heatmap draws in its own magenta ramp', r.magentaShare > 0.0005],
+      ['no heatmap layer is skipped, no error', r.warnings.length === 0 && r.errors.length === 0],
+      // Measured: 22 against 25 seamless; 57 against 38 with ring tiles left out (a seam).
+      ...(name === '3d' ? [] : [['no seam at the tile edge: the colour steps across it no more than beside it', r.edgeRows > 100 && r.edgeStep < r.nearbyStep * 1.2]]),
+      ...(name === '2d webgl2' ? [['WebGL2 draws the same heat as WebGPU', webgpu !== undefined && Math.abs(r.redShare - webgpu.redShare) <= webgpu.redShare * 0.1 && Math.abs(r.magentaShare - webgpu.magentaShare) <= webgpu.magentaShare * 0.2]] : []),
+    ]
+  }])),
   'sdf shapes plugin, strict mode': r => {
     const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
     return [

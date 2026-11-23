@@ -237,6 +237,21 @@ export interface MapStyleSummary {
   rasterLayers?: RasterLayerSummary[]
   /** `fill-extrusion` layers in style order: the main thread asks for building tiles of their sources. Default: none. */
   extrusionLayers?: Array<{ id: string; source: string; minimumZoom: number; maximumZoom: number }>
+  /** Heatmap layers in style order, with what colours them. Default: none. */
+  heatmapLayers?: HeatmapLayerSummary[]
+}
+
+/** A heatmap layer, evaluated in the worker: the main thread colours its density with these. */
+export interface HeatmapLayerSummary {
+  id: string
+  /** `heatmap-color` at 256 densities from 0 to 1, as premultiplied sRGB bytes (RGBA). */
+  colorRamp: Uint8Array
+  /** `heatmap-opacity` per integer zoom 0 to 24. */
+  opacityByZoom: number[]
+  /** `heatmap-intensity` per integer zoom 0 to 24. */
+  intensityByZoom: number[]
+  /** How far its kernels reach past their points, in pixels, per integer zoom 0 to 24. */
+  reachPixelsByZoom: number[]
 }
 
 /** The types of style layers drawn from raster tiles: images (`raster`) and elevation (`hillshade`, `color-relief`). */

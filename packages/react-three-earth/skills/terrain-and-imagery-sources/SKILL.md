@@ -2,9 +2,10 @@
 name: terrain-and-imagery-sources
 description: >
   Use when choosing or changing where a react-three-earth globe gets its elevation and its map pictures:
-  quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), XYZ raster tiles
+  quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), terrain from raster-dem elevation
+  tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain, as MapLibre's terrain), XYZ raster tiles
   (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
-  writing a custom terrain or imagery source class.
+  exaggerating terrain heights, or writing a custom terrain or imagery source class.
 metadata:
   purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
   type: core
@@ -16,6 +17,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/attribution.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/ImageOverlayPlugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/FlatMapPlugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/RasterDemTerrainPlugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/dem/demSurface.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/imagery/XYZImageryOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Imagery.tsx'
@@ -33,7 +37,7 @@ source object with the layer around them, so the JSX tree reads like the data fl
 
 | Layer | Sources | Rule |
 | --- | --- | --- |
-| `<Terrain>` / `new Terrain({ sources })` | `QuantizedMeshSource` | exactly one (more logs a warning; only the first is used) |
+| `<Terrain>` / `new Terrain({ sources })` | `QuantizedMeshSource`, `RasterDemSource` | exactly one (more logs a warning; only the first is used) |
 | `<Imagery>` / `new Imagery({ sources })` | `RasterTileSource` | stacked bottom to top |
 
 The library makes no network request of its own: every URL comes from you.
@@ -58,6 +62,72 @@ export function Ground() {
 ellipsoidal (WGS84): Re:Earth's `ellipsoid` endpoint already includes the geoid. Cesium ion assets need
 an access token in the URL or headers that this source does not handle yet; use a self-hosted or open
 endpoint.
+
+### Use raster-dem terrain (Terrarium, Terrain-RGB)
+
+The elevation tiles MapLibre users have: PNG or WebP tiles in Web Mercator XYZ whose colours encode heights.
+
+```tsx
+import { RasterDemSource, Terrain } from 'react-three-earth/react'
+
+export function Ground() {
+  return (
+    <Terrain>
+      <RasterDemSource
+        url="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
+        encoding="terrarium"
+        maximumZoom={15}
+        attribution="Terrain: Mapzen, AWS Terrain Tiles"
+      />
+    </Terrain>
+  )
+}
+```
+
+- `encoding`: `'terrarium'`, `'mapbox'` (Terrain-RGB, MapTiler Terrain; the default, as in MapLibre) or `'custom'`
+  with `redFactor`, `greenFactor`, `blueFactor` and `baseShift` (MapLibre's names and meaning). A wrong encoding
+  gives terrain kilometres off, not an error: Terrarium decoded as `mapbox` lands near −10 km.
+- `url` takes `{z}`, `{x}`, `{y}` or `{-y}`; or pass `tileJsonUrl` (its `tiles`, `maxzoom`, `scheme` and
+  `attribution` are read).
+- `maximumZoom`: the server's last zoom (Terrarium 15, MapTiler Terrain-RGB 12; default the TileJSON's `maxzoom`, or
+  15). Deeper tiles reuse that zoom's tiles with no new request, until a mesh cell spans one pixel (two levels for
+  256-pixel tiles, three for 512). Set it too high and each missing tile costs a 404 before its parent's raster
+  stands in (the console names the zoom to set); the terrain stays whole.
+- Each tile is a 65 × 65 grid with skirts (the sampling of a Cesium heightmap tile), decoded and built in a worker;
+  `createWorker` starts your bundler's worker instead (`null` builds on the main thread; a worker that fails to load
+  falls back to the main thread with a warning). Tile selection, fades,
+  imagery, labels, the flat map and `queryTerrainElevation` work as with quantized-mesh.
+- Web Mercator stops at about ±85.05°: caps built from the zoom 0 tile close the globe at the poles.
+- Heights are used as ellipsoidal heights: these tiles hold heights above sea level, so the ground sits up to about
+  100 m off true WGS84 heights. It only shows next to other geo-referenced 3D content. Quantized-mesh with an
+  `ellipsoid` endpoint is the exact option.
+
+Vanilla: `new Terrain({ sources: [new RasterDemSource({ url, encoding: 'terrarium' })] })`.
+
+### Exaggerate the relief
+
+```tsx
+import { RasterDemSource, Terrain } from 'react-three-earth/react'
+
+export function DramaticGround({ exaggeration }: { exaggeration: number }) {
+  return (
+    <Terrain exaggeration={exaggeration}>
+      <RasterDemSource url="https://example.com/terrarium/{z}/{x}/{y}.png" encoding="terrarium" />
+    </Terrain>
+  )
+}
+```
+
+- MapLibre's terrain `exaggeration`: heights are multiplied by it (1.5 draws mountains half again as high, 0 flattens the
+  ground onto the ellipsoid; seas below 0 m go deeper). Any terrain source, globe and flat map alike. Default 1.
+- Changing it needs no reload (vanilla: `terrain.exaggeration = 2`): the drawing is a shader uniform, but each new value
+  refits every tile's bounding volume, and raycasts copy each tile they test once per value. Set it from a slider or a
+  short transition, not on every frame of a long animation.
+- Below 1 the skirts that hide seams between tile levels shrink too; keep it at 1 or more unless you flatten on purpose.
+- `queryTerrainElevation`, `unproject`, pointer events, controls, labels and markers on the terrain read the heights as
+  drawn (exaggerated). Tile culling and level of detail use the scaled heights.
+- Shading keeps the data's normals: slopes are lit as if not exaggerated.
+- Negative or non-finite values throw, naming the fix.
 
 ### Drape raster imagery
 
@@ -87,7 +157,7 @@ export function Basemap() {
 - `tileDimensionPixels`: 256 by default; 512 for "@2x" or MapTiler-style 512 px tiles.
 - `projection`: `'EPSG:3857'` (Web Mercator, default, what XYZ servers use) or `'EPSG:4326'`.
 - `attribution`: the provider's required credit, text or HTML with `<a href>` links (everything else is
-  stripped). Every source takes it, `QuantizedMeshSource` and `MapStyleSource` included; show it with
+  stripped). Every source takes it, `QuantizedMeshSource`, `RasterDemSource` and `MapStyleSource` included; show it with
   `<AttributionControl />` (see `getting-started`). A `MapStyleSource` adds the `attribution` of its style's
   sources and their TileJSON or PMTiles metadata after loading.
 
@@ -178,6 +248,11 @@ is planned, not available.
 `RasterTileSource` only understands `{z}`, `{x}`, `{y}` and `{-y}` (TMS). Replace `{s}` with one subdomain,
 and convert WMTS to its REST tile template. A TileJSON URL goes in `tileJsonUrl`, not `url`.
 
+### HIGH: A style's raster-dem source expected to raise the terrain
+
+A `raster-dem` source inside a `MapStyleSource` style draws hillshade and colour relief on the ground; it does not
+change the ground's shape. For terrain, put a `<RasterDemSource>` with the same tile URL in `<Terrain>`.
+
 ### MEDIUM: Imagery without terrain
 
 Imagery drapes on terrain tiles. With no `<Terrain>`, imagery layers are registered but nothing draws.
@@ -187,6 +262,11 @@ For a smooth ellipsoid, use a quantized-mesh `ellipsoid` tileset or a flat-heigh
 
 Most providers require visible credit. Set `attribution` on the source and render `<AttributionControl />`
 (vanilla: `new AttributionControl({ earth, container })`); without both nothing is shown.
+
+### MEDIUM: Exaggeration expected to change `hillshade-exaggeration`
+
+`<Terrain exaggeration>` raises the ground. A style's `hillshade-exaggeration` paint only darkens or lightens the
+drawn shading; set each on its own.
 
 ## Completion
 

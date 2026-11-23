@@ -1330,9 +1330,12 @@ const GEOJSON_PIXELS = `
  */
 async function geoJsonSources(name, query) {
   let { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&geojson&camera=138.75,35.4,0,60000,0,-80${query}`)
+  // `idle`, not zero download, parse and composition counts: between two refinement steps, tiles still sit in the download
+  // queue or wait for their children to be prepared with nothing downloading or parsing, and the slower WebGL2
+  // path often stopped there, on coarse tiles and their coarse imagery.
   const settled = () => page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 10 && inspection.idle
   }, null, { timeout: 240_000, polling: 200 })
   const shot = async label => {
     await settled()
@@ -1386,6 +1389,56 @@ async function geoJsonSources(name, query) {
   })
   await page.close()
   results.push({ check: `geojson sources, ${name}`, before, moved, close, regionsHeldClose, regionsRedrawnFarFromView, ...detail, regionsRedrawnAfterUpdateData, clusterQuery, errors: [...errors, ...closePage.errors] })
+}
+
+/**
+ * The `?heatmap` layers, by colour: MapLibre's default ramp (its red core), the magenta ramp of the second layer.
+ * The quake heat straddles a tile edge (`edgeX` on screen). `edgeStep` is the mean colour step across the edge
+ * (3 px either side, clear of the terrain's 1 px region line), `nearbyStep` the same step 6 px to the west: a seam
+ * (a tile missing its neighbour's points) cuts the heat off at the edge, so its step stands out.
+ */
+const heatmapPixels = (edgeX, centerY) => `
+  const edgeX = ${Math.round(edgeX)}, centerY = ${Math.round(centerY)}
+  const at = (x, y) => { const i = (y * width + x) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  const step = (a, b) => (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])) / 3
+  // By hue, so the dimly lit 3D view counts too.
+  const isRed = ([r, g, b]) => r > 80 && r > g * 3 && r > b * 3
+  const isHeat = ([r, g, b]) => Math.max(r, g, b) - Math.min(r, g, b) > 100 && !(r > 80 && b > 80 && g < Math.min(r, b) * 0.6)
+  let red = 0, heat = 0, magenta = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (isRed([r, g, b])) red++
+    if (isHeat([r, g, b])) heat++
+    if (r > 80 && b > 80 && g < Math.min(r, b) * 0.6 && Math.abs(r - b) < Math.max(r, b) * 0.3) magenta++
+  }
+  let edgeStep = 0, nearbyStep = 0, rows = 0
+  for (let y = Math.max(centerY - 200, 0); y < Math.min(centerY + 200, height - 40); y++) {
+    if (!isHeat(at(edgeX - 3, y)) && !isHeat(at(edgeX + 3, y))) continue
+    edgeStep += step(at(edgeX - 3, y), at(edgeX + 3, y))
+    nearbyStep += step(at(edgeX - 9, y), at(edgeX - 3, y))
+    rows++
+  }
+  const n = px.length / 4
+  return { redShare: +(red / n).toFixed(4), heatShare: +(heat / n).toFixed(4), magentaShare: +(magenta / n).toFixed(4), edgeRows: rows, edgeStep: rows === 0 ? null : +(edgeStep / rows).toFixed(1), nearbyStep: rows === 0 ? null : +(nearbyStep / rows).toFixed(1) }
+`
+
+/** Heatmap layers (`?heatmap`): two layers over GeoJSON points, one mirrored about a tile edge. */
+async function heatmaps(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&heatmap${query}`)
+  const warnings = []
+  page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 300 })
+  await page.waitForTimeout(3000) // tile fades
+  // The tile edge the quake heat straddles (z8 column 227) at the cloud's latitude.
+  const edge = await page.evaluate(() => window.earth.project({ longitudeDegrees: (227 / 256) * 360 - 180, latitudeDegrees: 35.3 }))
+  const png = await page.screenshot()
+  writeFileSync(new URL(`heatmap-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const stats = await analyse(page, png, heatmapPixels(edge.xPixels, edge.yPixels))
+  await page.close()
+  results.push({ check: `heatmap layers, ${name}`, edge: { x: Math.round(edge.xPixels), y: Math.round(edge.yPixels) }, ...stats, errors, warnings: warnings.filter(text => /heatmap|skipp/i.test(text)) })
 }
 
 /**
@@ -1450,6 +1503,102 @@ async function reliefMap(name, query, script = RELIEF_PIXELS) {
   results.push({ check: `relief style with fixtures, ${name}`, ...stats, errors, warnings })
 }
 
+/** The fixture terrain's heights (`fixtures/quantizedMesh.ts`), which the `?plain` Terrarium fixture tiles encode. */
+function fixtureHeightMeters(longitudeDegrees, latitudeDegrees) {
+  const lon = (longitudeDegrees * Math.PI) / 180
+  const lat = (latitudeDegrees * Math.PI) / 180
+  const ridges = Math.sin(lon * 7) * Math.cos(lat * 9) + 0.5 * Math.sin(lon * 31 + lat * 17)
+  return Math.max(0, ridges) * 2600
+}
+
+/**
+ * Terrain from raster-dem (`?terrain=dem`, Terrarium tiles of the quantized-mesh fixture's heights): heights under a
+ * grid of points match the fixture function, imagery drapes on it, the north pole is closed and the flat map works.
+ */
+async function rasterDemTerrain(name, query, { heights = false } = {}) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0${query.includes('terrain=') ? '' : '&terrain=dem'}${query}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    const settledView = inspection?.view.morph === (inspection?.view.mode === '2d' ? 1 : 0)
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && settledView
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(2000) // tiles fade in
+  const png = await page.screenshot()
+  writeFileSync(new URL(`dem-terrain-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const stats = await analyse(page, png, `
+    let green = 0, black = 0, centreBlack = 0, centre = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      const x = (i / 4) % width, y = Math.floor(i / 4 / width)
+      if (g > r + 20 && g > b + 20) green++
+      if (r + g + b < 15) black++
+      if (Math.abs(x - width / 2) < 30 && Math.abs(y - height / 2) < 30) { centre++; if (r + g + b < 15) centreBlack++ }
+    }
+    const n = px.length / 4
+    return { greenShare: +(green / n).toFixed(3), blackShare: +(black / n).toFixed(3), centreBlackShare: +(centreBlack / centre).toFixed(3) }
+  `)
+  let heightErrorsMeters = null
+  if (heights) {
+    const points = []
+    for (let i = 0; i < 49; i++) points.push([-91.2 + (i % 7) * 0.4, -1.2 + Math.floor(i / 7) * 0.4])
+    const sampled = await page.evaluate(points => points.map(([longitudeDegrees, latitudeDegrees]) => window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })), points)
+    heightErrorsMeters = sampled.flatMap((height, index) => (height === null ? [] : [Math.abs(height - fixtureHeightMeters(...points[index]))]))
+    heightErrorsMeters = { count: heightErrorsMeters.length, maximum: Number(Math.max(...heightErrorsMeters).toFixed(2)), heightRangeMeters: Number((Math.max(...points.map(p => fixtureHeightMeters(...p))) - Math.min(...points.map(p => fixtureHeightMeters(...p)))).toFixed(0)) }
+  }
+  const { inspection, attributions } = await page.evaluate(() => ({ inspection: window.earth.inspect(), attributions: window.earth.getAttributions() }))
+  await page.close()
+  results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
+}
+
+/** Heights under a 7 × 7 grid over 2.4° around (-90°, 0°), against the fixture function times `exaggeration`. */
+async function fixtureHeightErrors(page, exaggeration = 1) {
+  const points = []
+  for (let i = 0; i < 49; i++) points.push([-91.2 + (i % 7) * 0.4, -1.2 + Math.floor(i / 7) * 0.4])
+  const sampled = await page.evaluate(points => points.map(([longitudeDegrees, latitudeDegrees]) => window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })), points)
+  const errors = sampled.flatMap((height, index) => (height === null ? [] : [Math.abs(height - exaggeration * fixtureHeightMeters(...points[index]))]))
+  return { count: errors.length, maximum: Number(Math.max(...errors).toFixed(2)) }
+}
+
+/**
+ * `<Terrain exaggeration>`: heights read under a grid are the fixture's times the exaggeration, a new value applies
+ * without reloading the terrain, and the flat map draws it.
+ */
+async function terrainExaggeration(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&camera=-90,0,0,400000,0,-90${query}`)
+  const settled = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && inspection.view.morph === (inspection.view.mode === '2d' ? 1 : 0)
+  }, null, { timeout: 240_000, polling: 500 })
+  await settled()
+  await page.waitForTimeout(1000)
+  const exaggerated = await fixtureHeightErrors(page, 2)
+  await page.evaluate(() => { window.terrainBeforeChange = window.earth.terrain })
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, distanceMeters: 80000, headingDegrees: 30, pitchDegrees: -25 }))
+  await settled()
+  await page.waitForTimeout(1500)
+  const pngExaggerated = await page.screenshot()
+  writeFileSync(new URL(`exaggeration-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), pngExaggerated)
+  await page.evaluate(() => window.setExaggeration(1))
+  await page.waitForTimeout(1500)
+  const pngPlain = await page.screenshot()
+  const changedShare = await page.evaluate(async ([a, b]) => {
+    const load = async data => { const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode(); const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height; const context = canvas.getContext('2d'); context.drawImage(image, 0, 0); return context.getImageData(0, 0, image.width, image.height).data }
+    const [pa, pb] = [await load(a), await load(b)]
+    let changed = 0
+    for (let i = 0; i < pa.length; i += 4) if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 30) changed++
+    return Number((changed / (pa.length / 4)).toFixed(3))
+  }, [pngExaggerated.toString('base64'), pngPlain.toString('base64')])
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, distanceMeters: 400000, headingDegrees: 0, pitchDegrees: -90 }))
+  await settled()
+  await page.waitForTimeout(1000)
+  const plain = await fixtureHeightErrors(page, 1)
+  const sameTerrain = await page.evaluate(() => window.terrainBeforeChange === window.earth.terrain)
+  await page.close()
+  results.push({ check: `terrain exaggeration, ${name}`, exaggerated, plain, changedShare, sameTerrain, errors })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1481,6 +1630,12 @@ try {
     await geoJsonSources('webgpu', '')
     await geoJsonSources('webgl2', '&webgl')
     await geoJsonSources('strict mode', '&strict')
+  }
+  if (!only || only === 'vector' || only === 'heatmap') {
+    const view = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
+    await heatmaps('2d', view)
+    await heatmaps('2d webgl2', `${view}&webgl`)
+    await heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')
   }
   if (!only || only === 'vector' || only === 'query') await featureQueries()
   if (!only || only === 'afterburner') await afterburnerChecks()
@@ -1539,6 +1694,19 @@ try {
     // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
     await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
     await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
+  }
+  if (!only || only === 'dem') {
+    await rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })
+    await rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })
+    await rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')
+    await rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')
+    await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
+    await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
+  }
+  if (!only || only === 'dem' || only === 'exaggeration') {
+    await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
+    await terrainExaggeration('quantized-mesh', '&exaggeration=2')
+    await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
   }
 } finally {
   await browser.close()

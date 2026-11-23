@@ -201,8 +201,8 @@ How it works:
 
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
-Not supported yet: icons along lines and on draped labels (point icons face the viewer, see W6 part 3 below), heatmap layers (skipped with one
-warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts (`fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), right-to-left and complex scripts (`fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -688,7 +688,8 @@ and `{-y}`.
   ramp texture of up to 256 stops.
 - Not done: `hillshade-illumination-anchor: 'viewport'` is read as `map` (on a globe the screen's up turns with
   the camera); a light tied to the atmosphere's sun was not built; `raster-fade-duration` is ignored (regions
-  redraw in place); a raster-dem source shades the drape and does not raise the terrain (W8).
+  redraw in place); a style's raster-dem source shades the drape and does not raise the terrain (terrain from
+  raster-dem tiles is `RasterDemSource`, W8, below).
 - Caches and failures: compressed raster tiles stay in the worker (64 MB LRU, cleared by `invalidate` and source
   removal), so a paint change decodes them again without fetching; it redraws only the regions drawing that
   layer's source. A tile that is not an image (an error page answered with 200) is skipped with one warning per
@@ -724,7 +725,8 @@ and `{-y}`.
 - **Terrain.** Each tile reads `terrain.sampleElevation` on a grid (4 to 32 cells, about 40 m) under a per-frame
   budget (1024 reads, 1 ms); a building takes the lowest of its footprint's corner and centre samples, so on a slope
   it sinks in uphill instead of floating downhill. A tile shows after its first complete pass, re-reads every 5 s to
-  follow finer terrain, and retries unknown points every 500 ms. The elevation is a vertex attribute, uploaded only
+  follow finer terrain, and retries unknown points every 500 ms. Heights are read as drawn, so buildings follow the terrain's `exaggeration`
+  (within one refresh after it changes). The elevation is a vertex attribute, uploaded only
   when it moves by more than 5 cm.
 - **Shading.** `MeshStandardNodeMaterial` lit by the scene's lights (the atmosphere's sun), so aerial perspective
   hazes buildings like the ground. Translucent layers draw a depth prepass then colour with `LessEqual` and no depth
@@ -756,6 +758,105 @@ shadows.
 | Browser (`?fixtures&map=buildings`, SwiftShader) | pitched: 33 tiles (z15, z17, z19), 40 building pieces, every building at 3899.9 to 3900 m on 3900 m ground, red buildings cover 5.5 % of the screen against 0.84 % draped |
 | | top-down 16 tiles, flat map 12 tiles, with the atmosphere at dusk, WebGL2 and StrictMode: buildings drawn, no `MapStyleSource:` error |
 | Frame cost | main-thread `updateMilliseconds` 1.3 to 3.6 ms on SwiftShader while tiles and elevations load; one draw per layer and tile (two for translucent layers) |
+### Terrain from raster-dem (W8, part 1)
+
+```tsx
+<Terrain><RasterDemSource url=".../terrarium/{z}/{x}/{y}.png" encoding="terrarium" maximumZoom={15} /></Terrain>
+// vanilla: new Terrain({ sources: [new RasterDemSource({ url, encoding: 'terrarium' })] })
+```
+
+How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
+
+- **A tile set like quantized-mesh's.** The plugin hands 3DTilesRenderer an implicit Web Mercator quadtree: zoom 0
+  plus two polar caps under the root, children added when a tile parses (kept when it unloads, like a static tile
+  set). Tiles carry region volumes (heights fitted on parse; children start from the parent's, widened by a quarter
+  of its range) and Cesium's heightmap geometric error (a quarter of the tile's width over its 65 samples, the width
+  taken at its latitude nearest the equator), with error target 2 as quantized-mesh. So tile selection, fades,
+  imagery, the label height sampler and the flat map work unchanged: nothing else in the pipeline knows the terrain
+  came from a raster.
+- **Mesh building in a worker** (`dem/rasterDemWorker.ts`, built as `dist/terrain-worker.js`): the tile's bytes are
+  transferred, decoded with `createImageBitmap` + `OffscreenCanvas` (exact bytes), unpacked with W7's
+  `demUnpackFactors` / `decodeDemPixels`, then a 65 × 65 grid uniform in Web Mercator is sampled bilinearly at pixel
+  centres, converted to ECEF in double precision, normals taken from neighbouring vertices, skirts (as long as the
+  geometric error, as quantized-mesh) hung along the ellipsoid normal on all four edges. Positions come back as float32
+  relative to the tile's centre, transferred. `createWorker: null` builds on the main thread; a worker that fails to
+  load (a bundler that does not follow `new URL(…, import.meta.url)`, a CSP) only fires `onerror` later, so the
+  builder keeps a copy of each request's bytes until it is answered and builds the pending tiles on the main thread
+  then (3DTilesRenderer never retries a failed tile: without this the globe would lose its terrain for good).
+- **Deeper than the data.** At `maximumZoom` the tile's encoded bytes are kept (64-entry LRU); its descendants read a
+  part of the same raster (served from the kept bytes by the plugin's `fetchData`: no request) until a cell spans a
+  pixel: two extra levels for 256-pixel tiles, three for 512. Deviation from upstream's `TerrainRGBMeshPlugin`
+  (3d-tiles-renderer 0.5.4 has one): it displaces a flat mesh on the GPU through classic-material `displacementMap`,
+  which node materials, our imagery UVs, the flat map's CPU `positionFlat`, raycasts and the label sampler cannot
+  read. CPU meshes keep all of those exact.
+- **Missing tiles.** A tile the server lacks (404 or 204: `maximumZoom` set past the server's last zoom, outside its
+  `bounds`) would fail and, under REPLACE refinement, open a hole. The plugin's `fetchData` fetches the tile itself and
+  on 404 walks up to the nearest ancestor the server has (or a kept raster), serves its bytes, and remembers the
+  stand-in: the tile then reads that ancestor's raster like a tile past the data, and its children need no request.
+  One warning per zoom names the `maximumZoom` to set.
+- **Poles.** Web Mercator stops at ±85.05°. Each cap is a ring grid (8 rings × 128 columns) from the edge to the pole,
+  following the zoom 0 raster's edge row, rising or falling evenly to the row's mean at the pole, with a 3 km skirt
+  along its edge so finer tiles never open a gap. On the flat map the caps collapse onto the edge of the square.
+- **Seams.** Neighbouring tiles sample their own edge pixels, so shared edges can differ by about a pixel's step (the
+  shading shows a faint line on steep slopes). Each tile's skirt is the longer of its geometric error and three times
+  the steepest half-pixel step along its edges, so a crack never opens, even past the data where the skirt would
+  otherwise halve each level while the step stays a source pixel. Tiles on the edge of Web Mercator hang 3 km skirts
+  towards the caps, whichever side is higher. Upstream stitches neighbour borders into each texture; that needs the
+  neighbours loaded and was left for later. Height reads straight down a seam could slip between two tiles' float32 edges:
+  `queryTerrainElevation` now falls back to the tile mesh sampler when its raycast misses, and that sampler takes the
+  nearest triangle within 1e-4 barycentric when a point falls a hair outside all of them (and skips triangles over half
+  a turn wide: on zoom 0 and the caps, antimeridian vertices can come back on either side).
+- Heights are used as ellipsoidal heights, while these tiles hold heights above sea level: up to about 100 m off true
+  WGS84 heights (the geoid). Not supported yet: TileJSON `bounds` and `minzoom` (tiles outside are requested, then
+  stood in for), cancelling a worker task when its tile is aborted, counting kept rasters (64, about 5 MB) in
+  `memoryBudgetBytes`. Exaggeration: part 2, below.
+
+| Check (`?fixtures&terrain=dem`: Terrarium tiles of the quantized-mesh fixture's heights; SwiftShader) | Result |
+| --- | --- |
+| Heights at a 7 × 7 grid over 2.4° (677 m of relief), from 400 km | all 49 read; worst error against the fixture function 1.8 m (quantized-mesh fixture: 4.6 m) |
+| Pitched view, WebGPU and WebGL2 | imagery checker drapes on 76 % of the view, same on both backends; terrain credit shown |
+| North pole from 6,000 km | closed: no black at the centre (without the caps, a black disc of 85.05°–90° shows: the check can fail) |
+| 2D at 80 km | morph settles, checker on 96 % of the view |
+| Unit tests | 16 new: surface grid and skirt winding, pixel-centre sampling, tile bounds, overzoomed tiles matching their ancestor's vertices, skirts lengthened by edge steps, polar caps, geometric errors, source validation, plugin tile set, region fitting, children, kept rasters, ancestors standing in for missing tiles, TileJSON, decode errors, worker failing to load |
+
+![raster-dem terrain](dem-terrain-pitched.png) ![north pole](dem-terrain-north-pole.png)
+
+### Terrain exaggeration (W8, part 2)
+
+```tsx
+<Terrain exaggeration={1.5}>…</Terrain>   // vanilla: terrain.exaggeration = 1.5
+```
+
+- **Shader.** `FlatMapPlugin` already converts every vertex to geodetic on load (for `positionFlat`); it now also
+  stores `heightOffset`, the vertex's height along the ellipsoid normal in the mesh frame (12 bytes a vertex). The
+  shared `positionNode` adds `heightOffset × (exaggeration − 1)` on the globe and `(flat z + mesh flat centre z) ×
+  (exaggeration − 1)` on the map, from per-draw uniforms. At 1 the lift is 0 times the offset: positions are bit for
+  bit unchanged (the precision check stays exact). Works for any terrain source, so quantized-mesh terrain gets it too.
+- **Selection and culling.** `EarthTilesRenderer` scales each region volume's heights after 3DTilesRenderer builds it
+  (`preprocessNode`) and after terrain plugins refit it on parse (`parseTile`); a change refits every tile (a
+  traversal, no reload). The flat map's region boxes scale alike. Tile `region`s keep the data's heights, so readers
+  of the data (the label sampler) stay exact.
+- **Reading heights.** Raycasts go through 3DTilesRenderer's `raycastTile` hook: `FlatMapPlugin` tests each mesh
+  through a copy of its positions with the offsets applied, built once per exaggeration value (lazily, only for
+  tiles whose volume the ray crosses on the accelerated path). So `queryTerrainElevation`, `unproject`, pointer events
+  and controls read the ground as drawn. `Terrain.sampleElevation` (labels, markers) adds `(exaggeration − 1)` times
+  the interpolated vertex heights to the sampled chord, as the shader draws it (not height × exaggeration, which would
+  scale the chord sag too). Label occlusion rays, the label cache and the controls' camera floor scale with it.
+- **Cost of a change.** Drawing is a uniform, but each new value traverses every tile to refit volumes and raycasts copy
+  the tiles they test, so the skill advises sliders and short transitions, not a per-frame animation. Below 1 the
+  skirts shrink with the heights.
+- Deviation from the brief: none in substance. Normals are not steepened (slopes are lit as unexaggerated);
+  a TSL normal tweak could follow if it looks flat at high values.
+
+| Check (`?fixtures`, exaggeration 2 then 1; SwiftShader) | Result |
+| --- | --- |
+| Raster-dem terrain: 7 × 7 grid of heights | all 49 read; worst error against 2 × the fixture 3.5 m (1.8 m at 1) |
+| Quantized-mesh terrain: same grid | 5.6 m at 2 (4.6 m at 1) |
+| Flat map, raster-dem | 3.5 m at 2, 1.8 m at 1 |
+| Changing the prop | the relief redraws (11 to 13 % of pixels change), same `Terrain` object (no reload), no errors |
+| Unit tests | 4 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, sampler agrees with the raycast, flat boxes scaled, volumes refit and restored with value checks |
+
+![exaggeration 2](terrain-exaggeration.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
@@ -899,6 +1000,49 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
+
+## Heatmap layers (W11)
+
+MapLibre `heatmap` layers, with every paint property and `heatmap-density`. The plugin design (W17, section 11)
+proposed heatmap as the first real plugin; it is built on the same seams, as a **built-in layer type** rather than a
+plugin, because `heatmap` is a MapLibre type (plugins cannot take those) and its properties are the style
+specification's own.
+
+- **Worker.** `getBuiltInLayerTypes()` adds `heatmap` to every processor's loaded layer types, with the style
+  specification's `paint_heatmap` / `layout_heatmap` instead of converted plugin definitions, so expressions,
+  validation and `['heatmap-density']` work as in MapLibre. Its tessellation is a `WorkerLayerType`, the plugin worker
+  API (`src/vector/heatmap/heatmapWorker.ts`), run in-process instead of imported by URL. Per point (every vertex,
+  as MapLibre's circle buckets), one quad as wide as the kernel reaches (`radius × √(−2 ln(ZERO / (w · i · G))) / 3`,
+  MapLibre's formula), carrying the centre, the weight and the radius. Points in the tile's buffer are skipped
+  (`host.isInsideTile`): densities add, so a point two tiles draw would count twice.
+- **Summary.** Per heatmap layer: its `heatmap-color` ramp at 256 densities (premultiplied sRGB bytes), and
+  `heatmap-opacity`, `heatmap-intensity` and the reach in pixels per integer zoom. The reach is the radius times the
+  kernel's extent for that zoom's weight × intensity, at most 512 px; a radius or weight read from the features
+  reaches the full ring (512 px).
+- **Main thread** (`HeatmapLayers`, one per overlay). The type's definition goes through the custom layer path of
+  W17 part 2 unchanged: `offscreen: { blending: 'additive' }` into the overlay's half-float layer target, then a
+  composite at the layer's place in the order. Two per-layer hooks (`prepareDraw`, `prepareComposite`, internal)
+  set the intensity of each draw at the region's zoom and point the composite at the layer's ramp row (one atlas
+  texture, 256 × layers) and opacity. The fragment shader evaluates `w · i · G · exp(−4.5 d²)` with `d` the distance
+  in radii at the region's zoom; buckets are processed at the region's level (overzoomed ones too), so quad size
+  and shader agree.
+- **Reach.** Region rings widen by the largest heatmap reach at the region's level (labels already reach half a
+  tile, so radii under 128 px cost nothing more); ring tiles draw their own points into the region.
+
+| Check (`?fixtures&map=vector&heatmap`, two layers over GeoJSON points; SwiftShader) | Result |
+| --- | --- |
+| Seamless across a tile edge (2D, 40 km): the colour step across a z8 tile edge against the step 6 px beside it | 22.1 against 24.7. With ring tiles left out on purpose: 56.9 against 37.5, and the cut is visible |
+| WebGL2 fallback (half-float blending) | the same red, heat and magenta pixel shares as WebGPU (0.0157, 0.0737, 0.0014) |
+| 3D, pitched, terrain | the heat drapes on terrain; 3.8 % heat pixels |
+| Per-layer ramps | the second layer draws in its own magenta ramp at 0.8 opacity |
+| Unit tests | 8 new: kernel values and extent against MapLibre's formula; quads per owned point, buffer points skipped, data-driven weight and radius, reach clamp, overzoomed tiles; ramp, opacity, intensity and reach per zoom; `setPaintProperty`; per-layer draw and composite values, the ramp atlas kept across equal summaries |
+
+![Heatmap layers: default ramp across a tile edge, magenta ramp](heatmap.png)
+
+Limits: the radius is in map pixels at the region's zoom (draped, like line widths), not screen pixels, so on a
+pitched globe far kernels are smaller, and the heat steps when regions change level (radius, intensity and opacity
+are taken at integer zooms). Heatmap layers are not queryable, as in MapLibre. Kernels are cut at one tile (512 px),
+which starts near a 400 px radius at a weight × intensity of 1.
 
 ## Map controls (W10)
 

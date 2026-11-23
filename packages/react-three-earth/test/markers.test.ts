@@ -41,7 +41,7 @@ afterEach(() => {
 
 /** A terrain with no tiles: raycasts find nothing, but markers following it still spend their budget. */
 function withEmptyTerrain(earth: Earth): void {
-  ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: false, update() {}, dispose() {} }
+  ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: false, sampleElevation: () => null, update() {}, dispose() {} }
 }
 
 /** Runs earth.update with the clock moved on by a 60 fps frame each time. */
@@ -231,7 +231,7 @@ describe('terrain checks while loading and hidden', () => {
   it('do not ask for frames while a download is pending and nothing changed', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const { earth, camera, container } = createMap()
-    ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: true, tiles: { stats: { loaded: 3 }, visibleTiles: new Set() }, update() {}, dispose() {} }
+    ;(earth as unknown as { terrain: object }).terrain = { object: new Group(), loading: true, sampleElevation: () => null, tiles: { stats: { loaded: 3 }, visibleTiles: new Set() }, update() {}, dispose() {} }
     for (let index = 0; index < 5; index++) new Marker({ longitudeDegrees: index * 0.1, latitudeDegrees: 0 }).addTo(earth, container)
     for (let round = 0; round < 5; round++) {
       frames(earth, camera, 16)

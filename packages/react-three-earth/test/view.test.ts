@@ -1,10 +1,11 @@
 import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
-import { Box3, BufferAttribute, BufferGeometry, MathUtils, Matrix4, PerspectiveCamera, Vector3 } from 'three'
-import { describe, expect, it } from 'vitest'
+import { Box3, BufferAttribute, BufferGeometry, DoubleSide, Group, MathUtils, Matrix4, Mesh, MeshBasicMaterial, PerspectiveCamera, Raycaster, Vector3, type Intersection } from 'three'
+import { describe, expect, it, vi } from 'vitest'
 
 import { setCameraView } from '../src/core/camera.js'
 import { getFlatRegionBox } from '../src/tiles/EarthTilesRenderer.js'
-import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
+import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, FlatMapPlugin, HEIGHT_OFFSET_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
+import { sampleTerrainHeight } from '../src/tiles/terrainHeights.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 import {
   ecefToGeodetic,
@@ -195,6 +196,19 @@ describe('flat tile bounds', () => {
     expect(box.containsPoint(new Vector3(0, 0, 0))).toBe(true)
     expect(box.max.z).toBeGreaterThan(3776)
   })
+
+  it('scales the heights with the exaggeration', () => {
+    const view = new ViewMorph()
+    view.setAnchor(FUJI.longitude, FUJI.latitude)
+    const region = [degrees(138), degrees(35), degrees(139), degrees(36), -100, 3800]
+    const plain = new Box3()
+    const exaggerated = new Box3()
+    getFlatRegionBox(region, view, plain)
+    getFlatRegionBox(region, view, exaggerated, 2)
+    expect(exaggerated.max.z).toBeCloseTo(plain.max.z * 2, 6)
+    expect(exaggerated.min.z).toBeCloseTo(plain.min.z * 2, 6)
+    expect(exaggerated.max.x).toBe(plain.max.x)
+  })
 })
 
 describe('computeFlatPositions', () => {
@@ -215,6 +229,77 @@ describe('computeFlatPositions', () => {
     expect(Math.abs(flat.getX(1) + center[0] - expectedX)).toBeLessThan(0.05)
     expect(Math.abs(flat.getY(2) + center[1] - latitudeToMercatorY(degrees(35.4)))).toBeLessThan(0.05)
     expect(Math.abs(flat.getZ(2) + center[2] - 3776 * mercatorScaleFactor(degrees(35.4)))).toBeLessThan(0.05)
+    // Each vertex's height along the ellipsoid normal, in the mesh frame.
+    const offsets = geometry.getAttribute(HEIGHT_OFFSET_ATTRIBUTE)
+    const summit = new Vector3().fromBufferAttribute(offsets, 2)
+    expect(summit.length()).toBeCloseTo(3776, 1)
+    const up = new Vector3()
+    WGS84_ELLIPSOID.getEastNorthUpAxes(degrees(35.4), degrees(138.7), new Vector3(), new Vector3(), up)
+    expect(summit.clone().normalize().dot(up)).toBeCloseTo(1, 6)
+    expect(new Vector3().fromBufferAttribute(offsets, 0).length()).toBeCloseTo(0, 3)
+  })
+})
+
+describe('terrain exaggeration', () => {
+  /** A one-triangle tile around Fuji's summit (3776 m), with the plugin's attributes. */
+  function summitTile() {
+    const points = [
+      [138.72, 35.35],
+      [138.74, 35.35],
+      [138.73, 35.37],
+    ].map(([longitude, latitude]) => WGS84_ELLIPSOID.getCartographicToPosition(degrees(latitude!), degrees(longitude!), 3776, new Vector3()))
+    const origin = points[0]!.clone()
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(points.flatMap(point => point.clone().sub(origin).toArray())), 3))
+    geometry.setIndex([0, 1, 2])
+    computeFlatPositions(geometry, new Matrix4().makeTranslation(origin), null)
+    const mesh = new Mesh(geometry, new MeshBasicMaterial({ side: DoubleSide }))
+    mesh.position.copy(origin)
+    mesh.updateMatrixWorld()
+    const scene = new Group()
+    scene.add(mesh)
+    return scene
+  }
+
+  /** Height above the ellipsoid where a ray straight down at the triangle's centre hits it. */
+  function hitHeight(plugin: FlatMapPlugin, scene: Group): number | null {
+    const up = new Vector3()
+    WGS84_ELLIPSOID.getEastNorthUpAxes(degrees(35.357), degrees(138.73), new Vector3(), new Vector3(), up)
+    const origin = WGS84_ELLIPSOID.getCartographicToPosition(degrees(35.357), degrees(138.73), 50_000, new Vector3())
+    const raycaster = new Raycaster(origin, up.clone().negate())
+    const hits: Intersection[] = []
+    if (!plugin.raycastTile({} as never, scene, raycaster, hits)) raycaster.intersectObject(scene, true, hits)
+    if (hits.length === 0) return null
+    const cartographic = { lat: 0, lon: 0, height: 0 }
+    WGS84_ELLIPSOID.getPositionToCartographic(hits[0]!.point, cartographic)
+    return cartographic.height
+  }
+
+  it('raycasts the ground as drawn', () => {
+    const plugin = new FlatMapPlugin()
+    const scene = summitTile()
+    // Within the chord a 2 km triangle cuts below the curved Earth.
+    expect(hitHeight(plugin, scene)).toBeCloseTo(3776, -1)
+    plugin.exaggeration = 2
+    expect(hitHeight(plugin, scene)).toBeCloseTo(7552, -1)
+    plugin.exaggeration = 0.5
+    expect(hitHeight(plugin, scene)).toBeCloseTo(1888, -1)
+    // The hit names the tile's own mesh.
+    const hits: Intersection[] = []
+    const mesh = scene.children[0]!
+    const up = WGS84_ELLIPSOID.getCartographicToPosition(degrees(35.357), degrees(138.73), 0, new Vector3()).normalize()
+    plugin.raycastTile({} as never, scene, new Raycaster(up.clone().multiplyScalar(6_500_000), up.clone().negate()), hits)
+    expect(hits[0]?.object).toBe(mesh)
+  })
+
+  it('samples the height the raycast hits', () => {
+    const plugin = new FlatMapPlugin()
+    const scene = summitTile()
+    const tile = { boundingVolume: { region: [degrees(138.72), degrees(35.35), degrees(138.74), degrees(35.37), 0, 4000] }, engineData: { scene } }
+    for (const exaggeration of [1, 2, 0.5]) {
+      plugin.exaggeration = exaggeration
+      expect(sampleTerrainHeight([tile], degrees(138.73), degrees(35.357), exaggeration)! - hitHeight(plugin, scene)!).toBeCloseTo(0, 1)
+    }
   })
 })
 
@@ -310,5 +395,29 @@ describe('world copies as instances', () => {
     geometry.setAttribute('layer_uv_0', new BufferAttribute(new Float32Array(6), 2))
     expect(instanced.getAttribute('layer_uv_0')).toBe(geometry.getAttribute('layer_uv_0'))
     expect(toInstancedGeometry(instanced)).toBe(instanced)
+  })
+})
+
+describe('Terrain.exaggeration', () => {
+  it('checks its value and refits tile volumes, not regions', async () => {
+    const { Terrain } = await import('../src/core/Terrain.js')
+    const { QuantizedMeshSource } = await import('../src/core/sources.js')
+    const terrain = new Terrain({ sources: [new QuantizedMeshSource({ url: 'https://example.com/terrain' })], exaggeration: 1.5 })
+    expect(terrain.exaggeration).toBe(1.5)
+    expect(terrain.tiles.exaggeration).toBe(1.5)
+    expect(() => (terrain.exaggeration = -1)).toThrow(/0 or more/)
+    expect(() => (terrain.exaggeration = Number.NaN)).toThrow(/finite/)
+
+    // A preprocessed tile's volume holds the exaggerated heights; its region keeps the data's.
+    const setRegionData = vi.fn()
+    const tile = { boundingVolume: { region: [0, 0, 0.1, 0.1, -10, 1000] }, engineData: { boundingVolume: { setRegionData } }, children: [] }
+    Object.defineProperty(terrain.tiles, 'root', { value: tile })
+    terrain.exaggeration = 2
+    expect(setRegionData).toHaveBeenLastCalledWith(expect.anything(), 0, 0, 0.1, 0.1, -20, 2000)
+    expect(tile.boundingVolume.region[5]).toBe(1000)
+    // Back to 1 restores them.
+    terrain.exaggeration = 1
+    expect(setRegionData).toHaveBeenLastCalledWith(expect.anything(), 0, 0, 0.1, 0.1, -10, 1000)
+    terrain.dispose()
   })
 })

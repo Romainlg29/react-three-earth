@@ -79,7 +79,7 @@ export function ReliefMap() {
 - `color-relief`: `color-relief-color` is an `interpolate` or `step` over `['elevation']` (up to 256 stops;
   longer ramps are resampled), with `color-relief-opacity`.
 - A raster-dem source shades and colours the drape; it does not raise the terrain. Elevation comes from the
-  `<Terrain>` source.
+  `<Terrain>` source: for terrain from the same tiles, put a `<RasterDemSource>` there (`terrain-and-imagery-sources`).
 
 ## Core Patterns
 
@@ -103,7 +103,8 @@ direction measured from north. The light does not follow the atmosphere's sun.
 
 ### MEDIUM: Expecting the relief to raise the terrain
 
-A raster-dem source only shades and colours the drape. Elevation comes from the `<Terrain>` source.
+A raster-dem source only shades and colours the drape. Elevation comes from the `<Terrain>` source; give it a
+`<RasterDemSource>` with the same `tiles` URL and `encoding` to raise the ground from the same data.
 
 ### MEDIUM: A hillshade on a vector source, or a raster layer on a raster-dem source
 

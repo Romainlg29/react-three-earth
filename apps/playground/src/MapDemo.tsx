@@ -25,6 +25,7 @@ import {
   PerformanceStats,
   Popup,
   QuantizedMeshSource,
+  RasterDemSource,
   RasterTileSource,
   ScaleControl,
   StyleLayer,
@@ -47,6 +48,7 @@ import { vignette } from './effects/vignette'
 import { sdfGlow } from './styleLayers/sdfGlow'
 import { stripedFill } from './styleLayers/stripedFill'
 import { GeoJsonExample } from './geojson/GeoJsonExample'
+import { HeatmapExample } from './heatmap/HeatmapExample'
 
 const OPENSTREETMAP_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
@@ -54,6 +56,14 @@ const params = new URLSearchParams(location.search)
 const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
+// `?terrain=dem` builds the terrain from Terrarium elevation tiles (`<RasterDemSource>`): with `?fixtures`, the
+// quantized-mesh fixture's heights; `?terrain=dem-hills` adds the relief fixture's round hills.
+const terrainKind = params.get('terrain') ?? 'quantized-mesh'
+const demUrl = useFixtures
+  ? `${import.meta.env.BASE_URL}fixtures/dem/{z}/{x}/{y}.png${terrainKind === 'dem-hills' ? '' : '?plain'}`
+  : (import.meta.env.VITE_DEM_URL ?? 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png')
+// `?exaggeration=2` scales the terrain's heights (`<Terrain exaggeration>`); tests change it with `window.setExaggeration`.
+const initialExaggeration = Number(params.get('exaggeration') ?? 1)
 const withAtmosphere = params.get('atmosphere') !== '0'
 const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery. `?test=invalidate` (with
@@ -120,6 +130,9 @@ if (showEffects) Object.assign(window, { effectPlugins })
 // `?geojson` (with `?fixtures&map=vector`) adds app data through <GeoJsonSource>: an area, a route with a gradient and
 // clustered stations (src/geojson/). The browser check moves the area (`window.moveGeoJsonArea`) and queries clusters.
 const showGeoJson = params.has('geojson')
+// `?heatmap` (with `?fixtures&map=vector`) adds two heatmap layers over GeoJSON points (src/heatmap/): one straddles a
+// tile edge, for the seam check, the other has a colour ramp of its own.
+const showHeatmap = params.has('heatmap')
 // Module scope: each distinct distance function is its own pipeline.
 const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
@@ -149,6 +162,7 @@ declare global {
   interface Window {
     earth?: EarthImpl
     setView?: (view: ViewMode) => void
+    setExaggeration?: (exaggeration: number) => void
     camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
     markers?: Record<string, MarkerImpl | null>
@@ -308,20 +322,27 @@ function AtmosphereStatus() {
 export function MapDemo() {
   const [view, setView] = useState<ViewMode>(initialView)
   window.setView = setView // tests switch the view like the button does
+  const [exaggeration, setExaggeration] = useState(initialExaggeration)
+  window.setExaggeration = setExaggeration
   return (
     <>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: forceWebGL, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date} view={view} plugins={plugins}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
-          <Terrain>
-            <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
+          <Terrain exaggeration={exaggeration}>
+            {terrainKind.startsWith('dem') ? (
+              <RasterDemSource url={demUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={useFixtures ? 'Synthetic test elevation' : 'Terrain: Mapzen, AWS Terrain Tiles'} />
+            ) : (
+              <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
+            )}
           </Terrain>
           <Imagery>
             {mapStyleUrl !== undefined ? (
               <MapStyleSource url={mapStyleUrl} symbols={symbolPlacement} extrusions={extrusionMode} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
                 {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
                 {showGeoJson ? <GeoJsonExample /> : null}
+                {showHeatmap ? <HeatmapExample /> : null}
                 {showHover ? <HoverLayer /> : null}
               </MapStyleSource>
             ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}

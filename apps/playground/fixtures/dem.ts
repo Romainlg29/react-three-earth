@@ -15,16 +15,17 @@ export function demHeightMeters(longitudeDegrees: number, latitudeDegrees: numbe
 }
 
 /**
- * A Terrarium-encoded elevation tile (256 pixels, Web Mercator XYZ) of `demHeightMeters`, sampled at pixel
- * centres: `height + 32768 = R × 256 + G + B / 256`.
+ * A Terrarium-encoded elevation tile (256 pixels, Web Mercator XYZ) of `demHeightMeters` (`fixtureHeightMeters`, the
+ * quantized-mesh terrain's, without `hills`), sampled at pixel centres: `height + 32768 = R × 256 + G + B / 256`.
  */
-export function terrariumTile(z: number, x: number, y: number): Uint8Array {
+export function terrariumTile(z: number, x: number, y: number, { hills = true }: { hills?: boolean } = {}): Uint8Array {
+  const height = hills ? demHeightMeters : fixtureHeightMeters
   const size = 256
   return encodePng(size, size, (px, py) => {
     const longitude = ((x + (px + 0.5) / size) / 2 ** z) * 360 - 180
     const n = Math.PI - (2 * Math.PI * (y + (py + 0.5) / size)) / 2 ** z
     const latitude = (180 / Math.PI) * Math.atan(Math.sinh(n))
-    const value = demHeightMeters(longitude, latitude) + 32768
+    const value = height(longitude, latitude) + 32768
     const red = Math.floor(value / 256)
     const green = Math.floor(value) % 256
     const blue = Math.floor((value - Math.floor(value)) * 256)

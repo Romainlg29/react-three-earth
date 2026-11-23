@@ -17,7 +17,8 @@ import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureRe
  * (and `@2x`).
  *
  * `/fixtures/style-relief.json` adds a raster layer of the imagery, colour relief and hillshade from Terrarium
- * elevation tiles at /fixtures/dem/{z}/{x}/{y}.png (`?only=hillshade`: the hillshade alone, on mid-grey).
+ * elevation tiles at /fixtures/dem/{z}/{x}/{y}.png (`?only=hillshade`: the hillshade alone, on mid-grey). The DEM tiles
+ * with `?plain` hold the quantized-mesh terrain's heights alone, for terrain from raster-dem.
  *
  * `/fixtures/style.json?live` reads /fixtures/vector-live/ instead, whose lakes take the colour set with
  * `/fixtures/vector-live/water-color?value=%23e0457b` (empty: the style's blue), for the invalidate check.
@@ -73,7 +74,8 @@ export function fixtureTiles(): Plugin {
         if (dem) {
           const [, z, x, y] = dem.map(Number)
           res.setHeader('Content-Type', 'image/png')
-          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0)))
+          const plain = new URLSearchParams(req.url?.split('?')[1] ?? '').has('plain')
+          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0, { hills: !plain })))
           return
         }
         if (url === '/fixtures/style-patterns.json') {
