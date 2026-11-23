@@ -13,6 +13,7 @@ import type {
   WorkerTileBuilder,
 } from '../../plugins/pluginWorker.js'
 import type { StyleLayerPropertyDefinition, WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
+import { createHeatmapWorkerLayerType, HEATMAP_DESCRIPTOR, HEATMAP_SPECIFICATIONS } from '../heatmap/heatmapWorker.js'
 import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
 import type { CompiledStyleLayer, StyleFeature } from './styleLayers.js'
 import { TILE_EXTENT, type CustomLayerAttribute, type CustomLayerMesh, type FeatureState } from './types.js'
@@ -54,15 +55,29 @@ function toSpecification(property: StyleLayerPropertyDefinition, kind: 'paint' |
 }
 
 /**
- * Loads the layer types, importing each worker module once: a type whose descriptor did not change keeps
- * its module. A module that fails to load skips its type, with a warning naming the URL.
+ * MapLibre layer types the library draws through the custom layer path (`heatmap`): always loaded, with the style
+ * specification's own properties. Plugins cannot register MapLibre types, so these names never collide.
  */
+let builtInLayerTypes: ReadonlyMap<string, LoadedLayerType> | null = null
+export function getBuiltInLayerTypes(): ReadonlyMap<string, LoadedLayerType> {
+  builtInLayerTypes ??= new Map([
+    [HEATMAP_DESCRIPTOR.type, { descriptor: HEATMAP_DESCRIPTOR, ...HEATMAP_SPECIFICATIONS, module: createHeatmapWorkerLayerType(createHost(HEATMAP_DESCRIPTOR)) }],
+  ])
+  return builtInLayerTypes
+}
+
 /** Per type, the revision whose worker module failed to load in this worker. */
 const failedRevisions = new Map<string, number>()
 
+/**
+ * Loads the layer types, importing each worker module once: a type whose descriptor did not change keeps
+ * its module. A module that fails to load skips its type, with a warning naming the URL. The built-in types
+ * (`getBuiltInLayerTypes`) come first, always.
+ */
 export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescriptor[], previous: ReadonlyMap<string, LoadedLayerType>): Promise<Map<string, LoadedLayerType>> {
+  const builtIns = getBuiltInLayerTypes()
   const loaded = await Promise.all(
-    descriptors.map(async (descriptor): Promise<LoadedLayerType | null> => {
+    descriptors.filter(descriptor => !builtIns.has(descriptor.type)).map(async (descriptor): Promise<LoadedLayerType | null> => {
       const kept = previous.get(descriptor.type)
       if (kept !== undefined && kept.descriptor.revision === descriptor.revision) return kept
       // A module that failed is retried only when its type is registered again (a new revision).
@@ -86,7 +101,7 @@ export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescri
       return { descriptor, paint: specifications('paint'), layout: specifications('layout'), module }
     }),
   )
-  return new Map(loaded.flatMap(type => (type === null ? [] : [[type.descriptor.type, type]])))
+  return new Map([...builtIns, ...loaded.flatMap(type => (type === null ? [] : [[type.descriptor.type, type] as const]))])
 }
 
 /** A worker module that takes longer than this is skipped, so it cannot hold up the whole style. */

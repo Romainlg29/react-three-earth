@@ -48,6 +48,7 @@ import { vignette } from './effects/vignette'
 import { sdfGlow } from './styleLayers/sdfGlow'
 import { stripedFill } from './styleLayers/stripedFill'
 import { GeoJsonExample } from './geojson/GeoJsonExample'
+import { HeatmapExample } from './heatmap/HeatmapExample'
 
 const OPENSTREETMAP_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
@@ -122,6 +123,9 @@ if (showEffects) Object.assign(window, { effectPlugins })
 // `?geojson` (with `?fixtures&map=vector`) adds app data through <GeoJsonSource>: an area, a route with a gradient and
 // clustered stations (src/geojson/). The browser check moves the area (`window.moveGeoJsonArea`) and queries clusters.
 const showGeoJson = params.has('geojson')
+// `?heatmap` (with `?fixtures&map=vector`) adds two heatmap layers over GeoJSON points (src/heatmap/): one straddles a
+// tile edge, for the seam check, the other has a colour ramp of its own.
+const showHeatmap = params.has('heatmap')
 // Module scope: each distinct distance function is its own pipeline.
 const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
@@ -328,6 +332,7 @@ export function MapDemo() {
               <MapStyleSource url={mapStyleUrl} symbols={symbolPlacement} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
                 {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
                 {showGeoJson ? <GeoJsonExample /> : null}
+                {showHeatmap ? <HeatmapExample /> : null}
                 {showHover ? <HoverLayer /> : null}
               </MapStyleSource>
             ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}

@@ -184,6 +184,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `terrain-and-imagery-sources` | choosing terrain (quantized-mesh, raster-dem) and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, GeoJSON and clusters, `invalidate` after data changes |
 | `map-labels` | labels facing the viewer or on the ground, collision, priorities, fades, reading labels in tests |
+| `heatmap-layers` | point density as a MapLibre heatmap: weight, radius, intensity, colour ramp, heat to points by zoom |
 | `satellite-and-relief-styles` | satellite imagery, hillshade and colour relief in a MapLibre style (`raster`, `raster-dem`) |
 | `query-features-and-layer-events` | `queryRenderedFeatures`, `querySourceFeatures`, layer click / enter / leave events, cursor, hover feature-state |
 | `flat-map-2d` | a flat 2D map (Web Mercator, like MapLibre) and the globe-to-map transition |

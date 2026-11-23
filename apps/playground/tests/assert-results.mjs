@@ -248,6 +248,18 @@ const expectations = {
     ['setData far from the view leaves the detailed regions in view as they are', r.detailedRegionsHeld >= 4 && r.detailedRegionsRedrawn === 0 && r.regionsRedrawnFarFromView < r.regionsHeldClose],
     ['a cluster query reaches the worker and states the fix', /has no cluster 987654.*use a `cluster_id`/.test(r.clusterQuery)],
   ]])),
+  // Heatmap layers (`?heatmap`): MapLibre's default ramp over points straddling a tile edge, and a magenta ramp.
+  ...Object.fromEntries(['2d', '2d webgl2', '3d'].map(name => [`heatmap layers, ${name}`, r => {
+    const webgpu = results.find(other => other.check === 'heatmap layers, 2d')
+    return [
+      ['the quake heatmap draws, with its red core', r.heatShare > 0.02 && r.redShare > (name === '3d' ? 0.0001 : 0.005)],
+      ['the sensor heatmap draws in its own magenta ramp', r.magentaShare > 0.0005],
+      ['no heatmap layer is skipped, no error', r.warnings.length === 0 && r.errors.length === 0],
+      // Measured: 22 against 25 seamless; 57 against 38 with ring tiles left out (a seam).
+      ...(name === '3d' ? [] : [['no seam at the tile edge: the colour steps across it no more than beside it', r.edgeRows > 100 && r.edgeStep < r.nearbyStep * 1.2]]),
+      ...(name === '2d webgl2' ? [['WebGL2 draws the same heat as WebGPU', webgpu !== undefined && Math.abs(r.redShare - webgpu.redShare) <= webgpu.redShare * 0.1 && Math.abs(r.magentaShare - webgpu.magentaShare) <= webgpu.magentaShare * 0.2]] : []),
+    ]
+  }])),
   'sdf shapes plugin, strict mode': r => {
     const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
     return [

@@ -1340,6 +1340,56 @@ async function geoJsonSources(name, query) {
 }
 
 /**
+ * The `?heatmap` layers, by colour: MapLibre's default ramp (its red core), the magenta ramp of the second layer.
+ * The quake heat straddles a tile edge (`edgeX` on screen). `edgeStep` is the mean colour step across the edge
+ * (3 px either side, clear of the terrain's 1 px region line), `nearbyStep` the same step 6 px to the west: a seam
+ * (a tile missing its neighbour's points) cuts the heat off at the edge, so its step stands out.
+ */
+const heatmapPixels = (edgeX, centerY) => `
+  const edgeX = ${Math.round(edgeX)}, centerY = ${Math.round(centerY)}
+  const at = (x, y) => { const i = (y * width + x) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  const step = (a, b) => (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2])) / 3
+  // By hue, so the dimly lit 3D view counts too.
+  const isRed = ([r, g, b]) => r > 80 && r > g * 3 && r > b * 3
+  const isHeat = ([r, g, b]) => Math.max(r, g, b) - Math.min(r, g, b) > 100 && !(r > 80 && b > 80 && g < Math.min(r, b) * 0.6)
+  let red = 0, heat = 0, magenta = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (isRed([r, g, b])) red++
+    if (isHeat([r, g, b])) heat++
+    if (r > 80 && b > 80 && g < Math.min(r, b) * 0.6 && Math.abs(r - b) < Math.max(r, b) * 0.3) magenta++
+  }
+  let edgeStep = 0, nearbyStep = 0, rows = 0
+  for (let y = Math.max(centerY - 200, 0); y < Math.min(centerY + 200, height - 40); y++) {
+    if (!isHeat(at(edgeX - 3, y)) && !isHeat(at(edgeX + 3, y))) continue
+    edgeStep += step(at(edgeX - 3, y), at(edgeX + 3, y))
+    nearbyStep += step(at(edgeX - 9, y), at(edgeX - 3, y))
+    rows++
+  }
+  const n = px.length / 4
+  return { redShare: +(red / n).toFixed(4), heatShare: +(heat / n).toFixed(4), magentaShare: +(magenta / n).toFixed(4), edgeRows: rows, edgeStep: rows === 0 ? null : +(edgeStep / rows).toFixed(1), nearbyStep: rows === 0 ? null : +(nearbyStep / rows).toFixed(1) }
+`
+
+/** Heatmap layers (`?heatmap`): two layers over GeoJSON points, one mirrored about a tile edge. */
+async function heatmaps(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&heatmap${query}`)
+  const warnings = []
+  page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 300 })
+  await page.waitForTimeout(3000) // tile fades
+  // The tile edge the quake heat straddles (z8 column 227) at the cloud's latitude.
+  const edge = await page.evaluate(() => window.earth.project({ longitudeDegrees: (227 / 256) * 360 - 180, latitudeDegrees: 35.3 }))
+  const png = await page.screenshot()
+  writeFileSync(new URL(`heatmap-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const stats = await analyse(page, png, heatmapPixels(edge.xPixels, edge.yPixels))
+  await page.close()
+  results.push({ check: `heatmap layers, ${name}`, edge: { x: Math.round(edge.xPixels), y: Math.round(edge.yPixels) }, ...stats, errors, warnings: warnings.filter(text => /heatmap|skipp/i.test(text)) })
+}
+
+/**
  * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
  * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
  */
@@ -1480,6 +1530,12 @@ try {
     await geoJsonSources('webgpu', '')
     await geoJsonSources('webgl2', '&webgl')
     await geoJsonSources('strict mode', '&strict')
+  }
+  if (!only || only === 'vector' || only === 'heatmap') {
+    const view = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
+    await heatmaps('2d', view)
+    await heatmaps('2d webgl2', `${view}&webgl`)
+    await heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')
   }
   if (!only || only === 'vector' || only === 'query') await featureQueries()
   if (!only || only === 'afterburner') await afterburnerChecks()

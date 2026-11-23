@@ -11,7 +11,7 @@ import {
   type VisibilityExpression,
 } from '@maplibre/maplibre-gl-style-spec'
 
-/** Style layer types the renderer draws. Others (heatmap) are skipped with a warning. */
+/** MapLibre style layer types the renderer draws natively. `heatmap` is drawn as a built-in custom layer type (`src/vector/heatmap/`). */
 export const SUPPORTED_LAYER_TYPES = ['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion', 'raster', 'hillshade', 'color-relief'] as const
 
 /** Layer types drawn from raster tiles, each with a draw group of its own (`assignLayerOrder`). */
@@ -154,11 +154,17 @@ export class CompiledStyleLayer {
   }
 
   /**
-   * Evaluates a property with more globals than the zoom: `elevation` for `color-relief-color`. Feature-less, so
-   * only for properties that do not read feature data.
+   * Evaluates a property with more globals than the zoom: `elevation` for `color-relief-color`, `heatmapDensity`
+   * for `heatmap-color`. Feature-less, so only for properties that do not read feature data.
    */
-  evaluateWithGlobals<T>(kind: PropertyKind, name: string, globals: { zoom: number; elevation?: number }): T {
+  evaluateWithGlobals<T>(kind: PropertyKind, name: string, globals: { zoom: number; elevation?: number; heatmapDensity?: number }): T {
     return this.compile(kind, name).evaluate(globals as never, undefined as never) as T
+  }
+
+  /** Whether a property's value depends on the feature (`['get', …]`, `feature-state`), not only on the zoom. */
+  isFeatureDependent(kind: PropertyKind, name: string): boolean {
+    const expressionKind = this.compile(kind, name).kind
+    return expressionKind === 'source' || expressionKind === 'composite'
   }
 
   /**
