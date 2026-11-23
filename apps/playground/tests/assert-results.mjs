@@ -92,6 +92,14 @@ const expectations = {
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
     ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
   ],
+  // `<Terrain exaggeration={2}>`, then 1, on both terrain kinds and on the flat map.
+  ...Object.fromEntries(['raster-dem', 'quantized-mesh', '2d'].map(name => [`terrain exaggeration, ${name}`, r => [
+    ['every point of the grid has a height', r.exaggerated?.count === 49 && r.plain?.count === 49],
+    ['at 2, heights read twice the fixture\'s (within 8 m)', r.exaggerated?.maximum < 8],
+    ['back at 1, heights read the fixture\'s (within 5 m)', r.plain?.maximum < 5],
+    ['the change redraws the relief (over 2 % of pixels change)', r.changedShare > 0.02],
+    ['without rebuilding the terrain', r.sameTerrain === true],
+  ]])),
   'relief style with fixtures, 3d': r => [
     ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
     ['no warnings', r.warnings.length === 0],

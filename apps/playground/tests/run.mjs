@@ -1499,6 +1499,54 @@ async function rasterDemTerrain(name, query, { heights = false } = {}) {
   results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
 }
 
+/** Heights under a 7 × 7 grid over 2.4° around (-90°, 0°), against the fixture function times `exaggeration`. */
+async function fixtureHeightErrors(page, exaggeration = 1) {
+  const points = []
+  for (let i = 0; i < 49; i++) points.push([-91.2 + (i % 7) * 0.4, -1.2 + Math.floor(i / 7) * 0.4])
+  const sampled = await page.evaluate(points => points.map(([longitudeDegrees, latitudeDegrees]) => window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })), points)
+  const errors = sampled.flatMap((height, index) => (height === null ? [] : [Math.abs(height - exaggeration * fixtureHeightMeters(...points[index]))]))
+  return { count: errors.length, maximum: Number(Math.max(...errors).toFixed(2)) }
+}
+
+/**
+ * `<Terrain exaggeration>`: heights read under a grid are the fixture's times the exaggeration, a new value applies
+ * without reloading the terrain, and the flat map draws it.
+ */
+async function terrainExaggeration(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&camera=-90,0,0,400000,0,-90${query}`)
+  const settled = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && inspection.view.morph === (inspection.view.mode === '2d' ? 1 : 0)
+  }, null, { timeout: 240_000, polling: 500 })
+  await settled()
+  await page.waitForTimeout(1000)
+  const exaggerated = await fixtureHeightErrors(page, 2)
+  await page.evaluate(() => { window.terrainBeforeChange = window.earth.terrain })
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, distanceMeters: 80000, headingDegrees: 30, pitchDegrees: -25 }))
+  await settled()
+  await page.waitForTimeout(1500)
+  const pngExaggerated = await page.screenshot()
+  writeFileSync(new URL(`exaggeration-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), pngExaggerated)
+  await page.evaluate(() => window.setExaggeration(1))
+  await page.waitForTimeout(1500)
+  const pngPlain = await page.screenshot()
+  const changedShare = await page.evaluate(async ([a, b]) => {
+    const load = async data => { const image = new Image(); image.src = `data:image/png;base64,${data}`; await image.decode(); const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height; const context = canvas.getContext('2d'); context.drawImage(image, 0, 0); return context.getImageData(0, 0, image.width, image.height).data }
+    const [pa, pb] = [await load(a), await load(b)]
+    let changed = 0
+    for (let i = 0; i < pa.length; i += 4) if (Math.abs(pa[i] - pb[i]) + Math.abs(pa[i + 1] - pb[i + 1]) + Math.abs(pa[i + 2] - pb[i + 2]) > 30) changed++
+    return Number((changed / (pa.length / 4)).toFixed(3))
+  }, [pngExaggerated.toString('base64'), pngPlain.toString('base64')])
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, distanceMeters: 400000, headingDegrees: 0, pitchDegrees: -90 }))
+  await settled()
+  await page.waitForTimeout(1000)
+  const plain = await fixtureHeightErrors(page, 1)
+  const sameTerrain = await page.evaluate(() => window.terrainBeforeChange === window.earth.terrain)
+  await page.close()
+  results.push({ check: `terrain exaggeration, ${name}`, exaggerated, plain, changedShare, sameTerrain, errors })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1590,6 +1638,11 @@ try {
     await rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')
     await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
     await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
+  }
+  if (!only || only === 'dem' || only === 'exaggeration') {
+    await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
+    await terrainExaggeration('quantized-mesh', '&exaggeration=2')
+    await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
   }
 } finally {
   await browser.close()
