@@ -189,6 +189,23 @@ export class StyleImages {
     return rectangle === null ? null : { ...rectangle, pixelRatio: image.pixelRatio }
   }
 
+  /**
+   * The image's place in the atlas as an icon (packed apart from its pattern copy, with a transparent padding),
+   * packing it on first use; null when it does not exist (recorded as missing) or the atlas is full.
+   */
+  getIcon(id: string): (PatternRectangle & { sdf: boolean }) | null {
+    const key = iconKey(id)
+    const packed = this.atlas.get(key)
+    const image = packed === null ? this.get(id) : null
+    if (packed !== null) return { ...packed, pixelRatio: this.pixelRatioOf(id), sdf: this.sdfOf(id) }
+    if (image === null) {
+      this.missing.add(id)
+      return null
+    }
+    const rectangle = this.atlas.add(key, image, false)
+    return rectangle === null ? null : { ...rectangle, pixelRatio: image.pixelRatio, sdf: image.sdf }
+  }
+
   /** Whether the last lookup of `id` found nothing. */
   isMissing(id: string): boolean {
     return this.missing.has(id)
@@ -200,23 +217,30 @@ export class StyleImages {
    */
   set(id: string, image: StyleImage | null): boolean {
     const packed = this.atlas.get(id)
+    const packedIcon = this.atlas.get(iconKey(id))
     const previousPixelRatio = this.pixelRatioOf(id)
+    const previousSdf = this.sdfOf(id)
     if (image === null) this.runtime.delete(id)
     else this.runtime.set(id, image)
     this.missing.delete(id)
-    if (packed === null) return true
+    if (packed === null && packedIcon === null) return true
     // Removing a runtime image may uncover a sprite image of the same id.
     const next = image ?? this.get(id)
-    if (next === null) {
-      this.atlas.remove(id)
-      return true
+    let rebuild = false
+    for (const [key, rectangle, wrap] of [[id, packed, true], [iconKey(id), packedIcon, false]] as const) {
+      if (rectangle === null) continue
+      if (next !== null && next.width === rectangle.width && next.height === rectangle.height && next.pixelRatio === previousPixelRatio && next.sdf === previousSdf) {
+        this.atlas.add(key, next, wrap)
+        continue
+      }
+      this.atlas.remove(key)
+      rebuild = true
     }
-    if (next.width === packed.width && next.height === packed.height && next.pixelRatio === previousPixelRatio) {
-      this.atlas.add(id, next)
-      return false
-    }
-    this.atlas.remove(id)
-    return true
+    return rebuild
+  }
+
+  protected sdfOf(id: string): boolean {
+    return this.runtime.get(id)?.sdf ?? this.findSpriteImage(id)?.metrics.sdf ?? false
   }
 
   protected pixelRatioOf(id: string): number {
@@ -232,6 +256,11 @@ export class StyleImages {
     }
     return null
   }
+}
+
+/** The atlas key of an image's icon copy (no style image id starts with a control character). */
+function iconKey(id: string): string {
+  return `\u0001icon\u0000${id}`
 }
 
 function prefixedId(spriteId: string, name: string): string {

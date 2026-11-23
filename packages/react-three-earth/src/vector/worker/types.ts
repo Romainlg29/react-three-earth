@@ -437,10 +437,19 @@ export interface SymbolMesh {
   anchorShiftStarts: Uint32Array
   anchorShiftCounts: Uint8Array
   anchorShifts: Float32Array
+  /**
+   * Per label with an icon (`SYMBOL_ICON`): the icon's box around the anchor (left, top, right, bottom, in the label's
+   * units); zeros otherwise. An icon alone has its box in `boxes` too.
+   */
+  iconBoxes: Float32Array
   corners: Float32Array
+  /** Per vertex, in pixels of the glyph atlas, or of the style's image atlas for an icon. */
   uvs: Float32Array
   labelIndices: Float32Array
-  /** Per vertex, the line label glyph it belongs to (index into `glyphOffsets`), or -1 in a point label. */
+  /**
+   * Per vertex, the line label glyph it belongs to (index into `glyphOffsets`), -1 in a point label's text, -2 in
+   * an icon and -3 in an SDF icon (`ICON_GLYPH_INDEX`, `SDF_ICON_GLYPH_INDEX`).
+   */
   glyphIndices: Float32Array
   colors: Uint8Array
   haloColors: Uint8Array

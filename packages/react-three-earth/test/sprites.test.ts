@@ -56,6 +56,16 @@ describe('ImageAtlas', () => {
     expect(pixel(padded, width, 1, 0)).toEqual([255, 0, 0, 255])
   })
 
+  it('pads icons with transparent pixels instead, so their edges fade out', () => {
+    const image: StyleImage = { width: 2, height: 1, data: new Uint8Array([255, 0, 0, 255, 255, 255, 255, 128]), pixelRatio: 1, sdf: false }
+    const padded = padAndPremultiply(image, false)
+    const width = 2 + IMAGE_ATLAS_PADDING * 2
+    expect(pixel(padded, width, 1, 1)).toEqual([255, 0, 0, 255])
+    expect(pixel(padded, width, 0, 1)).toEqual([0, 0, 0, 0])
+    expect(pixel(padded, width, 3, 1)).toEqual([0, 0, 0, 0])
+    expect(pixel(padded, width, 1, 0)).toEqual([0, 0, 0, 0])
+  })
+
   it('packs images, rewrites one of the same size in place, reuses freed slots and grows', () => {
     const atlas = new ImageAtlas()
     const first = atlas.add('a', solid(8, 8, [255, 0, 0, 255]))!

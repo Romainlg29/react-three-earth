@@ -4,12 +4,12 @@ import { bucketKey } from '../src/vector/MapStyleOverlay.js'
 import { Vector3 } from 'three'
 import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
 import { rayHitsTerrain } from '../src/vector/symbols/ScreenSymbols.js'
-import { CollisionGrid, SymbolPlacement, type PlacementCandidate } from '../src/vector/symbols/SymbolPlacement.js'
+import { boundBoxes, moveToAnchor, CollisionGrid, SymbolPlacement, type PlacementCandidate } from '../src/vector/symbols/SymbolPlacement.js'
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
 import { lineLabelPaths, radialAnchorOffset, textOffsetForAnchor, variableAnchorShifts } from '../src/vector/worker/labels.js'
 import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
-import { SYMBOL_ALLOW_OVERLAP, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
+import { ICON_GLYPH_INDEX, SDF_ICON_GLYPH_INDEX, SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
 
@@ -184,6 +184,7 @@ function candidate(key: string, x: number, y: number, options: Partial<Placement
     anchorShifts: null,
     anchorScale: 1,
     anchorIndex: 0,
+    anchorBoxStart: 0,
     layerIndex: 0,
     sortKey: 0,
     allowOverlap: false,
@@ -451,5 +452,63 @@ describe('labels behind terrain', () => {
     expect(rayHitsTerrain(camera, at(0.2, 300), longitude => ((longitude * 180) / Math.PI / 0.2) * 300)).toBe(false)
     // The same label behind a 300 m wall just in front of it, on flat ground: hidden.
     expect(rayHitsTerrain(camera, label, longitude => ((longitude * 180) / Math.PI > 0.195 ? 300 : 0))).toBe(true)
+  })
+})
+
+describe('icons', () => {
+  /** A 16 × 16 image at pixel ratio 2 (8 × 8 map pixels). */
+  const pin = { width: 16, height: 16, data: new Uint8Array(16 * 16 * 4).fill(255), pixelRatio: 2, sdf: false }
+  const peak = { ...pin, sdf: true }
+
+  async function iconSymbols(layers: object[]) {
+    const style = { ...labelStyle(), layers }
+    const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
+    const processor = await MapStyleProcessor.create(
+      { style, baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true, images: [['pin', pin], ['peak', peak]] },
+      { fetch, drawLocalGlyph },
+    )
+    return processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })
+  }
+
+  it('lays an icon at the point under its text, from the image atlas, sized by icon-size', async () => {
+    const bucket = await iconSymbols([
+      { id: 'places', type: 'symbol', source: 'base', 'source-layer': 'places', filter: ['==', ['get', 'name'], 'Fuji'], layout: { 'text-field': '{name}', 'text-size': 12, 'icon-image': 'pin', 'icon-size': 2 } },
+    ])
+    const symbols = bucket.symbols!
+    expect(bucket.images).toEqual(['pin'])
+    expect(symbols.keys).toEqual(['places\u0000Fuji\u0000pin'])
+    expect(symbols.flags[0]! & (SYMBOL_ICON | SYMBOL_ICON_ONLY)).toBe(SYMBOL_ICON)
+    // 8 map pixels × icon-size 2 = 16 screen pixels beside 12 px text: 32 units of a 24 px font, centred.
+    expect([...symbols.iconBoxes.subarray(0, 4)]).toEqual([-16, -16, 16, 16])
+    // The icon's quad comes first (drawn under the text), then the four glyphs.
+    expect(symbols.glyphIndices[0]).toBe(ICON_GLYPH_INDEX)
+    expect(symbols.glyphIndices[4]).toBe(-1)
+    expect(symbols.indices.length).toBe((1 + 4) * 6)
+    // Its colour stays the image's: white, at icon-opacity.
+    expect([...symbols.colors.subarray(0, 4)]).toEqual([255, 255, 255, 255])
+  })
+
+  it('scales an icon alone by icon-size between zooms, tints SDF icons and records missing images', async () => {
+    const bucket = await iconSymbols([
+      { id: 'peaks', type: 'symbol', source: 'base', 'source-layer': 'places', filter: ['==', ['get', 'name'], 'Fuji'], layout: { 'icon-image': 'peak', 'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 1, 11, 2] }, paint: { 'icon-color': '#ff0000' } },
+      { id: 'missing', type: 'symbol', source: 'base', 'source-layer': 'places', filter: ['==', ['get', 'name'], 'Over'], layout: { 'icon-image': 'nowhere' } },
+    ])
+    const symbols = bucket.symbols!
+    expect(bucket.missingImages).toEqual(['nowhere'])
+    expect(symbols.keys).toEqual(['peaks\u0000\u0000peak'])
+    expect(symbols.flags[0]! & SYMBOL_ICON_ONLY).toBe(SYMBOL_ICON_ONLY)
+    // The label scales as a 24 px font times icon-size; its corners are in image pixels at its pixel ratio.
+    expect([...symbols.sizes]).toEqual([24, 48])
+    expect([...symbols.boxes.subarray(0, 4)]).toEqual([-4, -4, 4, 4])
+    expect(symbols.glyphIndices[0]).toBe(SDF_ICON_GLYPH_INDEX)
+    expect([...symbols.colors.subarray(0, 4)]).toEqual([255, 0, 0, 255])
+  })
+
+  it('moves only the text box with a variable anchor; the icon box stays at the point', () => {
+    const label = candidate('label', 200, 200, { anchorShifts: new Float32Array([0, 0, 10, 0]), anchorBoxStart: 4, boxes: [190, 190, 210, 210, 180, 212, 220, 228] })
+    boundBoxes(label)
+    moveToAnchor(label, 1)
+    expect(label.boxes).toEqual([190, 190, 210, 210, 190, 212, 230, 228])
+    expect([label.minimumXPixels, label.maximumXPixels]).toEqual([190, 230])
   })
 })

@@ -30,6 +30,11 @@ export interface PlacementCandidate {
   anchorScale: number
   /** The anchor the box above is shifted to (an index into `anchorShifts`). */
   anchorIndex: number
+  /**
+   * With `boxes`: the first of them (an index into the numbers) that moves with the anchor; those before stay (an
+   * icon at the point while its text moves around it).
+   */
+  anchorBoxStart: number
   /** Placed nowhere this time, only kept so it fades out (a road name whose road on the screen no longer fits it). */
   hidden: boolean
   /** The style layer's index: higher places first. */
@@ -297,11 +302,41 @@ export function moveToAnchor(candidate: PlacementCandidate, anchor: number): voi
   if (anchor === from) return
   const dx = (shifts[anchor * 2]! - shifts[from * 2]!) * candidate.anchorScale
   const dy = (shifts[anchor * 2 + 1]! - shifts[from * 2 + 1]!) * candidate.anchorScale
-  candidate.minimumXPixels += dx
-  candidate.minimumYPixels += dy
-  candidate.maximumXPixels += dx
-  candidate.maximumYPixels += dy
   candidate.anchorIndex = anchor
+  const boxes = candidate.boxes
+  if (boxes === null) {
+    candidate.minimumXPixels += dx
+    candidate.minimumYPixels += dy
+    candidate.maximumXPixels += dx
+    candidate.maximumYPixels += dy
+    return
+  }
+  for (let index = candidate.anchorBoxStart; index < boxes.length; index += 4) {
+    boxes[index] = boxes[index]! + dx
+    boxes[index + 1] = boxes[index + 1]! + dy
+    boxes[index + 2] = boxes[index + 2]! + dx
+    boxes[index + 3] = boxes[index + 3]! + dy
+  }
+  boundBoxes(candidate)
+}
+
+/** Sets a candidate's box to the bounds of its `boxes`. */
+export function boundBoxes(candidate: PlacementCandidate): void {
+  const boxes = candidate.boxes!
+  let minimumX = Infinity
+  let minimumY = Infinity
+  let maximumX = -Infinity
+  let maximumY = -Infinity
+  for (let index = 0; index < boxes.length; index += 4) {
+    minimumX = Math.min(minimumX, boxes[index]!)
+    minimumY = Math.min(minimumY, boxes[index + 1]!)
+    maximumX = Math.max(maximumX, boxes[index + 2]!)
+    maximumY = Math.max(maximumY, boxes[index + 3]!)
+  }
+  candidate.minimumXPixels = minimumX
+  candidate.minimumYPixels = minimumY
+  candidate.maximumXPixels = maximumX
+  candidate.maximumYPixels = maximumY
 }
 
 function visibleRank(fade: SymbolFade | null): number {

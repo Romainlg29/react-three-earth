@@ -29,8 +29,8 @@ interface Slot {
  * so the main thread can mirror it. A removed image's slot is reused by the next image that fits in it, and an
  * image replaced at the same size is rewritten in place.
  *
- * Images are padded with a wrapped copy of their opposite edges: right for patterns, which repeat. Icons
- * (screen-space symbols) will need a transparent padding instead.
+ * Images are padded with a wrapped copy of their opposite edges, right for patterns, which repeat; icons are
+ * packed apart (`StyleImages.getIcon`) with a transparent padding, so their edges fade out.
  */
 export class ImageAtlas {
   width = ATLAS_WIDTH
@@ -53,7 +53,7 @@ export class ImageAtlas {
    * Packs an image under `id`, replacing what was there: in place when the size is the same. Returns its
    * place, or null if the atlas is full.
    */
-  add(id: string, image: StyleImage): AtlasImageRectangle | null {
+  add(id: string, image: StyleImage, wrap = true): AtlasImageRectangle | null {
     const width = image.width + IMAGE_ATLAS_PADDING * 2
     const height = image.height + IMAGE_ATLAS_PADDING * 2
     let slot = this.slots.get(id)
@@ -75,7 +75,7 @@ export class ImageAtlas {
       slot = allocated
       this.slots.set(id, slot)
     }
-    this.updates.push({ x: slot.x, y: slot.y, width, height, data: padAndPremultiply(image) })
+    this.updates.push({ x: slot.x, y: slot.y, width, height, data: padAndPremultiply(image, wrap) })
     return this.get(id)
   }
 
@@ -136,7 +136,7 @@ export class ImageAtlas {
  * The image with its edges wrapped around it (`IMAGE_ATLAS_PADDING` pixels), premultiplied by alpha so linear
  * filtering does not darken transparent edges.
  */
-export function padAndPremultiply(image: StyleImage): Uint8Array {
+export function padAndPremultiply(image: StyleImage, wrap = true): Uint8Array {
   const padding = IMAGE_ATLAS_PADDING
   const width = image.width + padding * 2
   const height = image.height + padding * 2
@@ -147,6 +147,8 @@ export function padAndPremultiply(image: StyleImage): Uint8Array {
       const sourceColumn = (((column - padding) % image.width) + image.width) % image.width
       const source = (sourceRow * image.width + sourceColumn) * 4
       const target = (row * width + column) * 4
+      // An icon's padding stays transparent.
+      if (!wrap && (row < padding || column < padding || row >= height - padding || column >= width - padding)) continue
       const alpha = image.data[source + 3]!
       output[target] = Math.round((image.data[source]! * alpha) / 255)
       output[target + 1] = Math.round((image.data[source + 1]! * alpha) / 255)

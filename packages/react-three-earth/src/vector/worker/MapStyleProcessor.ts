@@ -22,7 +22,7 @@ import {
   type TextSection,
 } from './labels.js'
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
-import { SymbolBuilder, symbolMeshByteLength } from './symbols.js'
+import { SymbolBuilder, symbolMeshByteLength, type ScreenLabelIcon } from './symbols.js'
 import { applyStyleCommand, copyStyleDocument, type StyleDocument } from './styleDocument.js'
 import { ShapeBuilder, type LineCap, type LineGradient, type LineJoin, type Point } from './ShapeBuilder.js'
 import { decodeImageInBrowser, StyleImages, type ImageDecoder } from './sprites.js'
@@ -130,7 +130,10 @@ interface SymbolCandidate {
   state: FeatureState
   type: VectorTileFeatureLike['type']
   geometry: Point[][]
+  /** The text, empty for an icon alone. */
   sections: TextSection[]
+  /** `icon-image`, or null without an icon. */
+  iconId: string | null
   sortKey: number
   order: number
 }
@@ -805,13 +808,15 @@ export class MapStyleProcessor {
     const builder = new SymbolBuilder()
     const getGlyph = (fontStack: string, codePoint: number) => this.glyphs.get(fontStack, codePoint)
     const tileUnitsPerPixel = TILE_EXTENT / (TILE_SIZE_PIXELS * 2 ** (zoom - request.z))
+    const images: TileImages = { used: new Set(), missing: new Set() }
     for (const symbol of symbols) {
       const { layer, feature, state } = symbol
       const placement = layer.evaluate<'point' | 'line' | 'line-center'>('layout', 'symbol-placement', zoom, feature)
       const opacity = layer.evaluate<number>('paint', 'text-opacity', zoom, feature, state)
       const color = layer.evaluateColor('text-color', zoom, feature, opacity, state)
       const haloColor = toRgba(layer.evaluate<Color>('paint', 'text-halo-color', zoom, feature, state), opacity)
-      if (color[3] === 0 && haloColor[3] === 0) continue
+      const hasText = symbol.sections.length > 0 && (color[3] > 0 || haloColor[3] > 0)
+      if (!hasText && (symbol.iconId === null || placement !== 'point')) continue
       const sizePixels = layer.evaluate<number>('layout', 'text-size', zoom, feature)
       const nextZoomSizePixels = layer.evaluate<number>('layout', 'text-size', zoom + 1, feature)
       const label = {
@@ -827,7 +832,7 @@ export class MapStyleProcessor {
         color,
         haloColor,
         haloWidthPixels: layer.evaluate<number>('paint', 'text-halo-width', zoom, feature, state),
-        key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}`,
+        key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}${symbol.iconId === null ? '' : `\u0000${symbol.iconId}`}`,
         sourceLayer: symbol.sourceLayer,
         featureIndex: symbol.featureIndex,
       }
@@ -863,24 +868,41 @@ export class MapStyleProcessor {
 
       const anchor = representativePoint(symbol.type, symbol.geometry)
       if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
-      const variableAnchors = layer.has('layout', 'text-variable-anchor') ? (layer.evaluate<TextAnchor[] | undefined>('layout', 'text-variable-anchor', zoom, feature) ?? []) : []
-      const shaped = shapeText(
-        symbol.sections,
-        {
-          maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
-          lineHeightEms,
-          letterSpacingEms,
-          // Variable anchors: laid out centred, then shifted to the anchor placement picks.
-          anchor: variableAnchors.length > 0 ? 'center' : firstAnchor(layer, zoom, feature),
-          justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
-        },
-        getGlyph,
-      )
-      if (shaped === null) continue
+      const variableAnchors = hasText && layer.has('layout', 'text-variable-anchor') ? (layer.evaluate<TextAnchor[] | undefined>('layout', 'text-variable-anchor', zoom, feature) ?? []) : []
+      const shaped = !hasText
+        ? null
+        : shapeText(
+            symbol.sections,
+            {
+              maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
+              lineHeightEms,
+              letterSpacingEms,
+              // Variable anchors: laid out centred, then shifted to the anchor placement picks.
+              anchor: variableAnchors.length > 0 ? 'center' : firstAnchor(layer, zoom, feature),
+              justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
+            },
+            getGlyph,
+          )
+      const icon = symbol.iconId === null ? undefined : this.layoutIcon(layer, feature, state, zoom, symbol.iconId, images, shaped === null ? null : sizePixels)
+      if (shaped === null && icon === undefined) continue
+      // Both must allow overlap (or ignore placement) for the symbol to; an icon alone goes by its own.
+      const iconAllowsOverlap = icon === undefined || layer.evaluate<boolean>('layout', 'icon-allow-overlap', zoom, feature)
+      const iconIgnoresPlacement = icon === undefined || layer.evaluate<boolean>('layout', 'icon-ignore-placement', zoom, feature)
+      const placementRules =
+        shaped === null
+          ? {
+              // An icon alone: the label scales with icon-size instead of text-size.
+              sizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom, feature),
+              nextZoomSizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom + 1, feature),
+              paddingPixels: layer.evaluate<number>('layout', 'icon-padding', zoom, feature),
+              allowOverlap: iconAllowsOverlap,
+              ignorePlacement: iconIgnoresPlacement,
+            }
+          : { allowOverlap: label.allowOverlap && iconAllowsOverlap, ignorePlacement: label.ignorePlacement && iconIgnoresPlacement }
       const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'text-offset', zoom, feature)
       const rotationRadians = (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180
-      if (variableAnchors.length === 0) {
-        builder.add({ ...label, anchor, shaped, offset: { x: offsetX * 24, y: offsetY * 24 }, rotationRadians })
+      if (shaped === null || variableAnchors.length === 0) {
+        builder.add({ ...label, ...placementRules, anchor, shaped, ...(icon === undefined ? {} : { icon }), offset: { x: offsetX * 24, y: offsetY * 24 }, rotationRadians })
         continue
       }
       // The radial offset when set above 0, else text-offset pointed away from the point (MapLibre's rule).
@@ -892,10 +914,60 @@ export class MapStyleProcessor {
         const offset = radial !== null ? radialAnchorOffset(variableAnchor, radial) : textOffsetForAnchor(variableAnchor, { x: offsetX, y: offsetY })
         return { x: offset.x * 24, y: offset.y * 24 }
       })
-      builder.add({ ...label, anchor, shaped, offset: { x: 0, y: 0 }, rotationRadians, anchorShifts })
+      builder.add({ ...label, ...placementRules, anchor, shaped, ...(icon === undefined ? {} : { icon }), offset: { x: 0, y: 0 }, rotationRadians, anchorShifts })
     }
     const mesh = builder.build()
-    return { ...empty, symbols: mesh, rebuildFeatureKeys: [...rebuildKeys], byteLength: symbolMeshByteLength(mesh) }
+    return { ...empty, symbols: mesh, images: [...images.used], missingImages: [...images.missing], rebuildFeatureKeys: [...rebuildKeys], byteLength: symbolMeshByteLength(mesh) }
+  }
+
+  /**
+   * A symbol's icon around its anchor, in the label's units: pixels of a 24 px font at `textSizePixels` beside
+   * text, or image pixels for an icon alone (whose label scales with icon-size). `icon-anchor`, `icon-offset`
+   * (scaled by icon-size) and `icon-rotate` apply. Undefined when the image is missing or the icon invisible.
+   */
+  protected layoutIcon(layer: CompiledStyleLayer, feature: StyleFeature, state: FeatureState, zoom: number, id: string, images: TileImages, textSizePixels: number | null): ScreenLabelIcon | undefined {
+    images.used.add(id)
+    const rectangle = this.images.getIcon(id)
+    if (rectangle === null) {
+      if (this.images.isMissing(id)) images.missing.add(id)
+      return undefined
+    }
+    const opacity = layer.evaluate<number>('paint', 'icon-opacity', zoom, feature, state)
+    if (opacity <= 0) return undefined
+    const iconSize = layer.evaluate<number>('layout', 'icon-size', zoom, feature)
+    const unitsPerIconPixel = textSizePixels === null ? 1 : (iconSize * 24) / textSizePixels
+    const width = (rectangle.width / rectangle.pixelRatio) * unitsPerIconPixel
+    const height = (rectangle.height / rectangle.pixelRatio) * unitsPerIconPixel
+    const iconAnchor = layer.evaluate<TextAnchor>('layout', 'icon-anchor', zoom, feature)
+    const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'icon-offset', zoom, feature)
+    const centred = { minimumX: -width / 2, minimumY: -height / 2, maximumX: width / 2, maximumY: height / 2 }
+    const [shiftX = 0, shiftY = 0] = variableAnchorShifts(centred, [iconAnchor], () => ({ x: offsetX * unitsPerIconPixel, y: offsetY * unitsPerIconPixel }))
+    const rotation = (layer.evaluate<number>('layout', 'icon-rotate', zoom, feature) * Math.PI) / 180
+    const cosine = Math.cos(rotation)
+    const sine = Math.sin(rotation)
+    const corners = [
+      [centred.minimumX, centred.minimumY],
+      [centred.maximumX, centred.minimumY],
+      [centred.maximumX, centred.maximumY],
+      [centred.minimumX, centred.maximumY],
+    ].map(([x, y]) => ({ x: (x! + shiftX) * cosine - (y! + shiftY) * sine, y: (x! + shiftX) * sine + (y! + shiftY) * cosine }))
+    const box = {
+      minimumX: Math.min(...corners.map(corner => corner.x)),
+      minimumY: Math.min(...corners.map(corner => corner.y)),
+      maximumX: Math.max(...corners.map(corner => corner.x)),
+      maximumY: Math.max(...corners.map(corner => corner.y)),
+    }
+    const tinted = rectangle.sdf
+    return {
+      rectangle,
+      corners,
+      box,
+      sdf: tinted,
+      // A colour image keeps its colours, faded by icon-opacity; an SDF image takes icon-color and a halo.
+      color: tinted ? layer.evaluateColor('icon-color', zoom, feature, opacity, state) : [255, 255, 255, Math.round(255 * Math.min(1, opacity))],
+      haloColor: tinted ? toRgba(layer.evaluate<Color>('paint', 'icon-halo-color', zoom, feature, state), opacity) : [0, 0, 0, 0],
+      haloWidthPixels: tinted ? layer.evaluate<number>('paint', 'icon-halo-width', zoom, feature, state) : 0,
+    }
   }
 
   /** Loads the glyphs the candidates' text needs, per font stack. */
@@ -1140,26 +1212,33 @@ export class MapStyleProcessor {
     sourceLayer: string,
     featureIndex: number,
   ): SymbolCandidate | null {
+    const sections = this.symbolText(layer, feature, zoom)
+    const iconId = symbolIcon(layer, feature, zoom)
+    if (sections.length === 0 && iconId === null) return null
+    const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
+    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, sections, iconId, sortKey, order }
+  }
+
+  /** A symbol's `text-field` as sections to shape; empty without text. */
+  protected symbolText(layer: CompiledStyleLayer, feature: StyleFeature, zoom: number): TextSection[] {
+    if (!layer.has('layout', 'text-field')) return []
     const field = layer.evaluate<Formatted | string | undefined>('layout', 'text-field', zoom, feature)
-    if (field === undefined || field === null) return null
+    if (field === undefined || field === null) return []
     // Legacy `{token}` strings (not expressions) substitute feature properties, as in MapLibre.
     const tokens = typeof layer.raw('layout', 'text-field') === 'string'
     const formatted = field instanceof Formatted ? field : Formatted.fromString(String(field))
     if (tokens) for (const section of formatted.sections) section.text = resolveTokens(section.text, feature.properties)
-    if (formatted.isEmpty()) return null
+    if (formatted.isEmpty()) return []
     const fonts = layer.evaluate<string[]>('layout', 'text-font', zoom, feature)
     const fontStack = fonts.join(',')
     const transform = layer.evaluate<'none' | 'uppercase' | 'lowercase'>('layout', 'text-transform', zoom, feature)
-    const sections = formatted.sections
+    return formatted.sections
       .filter(section => section.text.length > 0)
       .map(section => ({
         text: transform === 'uppercase' ? section.text.toLocaleUpperCase() : transform === 'lowercase' ? section.text.toLocaleLowerCase() : section.text,
         fontStack: section.fontStack ?? fontStack,
         scale: section.scale ?? 1,
       }))
-    if (sections.length === 0) return null
-    const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, sections, sortKey, order }
   }
 
   /**
@@ -1176,6 +1255,8 @@ export class MapStyleProcessor {
     const text = new TextBuilder()
     const getGlyph = (fontStack: string, codePoint: number) => this.glyphs.get(fontStack, codePoint)
     for (const symbol of symbols) {
+      // Draped labels draw text only: icons face the viewer.
+      if (symbol.sections.length === 0) continue
       const { layer, feature, state } = symbol
       const placement = layer.evaluate<'point' | 'line' | 'line-center'>('layout', 'symbol-placement', zoom, feature)
       const size = layer.evaluate<number>('layout', 'text-size', zoom, feature)
@@ -1586,6 +1667,15 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
 }
 
 /** The image a `*-pattern` property names, or null when it is not set or empty. */
+/** A symbol's `icon-image` id, or null without one. Legacy `{token}` strings substitute feature properties. */
+function symbolIcon(layer: CompiledStyleLayer, feature: StyleFeature, zoom: number): string | null {
+  if (!layer.has('layout', 'icon-image')) return null
+  const value = layer.evaluate<{ name: string } | string | undefined | null>('layout', 'icon-image', zoom, feature)
+  let name = typeof value === 'string' ? value : value?.name
+  if (name !== undefined && typeof layer.raw('layout', 'icon-image') === 'string') name = resolveTokens(name, feature.properties)
+  return name === undefined || name === '' ? null : name
+}
+
 function patternName(layer: CompiledStyleLayer, property: string, zoom: number, feature?: StyleFeature, state?: FeatureState): string | null {
   if (!layer.has('paint', property)) return null
   const value = layer.evaluate<{ name: string } | string | undefined | null>('paint', property, zoom, feature, state)

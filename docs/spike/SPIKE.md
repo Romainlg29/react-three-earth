@@ -201,7 +201,7 @@ How it works:
 
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
-Not supported yet: icons (sprites load and serve patterns, see W5 below), heatmap layers (skipped with one
+Not supported yet: icons along lines and on draped labels (point icons face the viewer, see W6 part 3 below), heatmap layers (skipped with one
 warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
@@ -359,8 +359,8 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
   refetch). Buckets still processing during a change are rebuilt too. Label-ring placements are skipped (patterns
   are shapes). The helpers are `rebuildTiles(matches)` and `redrawRegions(bucketKeys)`, names shared with W3.
 - Deviation from the brief: `updateImage` accepts another size (it rebuilds instead of throwing as MapLibre
-  does). Icon metadata (`sdf`, `stretchX/Y`, `content`) is parsed and kept for W6, which needs a transparent-padded
-  icon slot rather than the wrapped one.
+  does). Icon metadata (`sdf`, `stretchX/Y`, `content`) is parsed and kept; W6 part 3 packs icons in their own
+  transparent-padded slot rather than the wrapped one.
 
 | Check (`?fixtures&map=patterns`, SwiftShader) | Result |
 | --- | --- |
@@ -483,6 +483,32 @@ Deviations: `text-variable-anchor-offset` is not read; the 7 px baseline correct
 out; `text-justify: auto` does not follow the anchor (multi-line text stays centred); with `text-rotate` the
 offset turns with the text; occlusion tests the anchor point only (MapLibre tests
 depth per symbol in the shader), and is decided at placement, every 100 ms while moving.
+
+### Screen-space symbols (W6), part 3: icons from the sprite atlas
+
+- **Atlas.** `icon-image` (a name, a token string or a resolved image) is looked up in the style's sprite. Icons get
+  their own slot in the W5 image atlas (key `\u0001icon\u0000<id>`) padded with transparent pixels instead of the
+  wrapped edge patterns use, so linear filtering does not bleed the far edge into the quad. A sprite update rewrites
+  the slot in place when its size, pixel ratio and `sdf` flag are unchanged.
+- **Worker.** A point symbol with an icon gets one more quad in the same `SymbolMesh`, written before its glyphs
+  and marked by its glyph index (-2 colour, -3 SDF), so one draw call still draws every label of a tile. The quad
+  is sized by `icon-size` (MapLibre's 24 px icon unit relative to the text size when there is text), placed by
+  `icon-anchor`, `icon-offset` and `icon-rotate`. Its collision box (`SymbolMesh.iconBoxes`) is stored next to
+  the text box. An icon alone collides with `icon-padding`, `icon-allow-overlap` and `icon-ignore-placement`;
+  icon with text uses both flags (overlap only when both allow it). Missing images are reported as for patterns.
+- **Placement.** An icon with text collides as two boxes (icon, then text). Variable anchors move only the text
+  box: the icon stays on its point (`PlacementCandidate.anchorBoxStart`). The state texture now holds two texels
+  per label, the anchor position and the anchor shift, so the shader shifts text and not the icon.
+- **Shader.** Colour icons sample the image atlas premultiplied, sRGB to linear, times `icon-opacity` and the
+  layer opacity; SDF icons read the atlas alpha as a distance field (MapLibre's 0.75 edge) and draw with
+  `icon-color`, `icon-halo-color` and `icon-halo-width` through the glyph path.
+- In `?map=labels` places carry a red pin and Mount Fuji a blue SDF disc with a white halo; the browser check
+  counts icon labels and the red and blue pixels.
+
+Not supported yet: icons along lines (`symbol-placement: line`), `icon-text-fit`, `icon-optional` /
+`text-optional` (icon and text show or hide together), `icon-keep-upright`, `icon-pitch-alignment` and
+`icon-rotation-alignment: map` (icons face the viewer), stretchable icons (`stretchX/Y`, `content`), and icons in
+`symbols: 'draped'`.
 
 ### Feature querying and layer events (W4)
 
