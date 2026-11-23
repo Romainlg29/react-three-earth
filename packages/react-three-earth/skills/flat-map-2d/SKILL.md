@@ -27,7 +27,7 @@ servers use. On the flat map:
 - The world repeats east and west.
 - You cannot zoom out past the height where the whole map (±85°) fills the screen.
 - You cannot pan past the poles.
-- `<EarthControls>` pans, zooms and rotates, looking straight down.
+- `<EarthControls>` pans, zooms and rotates, looking straight down. On touch screens two fingers pinch, twist and pan together. A two-finger drag up or down tilts the map only when `maximumFlatMapTiltDegrees` is above 0.
 
 Changing `view` plays a transition:
 
