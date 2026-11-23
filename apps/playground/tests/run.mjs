@@ -343,6 +343,87 @@ async function vectorStyleRuntime() {
   })
 }
 
+/**
+ * Feature querying and layer events on fixture tiles (`?hover`): `queryRenderedFeatures` at the screen position of
+ * a lake and of a road returns them, a real mouse click reaches a layer `click` listener with the lake, hovering
+ * the lake sets its feature-state (it turns pink) and the pointer cursor, leaving clears both, and a whole-screen
+ * query and `querySourceFeatures` list the lakes.
+ */
+async function featureQueries() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&map=vector&hover')
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 200 })
+  await settled()
+  await page.waitForTimeout(3000) // tile fades
+  const lakeShare = async name => {
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending === 0, null, { timeout: 120_000, polling: 'raf' })
+    await page.waitForTimeout(500)
+    const png = await page.screenshot()
+    writeFileSync(new URL(`map-vector-query-${name}.png`, OUT), png)
+    return analyse(page, png, LAKE_COLOURS)
+  }
+  const before = await lakeShare('before')
+  // Screen positions of a point of Lake Kawaguchi (id 1) and of East Road 6, on the terrain
+  const screenOf = (longitudeDegrees, latitudeDegrees) => page.evaluate(([longitudeDegrees, latitudeDegrees]) => {
+    const heightMeters = window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0
+    return window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
+  }, [longitudeDegrees, latitudeDegrees])
+  const lake = await screenOf(138.76, 35.515)
+  const road = await screenOf(138.6, 35.3575)
+  const lakeQuery = await page.evaluate(async screen => (await window.earth.queryRenderedFeatures(screen)).map(feature => ({ layer: feature.layer.id, id: feature.id ?? null, name: feature.properties.name ?? null, geometry: feature.geometry.type })), lake)
+  const roadQuery = await page.evaluate(async screen => (await window.earth.queryRenderedFeatures(screen, { tolerancePixels: 3 })).map(feature => ({ layer: feature.layer.id, name: feature.properties.name ?? null })), road)
+
+  await page.mouse.click(lake.xPixels, lake.yPixels)
+  await page.waitForFunction(() => (window.layerClicks?.length ?? 0) > 0, null, { timeout: 30_000 }).catch(() => {})
+  const clicked = await page.evaluate(() => (window.layerClicks ?? []).map(features => features.map(feature => ({ layer: feature.layer.id, id: feature.id ?? null }))))
+
+  // The click left the pointer on the lake: it is hovered
+  await page.waitForFunction(() => window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }).hover === true, null, { timeout: 30_000 }).catch(() => {})
+  await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 10_000, polling: 'raf' }).catch(() => {})
+  const hovered = await lakeShare('hover')
+  const hover = await page.evaluate(() => ({
+    state: window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }),
+    cursor: window.earth.pointerEventsElement?.style.cursor ?? null,
+    entered: (window.hoveredFeatures ?? []).map(feature => feature.id),
+  }))
+  // Leave the lake for a spot with no lake and no road
+  await page.mouse.move(5, 5)
+  await page.waitForFunction(() => window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }).hover === false, null, { timeout: 30_000 }).catch(() => {})
+  await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 10_000, polling: 'raf' }).catch(() => {})
+  const left = await lakeShare('left')
+  const leave = await page.evaluate(() => ({
+    state: window.mapStyleSource.getFeatureState({ source: 'fixture', sourceLayer: 'water', id: 1 }),
+    cursor: window.earth.pointerEventsElement?.style.cursor ?? null,
+    entered: (window.hoveredFeatures ?? []).map(feature => feature.id),
+  }))
+  const screenLakes = await page.evaluate(async () => [...new Set((await window.earth.queryRenderedFeatures(undefined, { layers: ['water'] })).map(feature => feature.id))].sort())
+  const sourceLakes = await page.evaluate(async () => [...new Set((await window.mapStyleSource.querySourceFeatures('fixture', { sourceLayer: 'water' })).map(feature => feature.id))].sort())
+  // Timing of a point query on the CPU rasteriser's machine (worker round trip and hit test), for the record
+  const queryMilliseconds = await page.evaluate(async screen => {
+    const start = performance.now()
+    for (let index = 0; index < 20; index++) await window.earth.queryRenderedFeatures(screen)
+    return +((performance.now() - start) / 20).toFixed(2)
+  }, lake)
+  await page.close()
+  results.push({
+    check: 'vector map style with fixtures, feature queries and layer events',
+    lake: { screen: lake, features: lakeQuery },
+    road: { screen: road, features: roadQuery },
+    clicked,
+    before,
+    hovered,
+    left,
+    hover,
+    leave,
+    screenLakes,
+    sourceLakes,
+    queryMilliseconds,
+    errors,
+  })
+}
+
 const PATTERN_COLOURS = `
   // By hue, since the terrain is lit: the sprite's green checks (background), dark and light blue stripes
   // (lakes), red dashes (primary roads), and the runtime image's magenta, then yellow, hatch (Lake Motosu).
@@ -986,6 +1067,7 @@ try {
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
+  if (!only || only === 'vector' || only === 'query') await featureQueries()
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
   if (!only || only === 'markers') await markers()

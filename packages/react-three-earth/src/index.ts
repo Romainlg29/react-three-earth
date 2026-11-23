@@ -55,6 +55,19 @@ export {
   type AttributionSegment,
 } from './core/attribution.js'
 export { AttributionControl, type AttributionControlOptions } from './controls/AttributionControl.js'
+export {
+  geographicToMercator,
+  screenToMercatorQuery,
+  type FeatureGeometry,
+  type MercatorPoint,
+  type RenderedFeature,
+  type RenderedFeatureQueryOptions,
+  type RenderedSourceFeature,
+  type ScreenQueryGeometry,
+  type SourceFeature,
+  type SourceFeatureQueryOptions,
+} from './core/featureQuery.js'
+export { LayerEvents, type LayerEventListener, type LayerEventOptions, type LayerEventType, type LayerPointerEvent } from './core/LayerEvents.js'
 export { Marker, type MarkerDragEvent, type MarkerEventMap, type MarkerHeight, type MarkerOptions } from './core/Marker.js'
 export { Popup, type PopupEventMap, type PopupOptions } from './core/Popup.js'
 export {

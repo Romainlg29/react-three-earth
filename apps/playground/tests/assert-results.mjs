@@ -60,6 +60,18 @@ const expectations = {
     ['feature-state reads back', r.featureState.hover === true],
     ['a hover redraws regions without processing tiles again', r.tilesProcessedDuringHover === 0 && r.hover.regionsRedrawn > 0],
   ],
+  // queryRenderedFeatures, layer click / pointerenter / pointerleave, hover feature-state and cursor, querySourceFeatures.
+  'vector map style with fixtures, feature queries and layer events': r => [
+    ['a point on Lake Kawaguchi returns it, as a polygon', r.lake.features.some(feature => feature.layer === 'water' && feature.id === 1 && feature.name === 'Lake Kawaguchi' && feature.geometry === 'Polygon')],
+    ['a point on East Road 6 returns the road above its casing', r.road.features.findIndex(feature => feature.layer === 'road' && feature.name === 'East Road 6') !== -1 && r.road.features.findIndex(feature => feature.layer === 'road' && feature.name === 'East Road 6') < r.road.features.findIndex(feature => feature.layer === 'road-casing')],
+    ['a mouse click reaches the layer listener with the lake only', r.clicked.length === 1 && JSON.stringify(r.clicked[0]) === JSON.stringify([{ layer: 'water', id: 1 }])],
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['hovering sets feature-state, the pointer cursor and pointerenter', r.hover.state.hover === true && r.hover.cursor === 'pointer' && JSON.stringify(r.hover.entered) === '[1]'],
+    ['the hovered lake turns pink, the others stay blue', r.hovered.pinkShare > 0.0005 && r.hovered.blueShare > 0.001],
+    ['leaving clears the state, the cursor and fires pointerleave', r.leave.state.hover === false && r.leave.cursor === '' && r.leave.entered.length === 0],
+    ['the lake is blue again', r.left.pinkShare < 0.0005 && r.left.blueShare > r.before.blueShare * 0.8],
+    ['a whole-screen query and querySourceFeatures list the three lakes', JSON.stringify(r.screenLakes) === '[1,2,3]' && JSON.stringify(r.sourceLakes) === '[1,2,3]'],
+  ],
   ...Object.fromEntries(['webgpu', 'webgl2'].map(name => [`vector map style with fixtures, patterns, ${name}`, r => [
     ['background-pattern covers the land (green checks)', r.sprite.meadowShare > 0.5],
     ['fill-pattern stripes the lakes, dark and light', r.sprite.darkBlueShare > 0.004 && r.sprite.lightBlueShare > 0.003],

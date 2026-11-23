@@ -46,7 +46,7 @@ first frame.
 | `project`, `unproject` | `earth.project(position)`, `earth.unproject({ xPixels, yPixels })` |
 | `queryTerrainElevation` | `earth.queryTerrainElevation(position)` |
 | `map.on('load' \| 'idle' \| 'move…' \| 'zoom…' \| 'rotate…' \| 'pitch…')` | `earth.addEventListener(…)`, `useEarthEvent(…)` |
-| `map.on('click' \| 'dblclick' \| 'contextmenu' \| 'mousemove')` with `lngLat` | `click`, `doubleclick`, `contextmenu`, `pointermove` with `geographic` |
+| `map.on('click' \| 'dblclick' \| 'contextmenu' \| 'mousemove' \| 'mouseout')` with `lngLat` | `click`, `doubleclick`, `contextmenu`, `pointermove`, `pointerout` with `geographic` |
 
 `isMoving` has no twin: read `earth.camera.animating` or follow `movestart` / `moveend`. Not there yet:
 `rollDegrees`, `around` for `zoomTo`, `offset` options.
@@ -228,6 +228,10 @@ The camera and loading events fire from `earth.update`, at most once per frame e
 
 `useEarthEvent(type, handler)` subscribes for the component's lifetime and may take a new handler every
 render. Movement is detected by comparing the camera between frames, so nothing has to report it.
+
+`pointerout` fires when the pointer leaves the map's element. For events over features of style layers
+(`map.on('click', layerId)`, `mouseenter` / `mouseleave`), pass `{ layers }`: see
+`query-features-and-layer-events`.
 
 ## Common Mistakes
 

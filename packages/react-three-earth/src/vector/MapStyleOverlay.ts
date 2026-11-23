@@ -32,6 +32,10 @@ import {
   type ImageChange,
   type MapStyleProcessorOptions,
   type MapStyleSummary,
+  type MercatorPoint,
+  type QueryTile,
+  type RenderedSourceFeature,
+  type SourceFeature,
   type StyleCommand,
   type StyleImage,
   type StyleUpdateResult,
@@ -70,6 +74,30 @@ export interface MapStyleOverlayOptions {
   /** Called after the style loaded and each time a style change gave a new summary (sources, attributions…). */
   onSummaryChange?: (summary: MapStyleSummary) => void
 }
+
+/** Options of `queryRenderedFeatures`. */
+export interface RenderedFeatureQueryOptions {
+  /** Only features of these style layers. Default: every layer. */
+  layers?: readonly string[]
+  /** A MapLibre filter expression the features must also pass, as in a layer's `filter`. Default: none. */
+  filter?: unknown
+  /**
+   * Extra distance within which a feature counts as under the pointer, in map pixels at the zoom the terrain is
+   * textured at there (about screen pixels). Helps on touch screens. Default: 0, as MapLibre.
+   */
+  tolerancePixels?: number
+}
+
+/** Options of `querySourceFeatures`. */
+export interface SourceFeatureQueryOptions {
+  /** The source layer to read (MapLibre requires it for vector sources). Default: every source layer. */
+  sourceLayer?: string
+  /** A MapLibre filter expression the features must pass. Default: none. */
+  filter?: unknown
+}
+
+/** Tiles a box query reads per source at most: past it, coarser tiles are read. */
+const MAXIMUM_QUERY_TILES = 64
 
 /** One vector tile a region draws. */
 interface RegionTile {
@@ -644,6 +672,116 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const rectangles = bounds === undefined ? null : boundsToMercatorRectangles(bounds)
     this.backend?.invalidate(rectangles)
     this.rebuildTiles(({ x, y, z }) => tileOverlaps(x, y, z, rectangles))
+  }
+
+  /**
+   * The features drawn under a point or polygon (normalised Web Mercator), top-most first: labels, which draw above
+   * every shape, then shapes from the top style layer down. Hits are tested against the tiles drawn there, at the
+   * zoom the terrain is textured at, with line widths, circle radii and placed label boxes as drawn. Resolves to no
+   * features before the style has loaded or where no texture is drawn yet.
+   */
+  async queryRenderedFeatures(geometry: readonly MercatorPoint[], options: RenderedFeatureQueryOptions = {}): Promise<RenderedSourceFeature[]> {
+    const backend = this.backend
+    if (this.disposed || backend === null || this.summary === null || geometry.length === 0) return []
+    let centerX = 0
+    let centerY = 0
+    for (const point of geometry) {
+      centerX += point.x / geometry.length
+      centerY += point.y / geometry.length
+    }
+    const level = this.drawnLevelAt({ x: centerX, y: centerY })
+    if (level === null) return []
+    const tiles = this.getQueryTiles(geometry, level)
+    if (tiles.length === 0) return []
+    return backend.queryRenderedFeatures({
+      geometry: geometry.map(({ x, y }) => ({ x, y })),
+      tiles,
+      layers: options.layers === undefined ? null : [...options.layers],
+      filter: options.filter ?? null,
+      tolerancePixels: Math.max(0, options.tolerancePixels ?? 0),
+    })
+  }
+
+  /**
+   * Every feature of a style source in the tiles drawn now (MapLibre's `querySourceFeatures`), drawn by a layer or
+   * not. A feature crossing tiles is listed once per tile, its geometry clipped to each.
+   */
+  async querySourceFeatures(sourceId: string, options: SourceFeatureQueryOptions = {}): Promise<SourceFeature[]> {
+    const backend = this.backend
+    if (this.disposed || backend === null || this.summary === null) return []
+    if (this.mapStyle.getSource(sourceId) === undefined) throw new Error(`MapStyleSource.querySourceFeatures: the style has no source "${sourceId}"; pass one of ${JSON.stringify(Object.keys(this.mapStyle.getStyle()?.sources ?? {}))}.`)
+    const tiles = new Map<string, { x: number; y: number; z: number }>()
+    for (const key of this.regions.keys()) {
+      if (this.regions.get(key) === null) continue
+      const { range, level } = parseRegionKey(key)
+      for (const tile of this.getRegionTiles(range, level)) {
+        if (tile.textOnly || tile.request.sourceId !== sourceId) continue
+        const { x, y, z } = tile.request
+        tiles.set(`${z}/${x}/${y}`, { x, y, z })
+      }
+    }
+    if (tiles.size === 0) return []
+    return backend.querySourceFeatures({ sourceId, sourceLayer: options.sourceLayer ?? null, filter: options.filter ?? null, tiles: [...tiles.values()] })
+  }
+
+  /** The zoom of the finest loaded region texture covering a point, or null where none is drawn. */
+  protected drawnLevelAt(point: MercatorPoint): number | null {
+    const x = point.x - Math.floor(point.x)
+    let found: number | null = null
+    for (const key of this.regions.keys()) {
+      if (this.regions.get(key) === null) continue
+      const { range, level } = parseRegionKey(key)
+      const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
+      if (x < minimumX || x > maximumX || point.y < minimumY || point.y > maximumY) continue
+      if (found === null || level > found) found = level
+    }
+    return found
+  }
+
+  /**
+   * The tiles a query reads, per source: those under the geometry at the drawn zoom (coarser for a box too large
+   * for `MAXIMUM_QUERY_TILES`), and a ring of neighbours whose labels may reach in.
+   */
+  protected getQueryTiles(geometry: readonly MercatorPoint[], level: number): QueryTile[] {
+    let minimumX = Infinity
+    let minimumY = Infinity
+    let maximumX = -Infinity
+    let maximumY = -Infinity
+    for (const { x, y } of geometry) {
+      minimumX = Math.min(minimumX, x)
+      minimumY = Math.min(minimumY, y)
+      maximumX = Math.max(maximumX, x)
+      maximumY = Math.max(maximumY, y)
+    }
+    const shift = Math.floor((minimumX + maximumX) / 2) // keep the columns near the antimeridian unwrapped from there
+    const tiles: QueryTile[] = []
+    for (const source of this.summary?.sources ?? []) {
+      if (level < source.minimumZoom) continue
+      let z = Math.min(level, source.maximumZoom)
+      let zoom = level
+      const span = (scale: number) => {
+        const fromColumn = Math.floor((minimumX - shift) * scale)
+        const toColumn = Math.floor((maximumX - shift) * scale)
+        const fromRow = Math.max(0, Math.floor((1 - maximumY) * scale))
+        const toRow = Math.min(scale - 1, Math.floor((1 - minimumY) * scale))
+        return { fromColumn, toColumn, fromRow, toRow, count: (toColumn - fromColumn + 1) * Math.max(0, toRow - fromRow + 1) }
+      }
+      let range = span(2 ** z)
+      while (range.count > MAXIMUM_QUERY_TILES && z > source.minimumZoom) {
+        z--
+        zoom--
+        range = span(2 ** z)
+      }
+      const count = 2 ** z
+      for (let column = range.fromColumn - 1; column <= range.toColumn + 1; column++) {
+        for (let row = Math.max(0, range.fromRow - 1); row <= Math.min(count - 1, range.toRow + 1); row++) {
+          const labelsOnly = column < range.fromColumn || column > range.toColumn || row < range.fromRow || row > range.toRow
+          const unwrapped = column + shift * count
+          tiles.push({ sourceId: source.id, x: ((column % count) + count) % count, y: row, z, zoom, column: unwrapped, labelsOnly })
+        }
+      }
+    }
+    return tiles
   }
 
   /**

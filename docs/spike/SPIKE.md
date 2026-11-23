@@ -368,6 +368,72 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
+### Feature querying and layer events (W4)
+
+`earth.queryRenderedFeatures(point | box | nothing, { layers, filter, tolerancePixels })` and
+`MapStyleSource.querySourceFeatures(sourceId, { sourceLayer, filter })` answer MapLibre-shaped features (`id`,
+`properties`, GeoJSON `geometry` in degrees, `source`, `sourceLayer`, `state`, `layer`; rendered ones also
+`mapStyleSource`). `earth.layerEvents` adds layer-scoped `click`, `doubleclick`, `contextmenu`, `pointermove`,
+`pointerenter` and `pointerleave` (MapLibre's `mouseenter` / `mouseleave`), `addCursor` and `addHoverState`;
+React has `useEarthEvent(type, handler, { layers })`, `useLayerCursor` and `useHoverFeatureState`. `Earth`
+fires a new `pointerout` when the pointer leaves its element.
+
+How it works:
+
+- **Main thread: what is drawn there.** The screen point is unprojected (`earth.camera.unproject`, terrain
+  raycast) into normalised Web Mercator. Each `MapStyleOverlay` picks the finest *loaded* region texture covering
+  it: its level is the zoom the tiles were drawn at, so the query reads exactly the tiles (and evaluation zoom)
+  the terrain shows there, not a camera-derived guess. It sends those tiles, plus a ring of neighbours for labels
+  crossing in, to the worker. A box is unprojected along its outline (16 samples) so pitch and the globe bend it,
+  sky samples dropped; it reads the tiles under it at the centre's level, coarser past 64 tiles per source.
+- **Worker: hit tests from the raw tiles.** No decoded features are kept per tile. The raw tile comes from the
+  worker's raw-tile cache, and a grid index of feature boxes (`featureIndex.ts`, 16 × 16 cells, built from
+  `feature.bbox()` without allocating points) is kept in a `WeakMap` keyed by the decoded tile, so it lives exactly
+  as long as the raw tile. Candidates are decoded and tested as drawn: fills even-odd (holes are holes), lines by
+  half width (gap lines are their two sides and the gap, hairlines one pixel, `line-offset` applied with mitred
+  corners), circles by radius plus stroke, all at the drawn zoom's pixels. The query is clipped to the tile square,
+  since a tile draws nothing outside it. Hit testers are a registry by layer type (`featureHitTesters`), not a
+  `switch`, so custom types can add theirs.
+- **Labels hit their placed boxes.** `processTile` now records the boxes of the labels it placed (with the source
+  layer and feature index) in an LRU of 256 tiles. A query reuses them while the raw tile and the compiled layers
+  are the ones they were placed from; otherwise it lays the tile out again. Labels sort above every shape, because
+  they draw above every shape (top style layer first among themselves).
+- **Order and duplicates.** Top imagery layer first; in a style, labels, then shapes from the top style layer down,
+  later features in a tile first. A feature with an id is listed once per layer across tiles (MapLibre does the same
+  through its feature index); features without ids can repeat in box queries. `querySourceFeatures` reads every
+  feature of the source's tiles under held regions, once per tile, clipped, as MapLibre does.
+- **Layer events** run one `queryRenderedFeatures` per pointer event for all listeners of its type (the union of their
+  layers). Pointer moves keep one query in flight and query the latest move next; a `pointerout` meanwhile
+  discards the answer. `pointerenter` / `pointerleave` track, per listener, whether the pointer was over its layers.
+
+Deviations from the brief:
+
+- **No flatbush dependency.** A tile holds at most a few thousand features per source layer; a fixed grid over the
+  tile (with its buffer) answers a point query with a handful of candidates and costs nothing to depend on.
+- **No worker-side id → tiles index for feature-state.** W3 already keeps, on the main thread, the exact map from
+  feature key to loaded buckets (built from each bucket's `featureStateKeys`), which is what a state change needs to
+  pick regions to redraw. A second index in the worker would duplicate it, so W3's stays.
+- Queries are asynchronous (MapLibre's are synchronous): the features live in the worker. Layer listeners therefore
+  run after the DOM event; `preventDefault` there is too late, and the docs say so.
+- Line and circle candidates are looked up within 128 map pixels of the query: a data-driven half width beyond
+  that (not known until the feature is read) can be missed near its edge.
+
+Not supported yet: custom layer types (plugins), icons, raster sources and draped layers answer nothing;
+`fill-translate` and friends are not drawn either, so not queried; a box spanning very different terrain levels is
+read at its centre's level.
+
+| Check (`?fixtures&map=vector&hover`, SwiftShader; correctness only) | Result |
+| --- | --- |
+| `queryRenderedFeatures` at Lake Kawaguchi's screen position | `water-hover` (transparent) and `water`, id 1, "Lake Kawaguchi", a Polygon |
+| at East Road 6, `tolerancePixels: 3` | `road` above `road-casing`, both "East Road 6" |
+| real mouse click on the lake | the `click` listener for `water`, `road`, labels gets `[water 1]` only |
+| hover, then leave | feature-state `hover` true, cursor `pointer`, `pointerenter` with lake 1, lake 0.15 % pink; then false, cursor restored, `pointerleave`, blue again |
+| whole screen, `layers: ['water']`; `querySourceFeatures('fixture', { sourceLayer: 'water' })` | lakes 1, 2, 3 |
+| point query round trip | 1.7 ms average (worker hit test and message, CPU-only machine) |
+| Unit tests | 29 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, layer events (scoping, enter / leave, one query in flight, cleanup), hover state, cursor |
+
+![hover](map-vector-query-hover.png)
+
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
 Design: `handoff/plugin-system-design.md` in the project files (reviewed by Romain; he chose 3D raymarched

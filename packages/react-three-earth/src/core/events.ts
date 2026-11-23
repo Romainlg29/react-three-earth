@@ -26,7 +26,7 @@ export interface EarthPointerEvent {
  * The camera and loading events fire from `earth.update`, once per frame at most, in this order: `movestart`,
  * `zoomstart`, `rotatestart`, `pitchstart`, `move`, `zoom`, `rotate`, `pitch`, `zoomend`, `rotateend`,
  * `pitchend`, `moveend`, `load`, `idle`, then `update` last. `framerequest` fires at once, from `earth.requestFrame`. The
- * pointer events (`click`, `doubleclick`, `contextmenu`, `pointermove`) fire from the DOM, once
+ * pointer events (`click`, `doubleclick`, `contextmenu`, `pointermove`, `pointerout`) fire from the DOM, once
  * `earth.attachPointerEvents(canvas)` is called; `<Earth>` does it.
  */
 export interface EarthEventMap extends Object3DEventMap {
@@ -75,6 +75,8 @@ export interface EarthEventMap extends Object3DEventMap {
   contextmenu: EarthPointerEvent
   /** The pointer moved over the map, dragging or not. */
   pointermove: EarthPointerEvent
+  /** The pointer left the map's element (MapLibre's `mouseout`). Layer events use it to end `pointerleave`. */
+  pointerout: EarthPointerEvent
   /**
    * The Earth needs a frame although nothing in the scene changed yet, for example after
    * `earth.camera.jumpTo`. Hosts that render on demand (R3F `frameloop="demand"`) call their invalidate;
