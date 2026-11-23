@@ -453,6 +453,64 @@ Not done from the design: per-bucket constants for zoom-only paint (every paint 
 progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the type's maximum is used), and typed
 `<StyleLayer>` paint props for custom types.
 
+## Plugins (W17), part 3: render passes and draped layers
+
+- **`EarthRenderPipeline`** (`src/core/EarthRenderPipeline.ts`, vanilla) builds a three `RenderPipeline`'s output
+  from the scene pass's colour and depth in three stages: `scene` → `radiance` (after aerial perspective and the
+  sky, linear HDR; the scene colour without an atmosphere) → `display` (after `renderOutput`; the built-in FXAA is
+  a registered pass that runs last, on an 8-bit target as before). The output is rebuilt in a microtask when
+  passes, the atmosphere or the antialiasing change, so an `install` that registers several passes rebuilds once;
+  never per frame. What a build allocated (`disposeOnRebuild`) is freed by the next one.
+- **React.** `EarthRenderPipelineHost` plugs it into `useRenderPipeline`, which keeps owning the pipeline and the
+  scene pass. `<Atmosphere>` mounts it as `AtmosphereRenderPipeline` did (`renderPipeline={false}` still leaves
+  the pipeline to the app). Without an atmosphere, `<Earth>` mounts one only while passes are registered and no
+  child claims the pipeline (`<Atmosphere>`, `<EarthRenderPipelineHost>`, `useClaimRenderPipeline()`;
+  `<Earth renderPipeline={false}>` opts out), so plain maps keep rendering the scene directly. The host frees
+  its targets one task after unmount, after `useRenderPipeline`'s deferred release, so a last render cannot
+  allocate them again. The output is pixel-identical to before: the four `map` screenshots
+  differ only in the atmosphere status text.
+- **`context.registerRenderPass({ name, stage, order, build })`** returns a remover, undone with the plugin, into
+  `earth.renderPasses`. `earth.inspect().renderPasses` lists each pass with `active`, `timing` (`fused` for pure
+  node passes, `unavailable` for passes that own targets: v1 has no GPU timestamp queries yet) and the error of
+  a build that threw (that pass is skipped). `order` must be finite; FXAA is appended after the sorted passes,
+  so it stays last.
+- **`context.registerDrapedLayer({ id, bounds, draw })`** returns `{ invalidate(bounds?), remove() }`. Each layer
+  becomes a `DrapedLayerOverlay` in the terrain's `ImageOverlayPlugin`, ordered above every imagery overlay
+  (imagery now counts its order below a fixed base, so imagery added later stays under it). Regions draw through
+  the `ImageryCompositor` queue and budget (`preload`, `waited`, `recomposition`). A region outside `bounds`
+  holds a 1 × 1 render target that is never drawn (new GPU textures start zeroed); `invalidate` resizes it in
+  place when it enters or leaves the bounds, so terrain materials keep the same `Texture`. `draw` gets the
+  region's Mercator range, bounds, zoom and a 64-bit `project` into a camera spanning the region. The
+  compositor resets autoClear, MRT and the clear colour after each custom draw, so one layer's state does not
+  leak into the next job.
+- **Draped layer costs, as measured in the code.** Imagery sources and draped layers share the terrain shader's
+  10 layer slots; registering past them throws with the fix. Bounds do not keep a layer off tiles: upstream
+  builds every overlay's UVs on the CPU for every tile whether or not `hasContent`, and the shader samples every
+  layer, so tiles outside get a 1 × 1 texture and no draw, never no layer (`hasContent` false would also freeze
+  bounds at load time). Registering or removing a layer recompiles every terrain material and rebuilds every
+  loaded tile's UVs: register at install, leave it in place, and change content with `invalidate`. A region
+  resized by `invalidate` makes the tile set recount its memory.
+- **Two terrain-material bugs this exposed**, both from adding an overlay after the first compile (any imagery
+  layer added at runtime had them too): the overlay and fade wrappers each replaced `material.defines` with a
+  spread copy, which turned the other's `LAYER_COUNT` / `FEATURE_FADE` accessor into a plain value (its setter
+  never ran again); and the per-layer-count colour nodes are parameterless `Fn`s with equal cache keys, so even a
+  new colour node kept the old program. The wrappers now copy property descriptors, and the layer count is part
+  of `customProgramCacheKey`. A resized render target also kept its old binding until its texture version
+  changed: `resizeTarget` sets `needsUpdate`.
+
+| Check (`?fixtures&effects=late`, 20 km above the fixture peak; SwiftShader) | Result |
+| --- | --- |
+| Visual identity (`map` checks before and after the move to `EarthRenderPipeline`) | 0 pixels differ with the atmosphere off; with it on, only the status text (rows 579–591) |
+| Vignette (display) and highlight lift (radiance), installed at runtime | corners 23 % darker (58.8 → 45.2), the middle unchanged; both `fused`; with the atmosphere, `fxaa` reported last |
+| Selection glow | nothing before a selection (0 regions drawn); `select` marks 44 of 166 held regions; 45 regions drawn, glow at the place above the imagery; moving it clears the old place (23 regions left drawn) |
+| Plugins removed | the plain image again (corner brightness equal), no pass or layer left |
+| WebGL2 fallback | the same pixel counts as WebGPU |
+| Full browser suite | 157 assertions pass (128 before, 29 new) |
+| Unit tests | 23 new (render pass registry and pipeline stages, rebuild coalescing, resources, plugin undo; draped layer registry, overlay regions, bounds, resizing, ordering above imagery; the wrapper accessor fix) |
+
+Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
+(left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
+
 ## Attribution
 
 Every source can carry a credit, and a control shows them all (`src/core/attribution.ts`, `src/controls/AttributionControl.ts`,

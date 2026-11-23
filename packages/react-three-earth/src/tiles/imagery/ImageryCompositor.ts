@@ -50,7 +50,8 @@ export interface CompositeDraw {
 
 /**
  * Draws a composition into its target with any scene. Called inside `ImageryCompositor.render`, with the
- * renderer's state saved (and restored after), its clear colour transparent black and its MRT off.
+ * renderer's state saved (and restored after the batch), its clear colour transparent black, autoClear on and
+ * its MRT off. Those three are reset after each render, so a render may change them freely.
  */
 export type CompositionRenderer = (renderer: WebGPURenderer, target: RenderTarget) => void
 
@@ -257,9 +258,7 @@ export class ImageryCompositor {
     if (this.pendingCount === 0) return 0
     const startMilliseconds = performance.now()
     const restore = this.saveRendererState(renderer)
-    renderer.autoClear = true
-    renderer.setMRT(null)
-    renderer.setClearColor(0x000000, 0)
+    this.resetRendererState(renderer)
 
     let count = 0
     try {
@@ -304,8 +303,14 @@ export class ImageryCompositor {
 
   protected drawJob(renderer: WebGPURenderer, job: CompositionJob): void {
     try {
-      if (job.render !== null) job.render(renderer, job.target)
-      else {
+      if (job.render !== null) {
+        try {
+          job.render(renderer, job.target)
+        } finally {
+          // A custom render may change the clear colour, autoClear or MRT: reset them so later jobs start clean.
+          this.resetRendererState(renderer)
+        }
+      } else {
         this.prepareMeshes(job.draws)
         renderer.setRenderTarget(job.target)
         renderer.render(this.scene, this.camera)
@@ -324,6 +329,13 @@ export class ImageryCompositor {
   protected settle(job: CompositionJob): void {
     job.signal?.removeEventListener('abort', job.onAbort)
     for (const draw of job.draws) this.releaseTexture(draw.texture)
+  }
+
+  /** The state every composition starts from: autoClear on, MRT off, transparent black clear colour. */
+  protected resetRendererState(renderer: WebGPURenderer): void {
+    renderer.autoClear = true
+    renderer.setMRT(null)
+    renderer.setClearColor(0x000000, 0)
   }
 
   /** Saves what `render` changes on the renderer and returns a function that restores it. */

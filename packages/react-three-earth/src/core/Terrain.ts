@@ -1,10 +1,12 @@
 import type { Camera, Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
+import { MAXIMUM_TERRAIN_LAYERS } from '../tiles/wrapOverlaysNodeMaterial.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
@@ -115,8 +117,20 @@ export class Terrain implements AttributionProvider {
     this.overlays.setStyleLayerTypes(registry)
   }
 
+  /** The draped layers (plugins) it draws above its imagery. `Earth.setTerrain` calls it. */
+  setDrapedLayers(registry: DrapedLayerRegistry | null): void {
+    this.overlays.setDrapedLayers(registry)
+  }
+
+  /** Throws, stating the fix, when the layer's sources do not fit the terrain's layer slots (shared with draped layers). */
   addImagery(imagery: Imagery): void {
     if (this.imagery.has(imagery)) return
+    if (imagery.overlays.length > this.overlays.freeLayerSlots) {
+      throw new Error(
+        `Terrain: this imagery layer has ${imagery.overlays.length} sources but only ${this.overlays.freeLayerSlots} terrain layer slots are left ` +
+          `(imagery sources and draped layers share ${MAXIMUM_TERRAIN_LAYERS}). Remove an imagery layer or a plugin's draped layer first.`,
+      )
+    }
     this.imagery.add(imagery)
     for (const overlay of imagery.overlays) this.overlays.addOverlay(overlay as never)
   }
@@ -140,7 +154,7 @@ export class Terrain implements AttributionProvider {
     return this.overlays.compositor.pendingCount
   }
 
-  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles), or being redrawn. */
+  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles, draped layers), or being redrawn. */
   get imageryRecompositionsPending(): number {
     let count = 0
     for (const imagery of this.imagery) {
@@ -149,6 +163,7 @@ export class Terrain implements AttributionProvider {
         if (typeof pending === 'number') count += pending
       }
     }
+    count += this.overlays.drapedRecompositionsPending
     return count
   }
 

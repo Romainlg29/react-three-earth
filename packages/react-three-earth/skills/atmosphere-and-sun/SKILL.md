@@ -13,6 +13,8 @@ metadata:
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Atmosphere.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Atmosphere.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/EarthRenderPipeline.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/RenderPipeline.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AtmosphereParameters.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/ephemeris.ts'
   - 'Romainlg29/react-three-earth:docs/spike/SPIKE.md'
@@ -121,32 +123,44 @@ export async function startAtmosphere(renderer: WebGPURenderer) {
 From anywhere, `earth.inspect().atmosphere` is `{ ready, generationTimeMilliseconds }`, or null without
 an atmosphere. Tests should wait for `ready === true` before taking screenshots.
 
-### Combine with your own post-processing (vanilla)
+### Combine with your own post-processing
 
-The atmosphere output is an ordinary TSL node, so wrap it:
+`<Atmosphere>` runs an `EarthRenderPipeline` inside R3F's `useRenderPipeline`. It builds the output in three
+stages: `scene` (the scene colour) → `radiance` (after aerial perspective and the sky, linear HDR) →
+`display` (tone-mapped; the built-in FXAA runs last here). The easiest way to add an effect is a render
+pass in a plugin (`context.registerRenderPass`, see the write-a-plugin skill): it joins the atmosphere's
+pipeline, and the output is rebuilt once, not per frame.
+
+Vanilla, attach an `EarthRenderPipeline` to your own three `RenderPipeline`:
 
 ```ts
-import type { Atmosphere } from 'react-three-earth'
+import { EarthRenderPipeline, type Atmosphere, type Earth } from 'react-three-earth'
 import type { Camera, Scene } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, type WebGPURenderer } from 'three/webgpu'
 
-export function createPipeline(renderer: WebGPURenderer, scene: Scene, camera: Camera, atmosphere: Atmosphere) {
-  const scenePass = pass(scene, camera)
-  const pipeline = new RenderPipeline(renderer)
-  const sky = atmosphere.createAerialPerspective(scenePass.getTextureNode('output'), scenePass.getTextureNode('depth'), camera)
-  pipeline.outputNode = sky // feed `sky` into bloom, vignette... here
-  return pipeline
+export function createPipeline(renderer: WebGPURenderer, scene: Scene, camera: Camera, earth: Earth, atmosphere: Atmosphere) {
+  const renderPipeline = new RenderPipeline(renderer)
+  const earthPipeline = new EarthRenderPipeline(earth, { atmosphere, antialiasing: 'fxaa' })
+  earthPipeline.attach(renderPipeline, pass(scene, camera), camera) // render with renderPipeline.render()
+  return { renderPipeline, earthPipeline } // earthPipeline.dispose() when done
 }
 ```
+
+To compose the atmosphere into a pipeline of your own (for example @aeronautic/core's `volume_pass`), pass
+`renderPipeline={false}` and build from `useAtmosphere()` with `createAerialPerspective` or
+`createBackdropNode`; `new EarthRenderPipeline(earth, { atmosphere }).buildOutput({ color, depth, camera })`
+gives the staged output with plugin passes included.
 
 ## Common Mistakes
 
 ### HIGH: Two components setting the render pipeline
 
 `<Atmosphere>` owns R3F's render pipeline output through `useRenderPipeline`. Another component that
-also sets `renderPipeline.outputNode` replaces the sky. Build one pipeline that chains effects after
-`createAerialPerspective`.
+also calls `useRenderPipeline` replaces the sky (R3F warns that more than one component configures it).
+Register effects as render passes instead, or pass `renderPipeline={false}` and build the one pipeline
+yourself. Without `<Atmosphere>`, `<Earth>` sets the pipeline while plugin render passes are registered: give
+it `renderPipeline={false}` too (or call `useClaimRenderPipeline()` in your pipeline component).
 
 ### HIGH: Passing the post-processing camera to `createAerialPerspective`
 

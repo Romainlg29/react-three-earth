@@ -75,6 +75,7 @@ In React, get the Earth with `useEarth()`; for a HUD use `useEarthState` (see
 | Objects jitter close up | `renderer.highPrecision` | must be true (`<Earth>` sets it); keep vertices local, position objects |
 | Errors about `instanceof` or node materials | `pnpm why three` | two copies of three; pin `three@0.187.0` |
 | `idle` never fires, or frames slow with plugins | `inspect().plugins` | a plugin with `ready: false` or a pending `trackLoading`, or high `updateMilliseconds`; see `write-a-plugin` |
+| A plugin's screen effect or draped layer does not show | `inspect().renderPasses`, `inspect().drapedLayers` | a pass with `active: false` (no pipeline hosts it, e.g. `renderPipeline={false}`) or an `error`; a layer with `regionsDrawn: 0` (bounds null or elsewhere); see `write-a-plugin` |
 | Blank in headless Chromium | browser flags | WebGPU needs a headed browser, see the test recipe |
 
 ### Tune performance

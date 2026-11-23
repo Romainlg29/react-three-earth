@@ -14,6 +14,8 @@ import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnch
 import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
 import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import { DrapedLayerRegistry, type DrapedLayerInspection } from '../plugins/drapedLayers.js'
+import { RenderPassRegistry, type RenderPassInspection } from '../plugins/renderPasses.js'
 
 /** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
 const CLICK_TOLERANCE_PIXELS = 3
@@ -79,6 +81,10 @@ export interface EarthInspection {
   } | null
   /** Installed plugins by name, in install order. */
   plugins: Record<string, PluginInspection>
+  /** Render passes (`earth.renderPasses` and built-in ones such as `fxaa`), in the order they run. */
+  renderPasses: RenderPassInspection[]
+  /** Draped layers (`earth.drapedLayers`), bottom to top. */
+  drapedLayers: DrapedLayerInspection[]
 }
 
 function inspectImagery(terrain: Terrain) {
@@ -111,6 +117,10 @@ export class Earth extends Group<EarthEventMap> {
   readonly plugins: PluginManager = new PluginManager(this)
   /** Custom style layer types plugins registered (`context.registerStyleLayerType`), drawn by map style sources. */
   readonly styleLayerTypes = new StyleLayerTypeRegistry()
+  /** Screen effects plugins registered (`context.registerRenderPass`), built into the output by `EarthRenderPipeline`. */
+  readonly renderPasses = new RenderPassRegistry()
+  /** Layers plugins drape above every imagery layer (`context.registerDrapedLayer`), drawn by the terrain. */
+  readonly drapedLayers = new DrapedLayerRegistry()
   /** Anchors made by `createGeographicAnchor`, placed for the morph every frame. */
   protected readonly anchors = new Set<GeographicAnchor>()
   protected readonly events = new EarthEventTracker()
@@ -257,6 +267,7 @@ export class Earth extends Group<EarthEventMap> {
       this.unsubscribeAttributions(this.terrain)
       this.terrain.setView(null)
       this.terrain.setStyleLayerTypes(null)
+      this.terrain.setDrapedLayers(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
     }
@@ -266,15 +277,24 @@ export class Earth extends Group<EarthEventMap> {
       terrain.setView(this.view)
       terrain.setStyleLayerTypes(this.styleLayerTypes)
       this.add(terrain.object)
-      for (const imagery of this.imagery) terrain.addImagery(imagery)
+      // Imagery first: draped layers take the layer slots left after it (one that does not fit is logged).
+      for (const imagery of this.imagery) {
+        try {
+          terrain.addImagery(imagery)
+        } catch (error) {
+          console.error(error)
+        }
+      }
+      terrain.setDrapedLayers(this.drapedLayers)
     }
     this.dispatchEvent({ type: 'attributionchange' })
   }
 
+  /** Throws, stating the fix, when the terrain has no layer slot left for its sources (nothing changes then). */
   addImagery(imagery: Imagery): void {
+    this.terrain?.addImagery(imagery)
     if (!this.imagery.has(imagery)) this.subscribeAttributions(imagery)
     this.imagery.add(imagery)
-    this.terrain?.addImagery(imagery)
     this.dispatchEvent({ type: 'attributionchange' })
   }
 
@@ -453,6 +473,8 @@ export class Earth extends Group<EarthEventMap> {
               loadedFromCache: this.atmosphere.loadedFromCache,
             },
       plugins: this.plugins.inspect(),
+      renderPasses: this.renderPasses.inspect(),
+      drapedLayers: this.drapedLayers.inspect(),
     }
   }
 

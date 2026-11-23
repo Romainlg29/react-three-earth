@@ -4,11 +4,13 @@ import { ImageOverlayPlugin as ImageOverlayPluginBase } from '3d-tiles-renderer/
 import { Mesh, type Color, type Object3D, type Texture } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { DrapedLayerRegistry, RegisteredDrapedLayer } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import { DrapedLayerOverlay } from './imagery/DrapedLayerOverlay.js'
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
 import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
-import { wrapOverlaysNodeMaterial } from './wrapOverlaysNodeMaterial.js'
+import { MAXIMUM_TERRAIN_LAYERS, wrapOverlaysNodeMaterial } from './wrapOverlaysNodeMaterial.js'
 
 /** An overlay that draws custom style layer types (`MapStyleOverlay`). */
 interface StyleLayerTypeConsumer {
@@ -55,6 +57,19 @@ interface UpstreamInternals {
 const upstream = ImageOverlayPluginBase.prototype as unknown as UpstreamInternals
 
 /**
+ * Draped layers draw above every imagery overlay: their order starts here, far above what imagery layers reach
+ * (they count up from 0 by one per overlay added).
+ */
+const DRAPED_LAYER_ORDER_START = 1_000_000_000
+
+function terrainFullError(what: string): Error {
+  return new Error(
+    `The terrain has no layer slot left for this ${what}: imagery sources and draped layers share ${MAXIMUM_TERRAIN_LAYERS}. ` +
+      'Remove an imagery source or a draped layer first, or merge sources into one MapStyleSource.',
+  )
+}
+
+/**
  * 3DTilesRenderer's `ImageOverlayPlugin`, for `WebGPURenderer`:
  *
  * - The GLSL `onBeforeCompile` material patch is replaced by a TSL `colorNode`.
@@ -68,6 +83,11 @@ const upstream = ImageOverlayPluginBase.prototype as unknown as UpstreamInternal
 export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   declare meshParams: WeakMap<Object3D, OverlayParams>
   declare tiles: { dispatchEvent(event: { type: string }): void } | null
+  /** Upstream's per-overlay state; only `order` is read here. */
+  declare overlayInfo: Map<object, { order: number }>
+  declare overlays: object[]
+  /** Upstream's job queue, null until `init`. */
+  declare processQueue: object | null
   /** Draws composite overlay textures on the GPU. Shared by every GPU-composed overlay of this plugin. */
   readonly compositor: ImageryCompositor
   /** Main-thread imagery work, per frame and in total. */
@@ -111,7 +131,85 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
     for (const overlay of this.styleLayerOverlays) overlay.setStyleLayerTypes(registry)
   }
 
+  protected drapedLayers: DrapedLayerRegistry | null = null
+  protected unsubscribeDrapedLayers: (() => void) | null = null
+  protected readonly drapedLayerOverlays = new Map<RegisteredDrapedLayer, DrapedLayerOverlay>()
+  /** Layers left out for lack of a slot, reported once each. */
+  protected readonly refusedDrapedLayers = new WeakSet<RegisteredDrapedLayer>()
+  /** Recounts tile memory once a draped region's target changed size (its tile was counted at the old size). */
+  protected readonly recountBytes = (): void => (this.tiles as { recalculateBytesUsed?(): void } | null)?.recalculateBytesUsed?.()
+
+  /** Terrain layer slots left for imagery sources and draped layers (each takes one). */
+  get freeLayerSlots(): number {
+    return MAXIMUM_TERRAIN_LAYERS - this.overlays.length
+  }
+
+  /** Draws the draped layers plugins register (`earth.drapedLayers`) above every imagery overlay, now and later. */
+  setDrapedLayers(registry: DrapedLayerRegistry | null): void {
+    if (this.drapedLayers === registry) return
+    this.unsubscribeDrapedLayers?.()
+    this.unsubscribeDrapedLayers = null
+    this.drapedLayers = registry
+    if (registry !== null) {
+      const unsubscribe = registry.subscribe(() => this.syncDrapedLayers())
+      // Refuse a layer the terrain has no slot for, at registration, so the plugin gets the error.
+      const removeValidator = registry.addValidator(({ id }) => {
+        if (this.freeLayerSlots < 1) throw terrainFullError(`draped layer "${id}"`)
+      })
+      this.unsubscribeDrapedLayers = () => {
+        unsubscribe()
+        removeValidator()
+      }
+    }
+    this.syncDrapedLayers()
+  }
+
+  /** The overlays drawing draped layers, bottom to top. */
+  get drapedOverlays(): IterableIterator<DrapedLayerOverlay> {
+    return this.drapedLayerOverlays.values()
+  }
+
+  /** Draped regions waiting for, or in, a redraw after `invalidate`. Read every frame: no allocation. */
+  get drapedRecompositionsPending(): number {
+    let count = 0
+    for (const overlay of this.drapedLayerOverlays.values()) count += overlay.recompositionsPending
+    return count
+  }
+
+  protected syncDrapedLayers(): void {
+    const layers = new Set(this.drapedLayers?.values() ?? [])
+    for (const [layer, overlay] of this.drapedLayerOverlays) {
+      if (layers.has(layer)) continue
+      this.drapedLayerOverlays.delete(layer)
+      this.deleteOverlay(overlay as never)
+      overlay.dispose()
+    }
+    for (const layer of layers) {
+      if (this.drapedLayerOverlays.has(layer)) continue
+      if (this.freeLayerSlots < 1) {
+        // Only on a terrain change: registration refuses layers past the slots.
+        if (!this.refusedDrapedLayers.has(layer)) console.error(terrainFullError(`draped layer "${layer.id}"`).message)
+        this.refusedDrapedLayers.add(layer)
+        continue
+      }
+      const overlay = new DrapedLayerOverlay(layer)
+      overlay.onTargetsResized = this.recountBytes
+      this.drapedLayerOverlays.set(layer, overlay)
+      this.addOverlay(overlay as never, DRAPED_LAYER_ORDER_START + layer.sequence)
+    }
+  }
+
   override addOverlay(overlay: Parameters<ImageOverlayPluginBase['addOverlay']>[0], order?: number): void {
+    if (this.overlays.includes(overlay)) return
+    if (this.freeLayerSlots < 1) throw terrainFullError(overlay instanceof DrapedLayerOverlay ? `draped layer "${overlay.layer.id}"` : 'imagery source')
+    // Imagery counts up below the draped layers, whenever it is added.
+    if (order === undefined && !(overlay instanceof DrapedLayerOverlay)) {
+      order = 0
+      for (const other of this.overlays) {
+        const otherOrder = this.overlayInfo.get(other)?.order ?? 0
+        if (otherOrder < DRAPED_LAYER_ORDER_START) order = Math.max(order, otherOrder + 1)
+      }
+    }
     if (isGpuComposedOverlay(overlay)) overlay.compositor = this.compositor
     if (isStyleLayerTypeConsumer(overlay)) {
       this.styleLayerOverlays.add(overlay)
@@ -121,13 +219,22 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   }
 
   override deleteOverlay(overlay: Parameters<ImageOverlayPluginBase['deleteOverlay']>[0]): void {
-    upstream.deleteOverlay.call(this, overlay)
+    if (this.processQueue === null) {
+      // Before the plugin joined a tiles renderer, upstream's clean-up would throw on its missing queue: only unlist it.
+      const index = this.overlays.indexOf(overlay)
+      if (index !== -1) this.overlays.splice(index, 1)
+      this.overlayInfo.delete(overlay)
+    } else upstream.deleteOverlay.call(this, overlay)
     if (isStyleLayerTypeConsumer(overlay) && this.styleLayerOverlays.delete(overlay)) overlay.setStyleLayerTypes(null)
     if (isGpuComposedOverlay(overlay) && overlay.compositor === this.compositor) overlay.compositor = null
   }
 
   dispose(): void {
+    this.unsubscribeDrapedLayers?.()
+    this.unsubscribeDrapedLayers = null
     upstream.dispose.call(this)
+    for (const overlay of this.drapedLayerOverlays.values()) overlay.dispose()
+    this.drapedLayerOverlays.clear()
     this.compositor.dispose()
   }
 

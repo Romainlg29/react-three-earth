@@ -160,6 +160,19 @@ const expectations = {
     ['gone again once the plugins are removed', r.removed.magentaShare < 0.001 && r.removed.stripeDarkShare < 0.001],
     ['no tile fetched again for either change', r.tileRequestsAfterLoad === 0],
   ],
+  // Render passes and draped layers (src/effects/), installed at runtime, the selection moved, then removed.
+  'render passes and draped layers, webgpu': r => effectExpectations(r, { glowIsMagenta: true }),
+  'render passes and draped layers, webgl2': r => {
+    const webgpu = results.find(other => other.check === 'render passes and draped layers, webgpu')
+    return [
+      ...effectExpectations(r, { glowIsMagenta: true }),
+      ['WebGL2 draws the same glow as WebGPU', webgpu !== undefined && Math.abs(r.selected.magentaShare - webgpu.selected.magentaShare) <= webgpu.selected.magentaShare * 0.1],
+    ]
+  },
+  'render passes and draped layers, atmosphere on': r => [
+    ...effectExpectations(r, { glowIsMagenta: false }),
+    ['the built-in FXAA is reported, last in the display stage', r.plain.renderPasses.map(pass => pass.name).join() === 'fxaa' && r.installed.renderPasses.map(pass => pass.name).join() === 'highlight-lift,vignette,fxaa' && r.installed.renderPasses.at(-1).timing === 'unavailable'],
+  ],
   // StrictMode mounts, unmounts and mounts again: the plugin is removed and installed once more, its shape kept.
   'sdf shapes plugin, strict mode': r => {
     const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
@@ -178,6 +191,22 @@ function styleLayerExpectations(r) {
     ['beside a primary road: glow', magenta(r.samples[0])],
     ['beside a minor road: no glow (the layer filter applies)', !magenta(r.samples[1])],
     ['lakes are striped in both blues', r.stripeDarkShare > 0.003 && r.stripeLightShare > 0.003 && r.stripeChanges > 40],
+  ]
+}
+
+/** The `?effects` examples: a vignette darkens the corners only, the glow follows the selection, removal restores the plain map. */
+function effectExpectations(r, { glowIsMagenta }) {
+  const pink = ([red, green, blue]) => glowIsMagenta ? red > 110 && blue > 80 && red > green + 60 && blue > green + 40 : red > green + 30 && blue > green + 15
+  const pluginPasses = inspection => inspection.renderPasses.filter(pass => pass.name !== 'fxaa')
+  return [
+    ['the vignette darkens the corners (by over 15 %) and leaves the middle', r.installed.corners < r.plain.corners * 0.85 && Math.abs(r.installed.reference - r.plain.reference) < r.plain.reference * 0.03],
+    ['both passes are built, fused', pluginPasses(r.installed).map(pass => `${pass.name}:${pass.stage}:${pass.active}:${pass.timing}`).join() === 'highlight-lift:radiance:true:fused,vignette:display:true:fused'],
+    ['nothing glows before a selection, and no region is drawn', r.installed.magentaShare === 0 && r.installed.drapedLayers[0]?.regionsDrawn === 0 && !pink(r.installed.samples[0])],
+    ['selecting marks only the regions around the place', r.pendingAfterSelect > 0 && r.pendingAfterSelect < r.selected.drapedLayers[0].regions / 2],
+    ['the glow draws at the selected place, above the imagery', pink(r.selected.samples[0]) && !pink(r.selected.samples[1]) && (!glowIsMagenta || r.selected.magentaShare > 0.001)],
+    ['only regions inside the bounds get a texture', r.selected.drapedLayers[0].regionsDrawn > 0 && r.selected.drapedLayers[0].regionsDrawn < r.selected.drapedLayers[0].regions / 2],
+    ['moving the selection moves the glow and clears the old place', pink(r.moved.samples[1]) && !pink(r.moved.samples[0])],
+    ['removing the plugins restores the plain map', r.removed.magentaShare === 0 && pluginPasses(r.removed).length === 0 && r.removed.drapedLayers.length === 0 && Math.abs(r.removed.corners - r.plain.corners) < 1],
   ]
 }
 

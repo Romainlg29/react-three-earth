@@ -32,6 +32,8 @@ import { useThree } from '@react-three/fiber'
 import { capsule, smoothUnion, sphere, torus, translate, union } from './sdf/distance'
 import { SdfShape } from './sdf/SdfShape'
 import { sdfShapes } from './sdf/sdfShapes'
+import { selectionGlow } from './effects/selectionGlow'
+import { vignette } from './effects/vignette'
 import { sdfGlow } from './styleLayers/sdfGlow'
 import { stripedFill } from './styleLayers/stripedFill'
 
@@ -69,8 +71,18 @@ const sdfShapesPlugin = sdfShapes()
 // `?glow=late` leaves them out: the browser check installs them after the style loaded (window.styleLayerTypePlugins).
 const showStyleLayerTypes = params.has('glow')
 const styleLayerTypePlugins = [sdfGlow(), stripedFill()]
-const plugins = [...(showSdfShapes ? [sdfShapesPlugin] : []), ...(showStyleLayerTypes && params.get('glow') !== 'late' ? styleLayerTypePlugins : [])]
+// `?effects` installs the render pass and draped layer examples (src/effects/): a vignette with a highlight lift,
+// and a glow around a selected place (`window.effectPlugins.selectionGlow.select(position)`). `?effects=late`
+// leaves them out: the browser check installs and removes them at runtime.
+const showEffects = params.has('effects')
+const effectPlugins = { vignette: vignette(), selectionGlow: selectionGlow() }
+const plugins = [
+  ...(showSdfShapes ? [sdfShapesPlugin] : []),
+  ...(showStyleLayerTypes && params.get('glow') !== 'late' ? styleLayerTypePlugins : []),
+  ...(showEffects && params.get('effects') !== 'late' ? [effectPlugins.vignette, effectPlugins.selectionGlow] : []),
+]
 if (showStyleLayerTypes) Object.assign(window, { styleLayerTypePlugins })
+if (showEffects) Object.assign(window, { effectPlugins })
 // Module scope: each distinct distance function is its own pipeline.
 const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU

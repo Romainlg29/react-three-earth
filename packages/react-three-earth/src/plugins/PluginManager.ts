@@ -3,6 +3,8 @@ import type { Camera, Object3D } from 'three'
 import { GeographicAnchor } from '../core/GeographicAnchor.js'
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
+import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 import { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugin.js'
 
@@ -98,6 +100,20 @@ export class PluginInstallation implements PluginContext {
     const remove = this.earth.styleLayerTypes.register(definition)
     this.undoSteps.push(remove)
     return remove
+  }
+
+  registerRenderPass(definition: RenderPassDefinition): () => void {
+    this.requireActive('registerRenderPass')
+    const remove = this.earth.renderPasses.register(definition)
+    this.undoSteps.push(remove)
+    return remove
+  }
+
+  registerDrapedLayer(definition: DrapedLayerDefinition): DrapedLayerHandle {
+    this.requireActive('registerDrapedLayer')
+    const handle = this.earth.drapedLayers.register(definition)
+    this.undoSteps.push(handle.remove)
+    return handle
   }
 
   /** Runs the plugin's `onUpdate` callbacks. Returns true if one asked for another frame. */

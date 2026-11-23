@@ -2,6 +2,8 @@ import type { Camera, Object3D } from 'three'
 
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
+import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 
 /**
@@ -85,4 +87,16 @@ export interface PluginContext {
    * layers appear without refetching tiles. Returns a function that removes it early.
    */
   registerStyleLayerType(definition: StyleLayerTypeDefinition): () => void
+  /**
+   * Adds a screen effect to the earth's render pipeline (`EarthRenderPipeline`), in a stage: `scene` (before
+   * the atmosphere), `radiance` (after it, linear HDR) or `display` (tone-mapped). The pipeline's output is
+   * rebuilt once, not per frame. Returns a function that removes it early.
+   */
+  registerRenderPass(definition: RenderPassDefinition): () => void
+  /**
+   * Drapes a layer drawn by the plugin above every imagery layer, through the imagery compositor's queue and
+   * budget. It is static: it redraws only when `handle.invalidate(bounds)` is called. `handle.remove()`
+   * removes it early.
+   */
+  registerDrapedLayer(definition: DrapedLayerDefinition): DrapedLayerHandle
 }
