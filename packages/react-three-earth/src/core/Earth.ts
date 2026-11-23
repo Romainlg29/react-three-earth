@@ -377,8 +377,10 @@ export class Earth extends Group<EarthEventMap> {
     this.updateAnchors()
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
-      // The sky, haze and sunlight belong to the globe: they fade out on the flat map.
+      // The sky and haze belong to the globe: they fade out on the flat map.
       this.atmosphere.opacity = 1 - this.view.morph
+      // The sun keeps lighting the ground the unroll has not reached yet; the flat map is unlit.
+      this.atmosphere.light.intensity = this.view.morph < 1 ? 1 : 0
       this.atmosphere.update(camera, this.date)
     }
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)

@@ -1,7 +1,7 @@
 // Pivot material adapted from takram three-geospatial (MIT, (c) 2024 Shota Matsuda), storybook-webgpu at b012ad06,
 // itself ported from 3DTilesRendererJS's PivotPointMesh (Apache-2.0).
-import { EnvironmentControls, GlobeControls } from '3d-tiles-renderer'
-import { Group, MathUtils, Vector3, type Camera, type Material, type Mesh } from 'three'
+import { EnvironmentControls, GlobeControls, WGS84_ELLIPSOID } from '3d-tiles-renderer'
+import { Group, MathUtils, Plane, Vector2, Vector3, type Camera, type Material, type Mesh } from 'three'
 import {
   cameraProjectionMatrix,
   Fn,
@@ -20,6 +20,14 @@ import { NodeMaterial } from 'three/webgpu'
 import type { ViewMorph } from '../view/ViewMorph.js'
 import { mercatorScaleFactor } from '../view/webMercator.js'
 import type { Earth } from './Earth.js'
+import {
+  applyTwoFingerTilt,
+  applyTwoFingerTransformOnGlobe,
+  applyTwoFingerTransformOnPlane,
+  getScreenRay,
+  TouchGestures,
+  type TwoFingerFrame,
+} from './TouchGestures.js'
 
 function createPivotMaterial(): Material {
   const size = uniform(15).mul(screenDPR)
@@ -78,6 +86,7 @@ function replacePivotMaterial(controls: object): void {
  * plane follows the map's anchor. Like `EarthControls`, it fits the camera's near and far planes.
  */
 export class FlatMapControls extends EnvironmentControls {
+
   /** Steepest tilt away from looking straight down, in radians. Default: 0 (a flat 2D map). */
   maximumTiltRadians = 0
   /**
@@ -126,6 +135,24 @@ export class FlatMapControls extends EnvironmentControls {
 }
 
 const cameraFlat = new Vector3()
+const screenCenter = new Vector2(0, 0)
+const gesturePlane = new Plane()
+const gesturePivot = new Vector3()
+const gestureUp = new Vector3()
+
+/** Stops the controls' fling and spin, which a two-finger gesture replaces (internals, pinned to 0.5.x). */
+function stopInertia(controls: object): void {
+  const internals = controls as {
+    dragInertia?: Vector3
+    rotationInertia?: { set(x: number, y: number): void }
+    globeInertia?: { identity(): void }
+    globeInertiaFactor?: number
+  }
+  internals.dragInertia?.set(0, 0, 0)
+  internals.rotationInertia?.set(0, 0)
+  internals.globeInertia?.identity()
+  if (internals.globeInertiaFactor !== undefined) internals.globeInertiaFactor = 0
+}
 
 /**
  * Hands the camera between `EarthControls` on the globe and `FlatMapControls` on the flat map, following
@@ -136,6 +163,10 @@ const cameraFlat = new Vector3()
 export class EarthViewControls {
   readonly globe = new EarthControls()
   readonly flatMap = new FlatMapControls()
+  /** Two-finger touch gestures (pan, pinch, twist and tilt together), like Apple Maps. */
+  readonly touchGestures = new TouchGestures()
+  /** Steepest tilt a two-finger drag reaches on the globe, in radians. Default: 80°. */
+  maximumGlobeTiltRadians = MathUtils.degToRad(80)
 
   constructor(protected readonly earth: Earth) {
     this.globe.setScene(earth)
@@ -143,6 +174,7 @@ export class EarthViewControls {
     const stopAnimation = () => earth.camera.stop()
     this.globe.addEventListener('start', stopAnimation)
     this.flatMap.addEventListener('start', stopAnimation)
+    this.touchGestures.onStart = stopAnimation
   }
 
   setCamera(camera: Camera): void {
@@ -151,11 +183,14 @@ export class EarthViewControls {
   }
 
   attach(domElement: HTMLElement): void {
+    // First, so the gestures see each touch before the controls do.
+    this.touchGestures.attach(domElement)
     this.globe.attach(domElement)
     this.flatMap.attach(domElement)
   }
 
   detach(): void {
+    this.touchGestures.detach()
     this.globe.detach()
     this.flatMap.detach()
   }
@@ -172,19 +207,60 @@ export class EarthViewControls {
     const onFlatMap = view.mode === '2d' && !view.transitioning
     globe.enabled = onGlobe
     flatMap.enabled = onFlatMap
+    this.touchGestures.tiltEnabled = onGlobe || flatMap.maximumTiltRadians > 0
+    // Taken every frame, so finger travel during a view transition is dropped rather than applied after it.
+    const frame = this.touchGestures.takeFrame()
+    const gesture = onGlobe || onFlatMap ? frame : null
     if (onGlobe) {
       const tiles = earth.terrain?.tiles
       if (tiles !== undefined && globe.ellipsoidGroup !== tiles.group) globe.setEllipsoid(tiles.ellipsoid, tiles.group)
+      if (gesture !== null) this.applyGlobeGesture(gesture)
       globe.update(deltaSeconds)
     } else if (onFlatMap) {
       flatMap.followView(view)
       flatMap.terrainHeightMeters = this.findTerrainHeightUnderCamera()
+      if (gesture !== null) this.applyFlatMapGesture(gesture)
       flatMap.update(deltaSeconds)
     } else {
       // Mid-morph, keep the whole map and globe between the clipping planes.
       const camera = globe.camera as (Camera & { near: number; far: number }) | null
       if (camera !== null && 'near' in camera) fitClippingPlanes(camera, camera.position.distanceTo(view.anchorPosition))
     }
+  }
+
+  protected applyGlobeGesture(gesture: TwoFingerFrame): void {
+    const camera = this.globe.camera
+    if (camera === null) return
+    stopInertia(this.globe)
+    // GlobeControls caps zoom out at a distance from the Earth's centre that keeps the globe in view.
+    const globe = this.globe as unknown as { _getMaxPerspectiveDistance?: () => number }
+    const perspective = (camera as Camera & { isPerspectiveCamera?: boolean }).isPerspectiveCamera === true
+    const maximumDistanceMeters = perspective ? (globe._getMaxPerspectiveDistance?.() ?? Infinity) : Infinity
+    const maximumHeightMeters = Math.max(maximumDistanceMeters - WGS84_ELLIPSOID.radius.x, this.globe.minDistance)
+    if (gesture.mode === 'transform') {
+      applyTwoFingerTransformOnGlobe(camera, gesture, { minimumHeightMeters: this.globe.minDistance, maximumHeightMeters })
+      return
+    }
+    if (WGS84_ELLIPSOID.intersectRay(getScreenRay(camera, screenCenter), gesturePivot) === null) return
+    WGS84_ELLIPSOID.getPositionToNormal(gesturePivot, gestureUp)
+    applyTwoFingerTilt(camera, gesture, gesturePivot, gestureUp, this.maximumGlobeTiltRadians)
+  }
+
+  protected applyFlatMapGesture(gesture: TwoFingerFrame): void {
+    const camera = this.flatMap.camera
+    if (camera === null) return
+    stopInertia(this.flatMap)
+    const view = this.earth.view
+    gesturePlane.setFromNormalAndCoplanarPoint(view.anchorUp, view.anchorPosition)
+    if (gesture.mode === 'transform') {
+      applyTwoFingerTransformOnPlane(camera, gesturePlane, gesture, {
+        minimumHeightMeters: this.flatMap.terrainHeightMeters + this.flatMap.minDistance,
+        maximumHeightMeters: view.maximumFlatCameraHeightMeters(camera),
+      })
+      return
+    }
+    if (getScreenRay(camera, screenCenter).intersectPlane(gesturePlane, gesturePivot) === null) return
+    applyTwoFingerTilt(camera, gesture, gesturePivot, view.anchorUp, this.flatMap.maximumTiltRadians)
   }
 
   /** Highest point of the visible tiles under the camera, from their regions, in map metres. */
@@ -208,6 +284,7 @@ export class EarthViewControls {
   }
 
   dispose(): void {
+    this.touchGestures.detach()
     this.globe.dispose()
     this.flatMap.dispose()
   }
