@@ -5,7 +5,7 @@ description: >
   quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), terrain from raster-dem elevation
   tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain, as MapLibre's terrain), XYZ raster tiles
   (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
-  writing a custom terrain or imagery source class.
+  exaggerating terrain heights, or writing a custom terrain or imagery source class.
 metadata:
   purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
   type: core
@@ -17,6 +17,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/attribution.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/ImageOverlayPlugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/FlatMapPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/RasterDemTerrainPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/dem/demSurface.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/imagery/XYZImageryOverlay.ts'
@@ -102,6 +103,31 @@ export function Ground() {
   `ellipsoid` endpoint is the exact option.
 
 Vanilla: `new Terrain({ sources: [new RasterDemSource({ url, encoding: 'terrarium' })] })`.
+
+### Exaggerate the relief
+
+```tsx
+import { RasterDemSource, Terrain } from 'react-three-earth/react'
+
+export function DramaticGround({ exaggeration }: { exaggeration: number }) {
+  return (
+    <Terrain exaggeration={exaggeration}>
+      <RasterDemSource url="https://example.com/terrarium/{z}/{x}/{y}.png" encoding="terrarium" />
+    </Terrain>
+  )
+}
+```
+
+- MapLibre's terrain `exaggeration`: heights are multiplied by it (1.5 draws mountains half again as high, 0 flattens the
+  ground onto the ellipsoid; seas below 0 m go deeper). Any terrain source, globe and flat map alike. Default 1.
+- Changing it needs no reload (vanilla: `terrain.exaggeration = 2`): the drawing is a shader uniform, but each new value
+  refits every tile's bounding volume, and raycasts copy each tile they test once per value. Set it from a slider or a
+  short transition, not on every frame of a long animation.
+- Below 1 the skirts that hide seams between tile levels shrink too; keep it at 1 or more unless you flatten on purpose.
+- `queryTerrainElevation`, `unproject`, pointer events, controls, labels and markers on the terrain read the heights as
+  drawn (exaggerated). Tile culling and level of detail use the scaled heights.
+- Shading keeps the data's normals: slopes are lit as if not exaggerated.
+- Negative or non-finite values throw, naming the fix.
 
 ### Drape raster imagery
 
@@ -236,6 +262,11 @@ For a smooth ellipsoid, use a quantized-mesh `ellipsoid` tileset or a flat-heigh
 
 Most providers require visible credit. Set `attribution` on the source and render `<AttributionControl />`
 (vanilla: `new AttributionControl({ earth, container })`); without both nothing is shown.
+
+### MEDIUM: Exaggeration expected to change `hillshade-exaggeration`
+
+`<Terrain exaggeration>` raises the ground. A style's `hillshade-exaggeration` paint only darkens or lightens the
+drawn shading; set each on its own.
 
 ## Completion
 

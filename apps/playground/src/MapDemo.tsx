@@ -62,6 +62,8 @@ const terrainKind = params.get('terrain') ?? 'quantized-mesh'
 const demUrl = useFixtures
   ? `${import.meta.env.BASE_URL}fixtures/dem/{z}/{x}/{y}.png${terrainKind === 'dem-hills' ? '' : '?plain'}`
   : (import.meta.env.VITE_DEM_URL ?? 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png')
+// `?exaggeration=2` scales the terrain's heights (`<Terrain exaggeration>`); tests change it with `window.setExaggeration`.
+const initialExaggeration = Number(params.get('exaggeration') ?? 1)
 const withAtmosphere = params.get('atmosphere') !== '0'
 const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery. `?test=invalidate` (with
@@ -155,6 +157,7 @@ declare global {
   interface Window {
     earth?: EarthImpl
     setView?: (view: ViewMode) => void
+    setExaggeration?: (exaggeration: number) => void
     camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
     markers?: Record<string, MarkerImpl | null>
@@ -314,13 +317,15 @@ function AtmosphereStatus() {
 export function MapDemo() {
   const [view, setView] = useState<ViewMode>(initialView)
   window.setView = setView // tests switch the view like the button does
+  const [exaggeration, setExaggeration] = useState(initialExaggeration)
+  window.setExaggeration = setExaggeration
   return (
     <>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: forceWebGL, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth date={date} view={view} plugins={plugins}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
-          <Terrain>
+          <Terrain exaggeration={exaggeration}>
             {terrainKind.startsWith('dem') ? (
               <RasterDemSource url={demUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={useFixtures ? 'Synthetic test elevation' : 'Terrain: Mapzen, AWS Terrain Tiles'} />
             ) : (

@@ -33,6 +33,12 @@ export interface TerrainOptions {
    * least one terrain tile is composed per frame regardless. Default: 2.
    */
   imageryCompositionBudgetMilliseconds?: number
+  /**
+   * Scales the terrain's heights, as MapLibre's terrain `exaggeration`: 1.5 draws mountains half again as high. Applied
+   * in the vertex shader, so changing it costs no reload. Controls, `queryTerrainElevation`, `unproject`, labels and
+   * markers read the heights as drawn. Default: 1.
+   */
+  exaggeration?: number
 }
 
 const MEGABYTE_BYTES = 2 ** 20
@@ -68,6 +74,7 @@ export class Terrain implements AttributionProvider {
     fade = true,
     createMaterial,
     imageryCompositionBudgetMilliseconds,
+    exaggeration = 1,
   }: TerrainOptions) {
     const [source, ...ignored] = sources
     if (source === undefined) throw new Error('Terrain: needs one source, for example new QuantizedMeshSource({ url }).')
@@ -93,6 +100,23 @@ export class Terrain implements AttributionProvider {
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
     this.tiles.lruCache.minBytesSize = memoryBudgetBytes * 0.75
+    this.exaggeration = exaggeration
+  }
+
+  /** How much heights are scaled when drawn (see `TerrainOptions.exaggeration`). */
+  get exaggeration(): number {
+    return this.flatMap.exaggeration
+  }
+
+  set exaggeration(value: number) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Terrain: exaggeration must be a finite number of 0 or more (1 draws heights as they are), got ${value}.`)
+    }
+    if (value === this.flatMap.exaggeration) return
+    this.flatMap.exaggeration = value
+    this.tiles.exaggeration = value
+    this.updateRequested = true
+    ;(this.tiles as unknown as { dispatchEvent(event: { type: string }): void }).dispatchEvent({ type: 'needs-update' })
   }
 
   /** The credits of the terrain source. */
@@ -153,11 +177,11 @@ export class Terrain implements AttributionProvider {
   }
 
   /**
-   * Height of the terrain as drawn at a position (radians), in metres above the ellipsoid, from the deepest visible
+   * Height of the terrain as drawn (exaggerated) at a position (radians), in metres above the ellipsoid, from the deepest visible
    * tile there; null where no visible tile covers it. Cheaper than a raycast: for many reads per frame (labels).
    */
   sampleElevation(longitudeRadians: number, latitudeRadians: number): number | null {
-    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians)
+    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians, this.flatMap.exaggeration)
   }
 
   /** True when a map style source draws labels that face the viewer. */

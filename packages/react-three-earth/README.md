@@ -130,7 +130,7 @@ renderer.setAnimationLoop(() => {
 | React (`react-three-earth/react`) | Vanilla (`react-three-earth`) | Role |
 | --- | --- | --- |
 | `<Earth date>` | `new Earth({ date })`, `connect`, `update`, `inspect` | root; ECEF metres; drives the sun |
-| `<Terrain errorTargetPixels memoryBudgetBytes createMaterial …>` | `new Terrain({ sources, … })` | the ground, one terrain source |
+| `<Terrain exaggeration errorTargetPixels memoryBudgetBytes createMaterial …>` | `new Terrain({ sources, … })` | the ground, one terrain source; `exaggeration` scales heights |
 | `<QuantizedMeshSource url attribution>` | `new QuantizedMeshSource({ url, attribution })` | quantized-mesh terrain |
 | `<RasterDemSource url encoding attribution>` | `new RasterDemSource({ url, encoding, attribution })` | terrain from raster-dem tiles (Terrarium, Terrain-RGB) |
 | `<Imagery opacity>` | `new Imagery({ sources, opacity })` | a raster layer; layers stack |

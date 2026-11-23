@@ -759,7 +759,7 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 - Heights are used as ellipsoidal heights, while these tiles hold heights above sea level: up to about 100 m off true
   WGS84 heights (the geoid). Not supported yet: TileJSON `bounds` and `minzoom` (tiles outside are requested, then
   stood in for), cancelling a worker task when its tile is aborted, counting kept rasters (64, about 5 MB) in
-  `memoryBudgetBytes`, exaggeration (part 2).
+  `memoryBudgetBytes`. Exaggeration: part 2, below.
 
 | Check (`?fixtures&terrain=dem`: Terrarium tiles of the quantized-mesh fixture's heights; SwiftShader) | Result |
 | --- | --- |
@@ -770,6 +770,43 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 | Unit tests | 16 new: surface grid and skirt winding, pixel-centre sampling, tile bounds, overzoomed tiles matching their ancestor's vertices, skirts lengthened by edge steps, polar caps, geometric errors, source validation, plugin tile set, region fitting, children, kept rasters, ancestors standing in for missing tiles, TileJSON, decode errors, worker failing to load |
 
 ![raster-dem terrain](dem-terrain-pitched.png) ![north pole](dem-terrain-north-pole.png)
+
+### Terrain exaggeration (W8, part 2)
+
+```tsx
+<Terrain exaggeration={1.5}>…</Terrain>   // vanilla: terrain.exaggeration = 1.5
+```
+
+- **Shader.** `FlatMapPlugin` already converts every vertex to geodetic on load (for `positionFlat`); it now also
+  stores `heightOffset`, the vertex's height along the ellipsoid normal in the mesh frame (12 bytes a vertex). The
+  shared `positionNode` adds `heightOffset × (exaggeration − 1)` on the globe and `(flat z + mesh flat centre z) ×
+  (exaggeration − 1)` on the map, from per-draw uniforms. At 1 the lift is 0 times the offset: positions are bit for
+  bit unchanged (the precision check stays exact). Works for any terrain source, so quantized-mesh terrain gets it too.
+- **Selection and culling.** `EarthTilesRenderer` scales each region volume's heights after 3DTilesRenderer builds it
+  (`preprocessNode`) and after terrain plugins refit it on parse (`parseTile`); a change refits every tile (a
+  traversal, no reload). The flat map's region boxes scale alike. Tile `region`s keep the data's heights, so readers
+  of the data (the label sampler) stay exact.
+- **Reading heights.** Raycasts go through 3DTilesRenderer's `raycastTile` hook: `FlatMapPlugin` tests each mesh
+  through a copy of its positions with the offsets applied, built once per exaggeration value (lazily, only for
+  tiles whose volume the ray crosses on the accelerated path). So `queryTerrainElevation`, `unproject`, pointer events
+  and controls read the ground as drawn. `Terrain.sampleElevation` (labels, markers) adds `(exaggeration − 1)` times
+  the interpolated vertex heights to the sampled chord, as the shader draws it (not height × exaggeration, which would
+  scale the chord sag too). Label occlusion rays, the label cache and the controls' camera floor scale with it.
+- **Cost of a change.** Drawing is a uniform, but each new value traverses every tile to refit volumes and raycasts copy
+  the tiles they test, so the skill advises sliders and short transitions, not a per-frame animation. Below 1 the
+  skirts shrink with the heights.
+- Deviation from the brief: none in substance. Normals are not steepened (slopes are lit as unexaggerated);
+  a TSL normal tweak could follow if it looks flat at high values.
+
+| Check (`?fixtures`, exaggeration 2 then 1; SwiftShader) | Result |
+| --- | --- |
+| Raster-dem terrain: 7 × 7 grid of heights | all 49 read; worst error against 2 × the fixture 3.5 m (1.8 m at 1) |
+| Quantized-mesh terrain: same grid | 5.6 m at 2 (4.6 m at 1) |
+| Flat map, raster-dem | 3.5 m at 2, 1.8 m at 1 |
+| Changing the prop | the relief redraws (11 to 13 % of pixels change), same `Terrain` object (no reload), no errors |
+| Unit tests | 4 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, sampler agrees with the raycast, flat boxes scaled, volumes refit and restored with value checks |
+
+![exaggeration 2](terrain-exaggeration.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
