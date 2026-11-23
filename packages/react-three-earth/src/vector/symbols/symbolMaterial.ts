@@ -76,7 +76,8 @@ export class SymbolStateTexture {
   write(slot: number, xPixels: number, yPixels: number, scale: number, opacity: number): void {
     const offset = slot * 4
     const data = this.data
-    if (data[offset] === xPixels && data[offset + 1] === yPixels && data[offset + 2] === scale && data[offset + 3] === opacity) return
+    // Compared as stored: float32.
+    if (data[offset] === Math.fround(xPixels) && data[offset + 1] === Math.fround(yPixels) && data[offset + 2] === Math.fround(scale) && data[offset + 3] === Math.fround(opacity)) return
     data[offset] = xPixels
     data[offset + 1] = yPixels
     data[offset + 2] = scale

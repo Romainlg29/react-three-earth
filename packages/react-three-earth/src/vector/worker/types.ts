@@ -243,6 +243,8 @@ export interface ScreenLabelHit {
   x: number
   y: number
   z: number
+  /** The zoom the label was laid out at (past the data's maximum zoom, deeper than `z`). */
+  zoom: number
   layerId: string
   sourceLayer: string
   featureIndex: number

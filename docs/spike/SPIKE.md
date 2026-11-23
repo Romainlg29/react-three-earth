@@ -460,6 +460,10 @@ How it works:
   from; otherwise it lays the tile out again. A style change while a query loads tiles makes it start again (up to
   three tries), so an answer never mixes two styles. Labels sort above every shape, because
   they draw above every shape (top style layer first among themselves).
+  Point labels facing the viewer (W6) are not in those boxes: the main thread hits them by their box on the screen
+  (`ScreenSymbols.hitScreenLabels`, placed labels only), and the worker resolves each hit's symbol tile, source layer
+  and feature index (`RenderedFeatureQuery.screenLabels`). A refresh after a feature-state change keeps the labels'
+  fades and screen boxes, so hovering a label does not make it blink.
 - **Order and duplicates.** Top imagery layer first; in a style, labels, then shapes from the top style layer down,
   later features in a tile first. A feature with an id is listed once per layer across tiles (MapLibre does the same
   through its feature index); features without ids can repeat in box queries. `querySourceFeatures` reads every

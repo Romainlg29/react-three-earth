@@ -183,10 +183,6 @@ export class ScreenSymbols {
   }
 
   /**
-   * The labels on the screen as of the last frame (fading in or shown): text (`key` without its layer), anchor and
-   * collision box in CSS pixels, opacity. For tests and devtools.
-   */
-  /**
    * The labels shown on the screen whose box meets this screen box (CSS pixels: left, top, right, bottom, widened
    * by `tolerancePixels`), top style layer first, as feature query hits.
    */
@@ -198,19 +194,24 @@ export class ScreenSymbols {
       if (!tile.drawn || symbols === null) continue
       for (let index = 0; index < symbols.keys.length; index++) {
         const fade = tile.fades[index]
-        if (fade == null || fade.opacity <= 0 || tile.projected[index] === 0) continue
         const candidate = tile.candidates[index]!
+        // Placed labels only, as MapLibre: one fading out after a collision no longer answers.
+        if (fade == null || fade.opacity <= 0 || fade.target === 0 || tile.projected[index] === 0) continue
         if (candidate.maximumXPixels < left - tolerancePixels || candidate.minimumXPixels > right + tolerancePixels) continue
         if (candidate.maximumYPixels < top - tolerancePixels || candidate.minimumYPixels > bottom + tolerancePixels) continue
-        const { sourceId, x, y, z } = tile.request
+        const { sourceId, x, y, z, zoom } = tile.request
         const key = symbols.keys[index]!
-        hits.push({ sourceId, x, y, z, layerId: key.slice(0, key.indexOf('\u0000')), sourceLayer: symbols.sourceLayers[index]!, featureIndex: symbols.featureIndices[index]!, layerIndex: candidate.layerIndex })
+        hits.push({ sourceId, x, y, z, zoom, layerId: key.slice(0, key.indexOf('\u0000')), sourceLayer: symbols.sourceLayers[index]!, featureIndex: symbols.featureIndices[index]!, layerIndex: candidate.layerIndex })
       }
     }
     hits.sort((a, b) => b.layerIndex - a.layerIndex)
     return hits.map(({ layerIndex: _, ...hit }) => hit)
   }
 
+  /**
+   * The labels on the screen as of the last frame (fading in or shown): text (`key` without its layer), anchor and
+   * collision box in CSS pixels, opacity. For tests and devtools.
+   */
   getScreenLabels(): ScreenLabelInspection[] {
     const labels: ScreenLabelInspection[] = []
     for (const tile of this.tiles.values()) {
@@ -450,6 +451,11 @@ export class ScreenSymbols {
     }
     if (tile.slotBase !== -1) this.state.release(tile.slotBase, tile.symbols?.keys.length ?? 0)
     tile.slotBase = -1
+    // The same labels again (a refresh after a feature-state or paint change): they keep their height, fade and
+    // place on the screen, so they neither blink nor stop answering feature queries until the next placement.
+    const previous = tile.symbols
+    const same = previous !== null && symbols !== null && sameLabels(previous, symbols)
+    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, candidates: tile.candidates } : null
     tile.symbols = symbols
     tile.loaded = true
     this.tilesChanged = true
@@ -500,6 +506,25 @@ export class ScreenSymbols {
         tile,
         index,
       })
+    }
+    if (kept !== null) {
+      tile.heights = kept.heights
+      tile.heightReadAt = kept.heightReadAt
+      tile.fades = kept.fades
+      tile.projected = kept.projected
+      tile.screen = kept.screen
+      for (let index = 0; index < count; index++) {
+        const from = kept.candidates[index]!
+        const to = tile.candidates[index]!
+        to.xPixels = from.xPixels
+        to.yPixels = from.yPixels
+        to.minimumXPixels = from.minimumXPixels
+        to.minimumYPixels = from.minimumYPixels
+        to.maximumXPixels = from.maximumXPixels
+        to.maximumYPixels = from.maximumYPixels
+        to.fade = from.fade
+        to.placed = from.placed
+      }
     }
     tile.slotBase = this.state.allocate(count)
     const mesh = createSymbolTileMesh(symbols, this.material)
@@ -698,6 +723,14 @@ function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition
   if (flat) return point.copy(cameraPosition).applyMatrix4(view.earthToFlat).z * view.scale
   WGS84_ELLIPSOID.getPositionToCartographic(cameraPosition, cartographic)
   return cartographic.height
+}
+
+/** Same labels at the same anchors, in the same order. */
+function sameLabels(a: SymbolMesh, b: SymbolMesh): boolean {
+  if (a.keys.length !== b.keys.length) return false
+  for (let index = 0; index < a.keys.length; index++) if (a.keys[index] !== b.keys[index]) return false
+  for (let index = 0; index < a.anchors.length; index++) if (a.anchors[index] !== b.anchors[index]) return false
+  return true
 }
 
 function overlaps(a: SymbolTile, b: SymbolTile): boolean {

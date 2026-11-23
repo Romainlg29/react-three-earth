@@ -77,7 +77,7 @@ describe('labels facing the viewer, in the worker', () => {
     const symbols = (await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })).symbols!
     expect(symbols.sourceLayers).toEqual(['places', 'places'])
     expect([...symbols.featureIndices]).toEqual([0, 1])
-    const hit = { sourceId: 'base', x: 1, y: 2, z: 10, layerId: 'places', sourceLayer: 'places', featureIndex: 0 }
+    const hit = { sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, layerId: 'places', sourceLayer: 'places', featureIndex: 0 }
     const features = await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: null, filter: null, tolerancePixels: 0, screenLabels: [hit] })
     expect(features.map(feature => [feature.layer.id, feature.properties.name])).toEqual([['places', 'Fuji']])
     // Layer and filter options apply to them too.

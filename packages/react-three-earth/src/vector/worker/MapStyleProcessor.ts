@@ -1018,12 +1018,12 @@ export class MapStyleProcessor {
       const layer = layers.find(candidate => candidate.id === hit.layerId)
       const tile = layer === undefined ? null : await this.getRawTile(hit.sourceId, hit.x, hit.y, hit.z)
       if (layer === undefined || tile === null) continue
-      const tileRequest: QueryTile = { sourceId: hit.sourceId, x: hit.x, y: hit.y, z: hit.z, zoom: hit.z, column: hit.x, labelsOnly: true }
+      const tileRequest: QueryTile = { sourceId: hit.sourceId, x: hit.x, y: hit.y, z: hit.z, zoom: hit.zoom, column: hit.x, labelsOnly: true }
       if (filter !== null) {
         const vectorFeature = tile.layers[hit.sourceLayer]?.feature(hit.featureIndex)
         if (vectorFeature === undefined) continue
         const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id: this.featureId(hit.sourceId, hit.sourceLayer, vectorFeature) }
-        if (!filter.filter({ zoom: hit.z }, feature)) continue
+        if (!filter.filter({ zoom: hit.zoom }, feature)) continue
       }
       add(layer, tileRequest, tile, hit.sourceLayer, hit.featureIndex, true)
     }

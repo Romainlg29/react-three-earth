@@ -717,7 +717,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const backend = this.backend
     if (this.disposed || backend === null || this.summary === null || geometry.length === 0) return []
     const tiles = this.getQueryTiles(geometry)
-    const screenLabels = screenBox === undefined || this.screenSymbols === null ? [] : this.screenSymbols.hitScreenLabels(screenBox, Math.max(0, options.tolerancePixels ?? 0))
+    const screenLabels = screenBox === undefined || this.screenSymbols === null || this.opacity <= 0 ? [] : this.screenSymbols.hitScreenLabels(screenBox, Math.max(0, options.tolerancePixels ?? 0))
     if (tiles.length === 0 && screenLabels.length === 0) return []
     return backend.queryRenderedFeatures({
       screenLabels,
