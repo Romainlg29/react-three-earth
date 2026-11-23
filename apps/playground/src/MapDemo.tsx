@@ -279,6 +279,7 @@ export function MapDemo() {
       >
         {view === '3d' ? 'Flat map (2D)' : 'Globe (3D)'}
       </button>
+      <a href={`${import.meta.env.BASE_URL}examples.html`} style={{ position: 'absolute', top: 8, left: 8, color: '#fff', opacity: 0.85 }}>Examples</a>
       {withAtmosphere && <AtmosphereStatus />}
     </>
   )

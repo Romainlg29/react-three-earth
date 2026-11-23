@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="data:," />
+    <title>react-three-earth examples</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0b0e14; color: #e8ecf3; font: 16px/1.5 system-ui, sans-serif; }
+      main { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+      h1 { margin: 0 0 4px; font-size: 28px; }
+      p.lead { margin: 0 0 24px; color: #9aa4b5; }
+      .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+      a.card { display: block; padding: 16px; border: 1px solid #263044; border-radius: 10px; background: #121826; color: inherit; text-decoration: none; }
+      a.card:hover, a.card:focus-visible { border-color: #5b8def; }
+      a.card h2 { margin: 0 0 4px; font-size: 17px; }
+      a.card p { margin: 0; color: #9aa4b5; font-size: 14px; }
+      footer { margin-top: 32px; color: #9aa4b5; font-size: 14px; }
+      footer a { color: #8fb0ff; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Examples</h1>
+      <p class="lead">Each card opens the playground configured for one feature. They need a WebGPU browser (Safari and others fall back to WebGL 2) and stream real terrain and OpenStreetMap tiles.</p>
+      <div class="grid">
+        <a class="card" href="./"><h2>Globe</h2><p>Terrain, imagery and the atmosphere around Mount Fuji. Use the button in the corner to morph to the flat map.</p></a>
+        <a class="card" href="./?view=2d"><h2>Flat map (2D)</h2><p>The same scene starting in the 2D map view.</p></a>
+        <a class="card" href="./?camera=138.7,35.4,0,9000000,0,-20"><h2>From space</h2><p>The whole globe with its atmosphere; fly down by scrolling.</p></a>
+        <a class="card" href="./?date=2026-11-22T20:30:00Z"><h2>Sunset</h2><p>Same place at dusk: the sun position comes from the date.</p></a>
+        <a class="card" href="./?markers"><h2>Markers and popups</h2><p>Pins that follow the terrain, a controlled popup, a buried label and a draggable marker.</p></a>
+        <a class="card" href="./?sdf"><h2>Plugin: SDF shapes</h2><p>A raymarched signed-distance shape from an example plugin, half buried in the mountain.</p></a>
+        <a class="card" href="./?effects"><h2>Plugin: render passes</h2><p>A vignette with a highlight lift, added as a plugin render pass.</p></a>
+        <a class="card" href="./?atmosphere=0"><h2>No atmosphere</h2><p>Plain lights instead of the physically based sky, the cheapest setup.</p></a>
+        <a class="card" href="./?test=afterburner"><h2>Afterburner</h2><p>An aircraft effect sharing the Earth's atmosphere.</p></a>
+      </div>
+      <footer>
+        Source and docs on <a href="https://github.com/Romainlg29/react-three-earth">GitHub</a>. The vector map styles and road glow plugin need a style URL, so run them locally with <code>?map=vector&amp;glow</code>.
+      </footer>
+    </main>
+  </body>
+</html>
