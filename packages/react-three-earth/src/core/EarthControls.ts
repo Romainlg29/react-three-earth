@@ -59,10 +59,52 @@ function createPivotMaterial(): Material {
  * with its pivot marker drawn by a node material so it shows on `WebGPURenderer`.
  */
 export class EarthControls extends GlobeControls {
+  /** Fingers' spread at the last pinch step, in pixels, or null outside a pinch. */
+  protected pinchSeparationPixels: number | null = null
+
   constructor(...args: ConstructorParameters<typeof GlobeControls>) {
     super(...args)
     replacePivotMaterial(this)
   }
+
+  /** 3DTilesRenderer's zoom step (untyped upstream), with pinches kept under the fingers. */
+  _updateZoom(): void {
+    this.pinchSeparationPixels = lockPinchToFingers(this, this.pinchSeparationPixels)
+    ;(GlobeControls.prototype as unknown as { _updateZoom(this: GlobeControls): void })._updateZoom.call(this)
+  }
+}
+
+/** 3DTilesRenderer's internals that a pinch reads (untyped upstream, pinned to 0.5.x). */
+interface PinchInternals {
+  state: number
+  zoomDelta: number
+  zoomSpeed: number
+  pointerTracker: {
+    getPointerType(): string
+    getPointerCount(): number
+    getTouchPointerDistance(): number
+    getStartTouchPointerDistance(): number
+  }
+}
+
+/** 3DTilesRenderer's ZOOM state and the share of the distance one zoom unit moves (`ZOOM_DELTA_SCALAR`). */
+const ZOOM_STATE = 3
+const ZOOM_DELTA_SCALAR = 0.0025
+
+/**
+ * Makes a two-finger pinch zoom like a map app: spreading the fingers to twice their distance halves the
+ * camera's distance, so the ground stays under them. Upstream moves a fixed share of the distance per
+ * pixel of spread instead, which on a phone zooms about half as far as the fingers move. Sets the
+ * controls' zoom step for this frame and returns the spread to compare with next frame.
+ */
+export function lockPinchToFingers(controls: object, previousSeparationPixels: number | null): number | null {
+  const internals = controls as PinchInternals
+  const tracker = internals.pointerTracker
+  if (internals.state !== ZOOM_STATE || tracker.getPointerType() !== 'touch' || tracker.getPointerCount() !== 2) return null
+  const separation = tracker.getTouchPointerDistance()
+  const previous = previousSeparationPixels ?? tracker.getStartTouchPointerDistance()
+  if (separation > 0 && previous > 0) internals.zoomDelta = (1 - previous / separation) / (ZOOM_DELTA_SCALAR * internals.zoomSpeed)
+  return separation
 }
 
 function replacePivotMaterial(controls: object): void {
@@ -78,6 +120,9 @@ function replacePivotMaterial(controls: object): void {
  * plane follows the map's anchor. Like `EarthControls`, it fits the camera's near and far planes.
  */
 export class FlatMapControls extends EnvironmentControls {
+  /** Fingers' spread at the last pinch step, in pixels, or null outside a pinch. */
+  protected pinchSeparationPixels: number | null = null
+
   /** Steepest tilt away from looking straight down, in radians. Default: 0 (a flat 2D map). */
   maximumTiltRadians = 0
   /**
@@ -102,6 +147,12 @@ export class FlatMapControls extends EnvironmentControls {
     this.up.copy(view.anchorUp)
     this.fallbackPlane.setFromNormalAndCoplanarPoint(view.anchorUp, view.anchorPosition)
     this.maxAltitude = this.maximumTiltRadians
+  }
+
+  /** 3DTilesRenderer's zoom step (untyped upstream), with pinches kept under the fingers. */
+  _updateZoom(): void {
+    this.pinchSeparationPixels = lockPinchToFingers(this, this.pinchSeparationPixels)
+    ;(EnvironmentControls.prototype as unknown as { _updateZoom(this: EnvironmentControls): void })._updateZoom.call(this)
   }
 
   override update(deltaTime?: number): void {
