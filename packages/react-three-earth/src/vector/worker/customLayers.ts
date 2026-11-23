@@ -57,11 +57,16 @@ function toSpecification(property: StyleLayerPropertyDefinition, kind: 'paint' |
  * Loads the layer types, importing each worker module once: a type whose descriptor did not change keeps
  * its module. A module that fails to load skips its type, with a warning naming the URL.
  */
+/** Per type, the revision whose worker module failed to load in this worker. */
+const failedRevisions = new Map<string, number>()
+
 export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescriptor[], previous: ReadonlyMap<string, LoadedLayerType>): Promise<Map<string, LoadedLayerType>> {
   const loaded = await Promise.all(
     descriptors.map(async (descriptor): Promise<LoadedLayerType | null> => {
       const kept = previous.get(descriptor.type)
       if (kept !== undefined && kept.descriptor.revision === descriptor.revision) return kept
+      // A module that failed is retried only when its type is registered again (a new revision).
+      if (failedRevisions.get(descriptor.type) === descriptor.revision) return null
       let module: WorkerLayerType | null = null
       if (descriptor.module !== null) {
         const { href, exportName } = descriptor.module
@@ -73,6 +78,7 @@ export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescri
           if (typeof module?.createTileBuilder !== 'function') throw new Error(`"${exportName}" must return an object with createTileBuilder(options).`)
         } catch (error) {
           console.warn(`MapStyleSource: the worker module of layer type "${descriptor.type}" (${href}) did not load, its layers are skipped: ${(error as Error).message}`)
+          failedRevisions.set(descriptor.type, descriptor.revision)
           return null
         }
       }
@@ -244,7 +250,8 @@ function attributeProblem(attribute: { array: unknown; itemSize: number; normali
   if (![1, 2, 3, 4].includes(itemSize)) return `needs an itemSize of 1 to 4, not ${itemSize}`
   const bytes = (array as Float32Array).BYTES_PER_ELEMENT
   if (bytes < 4 && itemSize === 3) return 'of 8 or 16 bits needs an itemSize of 1, 2 or 4 (WebGPU has no 3-component format for them); pad it to 4'
-  if (normalized && bytes === 4) return 'cannot be normalized with 32-bit values; use 8 or 16 bits, or floats'
+  if (normalized && bytes === 4) return 'cannot be normalized with 32-bit values; drop `normalized`, or use 8 or 16 bits'
+  if (normalized && itemSize === 1) return 'normalized with 8 or 16 bits needs an itemSize of 2 or 4 (WebGPU has no 1-component format for them); use floats'
   return null
 }
 

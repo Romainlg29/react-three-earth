@@ -59,7 +59,11 @@ export interface WorkerTileBuilderOptions {
   tile: { x: number; y: number; z: number }
 }
 
-/** A vertex attribute of the layer's mesh. */
+/**
+ * A vertex attribute of the layer's mesh, in a format WebGPU reads: 8- and 16-bit arrays take an itemSize of
+ * 1, 2 or 4 (not 3), normalized ones 2 or 4; 32-bit arrays are never normalized. At most 8 attributes,
+ * `position` included.
+ */
 export interface WorkerAttribute {
   array: Float32Array | Uint8Array | Uint16Array | Int16Array | Uint32Array | Int32Array
   itemSize: 1 | 2 | 3 | 4
@@ -80,7 +84,7 @@ export interface WorkerLayerGeometry {
 /** Collects one layer's features in one tile, then builds its mesh. */
 export interface WorkerTileBuilder {
   addFeature(feature: WorkerFeature, geometry: WorkerPoint[][]): void
-  /** The mesh, or null when nothing is drawn. Its arrays are transferred to the main thread. */
+  /** The mesh, or null when nothing is drawn. The library copies its arrays, so the module may reuse them across tiles. */
   finish(): WorkerLayerGeometry | null
 }
 
