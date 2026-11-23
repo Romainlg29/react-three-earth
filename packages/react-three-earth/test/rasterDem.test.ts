@@ -4,6 +4,7 @@ import { RasterDemSource } from '../src/core/sources.js'
 import { buildDemTileSurface, buildPolarCapSurface, buildSurface, demTileGeometricError, sampleRaster, webMercatorTileBounds, type ElevationRaster, type TerrainSurface } from '../src/tiles/dem/demSurface.js'
 import type { DemImageDecoder } from '../src/tiles/dem/demTasks.js'
 import { RasterDemTerrainPlugin } from '../src/tiles/RasterDemTerrainPlugin.js'
+import { DemMeshBuilder } from '../src/tiles/dem/DemMeshBuilder.js'
 import { demUnpackFactors } from '../src/vector/raster/rasterTiles.js'
 import { ecefToGeodetic, WEB_MERCATOR_MAX_LATITUDE_RADIANS, type GeodeticRadians } from '../src/view/webMercator.js'
 
@@ -158,6 +159,15 @@ describe('terrain surfaces from elevation rasters', () => {
     }
   })
 
+  it('lengthens skirts where edge pixels step, so neighbours sampling their own edge pixels leave no crack', () => {
+    // A slope of 50 m per pixel eastwards.
+    const raster = rasterOf(256, u => 50 * 256 * u)
+    const surface = buildDemTileSurface(raster, { x: 0, y: 0, z: 10, subview: [0, 0, 1, 1], segments: 4, skirtLengthMeters: 1 })
+    const geodetic = vertices(surface)
+    // The south skirt's first vertex hangs under the south-west corner by three half-pixel steps (25 m each).
+    expect(geodetic[0]!.heightMeters - geodetic[25]!.heightMeters).toBeCloseTo(75, 0)
+  })
+
   it('matches quantized-mesh geometric errors for tiles as wide', () => {
     // Zoom 1 Web Mercator tiles are as wide as quantized-mesh level 0 (two tiles round the equator).
     const quantizedMeshLevel0 = (6_378_137 * 2 * Math.PI * 0.25) / (65 * 2)
@@ -279,6 +289,37 @@ describe('RasterDemTerrainPlugin', () => {
     expect(grandchild.children).toHaveLength(0)
   })
 
+  it('lets the nearest ancestor the server has stand in for a missing tile', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const requested: string[] = []
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+      const url = String(input)
+      requested.push(url)
+      return /\/0\/0\/0\.png$/.test(url) ? new Response(new Uint8Array(8)) : new Response(null, { status: 404 })
+    })
+    try {
+      const { plugin, tileset } = await start(3)
+      const level0 = tileset.root.children[0]!
+      await parse(plugin, level0)
+      const child = level0.children[0]!
+      const served = await plugin.fetchData(child.content!.uri)
+      expect(served).toBeInstanceOf(ArrayBuffer)
+      expect(requested).toEqual(['https://example.com/dem/1/0/1.png', 'https://example.com/dem/0/0/0.png'])
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/no elevation tiles at zoom 1 .* set maximumZoom to 0/))
+      // The child reads the zoom 0 raster, and so do its children, with no further request.
+      await parse(plugin, child)
+      expect(child.children[0]!.content!.uri).toBe('https://example.com/dem/0/0/0.png')
+      expect(plugin.fetchData('https://example.com/dem/0/0/0.png')).toBeInstanceOf(ArrayBuffer)
+      // Asked again (the tile reloaded), the missing tile goes straight to its stand-in.
+      requested.length = 0
+      await plugin.fetchData(child.content!.uri)
+      expect(requested).toEqual([])
+    } finally {
+      fetchMock.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
   it('reads the template, zoom range and attribution from a TileJSON', async () => {
     const onTileJson = vi.fn()
     const plugin = new RasterDemTerrainPlugin({ tileJsonUrl: 'https://example.com/tiles.json', factors: demUnpackFactors({}), createWorker: null, onTileJson })
@@ -295,5 +336,22 @@ describe('RasterDemTerrainPlugin', () => {
     plugin.init(fakeTiles() as never)
     const tileset = (await plugin.loadRootTileset()) as { root: { children: PluginTile[] } }
     await expect(parse(plugin, tileset.root.children[0]!)).rejects.toThrow(/RasterDemSource: the elevation tile .* could not be decoded \(not an image\)/)
+  })
+})
+
+describe('DemMeshBuilder', () => {
+  it('builds the pending tiles on the main thread when the worker fails to load', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const worker = { postMessage: vi.fn(), terminate: vi.fn(), onmessage: null, onerror: null as ((event: { message?: string }) => void) | null }
+    const builder = new DemMeshBuilder(demUnpackFactors({ encoding: 'terrarium' }), () => worker as unknown as Worker, terrariumDecoder(42, 16))
+    const result = builder.build(new ArrayBuffer(8), { kind: 'tile', x: 0, y: 0, z: 1, subview: [0, 0, 1, 1], segments: 2, skirtLengthMeters: 1 })
+    worker.onerror!({ message: 'failed to load' })
+    expect((await result).surface.maximumHeightMeters).toBeCloseTo(42, 3)
+    expect(worker.terminate).toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/main thread/))
+    // Later tiles skip the worker.
+    await builder.build(new ArrayBuffer(8), { kind: 'tile', x: 0, y: 0, z: 1, subview: [0, 0, 1, 1], segments: 2, skirtLengthMeters: 1 })
+    expect(worker.postMessage).toHaveBeenCalledOnce()
+    warn.mockRestore()
   })
 })

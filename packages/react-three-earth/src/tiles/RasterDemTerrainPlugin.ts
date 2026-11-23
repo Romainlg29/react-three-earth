@@ -18,6 +18,10 @@ const INITIAL_MINIMUM_HEIGHT_METERS = -11_000
 const INITIAL_MAXIMUM_HEIGHT_METERS = 9_000
 /** Encoded elevation tiles kept at the data's deepest zoom, for the tiles drawn deeper than the data. */
 const RETAINED_RASTER_COUNT = 64
+/** Skirt along the edge of Web Mercator, where tiles meet the polar caps (which follow the coarse zoom 0 row). */
+const POLAR_EDGE_SKIRT_LENGTH_METERS = 3000
+/** Statuses of a tile the server does not have (past its last zoom, outside its bounds): its parent stands in. */
+const MISSING_TILE_STATUSES = new Set([204, 404])
 
 const DEM_TILE = Symbol('DEM_TILE')
 const CHILDREN_EXPANDED = Symbol('DEM_CHILDREN_EXPANDED')
@@ -27,7 +31,7 @@ interface DemTileInfo {
   x: number
   y: number
   z: number
-  /** The tile whose raster this one reads (itself, or its ancestor at the data's deepest zoom). */
+  /** The tile whose raster this one reads: itself, its ancestor at the data's deepest zoom, or the nearest ancestor the server has. */
   sourceX: number
   sourceY: number
   sourceZ: number
@@ -94,6 +98,12 @@ export class RasterDemTerrainPlugin {
   protected readonly retainedRasters = new Map<string, ArrayBuffer>()
   /** Levels drawn past the data's deepest zoom, known once a raster's size is: until a grid cell spans a pixel. */
   protected extraLevels: number | null = null
+  /** Tiles that read their own URL, by URL: the ones whose parent can stand in when the server lacks them. */
+  protected readonly tileCoordinates = new Map<string, { x: number; y: number; z: number }>()
+  /** URLs the server lacks, and the ancestor whose raster stands in for each. */
+  protected readonly substitutes = new Map<string, { x: number; y: number; z: number }>()
+  /** Zooms already warned about missing tiles. */
+  protected readonly warnedMissingZooms = new Set<number>()
 
   constructor(protected readonly options: RasterDemTerrainPluginOptions) {
     this.template = options.url ?? ''
@@ -137,19 +147,40 @@ export class RasterDemTerrainPlugin {
     return tileset
   }
 
-  /** Serves the rasters kept for tiles deeper than the data, instead of a new request. */
-  fetchData(url: string): ArrayBuffer | undefined {
-    const retained = this.retainedRasters.get(url)
-    if (retained === undefined) return undefined
-    this.retainedRasters.delete(url)
-    this.retainedRasters.set(url, retained)
-    return retained.slice(0)
+  /**
+   * Serves the rasters kept for tiles deeper than the data, instead of a new request. A tile the server lacks (404, 204:
+   * past its last zoom or outside its bounds) is served its nearest ancestor's raster, so the terrain stays whole.
+   */
+  fetchData(url: string, options?: RequestInit): ArrayBuffer | Promise<Response | ArrayBuffer> | undefined {
+    const retained = this.takeRetained(url)
+    if (retained !== undefined) return retained
+    const substitute = this.substitutes.get(url)
+    if (substitute !== undefined) return this.fetchAncestor(url, substitute.x, substitute.y, substitute.z + 1, options)
+    const coordinates = this.tileCoordinates.get(url)
+    if (coordinates === undefined || coordinates.z === 0) return undefined
+    return fetch(url, options).then(response => {
+      if (!MISSING_TILE_STATUSES.has(response.status)) return response
+      this.warnMissing(coordinates.z)
+      return this.fetchAncestor(url, coordinates.x, coordinates.y, coordinates.z, options, response)
+    })
   }
 
-  async parseToMesh(buffer: ArrayBuffer, tile: Tile & DemTile, _extension: string, url: string, abortSignal: AbortSignal): Promise<Object3D | null | undefined> {
+  parseToMesh(buffer: ArrayBuffer, tile: Tile & DemTile, _extension: string, url: string, abortSignal: AbortSignal): Promise<Object3D | null> | undefined {
     const info = tile[DEM_TILE]
+    // Not a promise: other plugins get the tiles this one did not make.
     if (info === undefined) return undefined
-    if (info.z === this.maximumZoom && info.cap === null) this.retainRaster(url, buffer)
+    return this.parseDemTile(buffer, tile, info, url, abortSignal)
+  }
+
+  protected async parseDemTile(buffer: ArrayBuffer, tile: Tile & DemTile, info: DemTileInfo, url: string, abortSignal: AbortSignal): Promise<Object3D | null> {
+    const substitute = this.substitutes.get(url)
+    if (substitute !== undefined && info.sourceZ === info.z) {
+      info.sourceX = substitute.x
+      info.sourceY = substitute.y
+      info.sourceZ = substitute.z
+    }
+    // Keep the raster when descendants will read it: at the data's deepest zoom, or standing in for a missing tile.
+    if (info.cap === null && (info.z >= this.maximumZoom || info.sourceZ < info.z)) this.retainRaster(this.tileUrl(info.sourceX, info.sourceY, info.sourceZ), buffer)
 
     let surface: TerrainSurface
     let rasterWidth: number
@@ -188,8 +219,42 @@ export class RasterDemTerrainPlugin {
       z: info.z,
       subview: [west, top, west + 1 / scale, top + 1 / scale],
       segments: DEM_TILE_SEGMENTS,
-      skirtLengthMeters: tile.geometricError,
+      skirtLengthMeters: info.y === 0 || info.y === 2 ** info.z - 1 ? Math.max(tile.geometricError, POLAR_EDGE_SKIRT_LENGTH_METERS) : tile.geometricError,
     }
+  }
+
+  protected takeRetained(url: string): ArrayBuffer | undefined {
+    const retained = this.retainedRasters.get(url)
+    if (retained === undefined) return undefined
+    this.retainedRasters.delete(url)
+    this.retainedRasters.set(url, retained)
+    return retained.slice(0)
+  }
+
+  /** The raster of the nearest ancestor (above zoom `z`) the server has, kept or fetched; `fallback` when none answers. */
+  protected async fetchAncestor(url: string, x: number, y: number, z: number, options: RequestInit | undefined, fallback?: Response): Promise<Response | ArrayBuffer> {
+    let response = fallback
+    for (let level = z - 1, ancestorX = x >> 1, ancestorY = y >> 1; level >= 0; level--, ancestorX >>= 1, ancestorY >>= 1) {
+      const ancestorUrl = this.tileUrl(ancestorX, ancestorY, level)
+      const retained = this.takeRetained(ancestorUrl)
+      if (retained === undefined) {
+        response = await fetch(ancestorUrl, options)
+        if (MISSING_TILE_STATUSES.has(response.status)) continue
+        if (!response.ok) return response
+      }
+      this.substitutes.set(url, { x: ancestorX, y: ancestorY, z: level })
+      return retained ?? response!.arrayBuffer()
+    }
+    return response ?? fetch(url, options)
+  }
+
+  protected warnMissing(z: number): void {
+    if (this.warnedMissingZooms.has(z)) return
+    this.warnedMissingZooms.add(z)
+    console.warn(
+      `RasterDemSource: the server has no elevation tiles at zoom ${z} here (404); their parents' rasters stand in. ` +
+        `If the server stops at zoom ${z - 1}, set maximumZoom to ${z - 1} to skip these requests.`,
+    )
   }
 
   protected retainRaster(url: string, buffer: ArrayBuffer): void {
@@ -202,8 +267,11 @@ export class RasterDemTerrainPlugin {
   protected expandChildren(tile: DemTile, info: DemTileInfo, surface: TerrainSurface): void {
     if (tile[CHILDREN_EXPANDED] === true) return
     tile[CHILDREN_EXPANDED] = true
-    if (info.z >= this.maximumZoom + (this.extraLevels ?? 0)) return
-    const source = info.z < this.maximumZoom ? null : info
+    // Past the data (its deepest zoom, or an ancestor standing in for a missing tile), children read the same raster
+    // until a cell spans a pixel.
+    const pastData = info.z >= this.maximumZoom || info.sourceZ < info.z
+    if (pastData && info.z >= info.sourceZ + (this.extraLevels ?? 0)) return
+    const source = pastData ? info : null
     // Children start from this tile's heights, widened: their finer grids reach peaks and pits this one smooths over.
     const margin = Math.max(100, 0.25 * (surface.maximumHeightMeters - surface.minimumHeightMeters))
     for (let dy = 0; dy < 2; dy++) {
@@ -218,6 +286,7 @@ export class RasterDemTerrainPlugin {
     const sourceX = source?.sourceX ?? x
     const sourceY = source?.sourceY ?? y
     const sourceZ = source?.sourceZ ?? z
+    if (source === null) this.tileCoordinates.set(this.tileUrl(x, y, z), { x, y, z })
     return {
       refine: 'REPLACE',
       geometricError: demTileGeometricError(x, y, z, DEM_TILE_SEGMENTS),

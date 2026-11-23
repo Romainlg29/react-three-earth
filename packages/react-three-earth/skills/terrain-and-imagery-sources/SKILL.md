@@ -90,9 +90,11 @@ export function Ground() {
   `attribution` are read).
 - `maximumZoom`: the server's last zoom (Terrarium 15, MapTiler Terrain-RGB 12; default the TileJSON's `maxzoom`, or
   15). Deeper tiles reuse that zoom's tiles with no new request, until a mesh cell spans one pixel (two levels for
-  256-pixel tiles, three for 512). Set it too high and tiles past the server's last zoom fail to load (404s).
+  256-pixel tiles, three for 512). Set it too high and each missing tile costs a 404 before its parent's raster
+  stands in (the console names the zoom to set); the terrain stays whole.
 - Each tile is a 65 × 65 grid with skirts (the sampling of a Cesium heightmap tile), decoded and built in a worker;
-  `createWorker` starts your bundler's worker instead (`null` builds on the main thread). Tile selection, fades,
+  `createWorker` starts your bundler's worker instead (`null` builds on the main thread; a worker that fails to load
+  falls back to the main thread with a warning). Tile selection, fades,
   imagery, labels, the flat map and `queryTerrainElevation` work as with quantized-mesh.
 - Web Mercator stops at about ±85.05°: caps built from the zoom 0 tile close the globe at the poles.
 - Heights are used as ellipsoidal heights: these tiles hold heights above sea level, so the ground sits up to about

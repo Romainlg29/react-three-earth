@@ -179,6 +179,9 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
     const y1 = latitudes[i1]!
     const y2 = latitudes[i2]!
     if (Math.abs((y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)) <= minimumDeterminant) continue // a skirt wall
+    // On a mesh a whole turn wide (zoom 0 raster-dem terrain, polar caps), a vertex on the antimeridian can come back on
+    // either side: a triangle spanning over half a turn is one of those, and would answer for points across the globe.
+    if (Math.max(x0, x1, x2) - Math.min(x0, x1, x2) > Math.PI) continue
     const fromColumn = Math.max(0, Math.floor((Math.min(x0, x1, x2) - minimumX) / cellWidth))
     const toColumn = Math.min(GRID_SIZE - 1, Math.floor((Math.max(x0, x1, x2) - minimumX) / cellWidth))
     const fromRow = Math.max(0, Math.floor((Math.min(y0, y1, y2) - minimumY) / cellHeight))

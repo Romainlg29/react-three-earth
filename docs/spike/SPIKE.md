@@ -729,22 +729,37 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
   `demUnpackFactors` / `decodeDemPixels`, then a 65 × 65 grid uniform in Web Mercator is sampled bilinearly at pixel
   centres, converted to ECEF in double precision, normals taken from neighbouring vertices, skirts (as long as the
   geometric error, as quantized-mesh) hung along the ellipsoid normal on all four edges. Positions come back as float32
-  relative to the tile's centre, transferred. `createWorker: null` builds on the main thread.
+  relative to the tile's centre, transferred. `createWorker: null` builds on the main thread; a worker that fails to
+  load (a bundler that does not follow `new URL(…, import.meta.url)`, a CSP) only fires `onerror` later, so the
+  builder keeps a copy of each request's bytes until it is answered and builds the pending tiles on the main thread
+  then (3DTilesRenderer never retries a failed tile: without this the globe would lose its terrain for good).
 - **Deeper than the data.** At `maximumZoom` the tile's encoded bytes are kept (64-entry LRU); its descendants read a
   part of the same raster (served from the kept bytes by the plugin's `fetchData`: no request) until a cell spans a
   pixel: two extra levels for 256-pixel tiles, three for 512. Deviation from upstream's `TerrainRGBMeshPlugin`
   (3d-tiles-renderer 0.5.4 has one): it displaces a flat mesh on the GPU through classic-material `displacementMap`,
   which node materials, our imagery UVs, the flat map's CPU `positionFlat`, raycasts and the label sampler cannot
   read. CPU meshes keep all of those exact.
+- **Missing tiles.** A tile the server lacks (404 or 204: `maximumZoom` set past the server's last zoom, outside its
+  `bounds`) would fail and, under REPLACE refinement, open a hole. The plugin's `fetchData` fetches the tile itself and
+  on 404 walks up to the nearest ancestor the server has (or a kept raster), serves its bytes, and remembers the
+  stand-in: the tile then reads that ancestor's raster like a tile past the data, and its children need no request.
+  One warning per zoom names the `maximumZoom` to set.
 - **Poles.** Web Mercator stops at ±85.05°. Each cap is a ring grid (8 rings × 128 columns) from the edge to the pole,
   following the zoom 0 raster's edge row, rising or falling evenly to the row's mean at the pole, with a 3 km skirt
   along its edge so finer tiles never open a gap. On the flat map the caps collapse onto the edge of the square.
-- **Seams.** Neighbouring tiles sample their own edge pixels, so shared edges can differ by up to half a pixel's slope;
-  skirts hide the cracks. Height reads straight down a seam could slip between two tiles' float32 edges:
+- **Seams.** Neighbouring tiles sample their own edge pixels, so shared edges can differ by about a pixel's step (the
+  shading shows a faint line on steep slopes). Each tile's skirt is the longer of its geometric error and three times
+  the steepest half-pixel step along its edges, so a crack never opens, even past the data where the skirt would
+  otherwise halve each level while the step stays a source pixel. Tiles on the edge of Web Mercator hang 3 km skirts
+  towards the caps, whichever side is higher. Upstream stitches neighbour borders into each texture; that needs the
+  neighbours loaded and was left for later. Height reads straight down a seam could slip between two tiles' float32 edges:
   `queryTerrainElevation` now falls back to the tile mesh sampler when its raycast misses, and that sampler takes the
-  nearest triangle within 1e-4 barycentric when a point falls a hair outside all of them.
+  nearest triangle within 1e-4 barycentric when a point falls a hair outside all of them (and skips triangles over half
+  a turn wide: on zoom 0 and the caps, antimeridian vertices can come back on either side).
 - Heights are used as ellipsoidal heights, while these tiles hold heights above sea level: up to about 100 m off true
-  WGS84 heights (the geoid). Not supported yet: TileJSON `bounds` and `minzoom`, exaggeration (part 2).
+  WGS84 heights (the geoid). Not supported yet: TileJSON `bounds` and `minzoom` (tiles outside are requested, then
+  stood in for), cancelling a worker task when its tile is aborted, counting kept rasters (64, about 5 MB) in
+  `memoryBudgetBytes`, exaggeration (part 2).
 
 | Check (`?fixtures&terrain=dem`: Terrarium tiles of the quantized-mesh fixture's heights; SwiftShader) | Result |
 | --- | --- |
@@ -752,7 +767,7 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 | Pitched view, WebGPU and WebGL2 | imagery checker drapes on 76 % of the view, same on both backends; terrain credit shown |
 | North pole from 6,000 km | closed: no black at the centre (without the caps, a black disc of 85.05°–90° shows: the check can fail) |
 | 2D at 80 km | morph settles, checker on 96 % of the view |
-| Unit tests | 13 new: surface grid and skirt winding, pixel-centre sampling, tile bounds, overzoomed tiles matching their ancestor's vertices, polar caps, geometric errors, source validation, plugin tile set, region fitting, children, kept rasters, TileJSON, decode errors |
+| Unit tests | 16 new: surface grid and skirt winding, pixel-centre sampling, tile bounds, overzoomed tiles matching their ancestor's vertices, skirts lengthened by edge steps, polar caps, geometric errors, source validation, plugin tile set, region fitting, children, kept rasters, ancestors standing in for missing tiles, TileJSON, decode errors, worker failing to load |
 
 ![raster-dem terrain](dem-terrain-pitched.png) ![north pole](dem-terrain-north-pole.png)
 

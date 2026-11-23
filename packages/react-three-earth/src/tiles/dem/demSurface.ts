@@ -277,7 +277,30 @@ export function buildDemTileSurface(raster: ElevationRaster, { x, y, z, subview,
       heights[row * size + column] = sampleRaster(raster, u, v)
     }
   }
-  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters, skirtEdges: { west: true, south: true, east: true, north: true } })
+  // Neighbours sample their own edge pixels, so a shared edge can differ by about a pixel's step: the skirt reaches
+  // at least three times the steepest half-pixel step across this tile's edges.
+  const skirt = Math.max(skirtLengthMeters, 3 * edgePixelStepMeters(raster, subview, segments))
+  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters: skirt, skirtEdges: { west: true, south: true, east: true, north: true } })
+}
+
+/** The largest height change from a subview's edges to half a pixel inwards (the first pixel centre on), metres. */
+export function edgePixelStepMeters(raster: ElevationRaster, subview: readonly [number, number, number, number], segments: number): number {
+  const [west, top, east, bottom] = subview
+  const pixelU = 1 / raster.width
+  const pixelV = 1 / raster.height
+  let step = 0
+  for (let index = 0; index <= segments; index++) {
+    const u = west + ((east - west) * index) / segments
+    const v = top + ((bottom - top) * index) / segments
+    step = Math.max(
+      step,
+      Math.abs(sampleRaster(raster, u, top) - sampleRaster(raster, u, top + pixelV)),
+      Math.abs(sampleRaster(raster, u, bottom) - sampleRaster(raster, u, bottom - pixelV)),
+      Math.abs(sampleRaster(raster, west, v) - sampleRaster(raster, west + pixelU, v)),
+      Math.abs(sampleRaster(raster, east, v) - sampleRaster(raster, east - pixelU, v)),
+    )
+  }
+  return step
 }
 
 export interface PolarCapRequest {

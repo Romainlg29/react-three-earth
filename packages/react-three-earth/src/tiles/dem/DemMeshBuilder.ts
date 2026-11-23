@@ -13,6 +13,9 @@ export function createRasterDemWorker(): Worker {
 interface Pending {
   resolve: (result: DemTaskResult) => void
   reject: (reason: unknown) => void
+  /** A copy of the bytes sent, to build on the main thread if the worker fails before answering. */
+  bytes: ArrayBuffer
+  task: DemTask
 }
 
 /**
@@ -44,9 +47,16 @@ export class DemMeshBuilder {
       if ('error' in data) pending.reject(new Error(data.error))
       else pending.resolve(data.result)
     }
+    // A module worker that cannot load (a bundler that does not follow `new URL(…, import.meta.url)`, a CSP) fails here,
+    // after construction: its pending tiles are built on the main thread instead of failing for good.
     this.worker.onerror = event => {
-      console.warn(`RasterDemSource: the terrain worker failed (${event.message}); decoding on the main thread from now on.`)
-      this.stopWorker(new Error('the terrain worker failed'))
+      console.warn(
+        `RasterDemSource: the terrain worker failed (${event.message ?? 'it did not load'}); building terrain on the main thread from now on. ` +
+          'Pass createWorker to start your bundler\'s worker, or createWorker: null to skip it.',
+      )
+      const pending = [...this.pending.values()]
+      this.stopWorker(null)
+      for (const { bytes, task, resolve, reject } of pending) runDemTask({ bytes, factors: this.factors, task }, this.decode).then(resolve, reject)
     }
   }
 
@@ -56,7 +66,7 @@ export class DemMeshBuilder {
     if (worker === null) return runDemTask({ bytes, factors: this.factors, task }, this.decode)
     const id = this.nextId++
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      this.pending.set(id, { resolve, reject, bytes: bytes.slice(0), task })
       const request: DemTaskRequest = { id, bytes, factors: this.factors, task }
       worker.postMessage(request, [bytes])
     })
@@ -66,10 +76,11 @@ export class DemMeshBuilder {
     this.stopWorker(Object.assign(new Error('the terrain was disposed'), { name: 'AbortError' }))
   }
 
-  protected stopWorker(reason: Error): void {
+  /** Ends the worker; pending tasks are rejected with `reason`, or left to the caller when it is null. */
+  protected stopWorker(reason: Error | null): void {
     this.worker?.terminate()
     this.worker = null
-    for (const { reject } of this.pending.values()) reject(reason)
+    if (reason !== null) for (const { reject } of this.pending.values()) reject(reason)
     this.pending.clear()
   }
 }
