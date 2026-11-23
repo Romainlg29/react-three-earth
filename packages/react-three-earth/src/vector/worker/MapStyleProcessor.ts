@@ -20,14 +20,17 @@ import {
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
 import { applyStyleCommand, copyStyleDocument, type StyleDocument } from './styleDocument.js'
 import { ShapeBuilder, type LineCap, type LineGradient, type LineJoin, type Point } from './ShapeBuilder.js'
-import { StyleImages, type ImageDecoder } from './sprites.js'
+import { decodeImageInBrowser, StyleImages, type ImageDecoder } from './sprites.js'
+import { decodeRasterImageInBrowser, decodeRasterTile, rasterTileByteLength, type DemEncoding, type DemSourceSpecification, type RasterImageDecoder } from '../raster/rasterTiles.js'
+import { requiredSourceType, summarizeRasterLayers } from '../raster/rasterLayers.js'
 import { assignLayerOrder, compileStyleLayer, toRgba, type CompiledStyleLayer, type Rgba, type StyleFeature, type StyleLayerSpecification } from './styleLayers.js'
-import { createVectorTileProvider, type TileSourceSpecification, type VectorTileFeatureLike, type VectorTileLike, type VectorTileProvider, type VectorTileProviderFactory } from './tileProviders.js'
+import { createRasterTileProvider, createVectorTileProvider, isRasterTileProvider, type TileSourceSpecification, type VectorTileFeatureLike, type VectorTileLike, type VectorTileProvider, type VectorTileProviderFactory } from './tileProviders.js'
 import { resolveTemplate, type ResourceFetch, type VectorSourceSpecification } from './tileSources.js'
 import {
   TILE_EXTENT,
   TILE_SIZE_PIXELS,
   type AtlasUpdate,
+  type RasterTileData,
   type BackgroundPattern,
   type FeatureColorUpdate,
   type FeatureState,
@@ -36,6 +39,7 @@ import {
   type ImageAtlasUpdate,
   type ImageChange,
   type MapStyleProcessorOptions,
+  type MapStyleSourceSummary,
   type MapStyleSummary,
   type PatternRectangle,
   type ResourceAnswer,
@@ -61,8 +65,10 @@ export interface MapStyleProcessorHooks {
   drawLocalGlyph?: (fontStack: string, codePoint: number) => Glyph | null
   /** Asks the main thread to resolve a request (`transformRequest`, protocols). Without it, URLs are fetched as they are. */
   resolveResource?: (request: ResourceRequest, signal?: AbortSignal) => Promise<ResourceAnswer>
-  /** Decodes sprite sheets (Node has no `createImageBitmap`). */
+  /** Decodes sprite sheets and elevation tiles to pixels (Node has no `createImageBitmap`). */
   decodeImage?: ImageDecoder
+  /** Decodes raster tiles to `ImageBitmap`s (Node has no `createImageBitmap`). */
+  decodeRasterImage?: RasterImageDecoder
 }
 
 /** Pattern lookups of one tile: the images it asked for, and those that do not exist. */
@@ -86,6 +92,8 @@ const RAW_TILE_CACHE_SIZE = 128
 const PLACED_LABEL_CACHE_SIZE = 256
 /** Features `querySourceFeatures` returns at most, so a careless query cannot flood the main thread. */
 const MAXIMUM_SOURCE_FEATURES = 100_000
+/** Compressed raster tiles kept in the worker, so a style change decodes them again without fetching. */
+const RAW_RASTER_CACHE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_ZOOM = 24
 const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
 /**
@@ -95,6 +103,8 @@ const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
 export const TILE_PROVIDER_FACTORIES: ReadonlyMap<string, VectorTileProviderFactory> = new Map([
   ['vector', createVectorTileProvider],
   ['geojson', createGeoJsonTileProvider],
+  ['raster', createRasterTileProvider],
+  ['raster-dem', createRasterTileProvider],
 ])
 
 /** Line gradients are evaluated at this many points from start to end (MapLibre's ramp texture width). */
@@ -104,6 +114,7 @@ const LINE_GRADIENT_STEP = 1 / 128
 
 /** Layer types MapLibre defines; a style layer of another type needs a plugin. */
 const MAPLIBRE_LAYER_TYPES = new Set(['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion', 'raster', 'hillshade', 'heatmap', 'color-relief'])
+/** Source types whose tiles the processor fetches: vector tiles, and raster or elevation images. */
 
 interface SymbolCandidate {
   layer: CompiledStyleLayer
@@ -202,6 +213,13 @@ export class MapStyleProcessor {
   protected readonly hooks: MapStyleProcessorHooks
   protected readonly networkFetch: typeof fetch
   protected readonly rawTiles = new Map<string, RawTileEntry>()
+  /** Compressed raster and raster-dem tiles by `source/z/x/y`, least recently used first. */
+  protected readonly rawRasterTiles = new Map<string, { x: number; y: number; z: number; bytes: Uint8Array }>()
+  protected rawRasterBytes = 0
+  /** Bumped by `invalidate` and `removeSource`: a fetch that started before is not cached. */
+  protected rawRasterGeneration = 0
+  /** Sources whose undecodable tiles were already reported. */
+  protected readonly reportedRasterSources = new Set<string>()
   /** Custom layer types from plugins, with their worker modules loaded. */
   protected layerTypes: Map<string, LoadedLayerType> = new Map()
   protected layerTypeWork: Promise<unknown> = Promise.resolve()
@@ -246,7 +264,7 @@ export class MapStyleProcessor {
     this.previous = previous
     // Worker modules already imported stay loaded across a reload.
     if (previous !== undefined) this.layerTypes = previous.layerTypes
-    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [] }
+    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [], rasterLayers: [] }
   }
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
@@ -290,7 +308,20 @@ export class MapStyleProcessor {
 
   /** Sources at least one drawn layer reads. */
   protected usedSources(): Set<string> {
-    return new Set(this.layers.flatMap(layer => (layer.type !== 'background' && layer.source !== undefined ? [layer.source] : [])))
+    return new Set(this.layers.flatMap(layer => (layer.type !== 'background' && layer.source !== undefined && this.readsRightSourceType(layer.type, layer.source) ? [layer.source] : [])))
+  }
+
+  /**
+   * Whether a layer of this type can read this source: a source type without a provider (image, video…), a fill on a
+   * raster source or a hillshade on a vector one draws nothing, is listed as skipped and does not load the source.
+   */
+  protected readsRightSourceType(layerType: string, sourceId: string): boolean {
+    const source = this.document.sources[sourceId] as { type?: string } | undefined
+    if (source === undefined) return true
+    if (source.type === undefined || !TILE_PROVIDER_FACTORIES.has(source.type)) return false
+    const required = this.layerTypes.has(layerType) ? 'vector' : requiredSourceType(layerType)
+    // Vector and GeoJSON sources both give features; raster layers need their own source type.
+    return required === 'vector' ? source.type !== 'raster' && source.type !== 'raster-dem' : source.type === required
   }
 
   /** Loads a source's fetcher once: a second style change while it loads waits for the same load. */
@@ -330,7 +361,7 @@ export class MapStyleProcessor {
         return []
       }
       if (!compiled.has(layer.id)) return [layer.id]
-      return layer.type !== 'background' && layer.source !== undefined && sources[layer.source] !== undefined && !TILE_PROVIDER_FACTORIES.has(sources[layer.source]!.type) ? [layer.id] : []
+      return layer.type !== 'background' && layer.source !== undefined && !this.readsRightSourceType(layer.type, layer.source) ? [layer.id] : []
     })
     const used = this.usedSources()
     // In the style's source order, not in the order the requests finished, and only for sources a drawn layer uses
@@ -341,7 +372,10 @@ export class MapStyleProcessor {
       return typeof attribution === 'string' ? [attribution] : []
     })
     return {
-      sources: [...this.fetchers].filter(([id]) => used.has(id)).map(([id, fetcher]) => ({ id, minimumZoom: fetcher.minimumZoom, maximumZoom: fetcher.maximumZoom })),
+      sources: Object.keys(sources).flatMap(id => {
+        const fetcher = this.fetchers.get(id)
+        return fetcher !== undefined && used.has(id) ? [this.summarizeSource(id, fetcher)] : []
+      }),
       backgroundByZoom: Array.from({ length: MAXIMUM_ZOOM + 1 }, (_, zoom) => this.backgroundAt(zoom)),
       skippedLayers: skipped,
       attributions,
@@ -349,7 +383,19 @@ export class MapStyleProcessor {
       spriteImageIds: this.images.spriteImageIds(),
       customLayerTypes: [...new Set(this.layers.flatMap(layer => (layer.custom !== null ? [layer.type] : [])))],
       missingLayerTypes,
+      rasterLayers: summarizeRasterLayers(
+        this.layers.filter(layer => layer.source !== undefined && this.fetchers.has(layer.source)),
+        sources,
+      ),
     }
+  }
+
+  protected summarizeSource(id: string, fetcher: VectorTileProvider): MapStyleSourceSummary {
+    const type = (this.document.sources[id] as VectorSourceSpecification | undefined)?.type
+    if ((type !== 'raster' && type !== 'raster-dem') || !isRasterTileProvider(fetcher)) return { id, minimumZoom: fetcher.minimumZoom, maximumZoom: fetcher.maximumZoom }
+    const { url, tiles, scheme, encoding, redFactor, greenFactor, blueFactor, baseShift } = this.document.sources[id] as VectorSourceSpecification & Record<string, unknown>
+    const contentKey = JSON.stringify([url, tiles, scheme, encoding ?? fetcher.encoding, redFactor, greenFactor, blueFactor, baseShift])
+    return { id, type, minimumZoom: fetcher.minimumZoom, maximumZoom: fetcher.maximumZoom, tileSizePixels: fetcher.tileSize ?? 512, bounds: fetcher.bounds ?? null, contentKey }
   }
 
   /**
@@ -501,7 +547,11 @@ export class MapStyleProcessor {
 
   /** Forgets the decoded tiles of a source. */
   protected dropRawTiles(sourceId: string): void {
-    for (const key of this.rawTiles.keys()) if (key.startsWith(`${sourceId}/`) && key.slice(sourceId.length + 1).split('/').length === 3) this.rawTiles.delete(key)
+    const ofSource = (key: string) => key.startsWith(`${sourceId}/`) && key.slice(sourceId.length + 1).split('/').length === 3
+    for (const key of this.rawTiles.keys()) if (ofSource(key)) this.rawTiles.delete(key)
+    for (const key of this.rawRasterTiles.keys()) if (ofSource(key)) this.forgetRawRaster(key)
+    this.rawRasterGeneration++
+    this.reportedRasterSources.delete(sourceId)
   }
 
   /**
@@ -592,6 +642,8 @@ export class MapStyleProcessor {
   async processTile(request: TileRequest, signal?: AbortSignal): Promise<TileBucket> {
     const { sourceId, x, y, z, zoom } = request
     signal?.throwIfAborted()
+    const sourceType = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.type
+    if (sourceType === 'raster' || sourceType === 'raster-dem') return this.processRasterTile(request, signal)
     const tile = await this.getRawTile(sourceId, x, y, z, signal)
     signal?.throwIfAborted()
     // From here to the end of the feature loop nothing awaits: states read there are those of this version.
@@ -659,6 +711,57 @@ export class MapStyleProcessor {
       rebuildFeatureKeys: [...uses.rebuildKeys],
       byteLength,
     }
+  }
+
+  /** Fetches and decodes a raster or elevation tile; a missing tile (404) is an empty bucket. */
+  protected async processRasterTile({ sourceId, x, y, z }: TileRequest, signal?: AbortSignal): Promise<TileBucket> {
+    const empty: TileBucket = { shapes: null, text: null, layers: [], raster: null, atlas: null, images: [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion: this.featureStateVersion, byteLength: 0 }
+    // A source removed and added back in one batch is loading again: wait for it rather than answer an empty tile.
+    await this.pendingSources.get(sourceId)?.load
+    signal?.throwIfAborted()
+    const fetcher = this.fetchers.get(sourceId)
+    const source = this.document.sources[sourceId] as VectorSourceSpecification | undefined
+    if (!isRasterTileProvider(fetcher) || source === undefined) return empty
+    const key = `${sourceId}/${z}/${x}/${y}`
+    const revalidate = this.revalidatedTiles.delete(key)
+    const cached = revalidate ? undefined : this.rawRasterTiles.get(key)
+    let bytes: Uint8Array | null
+    if (cached !== undefined) {
+      bytes = cached.bytes
+      this.rememberRawRaster(key, x, y, z, bytes) // most recently used
+    } else {
+      // Listed before the fetch, so an `invalidate` meanwhile makes the next request revalidate it.
+      this.fetchedTiles.delete(key)
+      this.fetchedTiles.set(key, { x, y, z })
+      if (this.fetchedTiles.size > 4096) this.fetchedTiles.delete(this.fetchedTiles.keys().next().value!)
+      const generation = this.rawRasterGeneration
+      try {
+        bytes = await fetcher.fetchTile(x, y, z, signal, revalidate)
+      } catch (error) {
+        if (revalidate) this.revalidatedTiles.add(key) // an aborted or failed refetch must not use up the revalidation
+        throw error
+      }
+      // Kept only when nothing was invalidated or removed meanwhile: these bytes may predate the change.
+      if (bytes !== null && generation === this.rawRasterGeneration && this.fetchers.get(sourceId) === fetcher) this.rememberRawRaster(key, x, y, z, bytes)
+    }
+    signal?.throwIfAborted()
+    if (bytes === null) return empty
+    const encoding = (source.encoding ?? fetcher.encoding) as DemEncoding | undefined
+    let raster: RasterTileData
+    try {
+      raster = await decodeRasterTile(bytes, { ...(source as DemSourceSpecification), type: source.type, ...(encoding !== undefined ? { encoding } : {}) }, {
+        decodeImage: this.hooks.decodeRasterImage ?? decodeRasterImageInBrowser,
+        decodePixels: this.hooks.decodeImage ?? decodeImageInBrowser,
+      })
+    } catch (error) {
+      // A server answering an error page with status 200: draw the other layers without this tile, as MapLibre does.
+      if (!this.reportedRasterSources.has(sourceId)) {
+        this.reportedRasterSources.add(sourceId)
+        console.warn(`MapStyleSource: a tile of source "${sourceId}" (${z}/${x}/${y}) is not an image and is skipped; check that its server answers PNG, JPEG, WebP or AVIF. ${(error as Error).message}`)
+      }
+      return empty
+    }
+    return { ...empty, raster, byteLength: rasterTileByteLength(raster) }
   }
 
   /**
@@ -1049,6 +1152,7 @@ export class MapStyleProcessor {
       const { zoom, z } = tileRequest
       const labelLayers = new Map(layers.filter(layer => layer.type === 'symbol' && layer.source === tileRequest.sourceId && layer.isVisibleAtZoom(zoom) && (wanted === null || wanted.has(layer.id))).map(layer => [layer.id, layer]))
       if (tileRequest.labelsOnly && labelLayers.size === 0) continue
+      if (!this.isVectorSource(tileRequest.sourceId)) continue // raster tiles hold no features
       const tile = await this.getRawTile(tileRequest.sourceId, tileRequest.x, tileRequest.y, tileRequest.z)
       if (tile === null) continue
       const scale = 2 ** z
@@ -1111,6 +1215,7 @@ export class MapStyleProcessor {
   async querySourceFeatures(query: SourceFeatureQuery): Promise<SourceFeature[]> {
     const filter = compileQueryFilter(query.filter)
     const features: SourceFeature[] = []
+    if (!this.isVectorSource(query.sourceId)) return features // raster tiles hold no features
     for (const { x, y, z } of query.tiles) {
       const tile = await this.getRawTile(query.sourceId, x, y, z)
       if (tile === null) continue
@@ -1169,6 +1274,31 @@ export class MapStyleProcessor {
     for (const fetcher of this.fetchers.values()) fetcher.invalidate?.()
     for (const [key, entry] of this.rawTiles) {
       if (tileOverlaps(entry.x, entry.y, entry.z, rectangles)) this.rawTiles.delete(key)
+    }
+    for (const [key, entry] of this.rawRasterTiles) if (tileOverlaps(entry.x, entry.y, entry.z, rectangles)) this.forgetRawRaster(key)
+    this.rawRasterGeneration++
+  }
+
+  /** Whether a source gives features: vector and GeoJSON sources, not raster ones. */
+  protected isVectorSource(sourceId: string): boolean {
+    const type = (this.document.sources[sourceId] as { type?: string } | undefined)?.type
+    return type !== 'raster' && type !== 'raster-dem'
+  }
+
+  protected forgetRawRaster(key: string): void {
+    const entry = this.rawRasterTiles.get(key)
+    if (entry === undefined) return
+    this.rawRasterBytes -= entry.bytes.byteLength
+    this.rawRasterTiles.delete(key)
+  }
+
+  protected rememberRawRaster(key: string, x: number, y: number, z: number, bytes: Uint8Array): void {
+    this.forgetRawRaster(key)
+    this.rawRasterTiles.set(key, { x, y, z, bytes })
+    this.rawRasterBytes += bytes.byteLength
+    for (const oldest of this.rawRasterTiles.keys()) {
+      if (this.rawRasterBytes <= RAW_RASTER_CACHE_BYTES) break
+      this.forgetRawRaster(oldest)
     }
   }
 

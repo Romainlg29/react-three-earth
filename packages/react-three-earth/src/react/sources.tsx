@@ -37,12 +37,12 @@ export function QuantizedMeshSource({ url, skirtLengthMeters, smoothSkirtNormals
 
 export type RasterTileSourceProps = RasterTileSourceOptions
 
-/** XYZ raster tiles. Goes inside `<Imagery>`. */
-export function RasterTileSource({ url, levels, tileDimensionPixels, projection, attribution }: RasterTileSourceProps) {
+/** XYZ raster tiles, from a URL template or a TileJSON document. Goes inside `<Imagery>`. */
+export function RasterTileSource({ url, tileJsonUrl, levels, tileDimensionPixels, projection, attribution }: RasterTileSourceProps) {
   const source = useMemo(
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    () => new RasterTileSourceImpl({ url, levels, tileDimensionPixels, projection, attribution }),
-    [url, levels, tileDimensionPixels, projection],
+    () => new RasterTileSourceImpl({ url, tileJsonUrl, levels, tileDimensionPixels, projection, attribution }),
+    [url, tileJsonUrl, levels, tileDimensionPixels, projection],
   )
   useAttribution(source, attribution)
   useRegisterSource(use(ImagerySourceContext), source, 'RasterTileSource', 'Imagery')
