@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import { bucketKey } from '../src/vector/MapStyleOverlay.js'
+import { Vector3 } from 'three'
+import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
+import { rayHitsTerrain } from '../src/vector/symbols/ScreenSymbols.js'
 import { CollisionGrid, SymbolPlacement, type PlacementCandidate } from '../src/vector/symbols/SymbolPlacement.js'
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
-import { lineLabelPaths } from '../src/vector/worker/labels.js'
+import { lineLabelPaths, radialAnchorOffset, textOffsetForAnchor, variableAnchorShifts } from '../src/vector/worker/labels.js'
 import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
 import { SYMBOL_ALLOW_OVERLAP, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
@@ -178,6 +181,9 @@ function candidate(key: string, x: number, y: number, options: Partial<Placement
     maximumYPixels: y + 8,
     boxes: null,
     hidden: false,
+    anchorShifts: null,
+    anchorScale: 1,
+    anchorIndex: 0,
     layerIndex: 0,
     sortKey: 0,
     allowOverlap: false,
@@ -357,5 +363,93 @@ describe('placing labels with one box per glyph', () => {
     expect(otherTile.fade).toBe(road.fade)
     expect(otherTile.placed).toBe(true)
     expect(hidden.fade).toBeNull()
+  })
+})
+
+describe('variable anchors', () => {
+  const box = { minimumX: -30, minimumY: -10, maximumX: 30, maximumY: 10 }
+
+  it('shifts the centred box so the anchor names the side touching the point, then by the offset', () => {
+    const shifts = variableAnchorShifts(box, ['center', 'left', 'top-right', 'bottom'], () => ({ x: 0, y: 0 }))
+    expect(shifts).toEqual([0, 0, 30, 0, -30, 10, 0, -10])
+    expect(variableAnchorShifts(box, ['left'], () => ({ x: 5, y: 1 }))).toEqual([35, 1])
+  })
+
+  it('points offsets away from the point (radial on a diagonal; text-offset by its size)', () => {
+    expect(radialAnchorOffset('top', 2)).toEqual({ x: 0, y: 2 })
+    expect(radialAnchorOffset('right', 2)).toEqual({ x: -2, y: 0 })
+    const corner = radialAnchorOffset('bottom-left', 2)
+    expect(corner.x).toBeCloseTo(Math.SQRT2)
+    expect(corner.y).toBeCloseTo(-Math.SQRT2)
+    expect(textOffsetForAnchor('top-right', { x: -1, y: -3 })).toEqual({ x: -1, y: 3 })
+    expect(textOffsetForAnchor('center', { x: 1, y: 3 })).toEqual({ x: 0, y: 0 })
+  })
+
+  it('places a label at the first anchor that fits, and keeps the anchor it showed with', () => {
+    const placement = new SymbolPlacement()
+    const blocker = candidate('blocker', 230, 200, { layerIndex: 2 })
+    // Box 40 × 16 around (200, 200); anchors: centre, then left of the point (shifted right 30), then right (shifted left 30).
+    const shifts = new Float32Array([0, 0, 30, 0, -30, 0])
+    const label = candidate('label', 200, 200, { layerIndex: 1, anchorShifts: shifts })
+    placement.place([blocker, label], 800, 600)
+    // Centre and "left" both hit the blocker at x 210-250; "right" sits at 150-190.
+    expect(label.placed).toBe(true)
+    expect(label.anchorIndex).toBe(2)
+    expect(label.minimumXPixels).toBe(150)
+    placement.fade(1)
+    // The blocker gone, the label stays on the anchor it showed with rather than jumping back to the centre.
+    const again = candidate('label', 200, 200, { layerIndex: 1, anchorShifts: shifts })
+    placement.place([again], 800, 600)
+    expect(again.anchorIndex).toBe(2)
+    // Nowhere fits: not placed, left at the anchor it tried first.
+    const wall = candidate('wall', 200, 200, { layerIndex: 2, minimumXPixels: 100, maximumXPixels: 300 })
+    const blocked = candidate('label', 200, 200, { layerIndex: 1, anchorShifts: shifts })
+    placement.place([wall, blocked], 800, 600)
+    expect(blocked.placed).toBe(false)
+    expect(blocked.anchorIndex).toBe(2)
+  })
+})
+
+describe('variable anchors in the worker', () => {
+  it('lays the text out centred and stores a shift per anchor, radial offset in pixels of a 24 px font', async () => {
+    const style = labelStyle()
+    style.layers = style.layers.filter(layer => layer.id === 'over') as typeof style.layers
+    Object.assign(style.layers[0]!.layout!, { 'text-variable-anchor': ['top', 'left'], 'text-radial-offset': 0.5 })
+    const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
+    const symbols = (await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })).symbols!
+    expect(symbols.keys).toEqual(['over\u0000Over'])
+    expect(symbols.anchorShiftCounts[0]).toBe(2)
+    const [left, top, right, bottom] = symbols.boxes
+    expect(left! + right!).toBeCloseTo(0)
+    const shifts = [...symbols.anchorShifts]
+    // "top": the text below the point by half its height plus 12 px; "left": right of it by half its width plus 12 px.
+    expect(shifts[0]).toBeCloseTo(0)
+    expect(shifts[1]).toBeCloseTo(-top! + 12)
+    expect(shifts[2]).toBeCloseTo(-left! + 12)
+    expect(shifts[3]).toBeCloseTo(-(top! + bottom!) / 2)
+  })
+})
+
+describe('labels behind terrain', () => {
+  const at = (longitudeDegrees: number, heightMeters: number) => WGS84_ELLIPSOID.getCartographicToPosition(0, (longitudeDegrees * Math.PI) / 180, heightMeters, new Vector3()) as Vector3
+  // A camera 1 km up at 0°, a label on the ground at 0.2° east (about 22 km).
+  const camera = at(0, 1000)
+  const label = at(0.2, 0)
+
+  it('hides a label where the ground rises above the line of sight', () => {
+    const ridge = (longitude: number) => (Math.abs((longitude * 180) / Math.PI - 0.1) < 0.02 ? 2000 : 0)
+    expect(rayHitsTerrain(camera, label, ridge)).toBe(true)
+  })
+
+  it('keeps it over flat ground, a low bump, missing tiles and the slope it stands on', () => {
+    expect(rayHitsTerrain(camera, label, () => 0)).toBe(false)
+    // The line of sight is about 500 m up halfway: a 450 m hill stays under it.
+    expect(rayHitsTerrain(camera, label, longitude => (Math.abs((longitude * 180) / Math.PI - 0.1) < 0.005 ? 450 : 0))).toBe(false)
+    expect(rayHitsTerrain(camera, label, () => null)).toBe(false)
+    // A label 300 m up a slope that rises all the way from the camera's valley.
+    expect(rayHitsTerrain(camera, at(0.2, 300), longitude => ((longitude * 180) / Math.PI / 0.2) * 300)).toBe(false)
+    // The same label behind a 300 m wall just in front of it, on flat ground: hidden.
+    expect(rayHitsTerrain(camera, label, longitude => ((longitude * 180) / Math.PI > 0.195 ? 300 : 0))).toBe(true)
   })
 })

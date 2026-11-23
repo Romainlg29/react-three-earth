@@ -3,7 +3,8 @@ name: map-labels
 description: >
   Use when working on the text labels of a MapLibre style on a react-three-earth globe or flat map: labels that
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
-  collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), fades
+  collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
+  anchors (text-variable-anchor), labels hidden behind mountains, fades
   (symbolFadeDurationSeconds), reading the labels on the screen in tests (earth.terrain.getScreenLabels), and what
   labels do not do yet.
 metadata:
@@ -84,7 +85,11 @@ export function GroundLabels() {
   every `symbol-spacing` pixels at its tile's zoom. `text-keep-upright` (default true) turns a name that would read
   upside down (a name on a road running up the screen reads bottom to top); a name fades out where the road on
   the screen turns more than `text-max-angle` (default 45°) along it, or is too short for it.
-- Labels stand on the terrain as drawn and go behind the globe's horizon. They fade with the `<Imagery>`
+- `text-variable-anchor`: a label tries its anchors in order and takes the first that fits, beside its point
+  (`text-radial-offset`, else `text-offset`, moves it away from the point). One already showing keeps its
+  anchor while it fits, so it does not jump. `text-variable-anchor-offset` is not read yet.
+- Labels stand on the terrain as drawn, fade out behind mountains in front of them on the globe, and go behind
+  the globe's horizon. They fade with the `<Imagery>`
   layer's `opacity`, and hide while the view morphs between the globe and the flat map.
 - `earth.queryRenderedFeatures`, layer events and hover hit them by their box on the screen
   (`query-features-and-layer-events`).
@@ -99,25 +104,26 @@ export function labelsOnScreen(earth: Earth): string[] {
 }
 ```
 
-Each entry has `text`, `xPixels` / `yPixels` (anchor), `box` (left, top, right, bottom, padding included),
+Each entry has `text`, `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
 `opacity`, `layerIndex`, `allowOverlap` and `ignorePlacement`. Road names also have `glyphBoxes` (the boxes
 that collide) and `glyphAnglesRadians` (0 reads left to right); both are null for point labels. Labels fading in
 count; collided ones do not.
 
 ## Common Mistakes
 
-### MEDIUM: Expecting labels to hide behind mountains
+### MEDIUM: Expecting a label to hide the instant a ridge covers it
 
-Labels draw over terrain in front of them; only the globe hides them. Pitch over mountains shows labels from
-the valley behind.
+Labels are tested against the terrain when they are placed (every 100 ms while the camera moves), at their
+anchor only, and fade like a collision. A label whose text pokes past a ridge fades as a whole; on the flat map
+nothing hides labels.
 
 ### MEDIUM: Expecting two styles' labels to avoid each other
 
 Each `<MapStyleSource>` places its own labels. Put the labels in one style, or turn one style's symbol layers off.
 
-### MEDIUM: Expecting icons, variable anchors or pitch-aligned road names
+### MEDIUM: Expecting icons or pitch-aligned road names
 
-`icon-image` is not drawn yet; `text-variable-anchor` uses its first anchor. Road names face the viewer whatever
+`icon-image` is not drawn yet. Road names face the viewer whatever
 `text-pitch-alignment` and `text-rotation-alignment` say: they never lie flat on the ground in the screen mode
 (use `symbols="draped"` for that). On the flat map only the world copy nearest the camera has labels.
 
@@ -128,7 +134,8 @@ Labels wait for their tiles and a terrain height before they show, then fade in.
 
 ## Completion
 
-- `earth.inspect().terrain.symbols` shows `labelsShown` above 0 and `elevationsPending` back to 0. It is null
+- `earth.inspect().terrain.symbols` shows `labelsShown` above 0 and `elevationsPending` back to 0;
+  `labelsOccluded` counts labels behind terrain. It is null
   with `symbols="draped"`.
 - `earth.terrain.getScreenLabels()` lists no two boxes that overlap (road names: compare `glyphBoxes`), except
   labels that allow overlap or ignore placement.

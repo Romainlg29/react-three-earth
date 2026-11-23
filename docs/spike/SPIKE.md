@@ -411,7 +411,7 @@ Point-placed labels no longer go into region textures: they stand upright on the
   at most every 100 ms, as labels are placed. Labels follow the imagery layer's `opacity`.
 
 Deviations from MapLibre, for later parts: line-placed labels stay draped (done in part 2a below); `text-variable-anchor` takes its first
-anchor; labels are not hidden behind mountains (only behind the globe); labels hide while the view morphs between
+anchor (done in part 2b); labels are not hidden behind mountains, only behind the globe (done in part 2b); labels hide while the view morphs between
 globe and map; on the flat map only the world copy nearest the camera has labels; each `MapStyleSource` places its
 labels on its own, so two styles' labels can overlap. Positions are ECEF against the camera's world matrix: the
 Earth group must not be moved or rotated in the scene for labels to line up.
@@ -458,6 +458,31 @@ Line-placed labels (`line`, `line-center`) now face the viewer too; with `symbol
 Deviations: road names are always viewer-facing (MapLibre's default for line placement is pitch-aligned, lying on
 the ground); glyphs stand at the anchor's height, not each at its own; `text-offset` and multi-line text are not
 applied along lines.
+
+### Screen-space symbols (W6), part 2b: variable anchors and labels behind terrain
+
+- **Variable anchors.** With `text-variable-anchor`, the worker shapes the text centred and stores, per anchor,
+  the shift from the centred box: the anchor names the side of the text at the point, then `text-radial-offset`
+  (on a diagonal for corners) or `text-offset` (its size, pointed away from the point), MapLibre's rules
+  (`variableAnchorShifts`, `SymbolMesh.anchorShifts`). Placement tries the anchor the label's fade state
+  showed with, then the others in order, and moves the box to the first that fits (`SymbolPlacement.placeAnchors`);
+  the state texture gets the shifted position, so glyph vertices never change. In `?map=labels` the towns try
+  five anchors: 56 of 124 labels show top-down instead of 43, 17 of them beside their point.
+- **Terrain occlusion.** At each placement, a ray from the camera to each label's anchor (at its height) is read
+  against the terrain as drawn at up to 12 points at fixed distances from the label, 150 m growing by 1.7× to
+  about 50 km (fixed distances, so reads do not slide over a ridge as the camera pans; densest near the label),
+  skipping points above 9 km with a closed-form height estimate along the chord. Ground more than 30 m above the
+  ray hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another
+  tile can take over. Each style's pass stops after 1 ms: labels never read go first (a tile that just arrived), then
+  the rest in turn from where the last pass stopped; with the camera still, the once-a-second pass places again, so
+  terrain that loaded finer hides or shows labels. Globe only. `inspect().terrain.symbols.labelsOccluded`.
+  The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; unit
+  tests cover a ridge, a low hill, missing tiles, a slope and a wall in front of a label.
+
+Deviations: `text-variable-anchor-offset` is not read; the 7 px baseline correction of vertical offsets is left
+out; `text-justify: auto` does not follow the anchor (multi-line text stays centred); with `text-rotate` the
+offset turns with the text; occlusion tests the anchor point only (MapLibre tests
+depth per symbol in the shader), and is decided at placement, every 100 ms while moving.
 
 ### Feature querying and layer events (W4)
 

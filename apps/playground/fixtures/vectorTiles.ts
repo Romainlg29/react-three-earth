@@ -208,7 +208,7 @@ export function fixtureStyle({ live = false }: { live?: boolean } = {}): object 
 
 /**
  * The fixture style with a dense grid of town labels under the place labels: they collide with each other and with
- * the places, sort by rank, and grow with zoom (12 px at zoom 9 to 16 px at zoom 13).
+ * the places, sort by rank, grow with zoom (12 px at zoom 9 to 16 px at zoom 13) and try five anchors.
  */
 export function fixtureLabelStyle(): object {
   const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
@@ -224,6 +224,8 @@ export function fixtureLabelStyle(): object {
       'text-font': ['Noto Sans Regular'],
       'symbol-sort-key': ['get', 'rank'],
       'text-padding': 2,
+      // Placement tries each in turn: a town crowded at its centre moves beside its point.
+      'text-variable-anchor': ['center', 'left', 'right', 'top', 'bottom'],
     },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
   }

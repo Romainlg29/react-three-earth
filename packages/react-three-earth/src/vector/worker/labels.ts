@@ -425,3 +425,45 @@ export class TextBuilder {
     }
   }
 }
+
+/**
+ * Where a label's box goes for each of its `text-variable-anchor` anchors, as (x, y) shifts from the box centred
+ * on its anchor point, in the box's units: the anchor names the side of the text that touches the point ('left':
+ * the text to its right), then moved by the anchor's offset. `box` is centred on the point.
+ */
+export function variableAnchorShifts(box: Box, anchors: readonly TextAnchor[], offsetFor: (anchor: TextAnchor) => Point): number[] {
+  const shifts: number[] = []
+  for (const anchor of anchors) {
+    const x = anchor.endsWith('left') ? -box.minimumX : anchor.endsWith('right') ? -box.maximumX : -(box.minimumX + box.maximumX) / 2
+    const y = anchor.startsWith('top') ? -box.minimumY : anchor.startsWith('bottom') ? -box.maximumY : -(box.minimumY + box.maximumY) / 2
+    const offset = offsetFor(anchor)
+    shifts.push(x + offset.x, y + offset.y)
+  }
+  return shifts
+}
+
+/** MapLibre's `text-radial-offset` for one anchor: the radius away from the point, split on a diagonal. */
+export function radialAnchorOffset(anchor: TextAnchor, radius: number): Point {
+  const diagonal = radius / Math.SQRT2
+  let x = 0
+  let y = 0
+  if (anchor === 'top-left' || anchor === 'top-right') y = diagonal
+  else if (anchor === 'bottom-left' || anchor === 'bottom-right') y = -diagonal
+  else if (anchor === 'top') y = radius
+  else if (anchor === 'bottom') y = -radius
+  if (anchor === 'top-left' || anchor === 'bottom-left') x = diagonal
+  else if (anchor === 'top-right' || anchor === 'bottom-right') x = -diagonal
+  else if (anchor === 'left') x = radius
+  else if (anchor === 'right') x = -radius
+  return { x, y }
+}
+
+/** MapLibre's `text-offset` with variable anchors: its size, pointed away from the point along each anchor's sides. */
+export function textOffsetForAnchor(anchor: TextAnchor, offset: Point): Point {
+  const x = Math.abs(offset.x)
+  const y = Math.abs(offset.y)
+  return {
+    x: anchor.endsWith('left') ? x : anchor.endsWith('right') ? -x : 0,
+    y: anchor.startsWith('top') ? y : anchor.startsWith('bottom') ? -y : 0,
+  }
+}

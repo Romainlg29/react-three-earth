@@ -10,6 +10,9 @@ import {
   CollisionGrid,
   layoutLineLabels,
   lineLabelPaths,
+  radialAnchorOffset,
+  textOffsetForAnchor,
+  variableAnchorShifts,
   layoutPointLabel,
   shapeText,
   TextBuilder,
@@ -860,26 +863,36 @@ export class MapStyleProcessor {
 
       const anchor = representativePoint(symbol.type, symbol.geometry)
       if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
+      const variableAnchors = layer.has('layout', 'text-variable-anchor') ? (layer.evaluate<TextAnchor[] | undefined>('layout', 'text-variable-anchor', zoom, feature) ?? []) : []
       const shaped = shapeText(
         symbol.sections,
         {
           maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
           lineHeightEms,
           letterSpacingEms,
-          anchor: firstAnchor(layer, zoom, feature),
+          // Variable anchors: laid out centred, then shifted to the anchor placement picks.
+          anchor: variableAnchors.length > 0 ? 'center' : firstAnchor(layer, zoom, feature),
           justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
         },
         getGlyph,
       )
       if (shaped === null) continue
       const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'text-offset', zoom, feature)
-      builder.add({
-        ...label,
-        anchor,
-        shaped,
-        offset: { x: offsetX * 24, y: offsetY * 24 },
-        rotationRadians: (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180,
+      const rotationRadians = (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180
+      if (variableAnchors.length === 0) {
+        builder.add({ ...label, anchor, shaped, offset: { x: offsetX * 24, y: offsetY * 24 }, rotationRadians })
+        continue
+      }
+      // The radial offset when set above 0, else text-offset pointed away from the point (MapLibre's rule).
+      const radialEms = layer.has('layout', 'text-radial-offset') ? layer.evaluate<number>('layout', 'text-radial-offset', zoom, feature) : 0
+      const radial = radialEms > 0 ? radialEms : null
+      const box = layoutPointLabel(shaped, { x: 0, y: 0 }, 1, { x: 0, y: 0 }, rotationRadians, 0).boxes[0]
+      if (box === undefined) continue
+      const anchorShifts = variableAnchorShifts(box, variableAnchors, variableAnchor => {
+        const offset = radial !== null ? radialAnchorOffset(variableAnchor, radial) : textOffsetForAnchor(variableAnchor, { x: offsetX, y: offsetY })
+        return { x: offset.x * 24, y: offset.y * 24 }
       })
+      builder.add({ ...label, anchor, shaped, offset: { x: 0, y: 0 }, rotationRadians, anchorShifts })
     }
     const mesh = builder.build()
     return { ...empty, symbols: mesh, rebuildFeatureKeys: [...rebuildKeys], byteLength: symbolMeshByteLength(mesh) }

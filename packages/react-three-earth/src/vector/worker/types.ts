@@ -429,6 +429,14 @@ export interface SymbolMesh {
   glyphCounts: Uint16Array
   glyphOffsets: Float32Array
   glyphHalfWidths: Float32Array
+  /**
+   * `text-variable-anchor`, per label: its anchors (`anchorShiftCounts` from `anchorShiftStarts`, zero without
+   * variable anchors), each an (x, y) shift of the label from its box centred on the anchor point, in pixels of a
+   * 24 px font. Placement takes the first that fits.
+   */
+  anchorShiftStarts: Uint32Array
+  anchorShiftCounts: Uint8Array
+  anchorShifts: Float32Array
   corners: Float32Array
   uvs: Float32Array
   labelIndices: Float32Array

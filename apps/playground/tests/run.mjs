@@ -1217,6 +1217,8 @@ async function screenSymbols(name, query, map = 'labels') {
     return {
       labelsShown: labels.length,
       towns: labels.filter(l => l.text.startsWith('Town')).length,
+      // Variable anchors: a town whose box is no longer centred on its point.
+      townsBesideTheirPoint: labels.filter(l => l.text.startsWith('Town') && Math.abs((l.box[0] + l.box[2]) / 2 - l.xPixels) + Math.abs((l.box[1] + l.box[3]) / 2 - l.yPixels) > 4).length,
       roadNames: roads.length,
       roadNamesUpsideDown: upsideDown,
       overlaps,
