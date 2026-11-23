@@ -16,8 +16,9 @@ JSON.
 ## Features
 
 - **WebGPU first**, with three's WebGL2 fallback, through `WebGPURenderer` and TSL node materials.
-- **Terrain** from quantized-mesh tilesets (Re:Earth Terrain, Cesium World Terrain, self-hosted), streamed
-  by [3DTilesRendererJS](https://github.com/NASA-AMMOS/3DTilesRendererJS) within a memory budget.
+- **Terrain** from quantized-mesh tilesets (Re:Earth Terrain, Cesium World Terrain, self-hosted) or raster-dem
+  elevation tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain), streamed by
+  [3DTilesRendererJS](https://github.com/NASA-AMMOS/3DTilesRendererJS) within a memory budget.
 - **Imagery** from any XYZ raster server, decoded off the main thread and composed onto terrain tiles on
   the GPU within a per-frame time budget. Layers stack and fade at no cost.
 - **Atmosphere**: our own TSL port of Bruneton's precomputed scattering. Sky, sunlight, aerial perspective
@@ -133,6 +134,7 @@ renderer.setAnimationLoop(() => {
 | `<Earth date>` | `new Earth({ date })`, `connect`, `update`, `inspect` | root; ECEF metres; drives the sun |
 | `<Terrain errorTargetPixels memoryBudgetBytes createMaterial …>` | `new Terrain({ sources, … })` | the ground, one terrain source |
 | `<QuantizedMeshSource url attribution>` | `new QuantizedMeshSource({ url, attribution })` | quantized-mesh terrain |
+| `<RasterDemSource url encoding attribution>` | `new RasterDemSource({ url, encoding, attribution })` | terrain from raster-dem tiles (Terrarium, Terrain-RGB) |
 | `<Imagery opacity>` | `new Imagery({ sources, opacity })` | a raster layer; layers stack |
 | `<RasterTileSource url levels tileDimensionPixels projection attribution>` | `new RasterTileSource({ … })` | XYZ raster tiles |
 | `<Atmosphere exposure parameters>` | `new Atmosphere({ parameters })`, `install`, `createAerialPerspective` | sky, sun, haze |
@@ -179,7 +181,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, `easeTo` / `flyTo` / `fitBounds`, padding, bounds, project / unproject, clicks with their position, `initialView`, URL hash, events |
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
 | `map-controls` | zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle, translated labels, phone use |
-| `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
+| `terrain-and-imagery-sources` | choosing terrain (quantized-mesh, raster-dem) and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, GeoJSON and clusters, `invalidate` after data changes |
 | `map-labels` | labels facing the viewer or on the ground, collision, priorities, fades, reading labels in tests |
 | `heatmap-layers` | point density as a MapLibre heatmap: weight, radius, intensity, colour ramp, heat to points by zoom |

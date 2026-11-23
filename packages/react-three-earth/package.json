@@ -47,6 +47,10 @@
       "types": "./dist/plugin-worker.d.ts",
       "default": "./dist/plugin-worker.js"
     },
+    "./terrain-worker": {
+      "types": "./dist/terrain-worker.d.ts",
+      "default": "./dist/terrain-worker.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

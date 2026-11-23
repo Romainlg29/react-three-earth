@@ -15,6 +15,8 @@ import type { FeatureState, SourceFeature } from '../vector/worker/types.js'
 import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../vector/styleImageInput.js'
 import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
+import { RasterDemTerrainPlugin } from '../tiles/RasterDemTerrainPlugin.js'
+import { demUnpackFactors, type DemEncoding, type DemUnpackFactors } from '../vector/raster/rasterTiles.js'
 
 /** Anything that can feed a `Terrain`: a root URL plus the 3DTilesRenderer plugins that read it. */
 export interface TerrainSource extends Partial<AttributionProvider> {
@@ -78,6 +80,89 @@ export class QuantizedMeshSource extends AttributionTracker implements TerrainSo
         ...(this.skirtLengthMeters !== undefined ? { skirtLength: this.skirtLengthMeters } : {}),
       }),
       new QuantizedMeshVersionPlugin(),
+    ]
+  }
+}
+
+export interface RasterDemSourceOptions {
+  /**
+   * URL template of elevation tiles (PNG or WebP, Web Mercator XYZ) with `{z}`, `{x}` and `{y}` (or `{-y}` for TMS
+   * rows). Pass this or `tileJsonUrl`.
+   * @example 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+   */
+  url?: string
+  /** A TileJSON document describing the tiles, instead of `url`: its `tiles`, `maxzoom`, `scheme` and `attribution` are read. */
+  tileJsonUrl?: string
+  /**
+   * How heights are packed into the tiles' colours, as MapLibre's `raster-dem` source: `'terrarium'`
+   * (`R × 256 + G + B / 256 − 32768`), `'mapbox'` (Terrain-RGB, `(R × 65536 + G × 256 + B) × 0.1 − 10000`) or
+   * `'custom'` (`redFactor`, `greenFactor`, `blueFactor`, `baseShift`). Default: 'mapbox', as in MapLibre.
+   */
+  encoding?: DemEncoding
+  /** `custom` encoding: elevation = R × redFactor + G × greenFactor + B × blueFactor − baseShift. Default: 1. */
+  redFactor?: number
+  greenFactor?: number
+  blueFactor?: number
+  /** Default: 0. */
+  baseShift?: number
+  /**
+   * The deepest zoom the server has. Deeper tiles reuse its rasters (no request) until a mesh cell spans a pixel.
+   * Default: the TileJSON's `maxzoom`, or 15 (Terrarium's and most Terrain-RGB servers' last level is 12 to 15).
+   */
+  maximumZoom?: number
+  /**
+   * Starts the terrain worker, which decodes tiles and builds their meshes. Default: the worker shipped with the
+   * library. Pass your bundler's worker if it cannot follow `new URL(…, import.meta.url)`, or `null` to build on the
+   * main thread.
+   */
+  createWorker?: (() => Worker) | null
+  /**
+   * Credit for the data, as `RasterTileSource`'s. Most elevation tiles require it.
+   * @example 'Terrain: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">Mapzen, AWS Terrain Tiles</a>'
+   */
+  attribution?: string | readonly string[]
+}
+
+/**
+ * Terrain from elevation tiles: the `raster-dem` tiles MapLibre users have (Terrarium, Mapbox Terrain-RGB, MapTiler
+ * Terrain), in Web Mercator XYZ tiling.
+ *
+ * Heights are taken as they are, above the WGS84 ellipsoid, while these tiles hold heights above sea level: the
+ * terrain sits up to about 100 m off where quantized-mesh terrain with ellipsoidal heights puts it, which only shows
+ * next to other geo-referenced 3D content. Web Mercator stops at about ±85.05°: caps built from the zoom 0 tile
+ * close the globe at the poles. Not supported yet: TileJSON `bounds` and `minzoom` (tiles outside them fail to load).
+ */
+export class RasterDemSource extends AttributionTracker implements TerrainSource {
+  readonly kind = 'terrain'
+  /** The URL template, or the TileJSON URL. */
+  readonly url: string
+  readonly options: RasterDemSourceOptions
+  readonly factors: DemUnpackFactors
+
+  constructor(options: RasterDemSourceOptions) {
+    super(options.attribution)
+    const { url, tileJsonUrl } = options
+    if ((url === undefined) === (tileJsonUrl === undefined)) {
+      throw new Error('RasterDemSource: pass either `url` (an elevation tile URL template) or `tileJsonUrl` (a TileJSON document).')
+    }
+    if (url !== undefined && (!url.includes('{z}') || !url.includes('{x}') || !/{-?y}/.test(url))) {
+      throw new Error(`RasterDemSource: the url needs {z}, {x} and {y} (or {-y}) placeholders, got "${url}". For a TileJSON document, pass it as \`tileJsonUrl\`.`)
+    }
+    this.url = (url ?? tileJsonUrl)!
+    this.options = options
+    this.factors = demUnpackFactors(options)
+  }
+
+  createPlugins(): object[] {
+    const { url, tileJsonUrl, maximumZoom, createWorker } = this.options
+    return [
+      new RasterDemTerrainPlugin({
+        factors: this.factors,
+        ...(url !== undefined ? { url } : {}),
+        ...(tileJsonUrl !== undefined ? { tileJsonUrl, onTileJson: info => this.setLoadedAttributions(info.attribution) } : {}),
+        ...(maximumZoom !== undefined ? { maximumZoom } : {}),
+        ...(createWorker !== undefined ? { createWorker } : {}),
+      }),
     ]
   }
 }
@@ -226,8 +311,8 @@ export interface MapStyleSourceOptions {
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
  * `background-pattern`) come from the style's sprite and from `addImage`. Heatmap layers sum their kernels
  * in a half-float target, then colour it with `heatmap-color`. Not supported yet: icons, right-to-left and
- * complex scripts, 3D extrusion (drawn flat). A raster-dem source shades the drape; it does not raise the
- * terrain.
+ * complex scripts, 3D extrusion (drawn flat). A raster-dem source in a style shades the drape; for terrain from
+ * it, put a `RasterDemSource` in the `Terrain`.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.

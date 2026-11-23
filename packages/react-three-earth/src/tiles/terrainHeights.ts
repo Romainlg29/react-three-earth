@@ -26,6 +26,8 @@ interface TriangleGrid {
 }
 
 const GRID_SIZE = 16
+/** How far outside a triangle (in barycentric weight) a point may lie and still read it, when no triangle holds it. */
+const NEAREST_TRIANGLE_TOLERANCE = 1e-4
 const grids = new WeakMap<BufferGeometry, TriangleGrid | null>()
 const vertex = new Vector3()
 const a = new Vector3()
@@ -83,8 +85,11 @@ function sampleMesh(mesh: Mesh, west: number, east: number, longitude: number, l
   const column = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor((longitude - grid.west) / grid.cellWidth)))
   const row = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor((latitude - grid.south) / grid.cellHeight)))
   const index = geometry.index!
-  const positions = geometry.getAttribute('position')
   const { longitudes, latitudes } = grid
+  // On a tile's edge, float32 vertices can leave the point a hair outside every triangle: take the nearest one then.
+  let nearestFirst = -1
+  let nearestWeight = -NEAREST_TRIANGLE_TOLERANCE
+  const nearestWeights = [0, 0, 0]
   for (const first of grid.cells[row * GRID_SIZE + column]!) {
     const i0 = index.getX(first)
     const i1 = index.getX(first + 1)
@@ -101,20 +106,37 @@ function sampleMesh(mesh: Mesh, west: number, east: number, longitude: number, l
     const w1 = ((y2 - y0) * (longitude - x2) + (x0 - x2) * (latitude - y2)) / determinant
     const w2 = 1 - w0 - w1
     const tolerance = -1e-9
-    if (w0 < tolerance || w1 < tolerance || w2 < tolerance) continue
-    a.fromBufferAttribute(positions, i0)
-    b.fromBufferAttribute(positions, i1)
-    c.fromBufferAttribute(positions, i2)
-    vertex
-      .set(0, 0, 0)
-      .addScaledVector(a, w0)
-      .addScaledVector(b, w1)
-      .addScaledVector(c, w2)
-      .applyMatrix4(mesh.matrixWorld)
-    WGS84_ELLIPSOID.getPositionToCartographic(vertex, cartographic)
-    return cartographic.height
+    const smallestWeight = Math.min(w0, w1, w2)
+    if (smallestWeight < tolerance) {
+      if (smallestWeight > nearestWeight) {
+        nearestWeight = smallestWeight
+        nearestFirst = first
+        nearestWeights[0] = w0
+        nearestWeights[1] = w1
+        nearestWeights[2] = w2
+      }
+      continue
+    }
+    return interpolateHeight(mesh, index.getX(first), index.getX(first + 1), index.getX(first + 2), w0, w1, w2)
   }
-  return null
+  if (nearestFirst === -1) return null
+  const [w0, w1, w2] = nearestWeights as [number, number, number]
+  return interpolateHeight(mesh, index.getX(nearestFirst), index.getX(nearestFirst + 1), index.getX(nearestFirst + 2), w0, w1, w2)
+}
+
+function interpolateHeight(mesh: Mesh, i0: number, i1: number, i2: number, w0: number, w1: number, w2: number): number {
+  const positions = mesh.geometry.getAttribute('position')
+  a.fromBufferAttribute(positions, i0)
+  b.fromBufferAttribute(positions, i1)
+  c.fromBufferAttribute(positions, i2)
+  vertex
+    .set(0, 0, 0)
+    .addScaledVector(a, w0)
+    .addScaledVector(b, w1)
+    .addScaledVector(c, w2)
+    .applyMatrix4(mesh.matrixWorld)
+  WGS84_ELLIPSOID.getPositionToCartographic(vertex, cartographic)
+  return cartographic.height
 }
 
 function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number, east: number): TriangleGrid | null {
@@ -157,6 +179,9 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
     const y1 = latitudes[i1]!
     const y2 = latitudes[i2]!
     if (Math.abs((y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)) <= minimumDeterminant) continue // a skirt wall
+    // On a mesh a whole turn wide (zoom 0 raster-dem terrain, polar caps), a vertex on the antimeridian can come back on
+    // either side: a triangle spanning over half a turn is one of those, and would answer for points across the globe.
+    if (Math.max(x0, x1, x2) - Math.min(x0, x1, x2) > Math.PI) continue
     const fromColumn = Math.max(0, Math.floor((Math.min(x0, x1, x2) - minimumX) / cellWidth))
     const toColumn = Math.min(GRID_SIZE - 1, Math.floor((Math.max(x0, x1, x2) - minimumX) / cellWidth))
     const fromRow = Math.max(0, Math.floor((Math.min(y0, y1, y2) - minimumY) / cellHeight))

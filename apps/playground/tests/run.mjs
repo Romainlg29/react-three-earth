@@ -1451,6 +1451,54 @@ async function reliefMap(name, query, script = RELIEF_PIXELS) {
   results.push({ check: `relief style with fixtures, ${name}`, ...stats, errors, warnings })
 }
 
+/** The fixture terrain's heights (`fixtures/quantizedMesh.ts`), which the `?plain` Terrarium fixture tiles encode. */
+function fixtureHeightMeters(longitudeDegrees, latitudeDegrees) {
+  const lon = (longitudeDegrees * Math.PI) / 180
+  const lat = (latitudeDegrees * Math.PI) / 180
+  const ridges = Math.sin(lon * 7) * Math.cos(lat * 9) + 0.5 * Math.sin(lon * 31 + lat * 17)
+  return Math.max(0, ridges) * 2600
+}
+
+/**
+ * Terrain from raster-dem (`?terrain=dem`, Terrarium tiles of the quantized-mesh fixture's heights): heights under a
+ * grid of points match the fixture function, imagery drapes on it, the north pole is closed and the flat map works.
+ */
+async function rasterDemTerrain(name, query, { heights = false } = {}) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0${query.includes('terrain=') ? '' : '&terrain=dem'}${query}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    const settledView = inspection?.view.morph === (inspection?.view.mode === '2d' ? 1 : 0)
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && settledView
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(2000) // tiles fade in
+  const png = await page.screenshot()
+  writeFileSync(new URL(`dem-terrain-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const stats = await analyse(page, png, `
+    let green = 0, black = 0, centreBlack = 0, centre = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      const x = (i / 4) % width, y = Math.floor(i / 4 / width)
+      if (g > r + 20 && g > b + 20) green++
+      if (r + g + b < 15) black++
+      if (Math.abs(x - width / 2) < 30 && Math.abs(y - height / 2) < 30) { centre++; if (r + g + b < 15) centreBlack++ }
+    }
+    const n = px.length / 4
+    return { greenShare: +(green / n).toFixed(3), blackShare: +(black / n).toFixed(3), centreBlackShare: +(centreBlack / centre).toFixed(3) }
+  `)
+  let heightErrorsMeters = null
+  if (heights) {
+    const points = []
+    for (let i = 0; i < 49; i++) points.push([-91.2 + (i % 7) * 0.4, -1.2 + Math.floor(i / 7) * 0.4])
+    const sampled = await page.evaluate(points => points.map(([longitudeDegrees, latitudeDegrees]) => window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })), points)
+    heightErrorsMeters = sampled.flatMap((height, index) => (height === null ? [] : [Math.abs(height - fixtureHeightMeters(...points[index]))]))
+    heightErrorsMeters = { count: heightErrorsMeters.length, maximum: Number(Math.max(...heightErrorsMeters).toFixed(2)), heightRangeMeters: Number((Math.max(...points.map(p => fixtureHeightMeters(...p))) - Math.min(...points.map(p => fixtureHeightMeters(...p)))).toFixed(0)) }
+  }
+  const { inspection, attributions } = await page.evaluate(() => ({ inspection: window.earth.inspect(), attributions: window.earth.getAttributions() }))
+  await page.close()
+  results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1534,6 +1582,14 @@ try {
     // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
     await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
     await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
+  }
+  if (!only || only === 'dem') {
+    await rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })
+    await rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })
+    await rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')
+    await rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')
+    await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
+    await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
   }
 } finally {
   await browser.close()
