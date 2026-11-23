@@ -396,11 +396,16 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 - **Only regions near the change redraw.** The worker answers each data change with `rebuiltAreas`: rectangles of
   the old and the new data (`setData`), of the changed features before and after (`updateData`), or of the whole old
   and new data when clustered (a cluster sits inside its points' box, so this is exact without tracking clusters).
-  The overlay rebuilds tiles overlapping them, each tile widened by the buffer at its own zoom
-  (`tileOverlapsWithMargin`), and F1 redraws the regions drawing those tiles in place. Deviation from the brief: no
+  The overlay rebuilds tiles overlapping them, each tile widened by the buffer at its own zoom (by the cluster
+  radius when larger, since supercluster pads tiles by it) (`tileOverlapsWithMargin`), and F1 redraws the regions drawing those tiles in place. Deviation from the brief: no
   global `invalidate`; raw-tile caches are dropped per source and nothing is fetched again.
 - **Cluster queries** go through `MapStyle.querySource`: the first overlay whose backend is ready answers, after every
-  change made before the call (queued behind the microtask that hands changes to the overlays).
+  change made before the call (queued behind the microtask that hands changes to the overlays, and behind a pending
+  `setStyle`).
+- **`updateData` cost.** Each diff is applied up to three times on the main thread (the `GeoJsonSource`, the
+  `MapStyle` document, and the processor's document on the inline backend), so `applyGeoJsonDiff` keeps the id
+  index of the list it returns and the next diff on that list reuses it: lookups cost O(changes), and only the copy
+  of the feature list is O(features). Feature-state on a geojson source ignores `sourceLayer`, as in MapLibre.
 - **`line-gradient`** (with `lineMetrics`): geojson-vt adds `mapbox_clip_start` / `mapbox_clip_end` to each clipped
   line. The ramp is sampled 256 times per layer and zoom (MapLibre's texture width) and cached; `ShapeBuilder`
   splits the line into pieces of at most 1/128 of its progress and colours every vertex, so the gradient continues
@@ -420,7 +425,7 @@ polygons (dropped, as in MapLibre), and `line-gradient` with `line-dasharray`.
 | A new `data` prop | the area moves east; the route and clusters are unchanged |
 | `setData` 20 km from a close view | 0 of 16 detailed regions in view redrawn (50 of 66 held regions are coarser ancestors spanning both places) |
 | `updateData` on the clustered source, cluster query with a wrong id | regions redrawn; the worker's error states the fix |
-| Unit tests | 24 new: diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal |
+| Unit tests | 30 new: diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal, `update` after `updateData`, query order behind `setStyle`, MultiPoint clusters, cluster-radius margins |
 
 ![GeoJSON sources](geojson-sources.png) ![clusters close up](geojson-clusters-close.png)
 

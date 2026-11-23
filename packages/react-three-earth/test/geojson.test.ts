@@ -43,6 +43,17 @@ async function createProcessor(sources: Record<string, object>, layers: object[]
   )
 }
 
+/** The cluster_id of the first cluster in the source's zoom 0 tile. */
+async function clusterIdAt(processor: MapStyleProcessor): Promise<number> {
+  const tile = await (processor as unknown as { getRawTile(source: string, x: number, y: number, z: number): Promise<{ layers: Record<string, { length: number; feature(index: number): { properties: Record<string, unknown> } }> } | null> }).getRawTile('stations', 0, 0, 0)
+  const layer = tile!.layers[GEOJSON_LAYER]!
+  for (let index = 0; index < layer.length; index++) {
+    const properties = layer.feature(index).properties
+    if (properties['cluster'] === true) return properties['cluster_id'] as number
+  }
+  throw new Error('no cluster')
+}
+
 /** Distinct baked RGBA colours of a bucket's shape vertices. */
 function colors(bucket: TileBucket): Set<string> {
   const result = new Set<string>()
@@ -67,6 +78,16 @@ describe('GeoJSON data helpers', () => {
     expect(applied.after.map(feature => feature.id)).toEqual([3, 2])
     // The input is not changed
     expect(features[1]!.properties).toEqual({ name: 'b', speed: 3 })
+  })
+
+  it('chains diffs through the id index of the previous result without changing earlier lists', () => {
+    const first = applyGeoJsonDiff([point(1, 0, 0)], { add: [point(2, 1, 1)] }, undefined, 'points').features
+    const second = applyGeoJsonDiff(first, { remove: [1] }, undefined, 'points').features
+    expect(first.map(feature => feature.id)).toEqual([1, 2])
+    expect(second.map(feature => feature.id)).toEqual([2])
+    // The first list's index went to the second diff: a diff on the first list again starts from its own features
+    expect(applyGeoJsonDiff(first, { remove: [2] }, undefined, 'points').features.map(feature => feature.id)).toEqual([1])
+    expect(applyGeoJsonDiff(second, { add: [point(3, 2, 2)] }, undefined, 'points').features.map(feature => feature.id)).toEqual([2, 3])
   })
 
   it('matches features by the promoted property and states the fix for a missing id', () => {
@@ -165,6 +186,15 @@ describe('GeoJSON sources in the worker', () => {
     // The circle layer only draws the cluster
     const bucket = await processor.processTile({ sourceId: 'stations', x: 0, y: 0, z: 0, zoom: 0 })
     expect(bucket.shapes).not.toBeNull()
+  })
+
+  it('clusters each point of a MultiPoint, and widens changed areas by the cluster radius', async () => {
+    const multi: Feature = { type: 'Feature', id: 'pair', geometry: { type: 'MultiPoint', coordinates: [[10, 10], [10.1, 10.1]] }, properties: {} }
+    const processor = await createProcessor({ stations: { type: 'geojson', data: collection(multi), cluster: true, buffer: 0, clusterRadius: 200 } }, [{ id: 'dots', type: 'circle', source: 'stations' }])
+    const leaves = (await processor.querySource('stations', { kind: 'clusterLeaves', clusterId: await clusterIdAt(processor), limit: Infinity, offset: 0 })) as Feature[]
+    expect(leaves).toHaveLength(2)
+    const result = await processor.applyCommands([{ command: 'setGeoJSONSourceData', args: ['stations', collection()] }])
+    expect(result.rebuiltAreas![0]!.marginTiles).toBe(200 / 512)
   })
 
   it('answers queries on a source no layer reads, and states the fix for an unclustered source', async () => {
@@ -271,32 +301,50 @@ describe('GeoJSON in the style document and MapStyle', () => {
     const data = collection(point(1, 0, 0))
     const style = new MapStyle({ style: { version: 8, sources: { points: { type: 'geojson', data } }, layers: [] }, baseUrl: 'https://maps.test/' })
     await style.load()
-    const changes: string[] = []
-    style.subscribe(batch => changes.push(...batch.map(({ change }) => (change.type === 'command' ? change.command.command : change.type))))
+    const commands: StyleCommand[] = []
+    style.subscribe(batch => commands.push(...batch.flatMap(({ change }) => (change.type === 'command' ? [change.command] : []))))
     const next = collection(point(2, 1, 1))
     style.setGeoJsonSourceData('points', next)
     await Promise.resolve()
+    expect(commands[0]!.args[1]).toBe(next)
     await style.setStyle({ version: 8, sources: { points: { type: 'geojson', data: collection(point(3, 2, 2)) } }, layers: [] })
     await Promise.resolve()
-    expect(changes).toEqual(['setGeoJSONSourceData', 'setGeoJSONSourceData'])
+    expect(commands.map(command => command.command)).toEqual(['setGeoJSONSourceData', 'setGeoJSONSourceData'])
   })
 
-  it('routes cluster queries to a renderer after the changes made before them', async () => {
+  it('routes cluster queries to a renderer after the changes made before them, and after a pending setStyle', async () => {
     const style = new MapStyle({ style: { version: 8, sources: { points: { type: 'geojson', data: collection() } }, layers: [] }, baseUrl: 'https://maps.test/' })
     await style.load()
     const order: string[] = []
     style.subscribe(batch => order.push(...batch.map(({ change }) => (change.type === 'command' ? change.command.command : change.type))))
-    const answer = style.querySource('points', { kind: 'clusterExpansionZoom', clusterId: 1 })
-    style.setGeoJsonSourceData('points', collection(point(1, 0, 0)))
-    // No renderer yet: the query waits for one
-    await new Promise(resolve => setTimeout(resolve, 0))
     style.attachSourceQueryHandler(async () => {
       order.push('query')
       return 7
     })
-    await expect(answer).resolves.toBe(7)
+    // The same task: the change reaches the renderers before the query does
+    style.setGeoJsonSourceData('points', collection(point(1, 0, 0)))
+    await expect(style.querySource('points', { kind: 'clusterExpansionZoom', clusterId: 1 })).resolves.toBe(7)
     expect(order).toEqual(['setGeoJSONSourceData', 'query'])
+
+    // A setStyle in progress holds the data change: the query waits for both
+    order.length = 0
+    const restyled = style.setStyle({ version: 8, sources: { points: { type: 'geojson', data: collection() } }, layers: [{ id: 'dots', type: 'circle', source: 'points' }] })
+    style.setGeoJsonSourceData('points', collection(point(2, 0, 0)))
+    const answer = style.querySource('points', { kind: 'clusterExpansionZoom', clusterId: 1 })
+    await restyled
+    await answer
+    expect(order.at(-1)).toBe('query')
+    expect(order.indexOf('setGeoJSONSourceData')).toBeLessThan(order.indexOf('query'))
     await expect(style.querySource('nope', { kind: 'clusterExpansionZoom', clusterId: 1 })).rejects.toThrow(/no source "nope"/)
+  })
+
+  it('keys a geojson feature’s state without a source layer, whatever the app passes', async () => {
+    const style = new MapStyle({ style: { version: 8, sources: { points: { type: 'geojson', data: collection(point(1, 0, 0)) } }, layers: [] }, baseUrl: 'https://maps.test/' })
+    await style.load()
+    style.setFeatureState({ source: 'points', sourceLayer: 'whatever', id: 1 }, { hover: true })
+    expect(style.getFeatureState({ source: 'points', id: 1 })).toEqual({ hover: true })
+    style.removeFeatureState({ source: 'points', sourceLayer: 'other' })
+    expect(style.getFeatureState({ source: 'points', id: 1 })).toEqual({})
   })
 })
 
@@ -339,6 +387,33 @@ describe('GeoJsonSource', () => {
     geoJson.updateData({ add: [point(2, 1, 1)] })
     expect((geoJson.data as FeatureCollection).features.map(feature => feature.id)).toEqual([1, 2])
     expect(() => new GeoJsonSource({ id: 'remote', data: 'a.geojson' }).updateData({ remove: [1] })).toThrow(/loads its data from a URL/)
+  })
+
+  it('keeps updateData changes when only other options change', async () => {
+    const source = await setUp()
+    const data = collection(point(1, 0, 0))
+    const geoJson = new GeoJsonSource({ id: 'route', data })
+    geoJson.addTo(source)
+    geoJson.updateData({ add: [point(2, 1, 1)] })
+    // A React re-render passes the same data object again
+    geoJson.update({ id: 'route', data })
+    geoJson.update({ id: 'route', data, cluster: true })
+    const ids = (source.getSource('route') as { data: FeatureCollection }).data.features.map(feature => feature.id)
+    expect(ids).toEqual([1, 2])
+    expect(data.features).toHaveLength(1) // the app's object is unchanged
+    // A diff naming no feature throws to the caller and changes nothing
+    expect(() => geoJson.updateData({ update: [{ id: 9, newGeometry: { type: 'Point', coordinates: [0, 0] } }] })).toThrow(/no feature with id 9/)
+    expect((geoJson.data as FeatureCollection).features).toHaveLength(2)
+  })
+
+  it('removes a source added while the style still loads, once it has loaded', async () => {
+    const source = new MapStyleSource({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/' })
+    const geoJson = new GeoJsonSource({ id: 'early', data: collection() })
+    geoJson.addTo(source)
+    geoJson.remove()
+    await source.getMapStyle().load()
+    await Promise.resolve()
+    expect(source.getSource('early')).toBeUndefined()
   })
 
   it('survives setStyle, over the new style’s source of the same id', async () => {

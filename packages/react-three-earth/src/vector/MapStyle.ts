@@ -122,6 +122,8 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   protected styleGeneration = 0
   /** `setStyle` calls in progress; commands made meanwhile wait in `held`, then apply to the new style. */
   protected stylesPending = 0
+  /** `whenSettled` calls waiting for the load or the pending `setStyle` calls. */
+  protected settleWaiters: Array<() => void> = []
   protected readonly held: StyleCommand[] = []
   protected readonly options: MapStyleOptions
   protected readonly protocols = new Map<string, ProtocolLoader>()
@@ -161,6 +163,16 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     return this.document !== null && this.stylesPending === 0
   }
 
+  /** Resolves once the style is settled (loaded, no `setStyle` in progress); never when it fails to load. */
+  whenSettled(): Promise<void> {
+    if (this.isSettled) return Promise.resolve()
+    return new Promise(resolve => this.settleWaiters.push(resolve))
+  }
+
+  protected resolveSettled(): void {
+    if (this.isSettled) for (const resolve of this.settleWaiters.splice(0)) resolve()
+  }
+
   /** Whether loading the style failed (a wrong URL, for example): `MapStyleSource` must be created again. */
   get loadFailed(): boolean {
     return this.loadError !== null
@@ -179,6 +191,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       }
       this.replay(this.early)
       this.queueEvent('styledata', {})
+      this.resolveSettled()
     })()
     return this.loading
   }
@@ -328,6 +341,8 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
    * `Imagery` layer drawing the style) has loaded the style.
    */
   async querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown> {
+    // A pending setStyle holds the changes made meanwhile: answer from the data once they are applied.
+    await this.whenSettled()
     const source = this.document?.sources[sourceId]
     if (this.document !== null && source === undefined) throw new Error(`GeoJsonSource: there is no source "${sourceId}" in the style; use a source id from getStyle().sources.`)
     if (source !== undefined && source.type !== 'geojson') throw new Error(`GeoJsonSource: source "${sourceId}" is a ${source.type} source; clusters belong to geojson sources.`)
@@ -386,6 +401,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
         // The first style never loaded: the source must be created again, so the held changes have nowhere to go.
         if (this.document === null) this.held.length = 0
         else this.replay(this.held, { skipRemovedLayers: true })
+        this.resolveSettled()
       }
     }
   }
@@ -423,7 +439,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   /** Merges `state` into the feature's state, as MapLibre does. Paint properties read it with `['feature-state', name]`. */
   setFeatureState(feature: FeatureIdentifier, state: FeatureState): void {
     this.checkFeature(feature, 'setFeatureState', true)
-    const key = featureKey(feature.source, feature.sourceLayer, feature.id)
+    const key = featureKey(feature.source, this.stateLayer(feature), feature.id)
     const previous = this.featureStates.get(key) ?? NO_STATE
     const next = { ...previous, ...clone(state) }
     if (sameValue(previous, next)) return
@@ -441,13 +457,14 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       if (key !== undefined) throw new Error('MapStyleSource.removeFeatureState: removing one key needs a feature `id` too.')
       for (const existing of [...this.featureStates.keys()]) {
         const parsed = parseFeatureKey(existing)
-        if (parsed.source !== feature.source || (feature.sourceLayer !== undefined && parsed.sourceLayer !== feature.sourceLayer)) continue
+        const sourceLayer = this.stateLayer(feature)
+        if (parsed.source !== feature.source || (sourceLayer !== undefined && parsed.sourceLayer !== sourceLayer)) continue
         this.featureStates.delete(existing)
         this.emit({ type: 'featureState', key: existing, state: null })
       }
       return
     }
-    const id = featureKey(feature.source, feature.sourceLayer, feature.id)
+    const id = featureKey(feature.source, this.stateLayer(feature), feature.id)
     const previous = this.featureStates.get(id)
     if (previous === undefined) return
     if (key === undefined || Object.keys(previous).length === 1 && key in previous) {
@@ -463,7 +480,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
 
   /** A copy of the feature's state (empty when none was set). */
   getFeatureState(feature: FeatureIdentifier): FeatureState {
-    return clone(this.featureStates.get(featureKey(feature.source, feature.sourceLayer, feature.id)) ?? {})
+    return clone(this.featureStates.get(featureKey(feature.source, this.stateLayer(feature), feature.id)) ?? {})
   }
 
   // Requests
@@ -603,6 +620,11 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       next.layers.splice(position === -1 ? next.layers.length : position, 0, layer)
     }
     return next
+  }
+
+  /** The source layer a feature's state is keyed by: none for a geojson source (its tiles have one layer). */
+  protected stateLayer(feature: { source: string; sourceLayer?: string }): string | undefined {
+    return this.document?.sources[feature.source]?.type === 'geojson' ? undefined : feature.sourceLayer
   }
 
   protected checkFeature(feature: { source: string; sourceLayer?: string; id?: string | number }, method: string, needsId: boolean): void {

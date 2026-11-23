@@ -85,25 +85,20 @@ function same(a: unknown, b: unknown): boolean {
  */
 export class GeoJsonSource {
   readonly id: string
+  /** The options, with `data` as it is now (`updateData` changes applied). */
   protected options: GeoJsonSourceOptions
-  /** Diffs applied with `updateData` since `options.data` was set, folded into it when the data is read. */
-  protected diffs: GeoJsonSourceDiff[] = []
+  /** The `data` the app last passed (constructor, `update`, `setData`): `update` compares the next one with it. */
+  protected suppliedData: GeoJSON | string
   protected style: MapStyle | null = null
 
   constructor(options: GeoJsonSourceOptions) {
     this.id = options.id
     this.options = { ...options }
+    this.suppliedData = options.data
   }
 
   /** The data as it is now, with `updateData` changes applied (a URL stays a URL). */
   get data(): GeoJSON | string {
-    const { data } = this.options
-    if (this.diffs.length > 0 && typeof data !== 'string') {
-      let features = toFeatures(data)
-      for (const diff of this.diffs) features = applyGeoJsonDiff(features, diff, this.options.promoteId, this.id).features
-      this.options = { ...this.options, data: { type: 'FeatureCollection', features } }
-    }
-    this.diffs = []
     return this.options.data
   }
 
@@ -147,12 +142,17 @@ export class GeoJsonSource {
     if (style === null) return
     this.style = null
     style.unmanageSource(this)
-    queueMicrotask(() => {
+    const removeIfUnread = (): void => {
       // Added again meanwhile (React StrictMode), or replaced by another GeoJsonSource of the same id
       if (this.style !== null || style.isSourceManaged(this.id)) return
-      if (!style.isSettled || !style.hasSource(this.id)) return
-      if (style.getLayerIdsReadingSource(this.id).length === 0) style.removeSource(this.id)
-    })
+      // Still loading (or a setStyle pending): the queued setSource applies first, so check again then.
+      if (!style.isSettled) {
+        void style.whenSettled().then(removeIfUnread)
+        return
+      }
+      if (style.hasSource(this.id) && style.getLayerIdsReadingSource(this.id).length === 0) style.removeSource(this.id)
+    }
+    queueMicrotask(removeIfUnread)
   }
 
   /**
@@ -163,10 +163,11 @@ export class GeoJsonSource {
     if (next.id !== this.id) throw new Error(`GeoJsonSource.update: the id cannot change ("${this.id}" to "${next.id}"); create another GeoJsonSource.`)
     const previous = this.options
     const optionsChanged = OPTION_NAMES.some(name => !same(previous[name], next[name]))
-    const dataChanged = previous.data !== next.data
+    const dataChanged = this.suppliedData !== next.data
     if (!optionsChanged && !dataChanged) return
-    this.options = { ...next }
-    this.diffs = []
+    // Same data object: keep the `updateData` changes applied since.
+    this.options = dataChanged ? { ...next } : { ...next, data: previous.data }
+    this.suppliedData = next.data
     if (this.style === null) return
     if (optionsChanged) this.style.setSource(this.id, this.toSpecification())
     else this.style.setGeoJsonSourceData(this.id, next.data)
@@ -178,7 +179,7 @@ export class GeoJsonSource {
    */
   setData(data: GeoJSON | string): void {
     this.options = { ...this.options, data }
-    this.diffs = []
+    this.suppliedData = data
     this.style?.setGeoJsonSourceData(this.id, data)
   }
 
@@ -188,11 +189,14 @@ export class GeoJsonSource {
    * @example source.updateData({ update: [{ id: 'bus-12', newGeometry: { type: 'Point', coordinates: [2.35, 48.86] } }] })
    */
   updateData(diff: GeoJsonSourceDiff): void {
-    if (typeof this.options.data === 'string') {
+    const { data, promoteId } = this.options
+    if (typeof data === 'string') {
       throw new Error(`GeoJsonSource.updateData: source "${this.id}" loads its data from a URL; fetch it in the app and pass the object with setData, then update it by id.`)
     }
+    // Applied here first, so a diff naming no feature throws to the caller and changes nothing.
+    const { features } = applyGeoJsonDiff(toFeatures(data), diff, promoteId, this.id)
+    this.options = { ...this.options, data: { type: 'FeatureCollection', features } }
     this.style?.updateGeoJsonSourceData(this.id, diff)
-    this.diffs.push(diff)
   }
 
   /** The zoom at which a cluster splits into several features: zoom there on a cluster click. */

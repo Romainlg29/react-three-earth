@@ -124,9 +124,13 @@ export class GeoJsonTileSource implements VectorTileProvider {
     return tileSource
   }
 
-  /** How far a tile's data reaches past its edges, in tiles. */
+  /**
+   * How far a tile's data reaches past its edges, in tiles: the buffer, or for clusters the cluster radius
+   * (supercluster pads each tile by it, whatever the buffer).
+   */
   get marginTiles(): number {
-    return this.options.bufferPixels / TILE_SIZE_PIXELS
+    const { bufferPixels, cluster, clusterRadiusPixels } = this.options
+    return (cluster ? Math.max(bufferPixels, clusterRadiusPixels) : bufferPixels) / TILE_SIZE_PIXELS
   }
 
   /**
@@ -220,7 +224,7 @@ export class GeoJsonTileSource implements VectorTileProvider {
     const drawn = this.drawnFeatures(features)
     const options = this.options
     if (options.cluster) {
-      const points = drawn.filter(feature => feature.geometry?.type === 'Point' || feature.geometry?.type === 'MultiPoint')
+      const points = drawn.flatMap(clusterablePoints)
       const clusters = new Supercluster({
         minZoom: 0,
         maxZoom: Math.max(options.clusterMaximumZoom, 0),
@@ -252,6 +256,14 @@ export class GeoJsonTileSource implements VectorTileProvider {
 /** Creates the provider of a `geojson` style source. */
 export const createGeoJsonTileProvider: VectorTileProviderFactory = (source, context, sourceId) =>
   GeoJsonTileSource.create(sourceId, source as GeoJsonSourceSpecification, context)
+
+/** The points supercluster indexes: a Point, or each point of a MultiPoint (with the feature's id and properties). */
+function clusterablePoints(feature: Feature): Feature[] {
+  const geometry = feature.geometry
+  if (geometry?.type === 'Point') return [feature]
+  if (geometry?.type !== 'MultiPoint') return []
+  return geometry.coordinates.map(coordinates => ({ ...feature, geometry: { type: 'Point', coordinates } }))
+}
 
 /** One rectangle (two across the antimeridian) around all the features; none when they have no coordinates. */
 function boxOf(features: readonly Feature[]): MercatorRectangle[] {

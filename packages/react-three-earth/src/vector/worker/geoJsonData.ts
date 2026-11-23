@@ -63,20 +63,34 @@ export interface AppliedGeoJsonDiff {
 }
 
 /**
+ * The id index of a feature list a diff produced, so the next diff on that list costs O(changes) for the lookups,
+ * not O(features). Taken (deleted) by the next diff: a list's index is never shared.
+ */
+const featureIndexes = new WeakMap<readonly Feature[], { promoteId: string | undefined; byId: Map<GeoJsonFeatureId, Feature> }>()
+
+/**
  * Applies a diff to a list of features, without changing it (or its features). Throws an error that states the fix
  * when a feature has no id or an update names no feature.
  */
 export function applyGeoJsonDiff(features: readonly Feature[], diff: GeoJsonSourceDiff, promoteId: string | undefined, sourceId: string): AppliedGeoJsonDiff {
   const missingId = `updateGeoJsonSourceData: source "${sourceId}" has a feature without an id; give every feature an \`id\` (or set \`promoteId\`) to update it by id, or call setData instead.`
-  const byId = new Map<GeoJsonFeatureId, Feature>()
   const before: Feature[] = []
   const after: Feature[] = []
-  if (diff.removeAll === true) before.push(...features)
-  else {
-    for (const feature of features) {
-      const id = geoJsonFeatureId(feature, promoteId)
-      if (id === undefined) throw new Error(missingId)
-      byId.set(id, feature)
+  let byId: Map<GeoJsonFeatureId, Feature>
+  if (diff.removeAll === true) {
+    before.push(...features)
+    byId = new Map()
+  } else {
+    const index = featureIndexes.get(features)
+    featureIndexes.delete(features)
+    if (index !== undefined && index.promoteId === promoteId) byId = index.byId
+    else {
+      byId = new Map()
+      for (const feature of features) {
+        const id = geoJsonFeatureId(feature, promoteId)
+        if (id === undefined) throw new Error(missingId)
+        byId.set(id, feature)
+      }
     }
   }
   for (const id of diff.remove ?? []) {
@@ -109,7 +123,9 @@ export function applyGeoJsonDiff(features: readonly Feature[], diff: GeoJsonSour
     before.push(current)
     after.push(next)
   }
-  return { features: [...byId.values()], before, after }
+  const result = [...byId.values()]
+  featureIndexes.set(result, { promoteId, byId })
+  return { features: result, before, after }
 }
 
 /** The box around the features' coordinates, or null when they have none. Longitudes are not wrapped. */
