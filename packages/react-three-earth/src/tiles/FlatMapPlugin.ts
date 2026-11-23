@@ -1,9 +1,10 @@
 import type { Tile } from '3d-tiles-renderer'
 import { BufferAttribute, InstancedBufferGeometry, Matrix4, Mesh, Vector2, type BufferGeometry, type Material, type Object3D } from 'three'
-import { attribute, diffuseColor, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, smoothstep, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
+import { attribute, diffuseColor, output, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, smoothstep, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
+import { setBaseOutputNode } from './wrapFadeNodeMaterial.js'
 import {
   ecefToGeodetic,
   latitudeToMercatorY,
@@ -79,27 +80,36 @@ const localMorph = smoothstep(0, 1, morphUniform.mul(1 + UNROLL_FRONT_WIDTH).sub
 /** 1 on the crest of the front, 0 away from it. */
 const unrollCrest = localMorph.mul(float(1).sub(localMorph)).mul(4)
 /** The crest lifts off the map, more the farther it has travelled. */
-const crestLift = vec3(0, 0, unrollCrest.mul(unrollCrest).mul(distanceFromAnchorMeters).mul(0.08))
+const crestLift = vec3(0, 0, unrollCrest.mul(unrollCrest).mul(distanceFromAnchorMeters).mul(0.03))
 const morphedPosition = mix(globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz, flatPosition.add(worldCopyOffset), localMorph).add(crestLift)
 
 /**
  * The normal, turned with the geometry into the flat frame, so shading stays continuous when the morph
  * starts (the mesh is then drawn with the flat frame's matrix). On the map itself sunlight is faded out.
  */
-const morphedNormal = transformNormalToView(mat3(globeToFlatUniform).mul(normalGeometry).normalize())
+// Unrolled ground faces straight up the map (flat +z), so it is not lit as if still curved round the globe.
+const morphedNormal = transformNormalToView(mix(mat3(globeToFlatUniform).mul(normalGeometry).normalize(), vec3(0, 0, 1), localMorph).normalize())
 
-/** On the flat map the imagery is shown unlit, as a map: its colour is emitted, fading in with the morph. */
 /** A thin glow rides the crest of the front. */
 const UNROLL_GLOW_COLOR = vec3(0.55, 0.8, 1)
-const unrollGlow = UNROLL_GLOW_COLOR.mul(unrollCrest.pow(24).mul(smoothstep(0.05, 0.3, distanceFromAnchor)).mul(1.2))
-// The sunlight fades as 1 - morph (see `Earth.update`): unrolled ground makes up the rest, so its brightness
-// holds steady through the transition.
-const flatEmission = diffuseColor.rgb.mul(localMorph.mul(morphUniform)).add(unrollGlow).mul(flatMapLuminanceUniform)
+const unrollGlow = UNROLL_GLOW_COLOR.mul(
+  unrollCrest
+    .pow(32)
+    .mul(smoothstep(0.05, 0.3, distanceFromAnchor))
+    .mul(morphUniform.mul(float(1).sub(morphUniform)).mul(4))
+    .mul(0.35),
+)
+/**
+ * On the flat map the imagery is shown unlit, as a map. Each vertex passes from the lit globe to the unlit
+ * map as the unroll front reaches it, so the ground still on the globe keeps its shading and the unrolled
+ * ground already looks like the map, with no blend of both.
+ */
+const flatColor = diffuseColor.rgb.add(unrollGlow).mul(flatMapLuminanceUniform)
+const unrollOutput = vec4(mix(output.rgb, flatColor, localMorph), output.a)
 
 const WRAPPED = Symbol('FLAT_MAP_WRAPPED')
-const combinedEmissions = new WeakSet<Node>()
 
-type WrappableMaterial = NodeMaterial & { [WRAPPED]?: true; emissiveNode?: Node | null }
+type WrappableMaterial = NodeMaterial & { [WRAPPED]?: true }
 
 const geodetic: GeodeticRadians = { longitude: 0, latitude: 0, heightMeters: 0 }
 const meshToTileScene = new Matrix4()
@@ -231,16 +241,7 @@ function wrapMaterial(material: Material, hasNormals: boolean): void {
   nodeMaterial[WRAPPED] = true
   nodeMaterial.positionNode = morphedPosition
   if (hasNormals && nodeMaterial.normalNode == null) nodeMaterial.normalNode = morphedNormal
-  if ('emissiveNode' in nodeMaterial) {
-    const existing = nodeMaterial.emissiveNode ?? null
-    if (existing === null) {
-      nodeMaterial.emissiveNode = flatEmission
-    } else if (existing !== flatEmission && !combinedEmissions.has(existing)) {
-      const combined = (existing as Node<'vec3'>).add(flatEmission) as unknown as Node
-      combinedEmissions.add(combined)
-      nodeMaterial.emissiveNode = combined
-    }
-  }
+  setBaseOutputNode(nodeMaterial, unrollOutput as unknown as Node)
   nodeMaterial.needsUpdate = true
 }
 

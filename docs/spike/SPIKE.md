@@ -537,7 +537,7 @@ DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill 
 - **Gestures.** The corner stops `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart` so a press
   on a control never starts a map gesture or a map `click`.
 - **Not done.** `TerrainControl` (needs W8 exaggeration), disabled zoom buttons at the limits, compass dragging.
-- **Checks.** `test/controls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
+- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
   `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
   fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
   loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.

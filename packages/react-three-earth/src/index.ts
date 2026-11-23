@@ -110,6 +110,7 @@ export {
 } from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls, EarthViewControls, FlatMapControls } from './core/EarthControls.js'
+export { TouchGestures, type TwoFingerFrame } from './core/TouchGestures.js'
 export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
 export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
