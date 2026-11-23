@@ -826,8 +826,15 @@ async function cameraAnimations() {
     const completed = await earth.camera.flyTo(target, { durationSeconds: 4, essential: true })
     const seconds = (performance.now() - startMilliseconds) / 1000
     const endView = earth.camera.getView()
-    // The frame after the last one, so moveend has fired.
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // The frame after the last one, so moveend has fired. Frames can be 400 ms apart on SwiftShader: wait for it
+    // (up to 3 s) rather than a fixed delay.
+    if (!events.includes('moveend')) {
+      await new Promise(resolve => {
+        const done = () => { clearTimeout(timer); earth.removeEventListener('moveend', done); resolve() }
+        const timer = setTimeout(done, 3000)
+        earth.addEventListener('moveend', done)
+      })
+    }
     earth.removeEventListener('move', sample)
     for (const [type, listener] of listeners) earth.removeEventListener(type, listener)
     return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), events }
