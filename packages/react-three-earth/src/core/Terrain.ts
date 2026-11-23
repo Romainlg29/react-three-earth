@@ -1,4 +1,4 @@
-import type { Camera, Object3D } from 'three'
+import { Group, type Camera, type Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
@@ -9,8 +9,10 @@ import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
 import { MAXIMUM_TERRAIN_LAYERS } from '../tiles/wrapOverlaysNodeMaterial.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
+import { sampleTerrainHeight } from '../tiles/terrainHeights.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { ViewMorph } from '../view/ViewMorph.js'
+import type { ScreenLabelInspection, ScreenSymbols, ScreenSymbolsInspection, SymbolFrame } from '../vector/symbols/ScreenSymbols.js'
 import type { AttributionProvider } from './attribution.js'
 import type { Imagery } from './Imagery.js'
 import type { TerrainSource } from './sources.js'
@@ -52,6 +54,8 @@ export class Terrain implements AttributionProvider {
   readonly overlays: ImageOverlayPlugin
   /** Lays the tiles on the flat map and morphs them (see `setView`). */
   readonly flatMap: FlatMapPlugin
+  /** Labels of its map style sources that face the viewer, drawn over the tiles. `Earth.setTerrain` adds it to the earth. */
+  readonly symbols = new Group()
   protected readonly imagery = new Set<Imagery>()
   protected readonly source: TerrainSource
   /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
@@ -132,12 +136,68 @@ export class Terrain implements AttributionProvider {
       )
     }
     this.imagery.add(imagery)
-    for (const overlay of imagery.overlays) this.overlays.addOverlay(overlay as never)
+    for (const overlay of imagery.overlays) {
+      this.overlays.addOverlay(overlay as never)
+      const symbols = screenSymbolsOf(overlay)
+      if (symbols !== null) this.symbols.add(symbols.object)
+    }
   }
 
   removeImagery(imagery: Imagery): void {
     if (!this.imagery.delete(imagery)) return
-    for (const overlay of imagery.overlays) this.overlays.deleteOverlay(overlay as never)
+    for (const overlay of imagery.overlays) {
+      this.overlays.deleteOverlay(overlay as never)
+      const symbols = screenSymbolsOf(overlay)
+      if (symbols !== null) this.symbols.remove(symbols.object)
+    }
+  }
+
+  /**
+   * Height of the terrain as drawn at a position (radians), in metres above the ellipsoid, from the deepest visible
+   * tile there; null where no visible tile covers it. Cheaper than a raycast: for many reads per frame (labels).
+   */
+  sampleElevation(longitudeRadians: number, latitudeRadians: number): number | null {
+    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians)
+  }
+
+  /** True when a map style source draws labels that face the viewer. */
+  get hasScreenSymbols(): boolean {
+    return this.symbols.children.length > 0
+  }
+
+  /**
+   * Places the labels that face the viewer for this frame (after `update`, so terrain heights are current). Returns
+   * true while they need another frame. `Earth.update` calls it.
+   */
+  updateSymbols(frame: SymbolFrame): boolean {
+    let needsFrame = false
+    for (const symbols of this.screenSymbols()) needsFrame = symbols.update(frame) || needsFrame
+    return needsFrame
+  }
+
+  /** Labels facing the viewer, summed over the map style sources. Null when none draws them. */
+  inspectSymbols(): ScreenSymbolsInspection | null {
+    let total: ScreenSymbolsInspection | null = null
+    for (const symbols of this.screenSymbols()) {
+      const inspection = symbols.inspect()
+      if (total === null) total = inspection
+      else for (const key of Object.keys(total) as Array<keyof ScreenSymbolsInspection>) total[key] += inspection[key]
+    }
+    return total
+  }
+
+  /** The labels facing the viewer on the screen as of the last frame, over every map style source. For tests and devtools. */
+  getScreenLabels(): ScreenLabelInspection[] {
+    return [...this.screenSymbols()].flatMap(symbols => symbols.getScreenLabels())
+  }
+
+  protected *screenSymbols(): Iterable<ScreenSymbols> {
+    for (const imagery of this.imagery) {
+      for (const overlay of imagery.overlays) {
+        const symbols = screenSymbolsOf(overlay)
+        if (symbols !== null) yield symbols
+      }
+    }
   }
 
   /**
@@ -179,6 +239,7 @@ export class Terrain implements AttributionProvider {
       isLoading: boolean
     }
     if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
+    for (const symbols of this.screenSymbols()) if (symbols.loading) return true
     const { queued, downloading, parsing } = stats
     return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0 || this.imageryRecompositionsPending > 0
   }
@@ -211,4 +272,8 @@ export class Terrain implements AttributionProvider {
   dispose(): void {
     this.tiles.dispose()
   }
+}
+
+function screenSymbolsOf(overlay: unknown): ScreenSymbols | null {
+  return (overlay as { screenSymbols?: ScreenSymbols | null }).screenSymbols ?? null
 }

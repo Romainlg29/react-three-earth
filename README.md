@@ -179,7 +179,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, `easeTo` / `flyTo` / `fitBounds`, padding, bounds, project / unproject, clicks with their position, `initialView`, URL hash, events |
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
 | `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
-| `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, `invalidate` after data changes |
+| `map-styles` | MapLibre vector styles: sources, fonts, labels facing the viewer, sprite patterns, `addImage`, `invalidate` after data changes |
 | `flat-map-2d` | a flat 2D map (Web Mercator, like MapLibre) and the globe-to-map transition |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |
 | `react-hooks-and-frame-loop` | Earth state in React UI, per-frame code, scheduler order, `frameloop="demand"` |

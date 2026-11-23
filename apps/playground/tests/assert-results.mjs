@@ -210,6 +210,26 @@ function effectExpectations(r, { glowIsMagenta }) {
   ]
 }
 
+// Screen-space labels on a dense grid of towns (124 labels, a third fit at 40 km).
+const screenLabels = (r, textShare = 0.005) => [
+  ...(textShare === null ? [] : [[`text draws (over ${textShare * 100} % text pixels)`, r.textShare > textShare]]),
+  ['between 20 and 80 labels show, most of them towns', r.labelsShown >= 20 && r.labelsShown <= 80 && r.towns >= r.labelsShown - 6],
+  ['no two placed labels overlap', r.overlaps === 0],
+  ['no text repeats at one place', r.duplicates === 0],
+  ['every label shown is on the screen', r.onScreen],
+  ['labels at the centre are 14 to 26 px tall (text size and padding)', r.centralBoxHeightPixels !== null && r.centralBoxHeightPixels > 14 && r.centralBoxHeightPixels < 26],
+  ['all terrain heights read', r.inspection?.elevationsPending === 0],
+]
+for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectations[`screen-space labels, ${name}`] = r => screenLabels(r)
+// The haze covers the text colour: no text-pixel count, but the same placement as without it.
+expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
+// Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
+expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
+expectations['screen-space labels, draped'] = r => [
+  ['no label faces the viewer', r.labelsShown === 0 && r.inspection === null],
+  ['labels are drawn on the ground instead', r.textShare > 0.005],
+]
+
 let failures = 0
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)

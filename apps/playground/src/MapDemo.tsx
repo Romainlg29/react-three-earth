@@ -50,9 +50,14 @@ const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // them through `window.mapStyleSource.invalidate(bounds)`.
 // `?map=patterns` (with `?fixtures`) is the fixture style with sprite patterns; images it lacks are listed in
 // `window.styleImagesMissing` for the browser check, which adds one with `window.mapStyleSource.addImage`.
+// `?map=labels` (with `?fixtures`) adds a dense grid of town labels to the fixture style, for collision and fades.
+// `?symbols=draped` lays labels on the ground instead of facing the viewer.
 const liveFixtures = useFixtures && params.get('test') === 'invalidate'
-const fixtureStyleUrl = params.get('map') === 'patterns' ? '/fixtures/style-patterns.json' : `/fixtures/style.json${liveFixtures ? '?live' : ''}`
-const mapStyleUrl = params.get('map') === 'vector' || (useFixtures && params.get('map') === 'patterns') ? (useFixtures ? fixtureStyleUrl : import.meta.env.VITE_MAP_STYLE_URL) : undefined
+const fixtureStyleUrl =
+  params.get('map') === 'patterns' ? '/fixtures/style-patterns.json' : params.get('map') === 'labels' ? '/fixtures/style-labels.json' : `/fixtures/style.json${liveFixtures ? '?live' : ''}`
+const fixtureOnlyMap = useFixtures && (params.get('map') === 'patterns' || params.get('map') === 'labels')
+const mapStyleUrl = params.get('map') === 'vector' || fixtureOnlyMap ? (useFixtures ? fixtureStyleUrl : import.meta.env.VITE_MAP_STYLE_URL) : undefined
+const symbolPlacement = params.get('symbols') === 'draped' ? 'draped' : 'screen'
 if (params.get('map') === 'vector' && mapStyleUrl === undefined) console.warn('Set VITE_MAP_STYLE_URL in apps/playground/.env for ?map=vector; showing raster imagery.')
 // The atmosphere's lookup textures are cached between page loads, in dev too: the cache key holds
 // ATMOSPHERE_PRECOMPUTE_VERSION, which a unit test makes you bump when the generating shaders change.
@@ -256,7 +261,7 @@ export function MapDemo() {
           </Terrain>
           <Imagery>
             {mapStyleUrl !== undefined ? (
-              <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
+              <MapStyleSource url={mapStyleUrl} symbols={symbolPlacement} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
                 {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
               </MapStyleSource>
             ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}

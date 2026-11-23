@@ -10,12 +10,17 @@ import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type Earth
 import type { Imagery } from './Imagery.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
+import type { ScreenSymbolsInspection } from '../vector/symbols/ScreenSymbols.js'
 import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnchor.js'
 import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
 import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { DrapedLayerRegistry, type DrapedLayerInspection } from '../plugins/drapedLayers.js'
 import { RenderPassRegistry, type RenderPassInspection } from '../plugins/renderPasses.js'
+
+/** Terrain height reads for labels per frame, and the time they may take. */
+const SYMBOL_ELEVATION_READS_PER_FRAME = 512
+const SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME = 1
 
 /** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
 const CLICK_TOLERANCE_PIXELS = 3
@@ -57,6 +62,8 @@ export interface EarthInspection {
     imageryTilesCompositedTotal: number
     /** Main-thread milliseconds spent on imagery since the terrain was created. */
     imageryMainThreadMillisecondsTotal: number
+    /** Labels of map style sources that face the viewer, summed over the sources; null when none draws them. */
+    symbols: ScreenSymbolsInspection | null
   }
   imageryLayers: number
   /** `earth.camera.getView()`, or null before the first `update`. */
@@ -96,6 +103,7 @@ function inspectImagery(terrain: Terrain) {
     imageryRecompositionsPending: terrain.imageryRecompositionsPending,
     imageryTilesCompositedTotal: total.tilesComposited,
     imageryMainThreadMillisecondsTotal: total.mainThreadMilliseconds,
+    symbols: terrain.inspectSymbols(),
   }
 }
 
@@ -270,6 +278,7 @@ export class Earth extends Group<EarthEventMap> {
       this.terrain.setDrapedLayers(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
+      this.remove(this.terrain.symbols)
     }
     this.terrain = terrain
     if (terrain !== null) {
@@ -277,6 +286,7 @@ export class Earth extends Group<EarthEventMap> {
       terrain.setView(this.view)
       terrain.setStyleLayerTypes(this.styleLayerTypes)
       this.add(terrain.object)
+      this.add(terrain.symbols)
       // Imagery first: draped layers take the layer slots left after it (one that does not fit is logged).
       for (const imagery of this.imagery) {
         try {
@@ -357,12 +367,33 @@ export class Earth extends Group<EarthEventMap> {
       this.atmosphere.opacity = 1 - this.view.morph
       this.atmosphere.update(camera, this.date)
     }
+    const symbolsNeedFrame = this.updateSymbols(camera, delta, now)
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)
     const pluginsNeedFrame = this.plugins.update(camera, delta)
     this.dispatchEvent({ type: 'update' })
     this.lastUpdateMilliseconds = performance.now() - now
     // After a move, one more frame tells whether the camera stopped (`moveend`).
-    return morphing || this.view.transitioning || cameraMoved || animating || pluginsNeedFrame
+    return morphing || this.view.transitioning || cameraMoved || animating || pluginsNeedFrame || symbolsNeedFrame
+  }
+
+  /** Places the labels of map style sources that face the viewer. Returns true while they need another frame. */
+  protected updateSymbols(camera: Camera, deltaSeconds: number, timeMilliseconds: number): boolean {
+    const terrain = this.terrain
+    if (terrain === null || !terrain.hasScreenSymbols || !this.camera.ready) return false
+    const view = this.camera.readEllipsoidView()
+    return terrain.updateSymbols({
+      camera,
+      widthPixels: this.viewportSize.x,
+      heightPixels: this.viewportSize.y,
+      zoom: view.zoom,
+      centerDistanceMeters: view.distanceMeters,
+      view: this.view,
+      sampleTerrainElevation: (longitudeRadians, latitudeRadians) => terrain.sampleElevation(longitudeRadians, latitudeRadians),
+      elevationBudget: { remaining: SYMBOL_ELEVATION_READS_PER_FRAME, deadlineMilliseconds: performance.now() + SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME },
+      timeMilliseconds,
+      deltaSeconds,
+      requestFrame: () => this.requestFrame(),
+    })
   }
 
   /** Places the anchors made by `createGeographicAnchor` for this frame's morph. */

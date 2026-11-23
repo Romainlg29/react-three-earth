@@ -73,6 +73,8 @@ export function MapStyleSource({
   createWorker,
   attribution,
   spritePixelRatio,
+  symbols,
+  symbolFadeDurationSeconds,
   onStyleImageMissing,
   transformRequest,
   protocols,
@@ -104,12 +106,14 @@ export function MapStyleSource({
         ...(hasTransform ? { transformRequest: stableTransform } : {}),
         ...(protocols !== undefined ? { protocols } : {}),
         ...(spritePixelRatio !== undefined ? { spritePixelRatio } : {}),
+        ...(symbols !== undefined ? { symbols } : {}),
+        ...(symbolFadeDurationSeconds !== undefined ? { symbolFadeDurationSeconds } : {}),
         onStyleImageMissing: imageId => onStyleImageMissingRef.current?.(imageId),
       })
     },
     // url and style are applied below with setStyle; attribution by useAttribution
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio, retries],
+    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio, symbols, symbolFadeDurationSeconds, retries],
   )
   const applied = useRef<{ source: MapStyleSourceImpl; style: unknown } | null>(null)
   useEffect(() => {

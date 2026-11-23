@@ -11,6 +11,7 @@ import { createCompositeMaterial, createCustomLayerMaterial, setCustomLayerDrawV
 import { MapStyle, type SequencedStyleChange } from './MapStyle.js'
 import { createVectorTileWorker, InlineMapStyleBackend, WorkerMapStyleBackend, type MapStyleBackend, type MapStyleBackendHost } from './MapStyleBackend.js'
 import { RefCountedCache, type Lease } from './RefCountedCache.js'
+import { ScreenSymbols, symbolTileKey, type ScreenSymbolsHost } from './symbols/ScreenSymbols.js'
 import {
   BucketMeshes,
   createBackgroundMaterial,
@@ -60,6 +61,14 @@ export interface MapStyleOverlayOptions {
   spritePixelRatio?: number
   /** Runtime images (`addImage`) known before the style loads. Later changes go through `setImage`. */
   images?: ReadonlyMap<string, StyleImage>
+  /**
+   * Where point-placed labels go. `'screen'`: they face the viewer at a constant size, collide across the whole screen
+   * and fade, as in MapLibre (line-placed labels stay draped for now). `'draped'`: every label is drawn into the
+   * terrain's textures, lying on the ground. Default: 'screen'.
+   */
+  symbols?: 'screen' | 'draped'
+  /** Seconds labels facing the viewer take to fade in or out (MapLibre's `fadeDuration`). Default: 0.3. */
+  symbolFadeDurationSeconds?: number
   /** Called once the style is loaded and `summary` is set. */
   onLoad?: (summary: MapStyleSummary) => void
   /**
@@ -129,7 +138,7 @@ interface PlacedMesh {
  * Extends 3DTilesRenderer's `XYZTilesOverlay` only for its Web Mercator tiling; its image source is never
  * fetched from.
  */
-export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverlay {
+export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverlay, ScreenSymbolsHost {
   /** Set by `ImageOverlayPlugin` when the overlay is added to it. */
   compositor: ImageryCompositor | null = null
   /** The style's summary once loaded: sources, zoom ranges, background. */
@@ -140,7 +149,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   declare fetch: (url: string, options?: RequestInit) => Promise<Response>
   /** The style this overlay draws; its changes reach the overlay as they are made. */
   readonly mapStyle: MapStyle
-  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style' | 'images' | 'onStyleImageMissing'>> & {
+  /** Labels that face the viewer (`symbols: 'screen'`), or null when every label is draped. `Terrain` adds its object to the scene and updates it. */
+  readonly screenSymbols: ScreenSymbols | null
+  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style' | 'images' | 'onStyleImageMissing' | 'symbols' | 'symbolFadeDurationSeconds'>> & {
     baseUrl: string | undefined
   }
   protected readonly onLoad: ((summary: MapStyleSummary) => void) | undefined
@@ -226,6 +237,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     retainedTileBytes = 32 * MEGABYTE_BYTES,
     spritePixelRatio = defaultSpritePixelRatio(),
     images,
+    symbols = 'screen',
+    symbolFadeDurationSeconds,
     onLoad,
     onSummaryChange,
     onStyleImageMissing,
@@ -258,6 +271,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.background.renderOrder = -2
     this.background.frustumCulled = false
     this.scene.matrixWorldAutoUpdate = true
+    this.screenSymbols = symbols === 'screen' ? new ScreenSymbols(this, symbolFadeDurationSeconds === undefined ? {} : { fadeDurationSeconds: symbolFadeDurationSeconds }) : null
 
     this.buckets = new RefCountedCache<LoadedBucket>({
       load: async (key, signal) => {
@@ -318,6 +332,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.reportMissingLayerTypes(this.summary)
     this.onLoad?.(this.summary)
     this.onSummaryChange?.(this.summary)
+    this.screenSymbols?.summaryChanged()
   }
 
   protected async initBackend(): Promise<void> {
@@ -372,7 +387,23 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       spritePixelRatio: this.options.spritePixelRatio,
       images: [...this.images],
       layerTypes: this.styleLayerTypes?.describe() ?? [],
+      screenSymbols: this.screenSymbols !== null,
     }
+  }
+
+  /** The glyph atlas the labels read (`ScreenSymbolsHost`). */
+  get glyphAtlas(): GlyphAtlasTexture {
+    return this.atlas
+  }
+
+  /** Deepest zoom tiles are laid out at (`ScreenSymbolsHost`). */
+  get maximumZoom(): number {
+    return this.options.maximumZoom
+  }
+
+  /** Locks a tile of labels facing the viewer in the tile cache (`ScreenSymbolsHost`). */
+  acquireSymbolTile(request: TileRequest): Lease<LoadedBucket> {
+    return this.buckets.acquire(bucketKey({ ...request, symbols: true }))
   }
 
   /**
@@ -517,6 +548,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.backgroundPatternByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
     this.reportMissingImages(result.summary.missingBackgroundImages)
     this.reportMissingLayerTypes(result.summary)
+    this.screenSymbols?.summaryChanged()
     this.onSummaryChange?.(result.summary)
   }
 
@@ -545,6 +577,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       this.summary = summary
       this.rebuildTiles(() => true)
       this.markRegionsStale(() => true)
+      this.screenSymbols?.summaryChanged()
       this.onSummaryChange?.(summary)
     })
   }
@@ -653,6 +686,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected rebuildTiles(matches: (request: TileRequest) => boolean, shapesOnly = false): void {
     if (this.disposed) return
     for (const key of [...this.buckets.keys()]) if (matches(parseBucketKey(key))) this.buckets.discard(key)
+    this.screenSymbols?.refresh(matches)
     this.markRegionsStale(key => {
       const { range, level } = parseRegionKey(key)
       return this.getRegionTiles(range, level).some(tile => matches(tile.request) && !(shapesOnly && tile.textOnly))
@@ -786,6 +820,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   /** Stops the worker and frees every texture and mesh. Call after removing the layer. */
   dispose(): void {
     this.disposed = true
+    this.screenSymbols?.dispose()
     this.unsubscribe?.()
     this.unsubscribe = null
     this.unsubscribeLayerTypes?.()
@@ -1148,13 +1183,15 @@ function parseRegionKey(key: string): { range: number[]; level: number } {
   return { range: values.slice(0, 4), level: values[4] ?? 0 }
 }
 
-export function bucketKey({ sourceId, x, y, z, zoom }: TileRequest): string {
-  return `${zoom}/${z}/${x}/${y}/${sourceId}`
+export function bucketKey(request: TileRequest): string {
+  const { sourceId, x, y, z, zoom } = request
+  return request.symbols === true ? symbolTileKey(request) : `${zoom}/${z}/${x}/${y}/${sourceId}`
 }
 
 function parseBucketKey(key: string): TileRequest {
-  const [zoom, z, x, y, ...source] = key.split('/')
-  return { sourceId: source.join('/'), x: Number(x), y: Number(y), z: Number(z), zoom: Number(zoom) }
+  const symbols = key.startsWith('s:')
+  const [zoom, z, x, y, ...source] = (symbols ? key.slice(2) : key).split('/')
+  return { sourceId: source.join('/'), x: Number(x), y: Number(y), z: Number(z), zoom: Number(zoom), ...(symbols ? { symbols } : {}) }
 }
 
 /** Rejects with the signal's reason as soon as it aborts, without waiting for the promise. */

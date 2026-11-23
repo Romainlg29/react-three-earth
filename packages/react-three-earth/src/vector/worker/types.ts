@@ -5,6 +5,7 @@
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
 import type { MercatorRectangle } from './rectangles.js'
+import { symbolMeshBuffers } from './symbols.js'
 
 /** Vector tile coordinates are rescaled to this extent, whatever the source layer's own extent. */
 export const TILE_EXTENT = 4096
@@ -45,6 +46,11 @@ export interface MapStyleProcessorOptions {
   transformsRequests?: boolean
   /** Custom style layer types from plugins (`earth.styleLayerTypes`). Default: none. */
   layerTypes?: WorkerLayerTypeDescriptor[]
+  /**
+   * Point-placed labels face the viewer: they are laid out by `symbols` requests and left out of draped tiles.
+   * Default: false (every label is draped).
+   */
+  screenSymbols?: boolean
 }
 
 /** Feature-state of one feature: any JSON values, read by `['feature-state', name]` in paint properties. */
@@ -192,6 +198,11 @@ export interface TileRequest {
   z: number
   /** Zoom the style is evaluated at: at least `z`, more when the tile is overzoomed. */
   zoom: number
+  /**
+   * Lays out only the labels that face the viewer (`SymbolMesh`), for the camera's symbol tiles, instead of the
+   * draped meshes. Default: false.
+   */
+  symbols?: boolean
 }
 
 /** A range of indices of a bucket's shape mesh drawn for one group of consecutive style layers. */
@@ -233,6 +244,31 @@ export interface TextMesh {
   haloColors: Uint8Array
   haloEdges: Float32Array
   indices: Uint32Array
+}
+
+/**
+ * Labels of one tile that face the viewer. Per label: anchor in tile units, `text-size` at the tile's zoom and the
+ * next, collision box (left, top, right, bottom) in pixels of a 24 px font around the anchor, padding in pixels,
+ * flags (`SYMBOL_ALLOW_OVERLAP`, `SYMBOL_IGNORE_PLACEMENT`), style layer index, sort key and identity key. Per
+ * vertex (4 per glyph): corner in pixels of a 24 px font around the anchor (y down), glyph atlas pixels, the
+ * label it belongs to, colours (straight-alpha sRGB, `text-opacity` included) and halo width in pixels.
+ */
+export interface SymbolMesh {
+  anchors: Float32Array
+  sizes: Float32Array
+  boxes: Float32Array
+  paddings: Float32Array
+  flags: Uint8Array
+  layerIndices: Uint16Array
+  sortKeys: Float32Array
+  keys: string[]
+  corners: Float32Array
+  uvs: Float32Array
+  labelIndices: Float32Array
+  colors: Uint8Array
+  haloColors: Uint8Array
+  haloWidths: Float32Array
+  indices: Uint16Array | Uint32Array
 }
 
 /** A glyph newly packed into the worker's atlas, for the main thread's copy. */
@@ -289,6 +325,8 @@ export interface CustomLayerMesh {
 export interface TileBucket {
   shapes: ShapeMesh | null
   text: TextMesh | null
+  /** Labels that face the viewer, for `symbols` requests only. */
+  symbols?: SymbolMesh | null
   /** Custom style layers (plugins), in style order. */
   layers: CustomLayerMesh[]
   atlas: AtlasUpdate | null
@@ -357,12 +395,13 @@ export type WorkerResponse =
 export function collectTransferables(bucket: TileBucket | null): Transferable[] {
   if (bucket === null) return []
   const buffers: ArrayBufferLike[] = []
-  const { shapes, text, atlas, layers } = bucket
+  const { shapes, text, atlas, layers, symbols } = bucket
   if (shapes !== null) buffers.push(shapes.positions.buffer, shapes.colors.buffer, shapes.indices.buffer)
   if (shapes?.colorSlots) buffers.push(shapes.colorSlots.buffer)
   if (shapes?.patterns != null && shapes.patternCoordinates !== null) buffers.push(shapes.patterns.buffer, shapes.patternCoordinates.buffer)
   if (text !== null) buffers.push(text.positions.buffer, text.uvs.buffer, text.colors.buffer, text.haloColors.buffer, text.haloEdges.buffer, text.indices.buffer)
   if (atlas !== null) for (const glyph of atlas.glyphs) buffers.push(glyph.data.buffer)
+  if (symbols != null) buffers.push(...symbolMeshBuffers(symbols))
   for (const layer of layers) {
     buffers.push(layer.indices.buffer)
     for (const attribute of layer.attributes) buffers.push(attribute.array.buffer)

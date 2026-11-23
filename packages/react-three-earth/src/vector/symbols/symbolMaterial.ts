@@ -1,0 +1,205 @@
+import { BufferAttribute, BufferGeometry, DataTexture, DoubleSide, FloatType, Mesh, NearestFilter, NoColorSpace, NormalBlending, RGBAFormat, Vector2 } from 'three'
+import { attribute, float, Fn, fwidth, int, ivec2, max, select, smoothstep, texture, textureLoad, uniform, varying, vec2, vec4 } from 'three/tsl'
+import { sRGBTransferEOTF } from 'three/tsl'
+import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
+
+import type { GlyphAtlasTexture } from '../VectorTileMeshes.js'
+import { GLYPH_EDGE } from '../worker/glyphs.js'
+import type { SymbolMesh } from '../worker/types.js'
+
+/** Labels per row of the state texture. */
+export const SYMBOL_STATE_WIDTH = 1024
+
+/**
+ * Where each label shows this frame, one RGBA float texel per label slot: anchor on the screen (CSS pixels), scale
+ * (text size / 24) and opacity (0 hides it). Written on the CPU after placement, read by the vertex shader, so a frame
+ * uploads 16 bytes per label rather than every glyph's vertices. Slots are handed out in ranges, one per tile.
+ */
+export class SymbolStateTexture {
+  texture: DataTexture
+  data: Float32Array
+  /** The node materials read; follows `texture` when it grows. */
+  readonly node: ReturnType<typeof texture>
+  /** Free slot ranges, sorted by start, never adjacent. */
+  protected readonly free: Array<{ start: number; count: number }> = []
+  protected rows = 1
+  protected dirty = true
+
+  constructor() {
+    this.data = new Float32Array(SYMBOL_STATE_WIDTH * 4)
+    this.texture = this.createTexture()
+    this.free.push({ start: 0, count: SYMBOL_STATE_WIDTH })
+    this.node = texture(this.texture)
+  }
+
+  get capacity(): number {
+    return this.rows * SYMBOL_STATE_WIDTH
+  }
+
+  /** Reserves `count` consecutive slots, growing the texture when none fit. Returns the first slot. */
+  allocate(count: number): number {
+    for (;;) {
+      const index = this.free.findIndex(range => range.count >= count)
+      if (index !== -1) {
+        const range = this.free[index]!
+        const start = range.start
+        range.start += count
+        range.count -= count
+        if (range.count === 0) this.free.splice(index, 1)
+        return start
+      }
+      this.grow()
+    }
+  }
+
+  /** Returns slots to the pool; they read as hidden until reused. */
+  release(start: number, count: number): void {
+    if (count <= 0) return
+    this.data.fill(0, start * 4, (start + count) * 4)
+    this.dirty = true
+    let index = this.free.findIndex(range => range.start > start)
+    if (index === -1) index = this.free.length
+    this.free.splice(index, 0, { start, count })
+    // Merge with the neighbours.
+    const next = this.free[index + 1]
+    if (next !== undefined && start + count === next.start) {
+      this.free[index]!.count += next.count
+      this.free.splice(index + 1, 1)
+    }
+    const previous = this.free[index - 1]
+    if (previous !== undefined && previous.start + previous.count === start) {
+      previous.count += this.free[index]!.count
+      this.free.splice(index, 1)
+    }
+  }
+
+  write(slot: number, xPixels: number, yPixels: number, scale: number, opacity: number): void {
+    const offset = slot * 4
+    const data = this.data
+    if (data[offset] === xPixels && data[offset + 1] === yPixels && data[offset + 2] === scale && data[offset + 3] === opacity) return
+    data[offset] = xPixels
+    data[offset + 1] = yPixels
+    data[offset + 2] = scale
+    data[offset + 3] = opacity
+    this.dirty = true
+  }
+
+  hide(slot: number): void {
+    if (this.data[slot * 4 + 3] === 0) return
+    this.data[slot * 4 + 3] = 0
+    this.dirty = true
+  }
+
+  /** Sends the state to the GPU when a value changed since the last upload. */
+  upload(): void {
+    if (!this.dirty) return
+    this.texture.needsUpdate = true
+    this.dirty = false
+  }
+
+  dispose(): void {
+    this.texture.dispose()
+  }
+
+  protected grow(): void {
+    const previousCapacity = this.capacity
+    this.rows *= 2
+    const data = new Float32Array(this.capacity * 4)
+    data.set(this.data)
+    this.data = data
+    this.texture.dispose()
+    this.texture = this.createTexture()
+    this.node.value = this.texture
+    const last = this.free.at(-1)
+    if (last !== undefined && last.start + last.count === previousCapacity) last.count += this.capacity - previousCapacity
+    else this.free.push({ start: previousCapacity, count: this.capacity - previousCapacity })
+  }
+
+  protected createTexture(): DataTexture {
+    const state = new DataTexture(this.data, SYMBOL_STATE_WIDTH, this.rows, RGBAFormat, FloatType)
+    state.colorSpace = NoColorSpace
+    state.minFilter = NearestFilter
+    state.magFilter = NearestFilter
+    state.generateMipmaps = false
+    state.flipY = false
+    state.name = 'MapStyleSymbolState'
+    state.needsUpdate = true
+    return state
+  }
+}
+
+/** Per-object value of `symbolSlotBase`: the first state slot of the tile the mesh draws. */
+export interface SymbolMeshUserData {
+  symbolSlotBase?: number
+}
+
+function linearColor(name: string) {
+  const color = attribute<'vec4'>(name, 'vec4')
+  return vec4(sRGBTransferEOTF(color.rgb) as unknown as Node<'vec3'>, color.a)
+}
+
+/**
+ * The material of every label mesh of one style source: each glyph corner is moved to its label's anchor on the
+ * screen (from the state texture) at the label's scale, so the CPU never touches vertices after a tile loads. SDF text
+ * with a halo, as the draped text. Drawn in the scene pass without depth test, over the terrain, so the atmosphere
+ * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
+ * so labels keep their style colours under the exposure.
+ */
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }): MeshBasicNodeMaterial {
+  const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
+  material.name = 'MapStyleSymbols'
+  const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
+  const slotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolSlotBase ?? 0) as unknown as Node<'float'>
+  const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
+
+  const slot = int(attribute<'float'>('labelIndex', 'float').add(slotBase))
+  const width = int(SYMBOL_STATE_WIDTH)
+  const labelState = textureLoad(state.node as never, ivec2(slot.mod(width), slot.div(width)), 0) as unknown as Node<'vec4'>
+  const corner = attribute<'vec3'>('position', 'vec3').xy
+  const pixels = labelState.xy.add(corner.mul(labelState.z))
+  const ndc = vec2(pixels.x.div(viewport.x).mul(2).sub(1), float(1).sub(pixels.y.div(viewport.y).mul(2)))
+  // Hidden labels collapse outside the clip volume.
+  material.vertexNode = vec4(select(labelState.w.greaterThan(0), ndc, vec2(4, 4)), 0, 1)
+
+  const opacity = varying(labelState.w)
+  const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(labelState.z, float(1e-3)).mul(8))), float(0.05)))
+  material.colorNode = Fn(() => {
+    const distance = (atlas.node.sample(attribute<'vec2'>('atlasUv', 'vec2').div(atlas.size)) as unknown as Node<'vec4'>).r
+    const smoothing = max(fwidth(distance).mul(0.7), float(1 / 255))
+    const edge = float(GLYPH_EDGE)
+    const fill = linearColor('fillColor')
+    const halo = linearColor('haloColor')
+    const fillAlpha = fill.a.mul(smoothstep(edge.sub(smoothing), edge.add(smoothing), distance))
+    const haloAlpha = halo.a.mul(smoothstep(haloEdge.sub(smoothing), haloEdge.add(smoothing), distance)).mul(fillAlpha.oneMinus())
+    const alpha = fillAlpha.add(haloAlpha)
+    const rgb = fill.rgb.mul(fillAlpha).add(halo.rgb.mul(haloAlpha)).div(max(alpha, float(1e-4)))
+    return vec4(rgb.mul(brightness), alpha.mul(opacity))
+  })()
+  return material
+}
+
+/** The GPU mesh of one tile's labels. Positions hold each glyph corner around its anchor; the material places it. */
+export function createSymbolTileMesh(symbols: SymbolMesh, material: MeshBasicNodeMaterial): Mesh {
+  const geometry = new BufferGeometry()
+  const vertexCount = symbols.labelIndices.length
+  const positions = new Float32Array(vertexCount * 3)
+  for (let index = 0; index < vertexCount; index++) {
+    positions[index * 3] = symbols.corners[index * 2]!
+    positions[index * 3 + 1] = symbols.corners[index * 2 + 1]!
+  }
+  geometry.setAttribute('position', new BufferAttribute(positions, 3))
+  geometry.setAttribute('atlasUv', new BufferAttribute(symbols.uvs, 2))
+  geometry.setAttribute('labelIndex', new BufferAttribute(symbols.labelIndices, 1))
+  geometry.setAttribute('fillColor', new BufferAttribute(symbols.colors, 4, true))
+  geometry.setAttribute('haloColor', new BufferAttribute(symbols.haloColors, 4, true))
+  geometry.setAttribute('haloWidth', new BufferAttribute(symbols.haloWidths, 1))
+  geometry.setIndex(new BufferAttribute(symbols.indices, 1))
+  const mesh = new Mesh(geometry, material)
+  mesh.name = 'MapStyleSymbolTile'
+  mesh.frustumCulled = false
+  mesh.matrixAutoUpdate = false
+  mesh.renderOrder = 1_000_000
+  // Screen-space quads: never a raycast hit (terrain queries raycast the scene graph).
+  mesh.raycast = () => {}
+  return mesh
+}

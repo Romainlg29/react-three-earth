@@ -3,7 +3,7 @@ name: map-styles
 description: >
   Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
-  fonts, sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
+  fonts, labels facing the viewer or draped (symbols, symbolFadeDurationSeconds), sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
   updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
   setFilter, addLayer, setStyle diff, StyleLayer), feature-state for hover and selection, global-state,
   transformRequest and addProtocol, and redrawing after tile data changed on the server with invalidate(bounds).
@@ -17,6 +17,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyleOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyle.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
@@ -34,7 +35,8 @@ layer and drapes on terrain.
 
 `MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles
 (fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
-on the GPU. Labels lie flat on the ground.
+on the GPU. Point labels (place names) face the viewer at a constant size above the terrain, collide across the
+whole screen and fade, as in MapLibre; line labels (road names) lie on the ground.
 
 ## Setup
 
@@ -92,6 +94,32 @@ export function OwnStyle({ token }: { token: string }) {
 - `requestHeaders` go with the style, TileJSON, tile and glyph requests.
 - `localFontFamily` draws labels when the style has no `glyphs` URL or the server lacks a glyph.
 - `maximumZoom` (default 20): deepest zoom terrain is textured at; past the data's maximum, tiles overzoom.
+
+### Labels facing the viewer or on the ground: `symbols`
+
+```tsx
+import { Imagery, MapStyleSource } from 'react-three-earth/react'
+
+export function GroundLabels() {
+  return (
+    <Imagery>
+      <MapStyleSource url="https://demotiles.maplibre.org/style.json" symbols="draped" symbolFadeDurationSeconds={0} />
+    </Imagery>
+  )
+}
+```
+
+- `symbols="screen"` (default): point-placed labels stand upright on the screen at their `text-size`, readable at
+  any pitch, a little smaller towards the horizon (as MapLibre's perspective ratio). They are placed together on
+  the whole screen: higher style layers first, then `symbol-sort-key`, then labels already showing, so the same
+  label never shows twice where tiles of two zooms meet. `text-allow-overlap` and `text-ignore-placement` apply.
+  They stand on the terrain as drawn, go behind the globe's horizon, and hide while the view morphs between the
+  globe and the flat map.
+- `symbols="draped"`: every label is drawn into the terrain's texture, flat on the ground, colliding only within
+  its tile.
+- `symbolFadeDurationSeconds` (default 0.3): how long a label takes to fade in or out; 0 switches at once.
+- `earth.terrain.getScreenLabels()` lists the labels on the screen this frame: text, anchor, collision box,
+  opacity. Use it in tests, or to find which label is under the pointer.
 
 ### Change the style at runtime
 
@@ -399,7 +427,8 @@ symbols come later). Labels still draw.
 ### MEDIUM: Unsupported layers
 
 Raster, hillshade and heatmap layers are skipped with one console warning listing them. `fill-extrusion`
-draws flat; labels do not collide across tiles. A layer of a type MapLibre does not define is drawn by the
+draws flat. Line labels (road names) stay on the ground and collide only within their terrain tile;
+`text-variable-anchor` uses its first anchor. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
 ## Completion
@@ -411,4 +440,6 @@ plugin that registers it (`write-a-plugin`); without one, it is skipped with a w
 - `source.getStyle()` shows the change; `source.getFeatureState(feature)` returns what was set.
 - The console shows no `MapStyleSource:` error; a warning lists skipped layers, if any. A sprite that cannot
   load warns once, naming its URL.
+- `earth.inspect().terrain.symbols` counts the labels facing the viewer: `labelsShown`, `labelsCollided`, and
+  `elevationsPending` back to 0 once each stands on the terrain. It is null with `symbols="draped"`.
 - `source.hasImage('name')` is true for sprite images once the style has loaded.

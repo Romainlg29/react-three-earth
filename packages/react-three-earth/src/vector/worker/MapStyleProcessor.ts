@@ -18,6 +18,7 @@ import {
   type TextSection,
 } from './labels.js'
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
+import { SymbolBuilder, symbolMeshByteLength } from './symbols.js'
 import { applyStyleCommand, copyStyleDocument, type StyleDocument } from './styleDocument.js'
 import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
 import { StyleImages, type ImageDecoder } from './sprites.js'
@@ -495,6 +496,7 @@ export class MapStyleProcessor {
     const symbols: SymbolCandidate[] = []
     const uses: FeatureStateUse = { colorKeys: new Set(), rebuildKeys: new Set() }
     const customBuilders: CustomLayerBuilder[] = []
+    if (request.symbols === true) return this.processSymbolTile(tile, request, empty, signal)
     for (const layer of layers) {
       if (layer.source !== sourceId || layer.type === 'background' || !layer.isVisibleAtZoom(zoom)) continue
       const sourceLayer = layer.sourceLayer === undefined ? undefined : tile.layers[layer.sourceLayer]
@@ -539,6 +541,97 @@ export class MapStyleProcessor {
       rebuildFeatureKeys: [...uses.rebuildKeys],
       byteLength,
     }
+  }
+
+  /**
+   * The labels of a tile that face the viewer (`screenSymbols`): point-placed text, laid out once around its
+   * anchor. Collision is left to the main thread, which sees every tile on the screen.
+   */
+  protected async processSymbolTile(tile: VectorTile, request: TileRequest, empty: TileBucket, signal?: AbortSignal): Promise<TileBucket> {
+    const { sourceId, zoom } = request
+    const layers = this.layers
+    const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
+    const symbols: SymbolCandidate[] = []
+    const rebuildKeys = new Set<string>()
+    for (const layer of layers) {
+      if (layer.source !== sourceId || layer.type !== 'symbol' || layer.custom !== null || !layer.isVisibleAtZoom(zoom)) continue
+      const sourceLayer = layer.sourceLayer === undefined ? undefined : tile.layers[layer.sourceLayer]
+      if (sourceLayer === undefined) continue
+      const factor = TILE_EXTENT / sourceLayer.extent
+      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layer.sourceLayer!]
+      for (let index = 0; index < sourceLayer.length; index++) {
+        const vectorFeature = sourceLayer.feature(index)
+        const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
+        const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
+        if (!layer.accepts(zoom, feature)) continue
+        if (layer.evaluate<string>('layout', 'symbol-placement', zoom, feature) !== 'point') continue
+        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, layer.sourceLayer, id)
+        const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
+        // Text paint is baked in the tile: a state change processes it again.
+        if (key !== undefined) rebuildKeys.add(key)
+        const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, scaleGeometry(vectorFeature.loadGeometry(), factor), zoom, symbols.length)
+        if (candidate !== null) symbols.push(candidate)
+      }
+    }
+    if (symbols.length === 0) return empty
+    await this.loadGlyphs(symbols)
+    signal?.throwIfAborted()
+    const builder = new SymbolBuilder()
+    const getGlyph = (fontStack: string, codePoint: number) => this.glyphs.get(fontStack, codePoint)
+    for (const symbol of symbols) {
+      const { layer, feature, state } = symbol
+      const anchor = representativePoint(symbol.type, symbol.geometry)
+      if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
+      const opacity = layer.evaluate<number>('paint', 'text-opacity', zoom, feature, state)
+      const color = layer.evaluateColor('text-color', zoom, feature, opacity, state)
+      const haloColor = toRgba(layer.evaluate<Color>('paint', 'text-halo-color', zoom, feature, state), opacity)
+      if (color[3] === 0 && haloColor[3] === 0) continue
+      const shaped = shapeText(
+        symbol.sections,
+        {
+          maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
+          lineHeightEms: layer.evaluate<number>('layout', 'text-line-height', zoom, feature),
+          letterSpacingEms: layer.evaluate<number>('layout', 'text-letter-spacing', zoom, feature),
+          anchor: firstAnchor(layer, zoom, feature),
+          justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
+        },
+        getGlyph,
+      )
+      if (shaped === null) continue
+      const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'text-offset', zoom, feature)
+      builder.add({
+        anchor,
+        shaped,
+        offset: { x: offsetX * 24, y: offsetY * 24 },
+        rotationRadians: (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180,
+        sizePixels: layer.evaluate<number>('layout', 'text-size', zoom, feature),
+        nextZoomSizePixels: layer.evaluate<number>('layout', 'text-size', zoom + 1, feature),
+        paddingPixels: layer.evaluate<number>('layout', 'text-padding', zoom, feature),
+        allowOverlap: layer.evaluate<boolean>('layout', 'text-allow-overlap', zoom, feature),
+        ignorePlacement: layer.evaluate<boolean>('layout', 'text-ignore-placement', zoom, feature),
+        layerIndex: layer.index,
+        sortKey: symbol.sortKey,
+        color,
+        haloColor,
+        haloWidthPixels: layer.evaluate<number>('paint', 'text-halo-width', zoom, feature, state),
+        key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}`,
+      })
+    }
+    const mesh = builder.build()
+    return { ...empty, symbols: mesh, rebuildFeatureKeys: [...rebuildKeys], byteLength: symbolMeshByteLength(mesh) }
+  }
+
+  /** Loads the glyphs the candidates' text needs, per font stack. */
+  protected async loadGlyphs(symbols: readonly SymbolCandidate[]): Promise<void> {
+    const codePoints = new Map<string, Set<number>>()
+    for (const { sections } of symbols) {
+      for (const section of sections) {
+        let set = codePoints.get(section.fontStack)
+        if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
+        for (const character of section.text) set.add(character.codePointAt(0)!)
+      }
+    }
+    await Promise.all([...codePoints].map(([fontStack, set]) => this.glyphs.load(fontStack, set)))
   }
 
   /**
@@ -751,15 +844,7 @@ export class MapStyleProcessor {
    */
   protected async layoutLabels(symbols: SymbolCandidate[], zoom: number, unitsPerPixel: number, signal?: AbortSignal) {
     if (symbols.length === 0) return null
-    const codePoints = new Map<string, Set<number>>()
-    for (const { sections } of symbols) {
-      for (const section of sections) {
-        let set = codePoints.get(section.fontStack)
-        if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
-        for (const character of section.text) set.add(character.codePointAt(0)!)
-      }
-    }
-    await Promise.all([...codePoints].map(([fontStack, set]) => this.glyphs.load(fontStack, set)))
+    await this.loadGlyphs(symbols)
     signal?.throwIfAborted()
 
     symbols.sort((a, b) => b.layer.index - a.layer.index || a.sortKey - b.sortKey || a.order - b.order)
@@ -791,6 +876,8 @@ export class MapStyleProcessor {
       }
 
       if (placement === 'point') {
+        // Faces the viewer instead: laid out by `processSymbolTile`.
+        if (this.options.screenSymbols === true) continue
         const anchor = representativePoint(symbol.type, symbol.geometry)
         if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
         const shaped = shapeText(

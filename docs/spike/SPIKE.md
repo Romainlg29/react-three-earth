@@ -200,11 +200,11 @@ How it works:
 - Processed tiles stay in a 32 MB cache of unused buckets (`retainedTileBytes`); raw tiles in the worker LRU.
 
 Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
-warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
-tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
+warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
+tiles (point labels face the viewer and collide on the whole screen, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
-3DTilesRenderer's `preprocessURL` (the style request does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
-has a fixed size on the ground.
+3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
+terrain tiles are textured at different zooms: draped text has a fixed size on the ground.
 
 | Check (fixtures: synthetic water, roads, places; SwiftShader) | Result |
 | --- | --- |
@@ -367,6 +367,59 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 | Unit tests | 18 new: sprite URLs and index, atlas padding, premultiplication, in-place rewrite and slot reuse, fill and line pattern coordinates, cross-tile continuity, processor sprites (@2x, array sprites, fallback, failures, runtime images), redraw scope, missing-image reports (background included), evicted buckets, background stacking, `MapStyleSource` image API |
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
+
+### Screen-space symbols (W6), part 1: point labels facing the viewer
+
+Point-placed labels no longer go into region textures: they stand upright on the screen at their `text-size`
+(`MapStyleSourceOptions.symbols`, default `'screen'`; `'draped'` keeps the old path).
+
+- **Which tiles.** Terrain regions vary in zoom across the screen, so labels taken from them would repeat or
+  vanish at the seams. `CameraTilePyramid.ts` picks symbol tiles from the camera instead, as MapLibre's source
+  cache: a quadtree from zoom 0, culled by the visible cap of the globe (exact nearest-point test, a degree of
+  slack and room for 9 km summits past the horizon) and a frustum sphere, split while a tile's half-edge spans more
+  than 512 px. Tiles reaching behind the camera estimate their size from their distance, floored at the
+  camera's height, so a view along the ground stops at about 80 tiles instead of splitting to zoom 21 underfoot.
+  Capped at 128 tiles. Past the data's maximum zoom a tile overzooms its parent's data. The tiles are reused by
+  W12's extrusions.
+- **Worker.** A symbol tile (`TileRequest.symbols`, cache key prefix `s:`) shapes each point label once, glyph
+  corners in pixels of a 24 px font around the anchor, `text-size` evaluated at the tile's zoom and the next so
+  the main thread interpolates by the camera zoom. Label key: layer id and text.
+- **Each frame** (`ScreenSymbols.update`, from `Earth.update`): anchors are lifted onto the terrain as drawn,
+  projected with double-precision matrices, and culled behind the ellipsoid's horizon. Sizes follow MapLibre's
+  perspective ratio, `clamp(0.5 + 0.5 · centreDistance / w, 0, 4)`. Heights come from `sampleTerrainHeight`
+  (`src/tiles/terrainHeights.ts`): the deepest visible terrain tile, a 16×16 longitude/latitude grid of its
+  triangles built once per geometry, barycentric in ECEF, skirts skipped. A raycast per label was far too slow
+  (88 reads pending after seconds on SwiftShader). Reads are budgeted (512 reads or 1 ms a frame), refreshed every
+  3 s, and clamped at −500 m: coarse terrain cuts a chord kilometres below the curved Earth, which put labels
+  behind the horizon. A label waits for its first height before it shows, so it never jumps.
+- **Placement** (`SymbolPlacement.ts`, pure, unit tested): one 64 px collision grid for the screen, at most every
+  100 ms while the camera moves (positions still follow every frame). Order: higher style layer, then
+  `symbol-sort-key`, then labels already showing (so equal labels do not swap as tiles change), then tile order.
+  A label with the same key as one claimed within 24 px is a duplicate from an overlapping tile and is dropped.
+  Opacity fades over 0.3 s and follows the label from one tile to its replacement; a tile being replaced stays
+  drawn until its successor has loaded.
+- **Drawing.** One mesh per tile, all sharing one TSL material. The vertex shader reads each label's anchor, scale
+  and opacity from a float RGBA texture (16 bytes per label, uploaded only when a value changed), so glyph
+  vertices never change after a tile loads; the tile's first slot is a per-object uniform. SDF fill and halo as
+  draped text. Drawn in the scene pass without depth test, so the atmosphere hazes labels like the ground under
+  them; colours follow `flatMapLuminance` on the map.
+- **Idle.** With the camera still, nothing fading and no height waiting, `update` returns after picking tiles; a
+  pass still runs every second to follow terrain that loaded finer.
+
+Deviations from MapLibre, for later parts: line-placed labels stay draped; `text-variable-anchor` takes its first
+anchor; labels are not hidden behind mountains (only behind the globe); labels hide while the view morphs between
+globe and map; on the flat map only the world copy nearest the camera has labels.
+
+| Check (`?fixtures&map=labels`, 124 towns and places, 40 km, SwiftShader) | Result |
+| --- | --- |
+| Top-down / pitched 60° | 43 / 34 shown, 81 / 90 collided, 0 overlapping boxes, 0 duplicates |
+| Box height at the screen centre | 19.2 px top-down, 20.3 px pitched (16 px text + padding) |
+| WebGL2, StrictMode, flat map, atmosphere on | same placement, no errors |
+| Placement | 0.2 ms for 124 labels (2.4 ms on the first, with JIT warm-up) |
+| `symbols: 'draped'` | no screen labels, labels drawn on the ground |
+
+Frame times on phones are not measured yet: SwiftShader proves correctness only. Per frame the CPU work is one
+projection per label of the drawn tiles and one 4-float write per changed label; the GPU draws one mesh per tile.
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
