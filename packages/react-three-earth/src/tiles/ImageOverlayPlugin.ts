@@ -4,7 +4,9 @@ import { ImageOverlayPlugin as ImageOverlayPluginBase } from '3d-tiles-renderer/
 import { Mesh, type Color, type Object3D, type Texture } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { DrapedLayerRegistry, RegisteredDrapedLayer } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import { DrapedLayerOverlay } from './imagery/DrapedLayerOverlay.js'
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
 import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
@@ -55,6 +57,12 @@ interface UpstreamInternals {
 const upstream = ImageOverlayPluginBase.prototype as unknown as UpstreamInternals
 
 /**
+ * Draped layers draw above every imagery overlay: their order starts here, far above what imagery layers reach
+ * (they count up from 0 by one per overlay added).
+ */
+const DRAPED_LAYER_ORDER_START = 1_000_000_000
+
+/**
  * 3DTilesRenderer's `ImageOverlayPlugin`, for `WebGPURenderer`:
  *
  * - The GLSL `onBeforeCompile` material patch is replaced by a TSL `colorNode`.
@@ -68,6 +76,11 @@ const upstream = ImageOverlayPluginBase.prototype as unknown as UpstreamInternal
 export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   declare meshParams: WeakMap<Object3D, OverlayParams>
   declare tiles: { dispatchEvent(event: { type: string }): void } | null
+  /** Upstream's per-overlay state; only `order` is read here. */
+  declare overlayInfo: Map<object, { order: number }>
+  declare overlays: object[]
+  /** Upstream's job queue, null until `init`. */
+  declare processQueue: object | null
   /** Draws composite overlay textures on the GPU. Shared by every GPU-composed overlay of this plugin. */
   readonly compositor: ImageryCompositor
   /** Main-thread imagery work, per frame and in total. */
@@ -111,7 +124,50 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
     for (const overlay of this.styleLayerOverlays) overlay.setStyleLayerTypes(registry)
   }
 
+  protected drapedLayers: DrapedLayerRegistry | null = null
+  protected unsubscribeDrapedLayers: (() => void) | null = null
+  protected readonly drapedLayerOverlays = new Map<RegisteredDrapedLayer, DrapedLayerOverlay>()
+
+  /** Draws the draped layers plugins register (`earth.drapedLayers`) above every imagery overlay, now and later. */
+  setDrapedLayers(registry: DrapedLayerRegistry | null): void {
+    if (this.drapedLayers === registry) return
+    this.unsubscribeDrapedLayers?.()
+    this.unsubscribeDrapedLayers = null
+    this.drapedLayers = registry
+    if (registry !== null) this.unsubscribeDrapedLayers = registry.subscribe(() => this.syncDrapedLayers())
+    this.syncDrapedLayers()
+  }
+
+  /** The overlays drawing draped layers, bottom to top. */
+  get drapedOverlays(): readonly DrapedLayerOverlay[] {
+    return [...this.drapedLayerOverlays.values()]
+  }
+
+  protected syncDrapedLayers(): void {
+    const layers = new Set(this.drapedLayers?.values() ?? [])
+    for (const [layer, overlay] of this.drapedLayerOverlays) {
+      if (layers.has(layer)) continue
+      this.drapedLayerOverlays.delete(layer)
+      this.deleteOverlay(overlay as never)
+      overlay.dispose()
+    }
+    for (const layer of layers) {
+      if (this.drapedLayerOverlays.has(layer)) continue
+      const overlay = new DrapedLayerOverlay(layer)
+      this.drapedLayerOverlays.set(layer, overlay)
+      this.addOverlay(overlay as never, DRAPED_LAYER_ORDER_START + layer.sequence)
+    }
+  }
+
   override addOverlay(overlay: Parameters<ImageOverlayPluginBase['addOverlay']>[0], order?: number): void {
+    // Imagery counts up below the draped layers, whenever it is added.
+    if (order === undefined && !(overlay instanceof DrapedLayerOverlay)) {
+      order = 0
+      for (const other of this.overlays) {
+        const otherOrder = this.overlayInfo.get(other)?.order ?? 0
+        if (otherOrder < DRAPED_LAYER_ORDER_START) order = Math.max(order, otherOrder + 1)
+      }
+    }
     if (isGpuComposedOverlay(overlay)) overlay.compositor = this.compositor
     if (isStyleLayerTypeConsumer(overlay)) {
       this.styleLayerOverlays.add(overlay)
@@ -121,13 +177,22 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   }
 
   override deleteOverlay(overlay: Parameters<ImageOverlayPluginBase['deleteOverlay']>[0]): void {
-    upstream.deleteOverlay.call(this, overlay)
+    if (this.processQueue === null) {
+      // Before the plugin joined a tiles renderer, upstream's clean-up would throw on its missing queue: only unlist it.
+      const index = this.overlays.indexOf(overlay)
+      if (index !== -1) this.overlays.splice(index, 1)
+      this.overlayInfo.delete(overlay)
+    } else upstream.deleteOverlay.call(this, overlay)
     if (isStyleLayerTypeConsumer(overlay) && this.styleLayerOverlays.delete(overlay)) overlay.setStyleLayerTypes(null)
     if (isGpuComposedOverlay(overlay) && overlay.compositor === this.compositor) overlay.compositor = null
   }
 
   dispose(): void {
+    this.unsubscribeDrapedLayers?.()
+    this.unsubscribeDrapedLayers = null
     upstream.dispose.call(this)
+    for (const overlay of this.drapedLayerOverlays.values()) overlay.dispose()
+    this.drapedLayerOverlays.clear()
     this.compositor.dispose()
   }
 

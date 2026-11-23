@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber/extension'
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { Earth as EarthImpl } from '../core/Earth.js'
@@ -7,6 +7,7 @@ import type { MapViewChange } from '../core/EarthCamera.js'
 import type { EarthPlugin } from '../plugins/plugin.js'
 import type { ViewMode } from '../view/ViewMorph.js'
 import { EarthContext } from './context.js'
+import { EarthRenderPipelineHost, RenderPipelineClaimContext } from './RenderPipeline.js'
 
 export interface EarthProps {
   /** Drives the sun, moon and stars. Default: now, fixed at mount. */
@@ -106,6 +107,16 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, p
 
   useLayoutEffect(() => () => earth.dispose(), [earth])
 
+  // Without an <Atmosphere> in charge of the render pipeline, render passes still need one: host it here,
+  // only while passes are registered (otherwise R3F renders the scene directly, as before).
+  const [renderPipelineClaims, setRenderPipelineClaims] = useState(0)
+  const claimRenderPipeline = useCallback(() => {
+    setRenderPipelineClaims(count => count + 1)
+    return () => setRenderPipelineClaims(count => count - 1)
+  }, [])
+  const subscribeRenderPasses = useCallback((listener: () => void) => earth.renderPasses.subscribe(listener), [earth])
+  const renderPassCount = useSyncExternalStore(subscribeRenderPasses, () => earth.renderPasses.size)
+
   useFrame(
     ({ camera, invalidate }, deltaSeconds) => {
       // With frameloop="demand", a morph or a camera animation still gets every frame it needs.
@@ -116,7 +127,10 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, p
 
   return (
     <EarthContext value={earth}>
-      {children}
+      <RenderPipelineClaimContext value={claimRenderPipeline}>
+        {children}
+        {renderPipelineClaims === 0 && renderPassCount > 0 ? <EarthRenderPipelineHost atmosphere={null} /> : null}
+      </RenderPipelineClaimContext>
     </EarthContext>
   )
 }

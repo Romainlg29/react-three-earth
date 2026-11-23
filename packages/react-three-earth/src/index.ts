@@ -15,6 +15,32 @@ export {
   type StyleLayerWorkerModule,
 } from './plugins/styleLayerTypes.js'
 export type * from './plugins/pluginWorker.js'
+export {
+  RenderPassRegistry,
+  RENDER_PASS_STAGES,
+  type RenderPassDefinition,
+  type RenderPassInputs,
+  type RenderPassInspection,
+  type RenderPassResource,
+  type RenderPassStage,
+  type RenderPassTiming,
+} from './plugins/renderPasses.js'
+export {
+  DrapedLayerRegistry,
+  RegisteredDrapedLayer,
+  type DrapedLayerDefinition,
+  type DrapedLayerDrawInputs,
+  type DrapedLayerHandle,
+  type DrapedLayerInspection,
+  type DrapedLayerRegion,
+} from './plugins/drapedLayers.js'
+export {
+  EarthRenderPipeline,
+  type EarthRenderPipelineAntialiasing,
+  type EarthRenderPipelineInputs,
+  type EarthRenderPipelineOptions,
+  type EarthRenderPipelineOutput,
+} from './core/EarthRenderPipeline.js'
 export { GeographicAnchor, type GeographicAnchorOptions } from './core/GeographicAnchor.js'
 export { createFlatMapEmissionNode, createLocalCameraPositionNode, depthFromViewZ, getLocalCameraPosition } from './core/sceneNodes.js'
 export {
@@ -90,6 +116,7 @@ export { QuantizedMeshVersionPlugin } from './tiles/QuantizedMeshVersionPlugin.j
 export { ImageryCompositor, type CompositeDraw, type CompositionPriority, type CompositionRenderer } from './tiles/imagery/ImageryCompositor.js'
 export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/ImageryStatistics.js'
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'
+export { DrapedLayerOverlay } from './tiles/imagery/DrapedLayerOverlay.js'
 export { TileMaterialReplacementPlugin, type MaterialFactory } from './tiles/TileMaterialReplacementPlugin.js'
 export {
   placeCameraAround,

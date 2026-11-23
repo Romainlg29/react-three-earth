@@ -1,6 +1,7 @@
 import type { Camera, Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
@@ -115,6 +116,11 @@ export class Terrain implements AttributionProvider {
     this.overlays.setStyleLayerTypes(registry)
   }
 
+  /** The draped layers (plugins) it draws above its imagery. `Earth.setTerrain` calls it. */
+  setDrapedLayers(registry: DrapedLayerRegistry | null): void {
+    this.overlays.setDrapedLayers(registry)
+  }
+
   addImagery(imagery: Imagery): void {
     if (this.imagery.has(imagery)) return
     this.imagery.add(imagery)
@@ -140,7 +146,7 @@ export class Terrain implements AttributionProvider {
     return this.overlays.compositor.pendingCount
   }
 
-  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles), or being redrawn. */
+  /** Imagery textures waiting to be redrawn after an `invalidate` (vector map styles, draped layers), or being redrawn. */
   get imageryRecompositionsPending(): number {
     let count = 0
     for (const imagery of this.imagery) {
@@ -149,6 +155,7 @@ export class Terrain implements AttributionProvider {
         if (typeof pending === 'number') count += pending
       }
     }
+    for (const overlay of this.overlays.drapedOverlays) count += overlay.recompositionsPending
     return count
   }
 

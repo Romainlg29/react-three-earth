@@ -79,20 +79,22 @@ export function wrapFadeNodeMaterial(
   let featureFade = 0
 
   // Use the same interface used for non-node materials:
-  material.defines = {
-    ...material.defines,
-
-    get FEATURE_FADE() {
+  // Copies the descriptors, not the values, so the overlay wrapper's accessor survives whichever wraps first
+  // (see wrapOverlaysNodeMaterial).
+  material.defines = Object.defineProperties({}, Object.getOwnPropertyDescriptors(material.defines ?? {}))
+  Object.defineProperty(material.defines, 'FEATURE_FADE', {
+    configurable: true,
+    enumerable: true,
+    get() {
       return featureFade
     },
-
-    set FEATURE_FADE(value: number) {
+    set(value: number) {
       if (value !== featureFade) {
         featureFade = value
         material.outputNode = value === 1 ? outputNode : null
       }
-    }
-  }
+    },
+  })
 
   return params
 }

@@ -154,21 +154,30 @@ export function wrapOverlaysNodeMaterial(
 
   let layerCount = 0
 
-  // Use the same interface used for non-node materials:
-  material.defines = {
-    ...material.defines,
+  // The colour node of each layer count is a parameterless `Fn`, so three's node cache key does not tell them
+  // apart: without the count in the program key, a layer added after the first compile (an imagery layer or a
+  // plugin's draped layer added at runtime) would keep the old shader.
+  const baseProgramCacheKey = material.customProgramCacheKey.bind(material)
+  material.customProgramCacheKey = () => `${baseProgramCacheKey()}:overlayLayers${layerCount}`
 
-    get LAYER_COUNT() {
+  // Use the same interface used for non-node materials:
+  // Copies the descriptors, not the values, so the fade wrapper's accessor survives whichever wraps first.
+  // Spreading would turn the other accessor into a plain value whose setter never runs again (for overlays:
+  // a layer added after the fade wrapper would never reach the shader).
+  material.defines = Object.defineProperties({}, Object.getOwnPropertyDescriptors(material.defines ?? {}))
+  Object.defineProperty(material.defines, 'LAYER_COUNT', {
+    configurable: true,
+    enumerable: true,
+    get() {
       return layerCount
     },
-
-    set LAYER_COUNT(value: number) {
+    set(value: number) {
       if (value !== layerCount) {
         layerCount = value
         material.colorNode = getColorNode(value)
       }
-    }
-  }
+    },
+  })
 
   return params
 }

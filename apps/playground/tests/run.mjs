@@ -894,6 +894,72 @@ async function styleLayerTypes(name, query, { late = false } = {}) {
   results.push(result)
 }
 
+/** Brightness of the corners against a point above the centre that the vignette leaves alone, and magenta glow pixels. */
+const EFFECT_PIXELS = `
+  const brightness = (x0, y0, size) => {
+    let sum = 0
+    for (let y = y0; y < y0 + size; y++) for (let x = x0; x < x0 + size; x++) { const i = (y * width + x) * 4; sum += px[i] + px[i + 1] + px[i + 2] }
+    return sum / (size * size * 3)
+  }
+  const corners = (brightness(0, 0, 40) + brightness(width - 40, 0, 40) + brightness(0, height - 80, 40) + brightness(width - 40, height - 80, 40)) / 4
+  const reference = brightness(width / 2 + 40, 130, 40)
+  let magenta = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (r > 110 && b > 80 && r > g + 60 && b > g + 40) magenta++
+  }
+  const sample = ([x, y]) => { const i = (Math.round(y) * width + Math.round(x)) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  return { corners: +corners.toFixed(2), reference: +reference.toFixed(2), cornerRatio: +(corners / Math.max(reference, 1)).toFixed(3), magentaShare: +(magenta / (px.length / 4)).toFixed(4), samples: window.__effectProbe.points.map(sample) }
+`
+
+/**
+ * The render pass and draped layer examples (`src/effects/`, `?effects=late`): a vignette in the display stage
+ * and a highlight lift in the radiance stage, and a selection glow draped above the imagery. The plugins are
+ * installed at runtime, the selection moves, then they are removed: the output rebuilds and the glow redraws
+ * only around the old and new place.
+ */
+async function renderPassesAndDrapedLayers(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&effects=late&atmosphereBudget=Infinity&date=2026-11-22T18:00:00Z&camera=-90,0,0,20000,0,-90${query}`)
+  const settle = async () => {
+    await page.waitForFunction(() => window.earth?.inspect().loaded === true && (window.earth.inspect().atmosphere?.ready ?? true) && window.earth.inspect().terrain.imageryRecompositionsPending === 0 && window.earth.inspect().terrain.imageryCompositionsPending === 0, null, { timeout: 240_000, polling: 250 })
+    await page.waitForTimeout(2500)
+  }
+  const first = { longitudeDegrees: -90, latitudeDegrees: 0 }
+  const second = { longitudeDegrees: -89.95, latitudeDegrees: 0.01 }
+  const measure = async label => {
+    await page.evaluate(([first, second]) => {
+      const at = position => { const projected = window.earth.project({ ...position, heightMeters: window.earth.queryTerrainElevation(position) ?? 0 }); return [projected.xPixels, projected.yPixels] }
+      window.__effectProbe = { points: [at(first), at(second)] }
+    }, [first, second])
+    const png = await page.screenshot()
+    writeFileSync(new URL(`effects-${name.replaceAll(' ', '-')}-${label}.png`, OUT), png)
+    const stats = await analyse(page, png, EFFECT_PIXELS)
+    const inspection = await page.evaluate(() => { const i = window.earth.inspect(); return { renderPasses: i.renderPasses, drapedLayers: i.drapedLayers } })
+    return { ...stats, ...inspection }
+  }
+  await settle()
+  const result = { check: `render passes and draped layers, ${name}`, errors }
+  result.plain = await measure('plain')
+  await page.evaluate(() => { window.earth.addPlugin(window.effectPlugins.vignette); window.earth.addPlugin(window.effectPlugins.selectionGlow) })
+  await settle()
+  result.installed = await measure('installed')
+  // Selecting redraws only the regions around the place: count them as they are marked.
+  result.pendingAfterSelect = await page.evaluate(first => {
+    window.effectPlugins.selectionGlow.select(first)
+    return new Promise(resolve => requestAnimationFrame(() => resolve(window.earth.inspect().terrain.imageryRecompositionsPending)))
+  }, first)
+  await settle()
+  result.selected = await measure('selected')
+  await page.evaluate(second => window.effectPlugins.selectionGlow.select(second), second)
+  await settle()
+  result.moved = await measure('moved')
+  await page.evaluate(() => { window.earth.removePlugin(window.effectPlugins.selectionGlow); window.earth.removePlugin(window.effectPlugins.vignette) })
+  await settle()
+  result.removed = await measure('removed')
+  await page.close()
+  results.push(result)
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -936,6 +1002,11 @@ try {
     await styleLayerTypes('webgpu', '')
     await styleLayerTypes('webgl2', '&webgl')
     await styleLayerTypes('registered late', '', { late: true })
+  }
+  if (!only || only === 'effects') {
+    await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
+    await renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')
+    await renderPassesAndDrapedLayers('atmosphere on', '')
   }
 } finally {
   await browser.close()
