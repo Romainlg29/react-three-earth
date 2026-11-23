@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Earth } from '../core/Earth.js'
 import type { EarthCamera } from '../core/EarthCamera.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { EarthPlugin } from '../plugins/plugin.js'
 import { useEarth } from './context.js'
 
 /** Runs every frame with the vanilla `Earth`. Never causes a React render. */
@@ -59,4 +60,20 @@ export function useEarthEvent<T extends EarthEventType>(type: T, handler: (event
     earth.addEventListener(type, listener as never)
     return () => earth.removeEventListener(type, listener as never)
   }, [earth, type])
+}
+
+/**
+ * Installs a plugin on the nearest `<Earth>` while the component is mounted, and removes it on unmount. Pass
+ * the same plugin object across renders (create it outside render or with `useState`), or it is reinstalled.
+ * For plugins the whole map uses, prefer `<Earth plugins>`.
+ * @example
+ * const [plugin] = useState(() => measurementTools())
+ * usePlugin(plugin)
+ */
+export function usePlugin(plugin: EarthPlugin): void {
+  const earth = useEarth()
+  useLayoutEffect(() => {
+    earth.addPlugin(plugin)
+    return () => earth.removePlugin(plugin)
+  }, [earth, plugin])
 }

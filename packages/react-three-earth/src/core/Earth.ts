@@ -10,6 +10,9 @@ import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type Earth
 import type { Imagery } from './Imagery.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
+import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnchor.js'
+import type { EarthPlugin } from '../plugins/plugin.js'
+import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
 
 /** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
 const CLICK_TOLERANCE_PIXELS = 3
@@ -73,6 +76,8 @@ export interface EarthInspection {
     generationFrames: number | null
     loadedFromCache: boolean
   } | null
+  /** Installed plugins by name, in install order. */
+  plugins: Record<string, PluginInspection>
 }
 
 function inspectImagery(terrain: Terrain) {
@@ -101,6 +106,10 @@ export class Earth extends Group<EarthEventMap> {
   readonly camera = new EarthCamera(this)
   /** Main-thread time of the last `update()`, in milliseconds. */
   lastUpdateMilliseconds = 0
+  /** The installed plugins, in install order. Add and remove them with `addPlugin` and `removePlugin`. */
+  readonly plugins: PluginManager = new PluginManager(this)
+  /** Anchors made by `createGeographicAnchor`, placed for the morph every frame. */
+  protected readonly anchors = new Set<GeographicAnchor>()
   protected readonly events = new EarthEventTracker()
   protected readonly cameraMotion = new CameraMotionDetector()
   protected readonly viewportSize = new Vector2()
@@ -208,6 +217,37 @@ export class Earth extends Group<EarthEventMap> {
     renderer.highPrecision = true
   }
 
+  /**
+   * Installs a plugin: it registers what it adds through a `PluginContext`, and `removePlugin` undoes all of
+   * it. Throws if a different plugin with the same name is installed, or if the plugin was built for another
+   * plugin API version (`PLUGIN_API_VERSION`). Adding the same plugin twice does nothing.
+   */
+  addPlugin(plugin: EarthPlugin): void {
+    this.plugins.add(plugin)
+  }
+
+  /** Removes a plugin (or the plugin with this name) and undoes everything it registered. */
+  removePlugin(plugin: EarthPlugin | string): void {
+    this.plugins.remove(plugin)
+  }
+
+  /**
+   * An `Object3D` at a geographic position, oriented east-north-up (x east, y north, z up, metres), that the
+   * earth keeps on its spot through the globe-to-map morph, at the map's scale. Add it under the earth
+   * (`earth.add(anchor)`, or `context.addObject(anchor)` in a plugin) and put your objects in it.
+   * `anchor.dispose()` stops the updates and removes it.
+   * @example
+   * const anchor = earth.createGeographicAnchor({ longitudeDegrees: 138.73, latitudeDegrees: 35.36, heightMeters: 3800 })
+   * anchor.add(new Mesh(new SphereGeometry(100), material))
+   * earth.add(anchor)
+   */
+  createGeographicAnchor(position: GeographicPosition, options?: GeographicAnchorOptions): GeographicAnchor {
+    const anchor = new GeographicAnchor(position, options)
+    anchor.update(this.view)
+    this.anchors.add(anchor)
+    return anchor
+  }
+
   setTerrain(terrain: Terrain | null): void {
     if (this.terrain === terrain) return
     if (this.terrain !== null) {
@@ -285,6 +325,7 @@ export class Earth extends Group<EarthEventMap> {
     const animating = this.camera.advanceAnimation(delta)
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.view.updateWorldCopies(camera)
+    this.updateAnchors()
     this.terrain?.update(camera, renderer)
     if (this.atmosphere !== null) {
       // The sky, haze and sunlight belong to the globe: they fade out on the flat map.
@@ -292,10 +333,19 @@ export class Earth extends Group<EarthEventMap> {
       this.atmosphere.update(camera, this.date)
     }
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)
+    const pluginsNeedFrame = this.plugins.update(camera, delta)
     this.dispatchEvent({ type: 'update' })
     this.lastUpdateMilliseconds = performance.now() - now
     // After a move, one more frame tells whether the camera stopped (`moveend`).
-    return morphing || this.view.transitioning || cameraMoved || animating
+    return morphing || this.view.transitioning || cameraMoved || animating || pluginsNeedFrame
+  }
+
+  /** Places the anchors made by `createGeographicAnchor` for this frame's morph. */
+  protected updateAnchors(): void {
+    for (const anchor of this.anchors) {
+      if (anchor.isDisposed) this.anchors.delete(anchor)
+      else anchor.update(this.view)
+    }
   }
 
   /** Fires this frame's `move*`, `load` and `idle` events. Returns true when the camera moved. */
@@ -321,6 +371,7 @@ export class Earth extends Group<EarthEventMap> {
   /** True while terrain tiles or imagery are loading or waiting to be composed, or the atmosphere is generating. */
   protected isLoading(): boolean {
     if (this.terrain?.loading === true) return true
+    if (this.plugins.loading) return true
     // A failed generation leaves the atmosphere off for good: it must not hold `idle` back.
     return this.atmosphere !== null && this.atmosphere.generating && this.atmosphere.context.texturesReady.value !== 1
   }
@@ -396,10 +447,14 @@ export class Earth extends Group<EarthEventMap> {
               generationFrames: this.atmosphere.generationFrames,
               loadedFromCache: this.atmosphere.loadedFromCache,
             },
+      plugins: this.plugins.inspect(),
     }
   }
 
   override dispose(): void {
+    this.plugins.clear()
+    for (const anchor of this.anchors) anchor.dispose()
+    this.anchors.clear()
     this.detachPointerEvents()
     this.camera.stop()
     for (const remove of this.attributionSubscriptions.values()) remove()

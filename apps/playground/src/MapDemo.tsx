@@ -28,6 +28,10 @@ import {
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
 
+import { capsule, smoothUnion, sphere, torus, translate, union } from './sdf/distance'
+import { SdfShape } from './sdf/SdfShape'
+import { sdfShapes } from './sdf/sdfShapes'
+
 const OPENSTREETMAP_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
 const params = new URLSearchParams(location.search)
@@ -54,6 +58,11 @@ const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atm
 const showStatistics = params.get('stats') !== '0'
 // `?markers` adds markers and popups (on the fixture terrain's highest hill with `?fixtures`).
 const showMarkers = params.has('markers')
+// `?sdf` installs the example plugin (src/sdf/) and puts a raymarched shape on the peak, half buried in it.
+const showSdfShapes = params.has('sdf')
+const plugins = showSdfShapes ? [sdfShapes()] : undefined
+// Module scope: each distinct distance function is its own pipeline.
+const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
 // (`?webgl` wins if both are given).
 const forceWebGL = params.has('webgl') || (!params.has('webgpu') && prefersWebGLBackend())
@@ -150,6 +159,15 @@ function Markers() {
   )
 }
 
+/**
+ * The `?sdf` scene: a beacon on the peak (3900 m at -90°, 0° with fixtures, Fuji otherwise), its lower half in
+ * the mountain, and a ring above it.
+ */
+function SdfShapes() {
+  const peak = useFixtures ? { longitudeDegrees: -90, latitudeDegrees: 0, heightMeters: 3900 } : { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 3776 }
+  return <SdfShape position={peak} halfSizeMeters={[480, 480, 1000]} distanceFunction={beacon} color="#ff5a1f" />
+}
+
 /** Plain lights for the atmosphere-off check, faded out on the flat map like the atmosphere's sun. */
 function PlainLights() {
   const [lights] = useState(() => ({ ambient: { current: null as { intensity: number } | null }, sun: { current: null as { intensity: number } | null } }))
@@ -190,7 +208,7 @@ export function MapDemo() {
   return (
     <>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL: forceWebGL, trackTimestamp: showStatistics }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth date={date} view={view}>
+        <Earth date={date} view={view} plugins={plugins}>
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
@@ -207,6 +225,7 @@ export function MapDemo() {
           <EarthControls />
           <AttributionControl />
           {showMarkers ? <Markers /> : null}
+          {showSdfShapes ? <SdfShapes /> : null}
         </Earth>
       </Canvas>
       <button

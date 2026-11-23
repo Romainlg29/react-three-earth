@@ -1,0 +1,238 @@
+---
+name: write-a-plugin
+description: >
+  Use when extending react-three-earth from a package or an app without forking it: writing an EarthPlugin,
+  installing plugins with earth.addPlugin or <Earth plugins>, placing 3D objects at a longitude and latitude
+  that follow the globe-to-map morph (createGeographicAnchor), raymarched signed-distance (SDF) shapes that
+  sort against terrain and take the atmosphere's haze, per-frame plugin code, or reading plugin state from
+  earth.inspect().
+metadata:
+  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes example plugin.'
+  type: framework
+  framework: 'react'
+  library: 'react-three-earth'
+  library_version: '0.0.0'
+sources:
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/plugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/PluginManager.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/GeographicAnchor.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sceneNodes.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Earth.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/hooks.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/sdf/sdfShapes.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/sdf/distance.ts'
+requires:
+  - getting-started
+  - coordinates-and-units
+---
+
+# Write a plugin
+
+Read `getting-started` and `coordinates-and-units` first. A plugin is a plain object with a `name`, the
+`apiVersion` it was built for and an `install(context)` method. Everything it registers through the context
+is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth as it was. The playground's
+`apps/playground/src/sdf/` is a complete example: raymarched signed-distance shapes on the globe.
+
+| You want | Use |
+| --- | --- |
+| Install for the whole map | `<Earth plugins={plugins}>` / `earth.addPlugin(plugin)` |
+| Install from one component | `usePlugin(plugin)` |
+| Code every frame | `context.onUpdate(frame => …)` |
+| A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` |
+| A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
+| Keep colour on the flat map | `createFlatMapEmissionNode(colorNode, earth.view)` |
+| Hold `idle` while loading | `context.trackLoading(promise)`, or an `async install` |
+| Report state to agents | the plugin's `inspect()`, read in `earth.inspect().plugins` |
+
+## Setup
+
+```tsx
+import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { Earth } from 'react-three-earth/react'
+
+const helloPlugin: EarthPlugin = {
+  name: 'hello',
+  apiVersion: PLUGIN_API_VERSION,
+  install(context) {
+    context.onUpdate(({ morph }) => {
+      // Runs at the end of every earth.update, after the camera, the morph, the tiles and the sun.
+      if (morph === 1) console.log('on the flat map')
+    })
+  },
+}
+
+const plugins = [helloPlugin] // module scope: the array is compared by identity
+
+export function Map() {
+  return <Earth plugins={plugins}>{/* <Terrain>, <Imagery>, <Atmosphere>… */}</Earth>
+}
+```
+
+Vanilla: `earth.addPlugin(helloPlugin)`, `earth.removePlugin(helloPlugin)` (or its name). `earth.dispose()`
+removes every plugin, last installed first.
+
+## Core Patterns
+
+### The context
+
+```ts
+import { BoxGeometry, Mesh, MeshStandardMaterial } from 'three'
+import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+
+export function spinningBox(): EarthPlugin {
+  let inspectedTurns = 0
+  return {
+    name: 'spinning-box',
+    apiVersion: PLUGIN_API_VERSION,
+    install(context) {
+      const anchor = context.earth.createGeographicAnchor({ longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 4500 })
+      const box = new Mesh(new BoxGeometry(400, 400, 400), new MeshStandardMaterial({ color: 'orange' }))
+      anchor.add(box)
+      context.addObject(anchor) // removed with the plugin
+      context.onDispose(() => {
+        anchor.dispose() // stop the morph updates
+        box.geometry.dispose()
+        box.material.dispose()
+      })
+      context.addEventListener('moveend', () => context.earth.requestFrame())
+      context.onUpdate(({ deltaSeconds }) => {
+        box.rotation.z += deltaSeconds
+        inspectedTurns = box.rotation.z / (2 * Math.PI)
+        return true // keeps asking for frames under frameloop="demand"
+      })
+    },
+    inspect: () => ({ turns: Math.floor(inspectedTurns) }),
+  }
+}
+```
+
+- Every `context` call is recorded and undone in reverse order on removal; `addObject` also returns a function
+  that removes the object early. Calls after removal throw.
+- `install` may be `async`: until it settles the plugin is `ready: false` and the earth does not fire `idle`. A
+  rejection removes the plugin and fires the earth's `pluginerror` event.
+- `onUpdate` time is measured per plugin (`earth.inspect().plugins[name].updateMilliseconds`). Over 1 ms on
+  average, the plugin gets one console warning.
+- `addPlugin` throws, stating the fix, when the plugin targets another `PLUGIN_API_VERSION` or another plugin
+  with the same name is installed. Adding the same object twice does nothing.
+
+### Objects that follow the flat map
+
+The terrain does not move to a flat position: each vertex is blended in the shader between the globe and the
+map by `earth.view.morph`. A `GeographicAnchor` does the same for an `Object3D`: `earth.update` moves, turns
+and scales it every frame, so its children stay on their spot and keep their size against the terrain. Its
+frame is east-north-up in metres (x east, y north, z up), turned by `headingDegrees` clockwise. On the flat map
+it is drawn on the copy of the world nearest the camera.
+
+```ts
+import { Mesh, MeshStandardMaterial, SphereGeometry } from 'three'
+import type { Earth } from 'react-three-earth'
+
+export function addBall(earth: Earth) {
+  const anchor = earth.createGeographicAnchor({ longitudeDegrees: 2.3522, latitudeDegrees: 48.8566, heightMeters: 500 }, { headingDegrees: 30 })
+  anchor.add(new Mesh(new SphereGeometry(100), new MeshStandardMaterial({ color: 'tomato' })))
+  earth.add(anchor)
+  return () => anchor.dispose() // stops the updates and removes it
+}
+```
+
+On the map the atmosphere's sun fades out, so lit objects turn dark. Add the flat terrain's emission:
+`material.emissiveNode = createFlatMapEmissionNode(material.colorNode, earth.view)` on a node material.
+
+### Raymarched (SDF) shapes
+
+A signed-distance shape is a box mesh around it whose fragment shader sphere-traces the distance function and
+writes the hit's real depth. Then terrain hides it, it hides terrain, and the atmosphere's aerial perspective
+hazes it like everything else. Three rules keep it exact and cheap at planet scale:
+
+1. **Small numbers only.** ECEF positions are millions of metres; 32-bit floats lose about half a metre there.
+   Build the ray from `createLocalCameraPositionNode()` (the camera in the object's frame, computed in 64-bit
+   on the CPU, per object) and `positionLocal`, never from world positions.
+2. **Write depth with `depthFromViewZ(viewZ)`.** It matches the renderer (`reversedDepthBuffer: true`,
+   logarithmic or standard) on WebGPU and the WebGL2 fallback. Compute the view-space hit as
+   `positionView + (modelViewMatrix · vec4(hitLocal − positionLocal, 0)).xyz`, again only small numbers.
+3. **Tight boxes, bounded steps.** Writing depth and discarding turn off early depth rejection, so every box
+   pixel pays the march. Cap the steps, let the hit tolerance grow with range (one pixel's footprint), and
+   share one material per distance function with per-object uniforms (`uniform(…).onObjectUpdate`).
+
+```ts
+import { createLocalCameraPositionNode, depthFromViewZ } from 'react-three-earth'
+import { BackSide } from 'three'
+import { Break, Discard, float, Fn, If, Loop, modelViewMatrix, positionLocal, positionView, vec4 } from 'three/tsl'
+import { MeshStandardNodeMaterial } from 'three/webgpu'
+
+/** A sphere of 100 m traced in a box of 2 × 2 × 2 local units scaled to 100 m (mesh.scale.setScalar(100)). */
+export function createSphereMaterial(): MeshStandardNodeMaterial {
+  const material = new MeshStandardNodeMaterial({ side: BackSide }) // back faces: works with the camera inside
+  const halfSizeMeters = float(100)
+  const camera = createLocalCameraPositionNode().mul(halfSizeMeters)
+  const exit = positionLocal.mul(halfSizeMeters) // where the ray leaves the box
+  const towardsExit = exit.sub(camera)
+  const direction = towardsExit.normalize()
+  const hit = Fn(() => {
+    // March from the camera side of the box (simplified: from the camera, at most 2 box widths).
+    const travelled = towardsExit.length().sub(halfSizeMeters.mul(2)).max(0).toVar()
+    const found = float(0).toVar()
+    Loop(64, () => {
+      const distance = camera.add(direction.mul(travelled)).length().sub(100)
+      If(distance.lessThan(0.05), () => {
+        found.assign(1)
+        Break()
+      })
+      travelled.addAssign(distance)
+    })
+    If(found.equal(0), () => Discard())
+    return camera.add(direction.mul(travelled))
+  })().toVar()
+  const viewHit = positionView.add(modelViewMatrix.mul(vec4(hit.sub(exit).div(halfSizeMeters), 0)).xyz)
+  material.depthNode = depthFromViewZ(viewHit.z)
+  return material
+}
+```
+
+The playground's `src/sdf/sdfShapes.ts` is the full version: box entry by the slab method, per-object size,
+colour and step count, a tetrahedron gradient for `normalNode` (lit by the scene's `AtmosphereLight`), flat-map
+emission, and `src/sdf/distance.ts` with `sphere`, `roundedBox`, `capsule`, `torus`, `union`, `smoothUnion`,
+`subtract`, `translate`. Run it with `?fixtures&sdf`.
+
+### Plugins that offer objects to React
+
+React runs children's effects before their parent's, so a child component can mount before `<Earth plugins>`
+has installed the plugin. Let your plugin's own methods (`plugin.add(shape)`) queue work until `install` runs,
+as `sdfShapes()` does, and find the plugin with `useEarth().plugins.get(name)` in an effect that runs after
+the first commit.
+
+## Common Mistakes
+
+### HIGH: A new plugins array every render
+
+`<Earth plugins={[myPlugin()]}>` creates a new plugin each render: it is removed and installed again, and
+whatever it built is lost. Create plugins at module scope or with `useState(() => myPlugin())`.
+
+### HIGH: World positions in a raymarching shader
+
+`cameraPosition` and `positionWorld` are ECEF metres: rays built from them shimmer by half a metre. Use
+`createLocalCameraPositionNode()` and `positionLocal`.
+
+### HIGH: Placing an object once with `toCartesian`
+
+It stays on the globe while the terrain unrolls into the map. Use `earth.createGeographicAnchor` (or call
+`anchor.update(earth.view)` yourself every frame for a `new GeographicAnchor`).
+
+### MEDIUM: Forgetting `uninstall` work
+
+The context undoes what went through it. Geometries, materials, textures and workers the plugin created
+itself need `context.onDispose` or the plugin's `uninstall`.
+
+### MEDIUM: Heavy work in `onUpdate`
+
+It runs on the main thread every frame, inside the 60 fps budget on a Pixel. Move per-feature work to a
+worker or the GPU, and watch `updateMilliseconds` in `earth.inspect().plugins`.
+
+## Completion
+
+- `earth.inspect().plugins[name]` is listed with `ready: true`, and `earth.removePlugin(name)` leaves no object,
+  listener or per-frame callback behind.
+- Objects stay on their spot through `setView('2d')` and back, and keep their size against the terrain.
+- A depth-writing shape is hidden where it is underground and hazed when far away; the WebGL2 fallback
+  (`forceWebGL`) draws the same image.

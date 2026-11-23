@@ -4,6 +4,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 
 import { Earth as EarthImpl } from '../core/Earth.js'
 import type { MapViewChange } from '../core/EarthCamera.js'
+import type { EarthPlugin } from '../plugins/plugin.js'
 import type { ViewMode } from '../view/ViewMorph.js'
 import { EarthContext } from './context.js'
 
@@ -23,6 +24,14 @@ export interface EarthProps {
    * @example <Earth initialView={{ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 11, pitchDegrees: -60 }}>
    */
   initialView?: MapViewChange
+  /**
+   * Plugins to install (`earth.addPlugin`). Compared by identity: create the array once, outside render or
+   * in a `useMemo`, or every render reinstalls them. Plugins added or removed from the array are installed or
+   * removed. Default: none.
+   * @example const plugins = [sdfShapes()]  // module scope
+   * <Earth plugins={plugins}>…</Earth>
+   */
+  plugins?: readonly EarthPlugin[]
   children?: ReactNode
 }
 
@@ -31,7 +40,7 @@ export interface EarthProps {
  * (ECEF) metres.
  *
   * Everything else (`<Terrain>`, `<Imagery>`, `<Atmosphere>`, `<EarthControls>`) goes inside it. */
-export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, children }: EarthProps) {
+export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, plugins, children }: EarthProps) {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
@@ -68,6 +77,14 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, c
     earth.addEventListener('framerequest', listener)
     return () => earth.removeEventListener('framerequest', listener)
   }, [earth, invalidate])
+
+  useLayoutEffect(() => {
+    if (plugins === undefined || plugins.length === 0) return
+    for (const plugin of plugins) earth.addPlugin(plugin)
+    return () => {
+      for (const plugin of [...plugins].reverse()) earth.removePlugin(plugin)
+    }
+  }, [earth, plugins])
 
   useLayoutEffect(() => () => earth.dispose(), [earth])
 

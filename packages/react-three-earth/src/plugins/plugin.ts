@@ -1,0 +1,81 @@
+import type { Camera, Object3D } from 'three'
+
+import type { Earth } from '../core/Earth.js'
+import type { EarthEventMap, EarthEventType } from '../core/events.js'
+
+/**
+ * The version of the plugin API this react-three-earth implements. Additive changes keep it; a change that
+ * breaks plugins raises it. A plugin states the version it was built against in `apiVersion`.
+ */
+export const PLUGIN_API_VERSION = 1
+
+/**
+ * A package that extends react-three-earth: install it with `earth.addPlugin(plugin)` or
+ * `<Earth plugins={[plugin]}>`. Everything it registers through its `PluginContext` is undone when it is
+ * removed, so `earth.removePlugin(plugin)` leaves the earth as it was.
+ *
+ * @example
+ * const spinner: EarthPlugin = {
+ *   name: 'spinner',
+ *   apiVersion: PLUGIN_API_VERSION,
+ *   install(context) {
+ *     const box = new Mesh(new BoxGeometry(1000, 1000, 1000))
+ *     context.addObject(box)
+ *     context.onUpdate(({ deltaSeconds }) => void (box.rotation.z += deltaSeconds))
+ *   },
+ * }
+ */
+export interface EarthPlugin {
+  /** Unique on an earth, npm-style: `'@acme/sdf-shapes'`. */
+  readonly name: string
+  /** The `PLUGIN_API_VERSION` the plugin was built against. */
+  readonly apiVersion: number
+  /**
+   * Registers everything the plugin adds, through `context`. May return a promise for asynchronous setup
+   * (a texture, a WebAssembly module): the earth counts as loading, and `idle` waits, until it settles. A
+   * rejection removes the plugin and fires the earth's `pluginerror` event.
+   */
+  install(context: PluginContext): void | Promise<void>
+  /** Clean-up beyond what the context undoes on its own, for resources the plugin created itself. */
+  uninstall?(): void
+  /** A JSON-serialisable snapshot for `earth.inspect().plugins[name]`, for agents and devtools. */
+  inspect?(): unknown
+}
+
+/** What `PluginContext.onUpdate` callbacks receive, once per `earth.update`. */
+export interface PluginFrame {
+  readonly earth: Earth
+  readonly camera: Camera
+  /** Time since the last frame. */
+  readonly deltaSeconds: number
+  /** 0 on the globe, 1 on the flat map (`earth.view.morph`). */
+  readonly morph: number
+}
+
+/**
+ * What a plugin registers through. Every call is recorded and undone, in reverse order, when the plugin
+ * is removed.
+ */
+export interface PluginContext {
+  /** The earth the plugin is installed on: camera, view, terrain, atmosphere, events. */
+  readonly earth: Earth
+  /** The `PLUGIN_API_VERSION` of this react-three-earth. */
+  readonly apiVersion: number
+  /**
+   * Runs `callback` at the end of every `earth.update`, after the camera, the morph, the tiles and the sun.
+   * Return true to ask for another frame (hosts that render on demand). Timed per plugin in
+   * `earth.inspect().plugins`.
+   */
+  onUpdate(callback: (frame: PluginFrame) => boolean | void): void
+  /**
+   * Adds an object under the earth, in ECEF metres (place it with `earth.createGeographicAnchor`). Returns
+   * a function that removes it; whatever is left is removed when the plugin is.
+   */
+  addObject(object: Object3D): () => void
+  /** Counts as loading until the promise settles, so `load` and `idle` wait for it. */
+  trackLoading(promise: Promise<unknown>): void
+  /** Listens to an earth event; the listener is removed with the plugin. */
+  addEventListener<T extends EarthEventType>(type: T, listener: (event: EarthEventMap[T] & { type: T; target: Earth }) => void): void
+  /** Runs `callback` when the plugin is removed, after the context's own clean-up steps registered later. */
+  onDispose(callback: () => void): void
+}

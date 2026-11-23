@@ -120,6 +120,31 @@ const expectations = {
       ['pointermove fires with the pointer', r.pointerMoves > 0],
     ]
   },
+  // The example plugin (src/sdf/): a raymarched shape on the fixture peak, half buried.
+  'sdf shapes plugin, near, atmosphere off': r => [
+    ['the plugin shows one shape with one pipeline', r.plugin?.details?.shown === 1 && r.plugin?.details?.pipelines === 1],
+    // Without the written depth, the box's back faces (underground) hide the lower visible part: 0.0006 measured.
+    ['the shape renders, depth written (over 0.085 % orange pixels)', r.orangeShare > 0.00085],
+    ['the terrain hides its buried half', r.orangeBelowGround < 20],
+  ],
+  'sdf shapes plugin, near, atmosphere on': r => [
+    ['lit by the atmosphere: orange at its centre', r.samples[0][0] - r.samples[0][2] > 60],
+    ['no black frame', r.blackShare < 0.05],
+    ['the terrain hides its buried half', r.orangeBelowGround < 20],
+  ],
+  'sdf shapes plugin, far, atmosphere on': r => {
+    const near = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere on')
+    const saturation = sample => sample[0] - sample[2]
+    return [['hazed with distance: less saturated far away than near', near !== undefined && saturation(r.samples[0]) < saturation(near.samples[0]) - 20]]
+  },
+  'sdf shapes plugin, 2d': r => [
+    ['on its spot on the flat map: orange at its projected centre', r.centreVisible && r.samples[0][0] > 180 && r.samples[0][0] - r.samples[0][2] > 100],
+    ['not black on the map (emits its colour)', r.orangeShare > 0.002 && r.blackShare < 0.01],
+  ],
+  'sdf shapes plugin, webgl2': r => {
+    const webgpu = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
+    return [['WebGL2 draws the same shape as WebGPU', webgpu !== undefined && Math.abs(r.orangeShare - webgpu.orangeShare) <= webgpu.orangeShare * 0.25 && r.orangeBelowGround < 20]]
+  },
 }
 
 let failures = 0

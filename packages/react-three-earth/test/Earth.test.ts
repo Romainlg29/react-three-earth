@@ -11,7 +11,7 @@ describe('Earth.inspect', () => {
     expect(inspection).toEqual({ date: '2026-11-22T07:00:00.000Z', updateMilliseconds: 0, terrain: null, imageryLayers: 0,
       camera: null, loaded: false, idle: false,
       view: { mode: '3d', morph: 0, anchorLongitudeDegrees: 0, anchorLatitudeDegrees: 0 },
-      atmosphere: null,
+      atmosphere: null, plugins: {},
     })
     expect(JSON.parse(JSON.stringify(inspection))).toEqual(inspection)
   })

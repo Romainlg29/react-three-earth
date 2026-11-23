@@ -182,6 +182,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |
 | `react-hooks-and-frame-loop` | Earth state in React UI, per-frame code, scheduler order, `frameloop="demand"` |
 | `customize-terrain-shading` | custom terrain materials and TSL effects |
+| `write-a-plugin` | extending the library with plugins: `<Earth plugins>`, objects that follow the 2D morph, raymarched SDF shapes |
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
 
 Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.

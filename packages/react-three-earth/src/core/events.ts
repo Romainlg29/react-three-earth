@@ -92,6 +92,8 @@ export interface EarthEventMap extends Object3DEventMap {
    * `earth.update` (as `EarthControls` does) for anything listening here to see it in the same frame.
    */
   update: object
+  /** A plugin's asynchronous `install` rejected; the plugin was removed. */
+  pluginerror: { pluginName: string; error: unknown }
 }
 
 export type EarthEventType = Exclude<keyof EarthEventMap, keyof Object3DEventMap>

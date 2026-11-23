@@ -74,6 +74,7 @@ In React, get the Earth with `useEarth()`; for a HUD use `useEarthState` (see
 | Globe clipped or flickering at start | camera | `far` below planet scale; use `near: 1, far: 1e8` |
 | Objects jitter close up | `renderer.highPrecision` | must be true (`<Earth>` sets it); keep vertices local, position objects |
 | Errors about `instanceof` or node materials | `pnpm why three` | two copies of three; pin `three@0.187.0` |
+| `idle` never fires, or frames slow with plugins | `inspect().plugins` | a plugin with `ready: false` or a pending `trackLoading`, or high `updateMilliseconds`; see `write-a-plugin` |
 | Blank in headless Chromium | browser flags | WebGPU needs a headed browser, see the test recipe |
 
 ### Tune performance

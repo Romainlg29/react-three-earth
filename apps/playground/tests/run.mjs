@@ -771,6 +771,50 @@ async function afterburnerChecks() {
   results.push(off.result, on.result)
 }
 
+
+/** Orange pixels of the `?sdf` shape, and the colour at given screen points. */
+const SDF_PIXELS = `
+  let orange = 0, below = 0, black = 0
+  const { belowY, points } = window.__sdfProbe
+  for (let i = 0; i < px.length; i += 4) {
+    const y = Math.floor(i / 4 / width)
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (r > 150 && g > 40 && g < 150 && b < 110 && r > g + 60) { orange++; if (y > belowY) below++ }
+    if (r + g + b < 15) black++
+  }
+  const sample = ([x, y]) => { const i = (Math.round(y) * width + Math.round(x)) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  const n = px.length / 4
+  return { orangeShare: +(orange / n).toFixed(4), orangeBelowGround: below, blackShare: +(black / n).toFixed(3), samples: points.map(sample) }
+`
+
+/**
+ * The example plugin (`src/sdf/`, `?sdf`): a raymarched shape on the fixture peak, its lower half buried. Checks
+ * it renders, the terrain hides the buried part (depth is written), the atmosphere hazes it with distance, it
+ * stays on its spot and is not black on the flat map, and WebGL2 matches.
+ */
+async function sdfShapes(name, query, { distanceMeters = 6000, pitchDegrees = -15, view = '3d' } = {}) {
+  const { page, errors } = await open(`/?fixtures&stats=0&sdf&atmosphereBudget=Infinity&date=2026-11-22T21:00:00Z&camera=-90,0,3900,${distanceMeters},-40,${pitchDegrees}${query}`)
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true && (window.earth.inspect().atmosphere?.ready ?? true), null, { timeout: 240_000, polling: 500 })
+  if (view === '2d') {
+    await page.evaluate(() => window.setView('2d'))
+    await page.waitForFunction(() => window.earth.inspect().view.morph === 1 && window.earth.inspect().idle, null, { timeout: 120_000, polling: 500 })
+  }
+  await page.waitForTimeout(2500)
+  const probe = await page.evaluate(() => {
+    const earth = window.earth
+    const at = heightMeters => earth.project({ longitudeDegrees: -90, latitudeDegrees: 0, heightMeters })
+    const centre = at(4050) // on the sphere, above the ground
+    const base = at(3000) // the capsule's buried end
+    window.__sdfProbe = { belowY: (at(3900).yPixels + base.yPixels) / 2 + 3, points: [[centre.xPixels, centre.yPixels], [400, 20]] }
+    return { centre, base, plugins: earth.inspect().plugins }
+  })
+  const png = await page.screenshot()
+  writeFileSync(new URL(`sdf-shapes-${name}.png`, OUT), png)
+  const stats = await analyse(page, png, SDF_PIXELS)
+  await page.close()
+  results.push({ check: `sdf shapes plugin, ${name}`, ...stats, centreVisible: probe.centre.visible, plugin: probe.plugins['sdf-shapes'], errors })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -801,6 +845,13 @@ try {
   if (!only || only === 'camera') await cameraAndEvents()
   if (!only || only === 'markers') await markers()
   if (!only || only === 'camera' || only === 'animations') await cameraAnimations()
+  if (!only || only === 'sdf') {
+    await sdfShapes('near, atmosphere off', '&atmosphere=0')
+    await sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })
+    await sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })
+    await sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })
+    await sdfShapes('webgl2', '&atmosphere=0&webgl')
+  }
 } finally {
   await browser.close()
 }

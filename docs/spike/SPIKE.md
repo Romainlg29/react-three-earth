@@ -368,6 +368,47 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
+## Plugins (W17), part 1: the plugin core and 3D SDF shapes
+
+Design: `handoff/plugin-system-design.md` in the project files (reviewed by Romain; he chose 3D raymarched
+shapes as the first example). This part needs nothing from the vector path, so it landed before the style layer
+types and render passes.
+
+- **Plugin core** (`src/plugins/`). `EarthPlugin` is `{ name, apiVersion, install(context), uninstall?, inspect? }`;
+  `earth.addPlugin` / `removePlugin`, `earth.plugins`, `<Earth plugins>` (installed in a layout effect, so it
+  survives StrictMode) and `usePlugin`. The `PluginContext` records every call (`onUpdate`, `addObject`,
+  `trackLoading`, `addEventListener`, `onDispose`) and undoes them in reverse order on removal. An async
+  `install` holds `idle`; a rejection removes the plugin and fires `pluginerror`. `onUpdate` is timed per
+  plugin in `earth.inspect().plugins`, with one warning over 1 ms on average. `PLUGIN_API_VERSION = 1`.
+- **`earth.createGeographicAnchor(position, { headingDegrees })`**. The terrain is never moved to a flat
+  position: `FlatMapPlugin` blends each vertex in the shader. So an `Object3D` must be blended the same way,
+  every frame: position (globe ECEF to the flat position on the nearest world copy), rotation (east-north-up
+  to the flat frame) and scale (to `view.scale × mercatorScaleFactor(latitude)`), so it keeps its size against the
+  terrain away from the morph anchor. `Earth.update` does it after `view.update`.
+- **Scene helpers.** `createLocalCameraPositionNode()` (the camera in the object's frame, 64-bit on the CPU,
+  per object), `depthFromViewZ(viewZ)` (three's `viewZTo…Depth` picked from `reversedDepthBuffer` /
+  `logarithmicDepthBuffer`), `createFlatMapEmissionNode(colorNode, view)` (flat terrain's unlit emission).
+- **Example plugin** (`apps/playground/src/sdf/`, `?sdf`). A box mesh drawn with back faces; the shader finds
+  the box entry backwards from the exit point (slab method), sphere-traces a TSL distance function with a
+  tolerance of one pixel's footprint and a per-object step cap (64), writes the hit's depth, and takes its
+  normal from a tetrahedron gradient for `MeshStandardNodeMaterial`, so the atmosphere's sun and sky light it.
+  One material per distance function; size, colour and steps are per-object uniforms. Only small numbers reach
+  the GPU: the view-space hit is `positionView + (modelViewMatrix · vec4(hit − exit, 0)).xyz`.
+
+Not done from the design: over-relaxed sphere tracing and `alphaToCoverage` edges (simple tracing is enough for
+the example), exact pointer hits (they hit the box), shadows on terrain (the library has no shadow maps), and
+shapes on world copies other than the one next to the camera.
+
+| Check (`?fixtures&sdf`, a shape half buried in the fixture peak; SwiftShader) | Result |
+| --- | --- |
+| Near, atmosphere off | renders (0.11 % orange pixels); nothing below the ground line. Without `depthNode`: 0.06 %, the box's underground back faces hide the shape's lower visible part, so the check can fail |
+| Near (3 km) and far (40 km), atmosphere on | lit orange near (red − blue 98); hazed far (red − blue 37) |
+| Flat map | on its spot (orange at its projected centre), emits its colour, not black |
+| WebGL2 fallback | same pixel count as WebGPU |
+| Unit tests | 17 new: lifecycle and undo order, duplicate and version errors, failed sync and async installs, `onUpdate` frames and errors, loading and `idle`, `inspect` JSON, anchors on the globe, with heading and on the flat map (same place as `toScenePosition`, flat axes, map scale), 64-bit local camera |
+
+![SDF shape with the atmosphere](sdf-shapes-atmosphere.png) ![SDF shape on the flat map](sdf-shapes-2d.png)
+
 ## Attribution
 
 Every source can carry a credit, and a control shows them all (`src/core/attribution.ts`, `src/controls/AttributionControl.ts`,
