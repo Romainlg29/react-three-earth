@@ -1278,9 +1278,12 @@ const GEOJSON_PIXELS = `
  */
 async function geoJsonSources(name, query) {
   let { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&geojson&camera=138.75,35.4,0,60000,0,-80${query}`)
+  // `idle`, not zero download, parse and composition counts: between two refinement steps, tiles still sit in the download
+  // queue or wait for their children to be prepared with nothing downloading or parsing, and the slower WebGL2
+  // path often stopped there, on coarse tiles and their coarse imagery.
   const settled = () => page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 10 && inspection.idle
   }, null, { timeout: 240_000, polling: 200 })
   const shot = async label => {
     await settled()
