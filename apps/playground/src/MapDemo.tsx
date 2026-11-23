@@ -25,6 +25,7 @@ import {
   PerformanceStats,
   Popup,
   QuantizedMeshSource,
+  RasterDemSource,
   RasterTileSource,
   ScaleControl,
   StyleLayer,
@@ -54,6 +55,12 @@ const params = new URLSearchParams(location.search)
 const useFixtures = params.has('fixtures')
 const terrainUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/terrain/` : (import.meta.env.VITE_TERRAIN_URL ?? 'https://terrain.reearth.land/cesium-mesh/ellipsoid/')
 const imageryUrl = useFixtures ? `${import.meta.env.BASE_URL}fixtures/imagery/{z}/{x}/{y}.png` : (import.meta.env.VITE_IMAGERY_URL ?? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png')
+// `?terrain=dem` builds the terrain from Terrarium elevation tiles (`<RasterDemSource>`): with `?fixtures`, the
+// quantized-mesh fixture's heights; `?terrain=dem-hills` adds the relief fixture's round hills.
+const terrainKind = params.get('terrain') ?? 'quantized-mesh'
+const demUrl = useFixtures
+  ? `${import.meta.env.BASE_URL}fixtures/dem/{z}/{x}/{y}.png${terrainKind === 'dem-hills' ? '' : '?plain'}`
+  : (import.meta.env.VITE_DEM_URL ?? 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png')
 const withAtmosphere = params.get('atmosphere') !== '0'
 const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=vector` drapes a MapLibre style (vector tiles) instead of raster imagery. `?test=invalidate` (with
@@ -310,7 +317,11 @@ export function MapDemo() {
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
           <Terrain>
-            <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
+            {terrainKind.startsWith('dem') ? (
+              <RasterDemSource url={demUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={useFixtures ? 'Synthetic test elevation' : 'Terrain: Mapzen, AWS Terrain Tiles'} />
+            ) : (
+              <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
+            )}
           </Terrain>
           <Imagery>
             {mapStyleUrl !== undefined ? (

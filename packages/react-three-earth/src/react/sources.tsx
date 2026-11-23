@@ -3,8 +3,10 @@ import { use, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, 
 import {
   MapStyleSource as MapStyleSourceImpl,
   QuantizedMeshSource as QuantizedMeshSourceImpl,
+  RasterDemSource as RasterDemSourceImpl,
   RasterTileSource as RasterTileSourceImpl,
   type QuantizedMeshSourceOptions,
+  type RasterDemSourceOptions,
   type RasterTileSourceOptions,
   type MapStyleSourceOptions,
 } from '../core/sources.js'
@@ -32,6 +34,23 @@ export function QuantizedMeshSource({ url, skirtLengthMeters, smoothSkirtNormals
   )
   useAttribution(source, attribution)
   useRegisterSource(use(TerrainSourceContext), source, 'QuantizedMeshSource', 'Terrain')
+  return null
+}
+
+export type RasterDemSourceProps = RasterDemSourceOptions
+
+/**
+ * Terrain from elevation tiles (Terrarium, Mapbox Terrain-RGB), MapLibre's `raster-dem`. Goes inside `<Terrain>`.
+ * Keep `createWorker` stable (memoised): changing it reloads the terrain.
+ */
+export function RasterDemSource({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }: RasterDemSourceProps) {
+  const source = useMemo(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => new RasterDemSourceImpl({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }),
+    [url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker],
+  )
+  useAttribution(source, attribution)
+  useRegisterSource(use(TerrainSourceContext), source, 'RasterDemSource', 'Terrain')
   return null
 }
 

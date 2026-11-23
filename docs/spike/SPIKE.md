@@ -688,7 +688,8 @@ and `{-y}`.
   ramp texture of up to 256 stops.
 - Not done: `hillshade-illumination-anchor: 'viewport'` is read as `map` (on a globe the screen's up turns with
   the camera); a light tied to the atmosphere's sun was not built; `raster-fade-duration` is ignored (regions
-  redraw in place); a raster-dem source shades the drape and does not raise the terrain (W8).
+  redraw in place); a style's raster-dem source shades the drape and does not raise the terrain (terrain from
+  raster-dem tiles is `RasterDemSource`, W8, below).
 - Caches and failures: compressed raster tiles stay in the worker (64 MB LRU, cleared by `invalidate` and source
   removal), so a paint change decodes them again without fetching; it redraws only the regions drawing that
   layer's source. A tile that is not an image (an error page answered with 200) is skipped with one warning per
@@ -706,6 +707,54 @@ and `{-y}`.
 | Unit tests | 21 new: DEM encodings, raster decoding, worker raster cache and undecodable tiles, paint factors, slope boost, colour relief ramps (interpolate, step, constant, resampling), per-zoom summaries and lights, draw groups, processor raster tiles (TMS `{-y}`, TileJSON metadata, PMTiles raster, 404s, wrong source kind), URL templates, TileJSON for `RasterTileSource`, elevation field grids |
 
 ![relief](map-relief-2d.png) ![hillshade](map-relief-hillshade-seams.png)
+
+### Terrain from raster-dem (W8, part 1)
+
+```tsx
+<Terrain><RasterDemSource url=".../terrarium/{z}/{x}/{y}.png" encoding="terrarium" maximumZoom={15} /></Terrain>
+// vanilla: new Terrain({ sources: [new RasterDemSource({ url, encoding: 'terrarium' })] })
+```
+
+How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
+
+- **A tile set like quantized-mesh's.** The plugin hands 3DTilesRenderer an implicit Web Mercator quadtree: zoom 0
+  plus two polar caps under the root, children added when a tile parses (kept when it unloads, like a static tile
+  set). Tiles carry region volumes (heights fitted on parse; children start from the parent's, widened by a quarter
+  of its range) and Cesium's heightmap geometric error (a quarter of the tile's width over its 65 samples, the width
+  taken at its latitude nearest the equator), with error target 2 as quantized-mesh. So tile selection, fades,
+  imagery, the label height sampler and the flat map work unchanged: nothing else in the pipeline knows the terrain
+  came from a raster.
+- **Mesh building in a worker** (`dem/rasterDemWorker.ts`, built as `dist/terrain-worker.js`): the tile's bytes are
+  transferred, decoded with `createImageBitmap` + `OffscreenCanvas` (exact bytes), unpacked with W7's
+  `demUnpackFactors` / `decodeDemPixels`, then a 65 × 65 grid uniform in Web Mercator is sampled bilinearly at pixel
+  centres, converted to ECEF in double precision, normals taken from neighbouring vertices, skirts (as long as the
+  geometric error, as quantized-mesh) hung along the ellipsoid normal on all four edges. Positions come back as float32
+  relative to the tile's centre, transferred. `createWorker: null` builds on the main thread.
+- **Deeper than the data.** At `maximumZoom` the tile's encoded bytes are kept (64-entry LRU); its descendants read a
+  part of the same raster (served from the kept bytes by the plugin's `fetchData`: no request) until a cell spans a
+  pixel: two extra levels for 256-pixel tiles, three for 512. Deviation from upstream's `TerrainRGBMeshPlugin`
+  (3d-tiles-renderer 0.5.4 has one): it displaces a flat mesh on the GPU through classic-material `displacementMap`,
+  which node materials, our imagery UVs, the flat map's CPU `positionFlat`, raycasts and the label sampler cannot
+  read. CPU meshes keep all of those exact.
+- **Poles.** Web Mercator stops at ±85.05°. Each cap is a ring grid (8 rings × 128 columns) from the edge to the pole,
+  following the zoom 0 raster's edge row, rising or falling evenly to the row's mean at the pole, with a 3 km skirt
+  along its edge so finer tiles never open a gap. On the flat map the caps collapse onto the edge of the square.
+- **Seams.** Neighbouring tiles sample their own edge pixels, so shared edges can differ by up to half a pixel's slope;
+  skirts hide the cracks. Height reads straight down a seam could slip between two tiles' float32 edges:
+  `queryTerrainElevation` now falls back to the tile mesh sampler when its raycast misses, and that sampler takes the
+  nearest triangle within 1e-4 barycentric when a point falls a hair outside all of them.
+- Heights are used as ellipsoidal heights, while these tiles hold heights above sea level: up to about 100 m off true
+  WGS84 heights (the geoid). Not supported yet: TileJSON `bounds` and `minzoom`, exaggeration (part 2).
+
+| Check (`?fixtures&terrain=dem`: Terrarium tiles of the quantized-mesh fixture's heights; SwiftShader) | Result |
+| --- | --- |
+| Heights at a 7 × 7 grid over 2.4° (677 m of relief), from 400 km | all 49 read; worst error against the fixture function 1.8 m (quantized-mesh fixture: 4.6 m) |
+| Pitched view, WebGPU and WebGL2 | imagery checker drapes on 76 % of the view, same on both backends; terrain credit shown |
+| North pole from 6,000 km | closed: no black at the centre (without the caps, a black disc of 85.05°–90° shows: the check can fail) |
+| 2D at 80 km | morph settles, checker on 96 % of the view |
+| Unit tests | 13 new: surface grid and skirt winding, pixel-centre sampling, tile bounds, overzoomed tiles matching their ancestor's vertices, polar caps, geometric errors, source validation, plugin tile set, region fitting, children, kept rasters, TileJSON, decode errors |
+
+![raster-dem terrain](dem-terrain-pitched.png) ![north pole](dem-terrain-north-pole.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 

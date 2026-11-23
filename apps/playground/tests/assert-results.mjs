@@ -76,6 +76,22 @@ const expectations = {
     ['hillshade lights and shades the hills', r.lightShare > 0.02 && r.shadedShare > 0.005],
     ['no warnings', r.warnings.length === 0],
   ]])),
+  // Terrain from Terrarium tiles of the quantized-mesh fixture's heights.
+  'raster-dem terrain, heights': r => [
+    ['every point of the grid has a height', r.heightErrorsMeters?.count === 49],
+    ['over hills 500 m high or more', r.heightErrorsMeters?.heightRangeMeters >= 500],
+    ['heights match the fixture within 3 m (measured: under 2 m; quantized-mesh: under 5 m)', r.heightErrorsMeters?.maximum < 3],
+  ],
+  'raster-dem terrain, heights, quantized-mesh for comparison': r => [['every point of the grid has a height', r.heightErrorsMeters?.count === 49]],
+  ...Object.fromEntries(['pitched', 'pitched webgl2'].map(name => [`raster-dem terrain, ${name}`, r => [
+    ['imagery drapes on the terrain (over 50 % checker pixels)', r.greenShare > 0.5],
+    ['the terrain credit shows', r.attributions?.[0] === 'Synthetic test elevation'],
+  ]])),
+  'raster-dem terrain, north pole': r => [['no hole at the pole (no black at the centre)', r.centreBlackShare === 0]],
+  'raster-dem terrain, 2d': r => [
+    ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],
+    ['imagery drapes on the map (over 50 % checker pixels)', r.greenShare > 0.5],
+  ],
   'relief style with fixtures, 3d': r => [
     ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
     ['no warnings', r.warnings.length === 0],
