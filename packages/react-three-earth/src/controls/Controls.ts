@@ -37,7 +37,7 @@ function acquireCorner(container: HTMLElement, position: ControlPosition): HTMLE
     element.className = 'react-three-earth-controls'
     element.dataset.position = position
     // Buttons never start a map gesture or count as a click on the map
-    for (const type of ['pointerdown', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart']) {
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart']) {
       element.addEventListener(type, stop, { passive: true })
     }
     container.append(element)
@@ -149,6 +149,8 @@ export abstract class MapControl implements ControlsItem {
   }
 
   onAdd(controls: Controls): void {
+    // Added straight to a second Controls with `controls.add`: leave the first one properly
+    if (this.controls !== null && this.controls !== controls) this.detach()
     this.controls = controls
     this.attach(controls)
   }

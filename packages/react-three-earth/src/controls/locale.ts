@@ -25,6 +25,9 @@ export interface ControlsLocale {
   geolocateDenied: string
   geolocateUnavailable: string
   geolocateFailed: string
+  /** Accessible names of the user's dot and its accuracy circle on the map. */
+  userLocation: string
+  userLocationAccuracy: string
   /** The accessible name of the scale bar. */
   scale: string
   /** Units of the scale bar: metres, kilometres, feet, miles and nautical miles. */
@@ -54,6 +57,8 @@ export const DEFAULT_CONTROLS_LOCALE: ControlsLocale = {
   geolocateDenied: 'Location access is turned off for this site',
   geolocateUnavailable: 'This browser cannot tell where you are',
   geolocateFailed: 'Your location could not be found, try again',
+  userLocation: 'Your location',
+  userLocationAccuracy: 'Accuracy of your location',
   scale: 'Map scale',
   unitMeters: 'm',
   unitKilometers: 'km',

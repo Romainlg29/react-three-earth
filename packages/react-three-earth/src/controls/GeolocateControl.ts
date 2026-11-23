@@ -35,6 +35,8 @@ export interface GeolocateEventMap {
   trackuserlocationend: object
 }
 
+const USER_INPUT_EVENTS = ['pointerdown', 'wheel', 'touchstart'] as const
+
 const CROSSHAIR = 'M9 1h2v2.07A7 7 0 0 1 16.93 9H19v2h-2.07A7 7 0 0 1 11 16.93V19H9v-2.07A7 7 0 0 1 3.07 11H1V9h2.07A7 7 0 0 1 9 3.07zM10 5a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0 3a2 2 0 1 1 0 4 2 2 0 0 1 0-4z'
 
 /**
@@ -67,6 +69,8 @@ export class GeolocateControl extends MapControl {
   protected listeningTo: Earth | null = null
   protected flightToken = 0
   protected firstFixPending = false
+  protected trackingStarted = false
+  protected stateBeforeError: GeolocateState = 'off'
 
   constructor({ trackUser = false, positionOptions, fitMaximumZoom = 15, showUserLocation = true, showAccuracyCircle = true, locale }: GeolocateControlOptions = {}) {
     super()
@@ -94,7 +98,8 @@ export class GeolocateControl extends MapControl {
 
   protected attach(controls: Controls): void {
     this.listeningTo = controls.earth
-    controls.earth.addEventListener('movestart', this.onMoveStart)
+    // The corner stops events from the buttons, so these come from the map itself
+    for (const type of USER_INPUT_EVENTS) controls.container.addEventListener(type, this.onUserInput, { passive: true })
     controls.earth.addEventListener('zoom', this.updateCircle)
     controls.earth.addEventListener('moveend', this.updateCircle)
     void this.watchPermission()
@@ -102,7 +107,7 @@ export class GeolocateControl extends MapControl {
 
   protected detach(): void {
     this.stop()
-    this.listeningTo?.removeEventListener('movestart', this.onMoveStart)
+    for (const type of USER_INPUT_EVENTS) this.controls?.container.removeEventListener(type, this.onUserInput)
     this.listeningTo?.removeEventListener('zoom', this.updateCircle)
     this.listeningTo?.removeEventListener('moveend', this.updateCircle)
     this.listeningTo = null
@@ -120,7 +125,17 @@ export class GeolocateControl extends MapControl {
         this.removeMarkers()
         return
       }
-      // 'background', 'error' and 'off' start (or resume) following
+      if (this.state === 'waiting') {
+        this.stop()
+        return
+      }
+      if (this.state === 'error' && this.watchIdentifier !== null) {
+        // The watch is alive after a lost fix: carry on following
+        this.setState('tracking')
+        if (this.lastPosition !== null) this.flyToPosition(this.lastPosition, false)
+        return
+      }
+      // 'background' and 'off' start (or resume) following
       if (this.state === 'background' && this.lastPosition !== null) {
         this.setState('tracking')
         this.flyToPosition(this.lastPosition, false)
@@ -137,20 +152,28 @@ export class GeolocateControl extends MapControl {
 
   /** Stops following and watching. The dot stays until the next press, or `removeMarkers`. */
   stop(): void {
-    if (this.watchIdentifier !== null) {
-      navigator.geolocation.clearWatch(this.watchIdentifier)
-      this.watchIdentifier = null
+    this.clearWatch()
+    if (this.trackingStarted) {
+      this.trackingStarted = false
+      this.events.dispatchEvent({ type: 'trackuserlocationend' })
     }
-    if (this.state === 'tracking' || this.state === 'background') this.events.dispatchEvent({ type: 'trackuserlocationend' })
     this.flightToken++
     this.setState('off')
   }
 
   protected start(): void {
+    this.clearWatch()
     this.firstFixPending = true
     this.setState('waiting')
+    this.trackingStarted = true
     this.events.dispatchEvent({ type: 'trackuserlocationstart' })
     this.watchIdentifier = navigator.geolocation.watchPosition(this.onPosition, this.onError, this.positionOptions)
+  }
+
+  protected clearWatch(): void {
+    if (this.watchIdentifier === null) return
+    navigator.geolocation.clearWatch(this.watchIdentifier)
+    this.watchIdentifier = null
   }
 
   protected onClick = (): void => this.trigger()
@@ -161,7 +184,8 @@ export class GeolocateControl extends MapControl {
     this.updateMarkers(position)
     this.events.dispatchEvent({ type: 'geolocate', coordinates: position.coords, timestamp: position.timestamp })
     if (this.trackUser) {
-      if (this.state === 'waiting' || this.state === 'error') this.setState('tracking')
+      if (this.state === 'waiting') this.setState('tracking')
+      else if (this.state === 'error') this.setState(this.stateBeforeError === 'background' ? 'background' : 'tracking')
       if (this.state === 'tracking') this.flyToPosition(position, !this.firstFixPending)
     } else {
       this.flyToPosition(position, false)
@@ -177,6 +201,7 @@ export class GeolocateControl extends MapControl {
     } else if (this.trackUser && this.watchIdentifier !== null && this.state !== 'waiting') {
       // A lost fix while following: the dot is stale, the watch carries on
       this.dot?.element.setAttribute('data-stale', 'true')
+      if (this.state !== 'error') this.stateBeforeError = this.state
     } else {
       this.stop()
     }
@@ -190,7 +215,7 @@ export class GeolocateControl extends MapControl {
     if (earth === null || !earth.camera.ready) return
     const { longitude, latitude, accuracy } = position.coords
     const camera = earth.camera
-    const token = ++this.flightToken
+    ++this.flightToken
     const target = { longitudeDegrees: longitude, latitudeDegrees: latitude }
     let motion: Promise<boolean>
     if (keepZoom) {
@@ -203,16 +228,15 @@ export class GeolocateControl extends MapControl {
       motion = camera.flyTo({ ...target, zoom }, {})
     }
     earth.requestFrame()
-    void motion.then(finished => {
-      // Cut short by something other than our next move: the user took the map
-      if (!finished && token === this.flightToken && this.state === 'tracking') this.setState('background')
-    })
+    void motion
   }
 
-  /** A movement we did not start while following: the user took the map. */
-  protected onMoveStart = (): void => {
-    // Our own moves are animations; the camera's `animating` is true for them
-    if (this.state === 'tracking' && this.earth !== null && !this.earth.camera.animating) this.setState('background')
+  /** The user touched the map while it followed: they took it, so following pauses (the dot stays). */
+  protected onUserInput = (): void => {
+    if (this.state === 'tracking') {
+      this.flightToken++
+      this.setState('background')
+    }
   }
 
   protected updateMarkers(position: GeolocationPosition): void {
@@ -223,7 +247,7 @@ export class GeolocateControl extends MapControl {
     if (this.dot === null) {
       const element = container.ownerDocument.createElement('div')
       element.className = 'react-three-earth-user-dot'
-      this.dot = new Marker({ longitudeDegrees: longitude, latitudeDegrees: latitude, element, anchor: 'center', label: 'Your location', occludedOpacity: 1 })
+      this.dot = new Marker({ longitudeDegrees: longitude, latitudeDegrees: latitude, element, anchor: 'center', label: this.locale.userLocation, occludedOpacity: 1 })
       if (this.showAccuracyCircle) {
         this.circleElement = container.ownerDocument.createElement('div')
         this.circleElement.className = 'react-three-earth-accuracy-circle'
@@ -234,7 +258,7 @@ export class GeolocateControl extends MapControl {
           anchor: 'center',
           pitchAlignment: 'map',
           rotationAlignment: 'map',
-          label: 'Accuracy of your location',
+          label: this.locale.userLocationAccuracy,
         })
         this.circleElement.setAttribute('aria-hidden', 'true')
         this.circleElement.removeAttribute('tabindex')
@@ -252,7 +276,7 @@ export class GeolocateControl extends MapControl {
     this.updateCircle()
   }
 
-  /** Sizes the accuracy circle to the current zoom: metres of accuracy over metres per pixel. */
+  /** Sizes the accuracy circle to the current zoom: metres of accuracy over metres per pixel at the centre of the screen (exact there, approximate toward the edges). */
   protected updateCircle = (): void => {
     const earth = this.earth
     if (earth === null || this.circleElement === null || this.lastPosition === null || !earth.camera.ready) return
@@ -309,8 +333,10 @@ export class GeolocateControl extends MapControl {
   /** Disables the button before the first press when the user already blocked the site's location access. */
   protected async watchPermission(): Promise<void> {
     try {
+      const forControls = this.controls
       const status = await navigator.permissions?.query({ name: 'geolocation' })
-      if (status === undefined || this.controls === null) return
+      if (status === undefined || this.controls === null || this.controls !== forControls) return
+      this.permissionStatus?.removeEventListener('change', this.onPermissionChange)
       this.permissionStatus = status
       status.addEventListener('change', this.onPermissionChange)
       this.onPermissionChange()

@@ -528,8 +528,9 @@ DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill 
   for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
 - **Geolocate.** States `off | waiting | tracking | background | error`. The dot and the accuracy circle are two
   `Marker`s (the circle `pitchAlignment: 'map'`, sized as accuracy over metres per pixel). "The user took the map" is a
-  `movestart` while the camera is not animating, or our follow animation ending with `false` while still the latest
-  one. A denied Permissions API state or a code-1 error disables the button.
+  a `pointerdown`, `wheel` or `touchstart` on the container (the corner stops those from the buttons; a `movestart` check
+  was dropped because viewport resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the state
+  before it and restores it on the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1 error disables the button.
 - **Phone.** `pointer: coarse` makes buttons 44 px; corners add `env(safe-area-inset-*)`; `touch-action: manipulation`.
   iPhone Safari has no element Fullscreen API, so `FullscreenControl` falls back to a `position: fixed; 100dvh` class on
   the container (Escape leaves), or hides with `unsupported: 'hide'`. Not tested on a real iPhone yet.

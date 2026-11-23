@@ -69,9 +69,10 @@ function useControl<T extends ControlsItem & { dispose?(): void }>(name: string,
     const release = onCreate?.(created)
     setControl(created)
     return () => {
-      release?.()
       setControl(null)
+      // Disposed first: it may still report an event (the end of following) to the listeners
       created.dispose?.()
+      release?.()
     }
     // `create` and `onCreate` close over `dependencies`
     // eslint-disable-next-line react-hooks/exhaustive-deps

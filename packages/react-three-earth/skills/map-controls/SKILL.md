@@ -112,7 +112,7 @@ A control of your own extends `MapControl` (`element`, `attach`, `detach`) and g
 ### Translate and style
 
 Every text is in `ControlsLocale`; give a partial object as `locale` to any control (`zoomIn`, `resetNorth`,
-`switchTo2D`, `geolocateDenied`, `unitKilometers`…). Colours and sizes are CSS variables on any ancestor:
+`switchTo2D`, `geolocateDenied`, `userLocation`, `unitKilometers`…). Colours and sizes are CSS variables on any ancestor:
 `--react-three-earth-control-background`, `-color`, `-hover-background`, `-active-color`, `-error-color`, `-shadow`,
 `-radius`, `-size`, and `--react-three-earth-controls-margin`, `--react-three-earth-controls-bottom-margin`.
 

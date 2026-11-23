@@ -356,7 +356,7 @@ describe('GeolocateControl', () => {
 
   it('follows with trackUser, pauses when the user moves the map, and stops on a press', () => {
     const { watchers, geolocation, position } = stubGeolocation()
-    const { earth, controls, camera } = setup()
+    const { container, controls, camera } = setup()
     const geolocate = new GeolocateControl({ trackUser: true }).addTo(controls)
     const button = geolocate.element.querySelector('button')!
     const started = vi.fn()
@@ -370,8 +370,8 @@ describe('GeolocateControl', () => {
     expect(button.getAttribute('aria-pressed')).toBe('true')
     watchers[0]!.success(position(1.1, 1.1))
     expect(camera.easeTo).toHaveBeenCalledWith({ longitudeDegrees: 1.1, latitudeDegrees: 1.1 }, expect.anything())
-    // The user drags the map: no animation of ours is running
-    earth.dispatchEvent({ type: 'movestart' } as never)
+    // The user touches the map (the corner stops events from the buttons themselves)
+    container.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(geolocate.currentState).toBe('background')
     camera.easeTo.mockClear()
     watchers[0]!.success(position(1.2, 1.2))
@@ -396,6 +396,31 @@ describe('GeolocateControl', () => {
     expect(failed).toHaveBeenCalledOnce()
     expect(button.disabled).toBe(true)
     expect(button.getAttribute('aria-label')).toBe('Location access is turned off for this site')
+  })
+
+  it('never leaves a watch running: a second press while waiting stops, and a lost fix keeps the user\'s choice', () => {
+    const { watchers, geolocation, position } = stubGeolocation()
+    const { container, controls } = setup()
+    const geolocate = new GeolocateControl({ trackUser: true }).addTo(controls)
+    const button = geolocate.element.querySelector('button')!
+    const ended = vi.fn()
+    geolocate.events.addEventListener('trackuserlocationend', ended)
+    button.click()
+    button.click()
+    expect(geolocation.watchPosition).toHaveBeenCalledOnce()
+    expect(geolocation.clearWatch).toHaveBeenCalledOnce()
+    expect(ended).toHaveBeenCalledOnce()
+    // Follow, pan away, lose the fix, get it back: still panned away
+    button.click()
+    watchers[1]!.success(position(1, 1))
+    container.dispatchEvent(new Event('wheel', { bubbles: true }))
+    expect(geolocate.currentState).toBe('background')
+    watchers[1]!.error({ code: 3, message: 'timeout' } as GeolocationPositionError)
+    expect(geolocate.currentState).toBe('error')
+    watchers[1]!.success(position(1.1, 1.1))
+    expect(geolocate.currentState).toBe('background')
+    geolocate.remove()
+    expect(geolocation.clearWatch).toHaveBeenCalledTimes(2)
   })
 
   it('lets the user try again after a timeout', () => {
