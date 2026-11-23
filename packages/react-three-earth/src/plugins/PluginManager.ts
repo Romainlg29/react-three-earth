@@ -1,5 +1,6 @@
 import type { Camera, Object3D } from 'three'
 
+import { GeographicAnchor } from '../core/GeographicAnchor.js'
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
 import { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugin.js'
@@ -61,8 +62,9 @@ export class PluginInstallation implements PluginContext {
     const remove = () => {
       if (removed) return
       removed = true
-      // Only if nothing else moved it elsewhere meanwhile.
-      if (object.parent === this.earth) this.earth.remove(object)
+      // An anchor stops following the morph; anything else leaves the earth, unless something moved it meanwhile.
+      if (object instanceof GeographicAnchor) object.dispose()
+      else if (object.parent === this.earth) this.earth.remove(object)
     }
     this.undoSteps.push(remove)
     return remove
@@ -99,6 +101,7 @@ export class PluginInstallation implements PluginContext {
     const start = performance.now()
     let needsFrame = false
     for (const callback of [...this.updateCallbacks]) {
+      if (this.disposed) break // removed by an earlier callback of this frame
       try {
         if (callback(frame) === true) needsFrame = true
       } catch (error) {
@@ -242,10 +245,10 @@ export class PluginManager {
         },
         (error: unknown) => {
           installation.ready = true
-          if (this.installations.get(name) === installation) {
-            this.installations.delete(name)
-            installation.dispose()
-          }
+          // Removed before it settled (StrictMode, a quick remove and add): its context refuses calls, which is no error.
+          if (this.installations.get(name) !== installation) return
+          this.installations.delete(name)
+          installation.dispose()
           this.earth.dispatchEvent({ type: 'pluginerror', pluginName: name, error })
           console.error(`Plugin "${name}" failed to install and was removed. Fix the error below, then add it again.`, error)
         },

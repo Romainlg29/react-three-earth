@@ -33,7 +33,8 @@ export function createLocalCameraPositionNode(): UniformNode<'vec3', Vector3> {
  * `depthNode`, matching how the renderer was created: reversed (`reversedDepthBuffer: true`, recommended
  * with the atmosphere), logarithmic, or standard. Lets a raymarched surface write its true depth, so terrain
  * hides it, it hides terrain, and the atmosphere's aerial perspective hazes it. Writing depth turns off early
- * depth rejection for the draw: keep such meshes tight around what they show.
+ * depth rejection for the draw: keep such meshes tight around what they show. For perspective cameras, which
+ * the library uses.
  */
 export const depthFromViewZ = Fn(([viewZ]: [Node<'float'>], builder: { renderer: { reversedDepthBuffer?: boolean; logarithmicDepthBuffer?: boolean } }) => {
   const { reversedDepthBuffer = false, logarithmicDepthBuffer = false } = builder.renderer

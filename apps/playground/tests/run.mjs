@@ -851,6 +851,7 @@ try {
     await sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })
     await sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })
     await sdfShapes('webgl2', '&atmosphere=0&webgl')
+    await sdfShapes('strict mode', '&atmosphere=0&strict')
   }
 } finally {
   await browser.close()

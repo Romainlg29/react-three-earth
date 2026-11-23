@@ -1,5 +1,5 @@
 import { useFrame, useThree } from '@react-three/fiber/extension'
-import { useLayoutEffect, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { Earth as EarthImpl } from '../core/Earth.js'
@@ -26,8 +26,8 @@ export interface EarthProps {
   initialView?: MapViewChange
   /**
    * Plugins to install (`earth.addPlugin`). Compared by identity: create the array once, outside render or
-   * in a `useMemo`, or every render reinstalls them. Plugins added or removed from the array are installed or
-   * removed. Default: none.
+   * in a `useMemo`, or every render reinstalls them. When the array changes, plugins in both arrays stay
+   * installed; new ones are installed and dropped ones removed. Default: none.
    * @example const plugins = [sdfShapes()]  // module scope
    * <Earth plugins={plugins}>…</Earth>
    */
@@ -78,13 +78,31 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, p
     return () => earth.removeEventListener('framerequest', listener)
   }, [earth, invalidate])
 
+  // Plugins kept from one array to the next stay installed, with their state; only those added or dropped change.
+  const installedPlugins = useRef<EarthPlugin[]>([])
   useLayoutEffect(() => {
-    if (plugins === undefined || plugins.length === 0) return
-    for (const plugin of plugins) earth.addPlugin(plugin)
-    return () => {
-      for (const plugin of [...plugins].reverse()) earth.removePlugin(plugin)
+    const next = plugins ?? []
+    const installed = installedPlugins.current
+    for (const plugin of [...installed].reverse()) if (!next.includes(plugin)) earth.removePlugin(plugin)
+    const kept = installed.filter(plugin => next.includes(plugin))
+    try {
+      for (const plugin of next) {
+        if (kept.includes(plugin)) continue
+        earth.addPlugin(plugin)
+        kept.push(plugin)
+      }
+    } finally {
+      // A plugin that throws is not listed: those installed before it are still removed at unmount.
+      installedPlugins.current = kept
     }
   }, [earth, plugins])
+  useLayoutEffect(
+    () => () => {
+      for (const plugin of [...installedPlugins.current].reverse()) earth.removePlugin(plugin)
+      installedPlugins.current = []
+    },
+    [earth],
+  )
 
   useLayoutEffect(() => () => earth.dispose(), [earth])
 

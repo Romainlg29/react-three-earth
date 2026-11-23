@@ -60,7 +60,8 @@ const showStatistics = params.get('stats') !== '0'
 const showMarkers = params.has('markers')
 // `?sdf` installs the example plugin (src/sdf/) and puts a raymarched shape on the peak, half buried in it.
 const showSdfShapes = params.has('sdf')
-const plugins = showSdfShapes ? [sdfShapes()] : undefined
+const sdfShapesPlugin = sdfShapes()
+const plugins = showSdfShapes ? [sdfShapesPlugin] : undefined
 // Module scope: each distinct distance function is its own pipeline.
 const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
@@ -165,7 +166,7 @@ function Markers() {
  */
 function SdfShapes() {
   const peak = useFixtures ? { longitudeDegrees: -90, latitudeDegrees: 0, heightMeters: 3900 } : { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 3776 }
-  return <SdfShape position={peak} halfSizeMeters={[480, 480, 1000]} distanceFunction={beacon} color="#ff5a1f" />
+  return <SdfShape plugin={sdfShapesPlugin} position={peak} halfSizeMeters={[480, 480, 1000]} distanceFunction={beacon} color="#ff5a1f" />
 }
 
 /** Plain lights for the atmosphere-off check, faded out on the flat map like the atmosphere's sun. */

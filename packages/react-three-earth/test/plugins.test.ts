@@ -112,6 +112,50 @@ describe('earth.addPlugin / removePlugin', () => {
     expect(object.parent).toBeNull()
   })
 
+  it('does not report an error when an asynchronous install settles after its plugin was removed and added again', async () => {
+    const earth = new Earth()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const errors: string[] = []
+    earth.addEventListener('pluginerror', event => errors.push(event.pluginName))
+    const objects: Mesh[] = []
+    const waiter = plugin('waiter', async context => {
+      await Promise.resolve()
+      const object = new Mesh()
+      objects.push(object)
+      context.addObject(object) // throws on the first, removed, installation
+    })
+    earth.addPlugin(waiter)
+    earth.removePlugin(waiter)
+    earth.addPlugin(waiter) // StrictMode's mount, unmount, mount
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(errors).toEqual([])
+    expect(error).not.toHaveBeenCalled()
+    expect(earth.plugins.has('waiter')).toBe(true)
+    expect(earth.inspect().plugins.waiter?.ready).toBe(true)
+    expect(objects.at(-1)?.parent).toBe(earth)
+  })
+
+  it("stops a plugin's other callbacks once one of them removed it", () => {
+    const earth = new Earth()
+    const second = vi.fn()
+    earth.addPlugin(
+      plugin('quitter', context => {
+        context.onUpdate(() => void earth.removePlugin('quitter'))
+        context.onUpdate(second)
+      }),
+    )
+    earth.update(createCamera(), renderer, 0.016)
+    expect(second).not.toHaveBeenCalled()
+    expect(earth.plugins.has('quitter')).toBe(false)
+  })
+
+  it('lets a plugin install another plugin from its install', () => {
+    const earth = new Earth()
+    const inner = plugin('inner', () => {})
+    earth.addPlugin(plugin('outer', () => earth.addPlugin(inner)))
+    expect([...earth.plugins].map(installed => installed.name)).toEqual(['outer', 'inner'])
+  })
+
   it('removes every plugin, last installed first, on dispose', () => {
     const earth = new Earth()
     const order: string[] = []
@@ -239,6 +283,40 @@ describe('GeographicAnchor', () => {
     const up = new Vector3(0, 0, 1).applyQuaternion(anchor.quaternion)
     expect(up.dot(earth.view.anchorUp)).toBeCloseTo(1, 6)
     expect(anchor.scale.x).toBeCloseTo(earth.view.scale * mercatorScaleFactor((45 * Math.PI) / 180), 9)
+  })
+
+  it('is disposed with the plugin that added it, and stops updating', () => {
+    const earth = new Earth()
+    let anchor: GeographicAnchor | null = null
+    earth.addPlugin(
+      plugin('anchored', context => {
+        anchor = context.earth.createGeographicAnchor(position)
+        context.addObject(anchor)
+      }),
+    )
+    expect(anchor!.parent).toBe(earth)
+    earth.removePlugin('anchored')
+    expect(anchor!.isDisposed).toBe(true)
+    expect(anchor!.parent).toBeNull()
+    anchor!.position.set(1, 2, 3)
+    earth.update(createCamera(), renderer, 0.016)
+    expect(anchor!.position.toArray()).toEqual([1, 2, 3])
+  })
+
+  it("keeps the flat map's distances away from the map's reference point", () => {
+    const earth = new Earth({ view: '2d' })
+    const camera = new PerspectiveCamera(60, 800 / 600, 1, 1e8)
+    setCameraView(camera, { longitudeDegrees: 10, latitudeDegrees: 45, distanceMeters: 100_000, headingDegrees: 0, pitchDegrees: -90 })
+    earth.update(camera, renderer, 0.016)
+    // 2° north of the reference, and a point about 1 km further north (1 km of meridian is about 0.009°).
+    const south = earth.createGeographicAnchor({ longitudeDegrees: 10.3, latitudeDegrees: 47, heightMeters: 0 })
+    const north = earth.createGeographicAnchor({ longitudeDegrees: 10.3, latitudeDegrees: 47 + 1000 / 111_170, heightMeters: 0 })
+    earth.update(camera, renderer, 0.016)
+    expect(south.position.distanceTo(earth.camera.toScenePosition({ longitudeDegrees: 10.3, latitudeDegrees: 47 }))).toBeLessThan(1e-3)
+    // 1 km of ground, times the anchor's scale, is what separates them on the map.
+    expect(south.position.distanceTo(north.position) / (1000 * south.scale.x)).toBeCloseTo(1, 2)
+    const up = new Vector3(0, 0, 1).applyQuaternion(south.quaternion)
+    expect(up.dot(earth.view.anchorUp)).toBeCloseTo(1, 6)
   })
 
   it('stops updating once disposed', () => {

@@ -39,7 +39,7 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 | Install for the whole map | `<Earth plugins={plugins}>` / `earth.addPlugin(plugin)` |
 | Install from one component | `usePlugin(plugin)` |
 | Code every frame | `context.onUpdate(frame => …)` |
-| A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` |
+| A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` (disposed with the plugin) |
 | A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
 | Keep colour on the flat map | `createFlatMapEmissionNode(colorNode, earth.view)` |
 | Hold `idle` while loading | `context.trackLoading(promise)`, or an `async install` |
@@ -89,9 +89,8 @@ export function spinningBox(): EarthPlugin {
       const anchor = context.earth.createGeographicAnchor({ longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 4500 })
       const box = new Mesh(new BoxGeometry(400, 400, 400), new MeshStandardMaterial({ color: 'orange' }))
       anchor.add(box)
-      context.addObject(anchor) // removed with the plugin
+      context.addObject(anchor) // removed and disposed with the plugin
       context.onDispose(() => {
-        anchor.dispose() // stop the morph updates
         box.geometry.dispose()
         box.material.dispose()
       })
@@ -108,7 +107,8 @@ export function spinningBox(): EarthPlugin {
 ```
 
 - Every `context` call is recorded and undone in reverse order on removal; `addObject` also returns a function
-  that removes the object early. Calls after removal throw.
+  that removes the object early, and a `GeographicAnchor` it added is disposed (it stops following the morph).
+  Calls after removal throw.
 - `install` may be `async`: until it settles the plugin is `ready: false` and the earth does not fire `idle`. A
   rejection removes the plugin and fires the earth's `pluginerror` event.
 - `onUpdate` time is measured per plugin (`earth.inspect().plugins[name].updateMilliseconds`). Over 1 ms on
@@ -165,24 +165,30 @@ import { MeshStandardNodeMaterial } from 'three/webgpu'
 export function createSphereMaterial(): MeshStandardNodeMaterial {
   const material = new MeshStandardNodeMaterial({ side: BackSide }) // back faces: works with the camera inside
   const halfSizeMeters = float(100)
-  const camera = createLocalCameraPositionNode().mul(halfSizeMeters)
-  const exit = positionLocal.mul(halfSizeMeters) // where the ray leaves the box
+  const camera = createLocalCameraPositionNode().mul(halfSizeMeters) // can be millions of metres away
+  const exit = positionLocal.mul(halfSizeMeters) // where the ray leaves the box: small
   const towardsExit = exit.sub(camera)
-  const direction = towardsExit.normalize()
+  const cameraToExit = towardsExit.length()
+  const direction = towardsExit.div(cameraToExit)
+  const pixelAngleRadians = float(0.001) // fov / drawing-buffer height, as a uniform in real code
   const hit = Fn(() => {
-    // March from the camera side of the box (simplified: from the camera, at most 2 box widths).
-    const travelled = towardsExit.length().sub(halfSizeMeters.mul(2)).max(0).toVar()
+    // March backwards from the exit point, so every position stays small (simplified: from 2 box widths back).
+    const start = halfSizeMeters.mul(2).min(cameraToExit)
+    const travelled = float(0).toVar()
     const found = float(0).toVar()
     Loop(64, () => {
-      const distance = camera.add(direction.mul(travelled)).length().sub(100)
-      If(distance.lessThan(0.05), () => {
+      const point = exit.sub(direction.mul(start.sub(travelled)))
+      const distance = point.length().sub(100)
+      // One pixel's footprint at this range: far shapes converge in a few steps.
+      If(distance.lessThan(pixelAngleRadians.mul(cameraToExit.sub(start).add(travelled)).max(1e-3)), () => {
         found.assign(1)
         Break()
       })
       travelled.addAssign(distance)
+      If(travelled.greaterThan(start), () => Break())
     })
     If(found.equal(0), () => Discard())
-    return camera.add(direction.mul(travelled))
+    return exit.sub(direction.mul(start.sub(travelled)))
   })().toVar()
   const viewHit = positionView.add(modelViewMatrix.mul(vec4(hit.sub(exit).div(halfSizeMeters), 0)).xyz)
   material.depthNode = depthFromViewZ(viewHit.z)
@@ -197,10 +203,13 @@ emission, and `src/sdf/distance.ts` with `sphere`, `roundedBox`, `capsule`, `tor
 
 ### Plugins that offer objects to React
 
-React runs children's effects before their parent's, so a child component can mount before `<Earth plugins>`
-has installed the plugin. Let your plugin's own methods (`plugin.add(shape)`) queue work until `install` runs,
-as `sdfShapes()` does, and find the plugin with `useEarth().plugins.get(name)` in an effect that runs after
-the first commit.
+React runs children's effects before their parent's, so a child component mounts before `<Earth plugins>`
+has installed the plugin, and `useEarth().plugins.get(name)` finds nothing yet. Pass the plugin instance to
+the components that use it (a prop or a context), and let its own methods (`plugin.add(shape)`) queue work until
+`install` runs, as `sdfShapes()` and the playground's `<SdfShape plugin={…}>` do.
+
+Create anchors and other per-earth objects in an effect or in the plugin, never in `useState` or `useMemo`:
+under StrictMode the earth is disposed and reused once at mount, which stops every anchor made before it.
 
 ## Common Mistakes
 

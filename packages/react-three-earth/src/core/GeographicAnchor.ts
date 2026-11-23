@@ -34,14 +34,18 @@ const Z_AXIS = new Vector3(0, 0, 1)
 export class GeographicAnchor extends Object3D {
   readonly geographicPosition: Required<GeographicPosition>
   headingDegrees: number
-  /** Set by `dispose`; `Earth` stops updating it. */
-  isDisposed = false
+  protected disposed = false
 
   constructor(position: GeographicPosition, { headingDegrees = 0 }: GeographicAnchorOptions = {}) {
     super()
     this.name = 'GeographicAnchor'
     this.geographicPosition = { longitudeDegrees: position.longitudeDegrees, latitudeDegrees: position.latitudeDegrees, heightMeters: position.heightMeters ?? 0 }
     this.headingDegrees = headingDegrees
+  }
+
+  /** Whether `dispose` was called: `Earth` no longer updates it. */
+  get isDisposed(): boolean {
+    return this.disposed
   }
 
   /** Moves the anchor. It takes effect at the next `update`. */
@@ -87,7 +91,7 @@ export class GeographicAnchor extends Object3D {
 
   /** Stops `Earth` updating the anchor and takes it out of its parent. */
   override dispose(): void {
-    this.isDisposed = true
+    this.disposed = true
     this.removeFromParent()
   }
 }

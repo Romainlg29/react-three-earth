@@ -145,6 +145,14 @@ const expectations = {
     const webgpu = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
     return [['WebGL2 draws the same shape as WebGPU', webgpu !== undefined && Math.abs(r.orangeShare - webgpu.orangeShare) <= webgpu.orangeShare * 0.25 && r.orangeBelowGround < 20]]
   },
+  // StrictMode mounts, unmounts and mounts again: the plugin is removed and installed once more, its shape kept.
+  'sdf shapes plugin, strict mode': r => {
+    const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
+    return [
+      ['one shape, one pipeline, no error', r.plugin?.ready === true && r.plugin?.details?.shown === 1 && r.plugin?.details?.pipelines === 1 && r.errors.length === 0],
+      ['draws the same shape as without StrictMode', plain !== undefined && Math.abs(r.orangeShare - plain.orangeShare) <= plain.orangeShare * 0.1],
+    ]
+  },
 }
 
 let failures = 0

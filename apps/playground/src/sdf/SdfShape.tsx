@@ -1,30 +1,24 @@
-import { useEarth } from 'react-three-earth/react'
-import { useLayoutEffect, useState } from 'react'
+import { useLayoutEffect } from 'react'
 
 import { SdfShape as SdfShapeImpl, type SdfShapeOptions, type SdfShapesPlugin } from './sdfShapes'
 
-export type SdfShapeProps = SdfShapeOptions
+export interface SdfShapeProps extends SdfShapeOptions {
+  /** The `sdfShapes()` plugin given to `<Earth plugins>`. Shapes added before it is installed wait for it. */
+  plugin: SdfShapesPlugin
+}
 
 /**
- * A raymarched signed-distance shape at a geographic position. Needs the `sdfShapes()` plugin in
- * `<Earth plugins>`. Wraps the vanilla `SdfShape`; changing any prop builds a new one.
+ * A raymarched signed-distance shape at a geographic position, drawn by the `sdfShapes()` plugin. Wraps the
+ * vanilla `SdfShape`; changing any prop builds a new one.
  */
-export function SdfShape({ position, headingDegrees, halfSizeMeters, distanceFunction, color, maximumMarchSteps }: SdfShapeProps) {
-  const earth = useEarth()
+export function SdfShape({ plugin, position, headingDegrees, halfSizeMeters, distanceFunction, color, maximumMarchSteps }: SdfShapeProps) {
   const { longitudeDegrees, latitudeDegrees, heightMeters } = position
   const [x, y, z] = halfSizeMeters
-  const [shape, setShape] = useState<SdfShapeImpl | null>(null)
   useLayoutEffect(() => {
-    const created = new SdfShapeImpl({ position: { longitudeDegrees, latitudeDegrees, heightMeters }, headingDegrees, halfSizeMeters: [x, y, z], distanceFunction, color, maximumMarchSteps })
-    setShape(created)
-    return () => setShape(current => (current === created ? null : current))
-  }, [longitudeDegrees, latitudeDegrees, heightMeters, headingDegrees, x, y, z, distanceFunction, color, maximumMarchSteps])
-  useLayoutEffect(() => {
-    if (shape === null) return
-    const plugin = earth.plugins.get<SdfShapesPlugin>('sdf-shapes')
-    if (plugin === undefined) throw new Error('<SdfShape> needs the sdfShapes() plugin: <Earth plugins={[sdfShapes()]}>.')
+    const shape = new SdfShapeImpl({ position: { longitudeDegrees, latitudeDegrees, heightMeters }, headingDegrees, halfSizeMeters: [x, y, z], distanceFunction, color, maximumMarchSteps })
+    // Passed in rather than looked up: children's effects run before <Earth plugins> installs it, and add() queues.
     plugin.add(shape)
     return () => plugin.remove(shape)
-  }, [earth, shape])
+  }, [plugin, longitudeDegrees, latitudeDegrees, heightMeters, headingDegrees, x, y, z, distanceFunction, color, maximumMarchSteps])
   return null
 }
