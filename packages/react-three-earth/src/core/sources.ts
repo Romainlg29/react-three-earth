@@ -224,9 +224,10 @@ export interface MapStyleSourceOptions {
  *
  * Tiles are decoded and tessellated in a worker, then drawn on the GPU straight into each terrain tile's
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
- * `background-pattern`) come from the style's sprite and from `addImage`. Not supported yet: icons, heatmap
- * layers, right-to-left and complex scripts, 3D extrusion (drawn flat). A raster-dem source shades the drape;
- * it does not raise the terrain.
+ * `background-pattern`) come from the style's sprite and from `addImage`. Heatmap layers sum their kernels
+ * in a half-float target, then colour it with `heatmap-color`. Not supported yet: icons, right-to-left and
+ * complex scripts, 3D extrusion (drawn flat). A raster-dem source shades the drape; it does not raise the
+ * terrain.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.

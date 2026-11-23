@@ -239,6 +239,7 @@ style.setGeoJsonSourceData('buses', { type: 'FeatureCollection', features: [] })
 - `updateData` needs every feature to have an id (`id`, or the `promoteId` property) and the data as an object.
   It redraws around the changed features only, or around the whole data when points are clustered.
 - Feature-state on GeoJSON: `setFeatureState({ source: 'buses', id: 12 }, { hover: true })`, no `sourceLayer`.
+- Point density: `heatmap` layers (`heatmap-layers`).
 
 ### Hover and selection: feature-state
 
@@ -478,8 +479,8 @@ A gradient needs the line's progress, which only a `geojson` source with `lineMe
 
 ### MEDIUM: Unsupported layers
 
-Heatmap layers are skipped with one console warning listing them, as are layers reading a source of the
-wrong kind (a hillshade on a vector source, a fill on a raster source). `fill-extrusion`
+Layers reading a source of the wrong kind (a hillshade on a vector source, a fill on a raster source) are skipped
+with one console warning listing them. `fill-extrusion`
 draws flat. Labels (`symbols`, icons not drawn yet, other limits) are in `map-labels`. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
