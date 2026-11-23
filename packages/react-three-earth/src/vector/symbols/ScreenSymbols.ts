@@ -370,7 +370,7 @@ export class ScreenSymbols {
       for (const tile of this.tiles.values()) tile.fades.fill(null)
       for (const candidate of candidates) candidate.tile.fades[candidate.index] = candidate.fade
       this.statistics.placementMilliseconds = performance.now() - start
-      this.statistics.labelsCollided = candidates.reduce((count, candidate) => count + (candidate.fade !== null && !candidate.placed ? 1 : 0), 0)
+      this.statistics.labelsCollided = candidates.reduce((count, candidate) => count + (candidate.fade !== null && !candidate.placed && !candidate.hidden ? 1 : 0), 0)
       this.lastPlacementMilliseconds = timeMilliseconds
       this.placementDue = false
     }
@@ -607,6 +607,9 @@ export class ScreenSymbols {
         tile.glyphScreen = kept.glyphScreen
         tile.lineFlipped = kept.lineFlipped
         tile.projectedBefore = kept.projectedBefore
+      } else {
+        // New glyphs: none laid out yet, so no road name may keep (shift) its glyphs before it fits once.
+        tile.projected = new Uint8Array(count)
       }
       for (let index = 0; index < count; index++) {
         const from = kept.candidates[index]!

@@ -345,4 +345,17 @@ describe('placing labels with one box per glyph', () => {
     placement.fade(0.5)
     expect(hidden.fade?.opacity).toBeCloseTo(0.5)
   })
+
+  it('hands a hidden label\'s fade to the same label from another tile that fits', () => {
+    const placement = new SymbolPlacement({ fadeDurationSeconds: 1 })
+    const road = candidate('road', 200, 200, { order: 0 })
+    placement.place([road], 800, 600)
+    placement.fade(1)
+    const hidden = candidate('road', 201, 200, { order: 0, hidden: true })
+    const otherTile = candidate('road', 203, 200, { order: 1 })
+    placement.place([hidden, otherTile], 800, 600)
+    expect(otherTile.fade).toBe(road.fade)
+    expect(otherTile.placed).toBe(true)
+    expect(hidden.fade).toBeNull()
+  })
 })

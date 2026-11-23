@@ -156,6 +156,8 @@ export class SymbolPlacement {
       (a, b) =>
         b.layerIndex - a.layerIndex ||
         a.sortKey - b.sortKey ||
+        // A hidden label (fading out) after the rest: the same label from another tile that fits takes its fade.
+        Number(a.hidden) - Number(b.hidden) ||
         visibleRank(b.match) - visibleRank(a.match) ||
         a.order - b.order,
     )
