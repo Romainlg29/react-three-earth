@@ -516,6 +516,8 @@ class StyleTestOverlay extends MapStyleOverlay {
       },
       updateFeatureStates: async changes => void this.sentStates.push(changes),
       setImage: async () => ({ rebuild: false, backgroundPatternByZoom: [], missingBackgroundImages: [] }),
+      queryRenderedFeatures: async () => [],
+      querySourceFeatures: async () => [],
       setLayerTypes: async () => ({ summary, rebuiltSources: [], errors: [] }),
       querySource: async () => null,
       dispose: () => {},
@@ -591,6 +593,77 @@ describe('MapStyleOverlay style changes', () => {
     expect(overlay.processed.every(key => key.endsWith('/other'))).toBe(true)
     expect(overlay.processed.length).toBeGreaterThan(0)
     expect(new Set(overlay.drawnRegions)).toEqual(new Set([A.join('_'), C.join('_')]))
+  })
+})
+
+describe('MapStyleOverlay feature queries', () => {
+  async function setUp() {
+    const mapStyle = new MapStyle({ style: { version: 8, sources: { base: { type: 'vector', tiles: [TILES] }, other: { type: 'vector', tiles: [TILES] } }, layers: [] }, baseUrl: 'https://maps.test/' })
+    await mapStyle.load()
+    const overlay = new StyleTestOverlay(mapStyle)
+    void overlay.lockTexture(A)
+    void overlay.lockTexture(C)
+    await overlay.settle()
+    const backend = (overlay as unknown as { backend: MapStyleBackend }).backend
+    const rendered = vi.spyOn(backend, 'queryRenderedFeatures')
+    const source = vi.spyOn(backend, 'querySourceFeatures')
+    return { overlay, rendered, source }
+  }
+
+  it('asks the worker about the tiles drawn under the point, at the drawn zoom, with a ring for labels', async () => {
+    const { overlay, rendered } = await setUp()
+    await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }], { layers: ['roads'], tolerancePixels: 3 })
+    const query = rendered.mock.calls[0]![0]
+    expect(query.layers).toEqual(['roads'])
+    expect(query.tolerancePixels).toBe(3)
+    const covered = query.tiles.filter(tile => !tile.labelsOnly)
+    expect(covered).toEqual([
+      { sourceId: 'base', x: 2, y: 1, z: 2, zoom: 2, column: 2, labelsOnly: false },
+      { sourceId: 'other', x: 2, y: 1, z: 2, zoom: 2, column: 2, labelsOnly: false },
+    ])
+    expect(query.tiles.filter(tile => tile.labelsOnly && tile.sourceId === 'base')).toHaveLength(8)
+  })
+
+  it('answers nothing where no texture is drawn, without asking the worker', async () => {
+    const { overlay, rendered } = await setUp()
+    expect(await overlay.queryRenderedFeatures([{ x: 0.9, y: 0.9 }])).toEqual([])
+    expect(rendered).not.toHaveBeenCalled()
+  })
+
+  it('wraps columns of a box crossing the antimeridian, keeping them unwrapped for the geometry', async () => {
+    const { overlay, rendered } = await setUp()
+    void overlay.lockTexture([0.875, 0.5, 1, 0.625]) // tile (3, 1)
+    void overlay.lockTexture([0, 0.5, 0.125, 0.625]) // tile (0, 1)
+    await overlay.settle()
+    await overlay.queryRenderedFeatures([{ x: 0.95, y: 0.52 }, { x: 1.05, y: 0.52 }, { x: 1.05, y: 0.55 }, { x: 0.95, y: 0.55 }])
+    const covered = rendered.mock.calls[0]![0].tiles.filter(tile => tile.sourceId === 'base' && !tile.labelsOnly)
+    expect(covered.map(tile => [tile.x, tile.column])).toEqual([
+      [3, 3],
+      [0, 4],
+    ])
+  })
+
+  it('reads only regions on visible terrain tiles once visibility is reported', async () => {
+    const { overlay, rendered } = await setUp()
+    overlay.setRegionVisible(C, true)
+    // Region A is still loaded (its terrain tile is cached) but not shown: it does not answer
+    expect(await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])).toEqual([])
+    expect(rendered).not.toHaveBeenCalled()
+    overlay.setRegionVisible(A, true)
+    await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])
+    expect(rendered).toHaveBeenCalledTimes(1)
+    overlay.setRegionVisible(A, false)
+    expect(await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])).toEqual([])
+  })
+
+  it('reads the source features of the tiles drawn now, and names the sources when the id is wrong', async () => {
+    const { overlay, source } = await setUp()
+    await overlay.querySourceFeatures('base', { sourceLayer: 'roads' })
+    const query = source.mock.calls[0]![0]
+    expect(query.sourceLayer).toBe('roads')
+    expect(query.tiles).toEqual(expect.arrayContaining([{ x: 2, y: 1, z: 2 }, { x: 0, y: 3, z: 2 }]))
+    expect(query.tiles).toHaveLength(2)
+    await expect(overlay.querySourceFeatures('nope')).rejects.toThrow(/no source "nope"; pass one of \["base","other"\]/)
   })
 })
 

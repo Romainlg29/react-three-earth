@@ -1,4 +1,6 @@
+import { classifyRings } from '@maplibre/maplibre-gl-style-spec'
 import { VectorTile } from '@mapbox/vector-tile'
+import type { Geometry } from 'geojson'
 import Pbf from 'pbf'
 
 import type { Point } from './ShapeBuilder.js'
@@ -12,6 +14,10 @@ export interface VectorTileFeatureLike {
   properties: Record<string, number | string | boolean>
   /** Rings (or lines, or one ring per point) in the layer's `extent` units, y down. */
   loadGeometry(): Point[][]
+  /** The box around the geometry, in the layer's `extent` units: minimum x, minimum y, maximum x, maximum y. */
+  bbox(): number[]
+  /** The feature in longitude-latitude, clipped to the tile (with its buffer), as `@mapbox/vector-tile` answers it. */
+  toGeoJSON(x: number, y: number, z: number): { geometry: Geometry }
 }
 
 export interface VectorTileLayerLike {
@@ -72,4 +78,28 @@ export const createVectorTileProvider: VectorTileProviderFactory = async (source
     invalidate: () => fetcher.invalidate?.(),
   }
   return provider
+}
+
+/**
+ * A feature's geometry in longitude-latitude, from its tile geometry: `@mapbox/vector-tile`'s `toGeoJSON`, for
+ * features that are not decoded vector tile features (GeoJSON tiles).
+ */
+export function tileFeatureGeometry(type: number, rings: Point[][], extent: number, x: number, y: number, z: number): Geometry {
+  const size = extent * 2 ** z
+  const toLongitudeLatitude = ({ x: column, y: row }: Point): [number, number] => {
+    const longitude = ((column + extent * x) * 360) / size - 180
+    const mercatorY = 180 - ((row + extent * y) * 360) / size
+    return [longitude, (360 / Math.PI) * Math.atan(Math.exp((mercatorY * Math.PI) / 180)) - 90]
+  }
+  if (type === 1) {
+    const points = rings.map(ring => toLongitudeLatitude(ring[0]!))
+    return points.length === 1 ? { type: 'Point', coordinates: points[0]! } : { type: 'MultiPoint', coordinates: points }
+  }
+  if (type === 2) {
+    const lines = rings.map(line => line.map(toLongitudeLatitude))
+    return lines.length === 1 ? { type: 'LineString', coordinates: lines[0]! } : { type: 'MultiLineString', coordinates: lines }
+  }
+  const polygons = classifyRings(rings as never, 0) as unknown as Point[][][]
+  const coordinates = polygons.map(polygon => polygon.map(ring => ring.map(toLongitudeLatitude)))
+  return coordinates.length === 1 ? { type: 'Polygon', coordinates: coordinates[0]! } : { type: 'MultiPolygon', coordinates }
 }

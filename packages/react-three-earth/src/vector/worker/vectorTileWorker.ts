@@ -118,6 +118,16 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
         })
         .catch(error => fail(data.id, error))
       return
+    case 'queryRendered':
+      requireProcessor()
+        .then(async created => post(created, { type: 'result', id: data.id, value: await created.queryRenderedFeatures(data.query) }))
+        .catch(error => fail(data.id, error))
+      return
+    case 'querySource':
+      requireProcessor()
+        .then(async created => post(created, { type: 'result', id: data.id, value: await created.querySourceFeatures(data.query) }))
+        .catch(error => fail(data.id, error))
+      return
     case 'image': {
       const { id, imageId, image } = data
       requireProcessor()

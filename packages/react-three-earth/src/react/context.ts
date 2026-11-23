@@ -52,3 +52,6 @@ export function useRegisterSource<T>(registry: SourceRegistry<T> | null, source:
 
 /** The vanilla `Marker` of the nearest `<Marker>`, for a `<Popup>` or content inside it. */
 export const MarkerContext = createContext<import('../core/Marker.js').Marker | null>(null)
+
+/** The vanilla `Controls` of the nearest `<Controls>`, which the control components add themselves to. */
+export const ControlsContext = createContext<import('../controls/Controls.js').Controls | null>(null)

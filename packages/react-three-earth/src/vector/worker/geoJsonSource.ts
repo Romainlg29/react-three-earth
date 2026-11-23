@@ -6,7 +6,7 @@ import Supercluster from 'supercluster'
 import { applyGeoJsonDiff, boundsRectangles, featureRectangles, geoJsonBounds, toFeatures, type GeoJsonSourceDiff } from './geoJsonData.js'
 import type { MercatorRectangle } from './rectangles.js'
 import type { Point } from './ShapeBuilder.js'
-import type { TileSourceSpecification, VectorTileFeatureLike, VectorTileLayerLike, VectorTileLike, VectorTileProvider, VectorTileProviderFactory } from './tileProviders.js'
+import { tileFeatureGeometry, type TileSourceSpecification, type VectorTileFeatureLike, type VectorTileLayerLike, type VectorTileLike, type VectorTileProvider, type VectorTileProviderFactory } from './tileProviders.js'
 import { resolveUrl, type FetcherContext } from './tileSources.js'
 import { TILE_EXTENT, TILE_SIZE_PIXELS, type GeoJsonSourceQuery } from './types.js'
 
@@ -339,11 +339,25 @@ class GeoJsonTile implements VectorTileLike {
 
 function toTileFeature(feature: LegacyFeature): VectorTileFeatureLike {
   const properties = (feature.tags ?? {}) as Record<string, number | string | boolean>
+  const loadGeometry = (): Point[][] =>
+    feature.type === 1 ? feature.geometry.map(([x, y]) => [{ x, y }]) : feature.geometry.map(ring => ring.map(([x, y]) => ({ x, y })))
   return {
     type: feature.type,
     id: feature.id,
     properties,
-    loadGeometry: (): Point[][] =>
-      feature.type === 1 ? feature.geometry.map(([x, y]) => [{ x, y }]) : feature.geometry.map(ring => ring.map(([x, y]) => ({ x, y }))),
+    loadGeometry,
+    bbox: () => {
+      let [minimumX, minimumY, maximumX, maximumY] = [Infinity, Infinity, -Infinity, -Infinity]
+      for (const ring of loadGeometry()) {
+        for (const { x, y } of ring) {
+          minimumX = Math.min(minimumX, x)
+          minimumY = Math.min(minimumY, y)
+          maximumX = Math.max(maximumX, x)
+          maximumY = Math.max(maximumY, y)
+        }
+      }
+      return [minimumX, minimumY, maximumX, maximumY]
+    },
+    toGeoJSON: (x, y, z) => ({ geometry: tileFeatureGeometry(feature.type, loadGeometry(), TILE_EXTENT, x, y, z) }),
   }
 }

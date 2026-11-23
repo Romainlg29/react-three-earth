@@ -10,10 +10,14 @@ import type {
   ImageChange,
   MapStyleProcessorOptions,
   MapStyleSummary,
+  RenderedFeatureQuery,
+  RenderedSourceFeature,
   ResourceAnswer,
   ResourceRequest,
   StyleCommand,
   StyleImage,
+  SourceFeature,
+  SourceFeatureQuery,
   StyleUpdateResult,
   TileBucket,
   TileRequest,
@@ -40,6 +44,10 @@ export interface MapStyleBackend {
   setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult>
   /** Asks a source a question (the clusters of a `geojson` source); sees every change sent before it. */
   querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown>
+  /** Hit-tests the features drawn under a point or polygon, top-most first. */
+  queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]>
+  /** Reads every feature of a source in the given tiles. */
+  querySourceFeatures(query: SourceFeatureQuery): Promise<SourceFeature[]>
   dispose(): void
 }
 
@@ -141,6 +149,14 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
 
   async updateFeatureStates(changes: FeatureStateChange[]): Promise<void> {
     await this.call<null>({ type: 'featureState', id: this.nextId++, changes })
+  }
+
+  queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]> {
+    return this.call<RenderedSourceFeature[]>({ type: 'queryRendered', id: this.nextId++, query })
+  }
+
+  querySourceFeatures(query: SourceFeatureQuery): Promise<SourceFeature[]> {
+    return this.call<SourceFeature[]>({ type: 'querySource', id: this.nextId++, query })
   }
 
   setImage(imageId: string, image: StyleImage | null): Promise<ImageChange> {
@@ -289,6 +305,21 @@ export class InlineMapStyleBackend implements MapStyleBackend {
     return processor.querySource(sourceId, query)
   }
 
+  async queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]> {
+    const processor = await this.requireProcessor()
+    // Copies, as a worker's answer would be: the caller may change them.
+    const features = structuredClone(await processor.queryRenderedFeatures(query))
+    this.flushQueryUpdates(processor)
+    return features
+  }
+
+  async querySourceFeatures(query: SourceFeatureQuery): Promise<SourceFeature[]> {
+    const processor = await this.requireProcessor()
+    const features = await processor.querySourceFeatures(query)
+    this.flushQueryUpdates(processor)
+    return features
+  }
+
   dispose(): void {
     this.processor = null
   }
@@ -296,6 +327,13 @@ export class InlineMapStyleBackend implements MapStyleBackend {
   protected requireProcessor(): Promise<MapStyleProcessor> {
     if (this.processor === null) return Promise.reject(new DOMException('MapStyleSource: disposed, or tile requested before init', 'AbortError'))
     return this.processor
+  }
+
+  /** A query may lay out a tile's labels again: hand over the glyphs, slot colours and images it added. */
+  protected flushQueryUpdates(processor: MapStyleProcessor): void {
+    const atlas = processor.takeAtlasUpdate()
+    if (atlas !== null) this.host.onAtlasUpdate(atlas)
+    this.flushUpdates(processor)
   }
 
   /** Hands slot colour and image atlas changes to the host. */

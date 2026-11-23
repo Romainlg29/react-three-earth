@@ -370,6 +370,78 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
+### Feature querying and layer events (W4)
+
+`earth.queryRenderedFeatures(point | box | nothing, { layers, filter, tolerancePixels })` and
+`MapStyleSource.querySourceFeatures(sourceId, { sourceLayer, filter })` answer MapLibre-shaped features (`id`,
+`properties`, GeoJSON `geometry` in degrees, `source`, `sourceLayer`, `state`, `layer`; rendered ones also
+`mapStyleSource`). `earth.layerEvents` adds layer-scoped `click`, `doubleclick`, `contextmenu`, `pointermove`,
+`pointerenter` and `pointerleave` (MapLibre's `mouseenter` / `mouseleave`), `addCursor` and `addHoverState`;
+React has `useEarthEvent(type, handler, { layers })`, `useLayerCursor` and `useHoverFeatureState`. `Earth`
+fires a new `pointerout` when the pointer leaves its element.
+
+How it works:
+
+- **Main thread: what is drawn there.** The screen point is unprojected (`earth.camera.unproject`, terrain
+  raycast) into normalised Web Mercator. Each `MapStyleOverlay` reads the region textures of *visible* terrain
+  tiles under it: it now follows 3DTilesRenderer's `setRegionVisible` (an upstream method without typings),
+  because a region stays locked and loaded while its terrain tile is only cached, so after zooming out the old
+  fine regions would otherwise answer. A point reads the finest visible region under it; a box every visible
+  region it overlaps, each at its own level. The query sends those regions' tiles, with the label ring each region
+  reads (same reach test as drawing), at the zoom each was drawn at: exactly what the terrain shows, and tiles
+  already processed. A box is unprojected along its outline (16 samples) so pitch and the globe bend it; when part
+  of the outline is on the sky (the whole globe in view), a 13 × 13 grid inside it is sampled and its hull used.
+- **Worker: hit tests from the raw tiles.** No decoded features are kept per tile. The raw tile comes from the
+  worker's raw-tile cache, and a grid index of feature boxes (`featureIndex.ts`, 16 × 16 cells, built from
+  `feature.bbox()` without allocating points) is kept in a `WeakMap` keyed by the decoded tile, so it lives exactly
+  as long as the raw tile. Candidates are decoded and tested as drawn: fills even-odd (holes are holes), lines by
+  half width (gap lines are their two sides and the gap, hairlines one pixel, `line-offset` applied with mitred
+  corners), circles by radius plus stroke, all at the drawn zoom's pixels. The query is clipped to the tile square,
+  since a tile draws nothing outside it. Hit testers are a registry by layer type (`featureHitTesters`), not a
+  `switch`, so custom types can add theirs.
+- **Labels hit their placed boxes.** `processTile` now records the boxes of the labels it placed (with the source
+  layer and feature index) in an LRU of 256 tiles, keyed to the decoded tile by a serial number (so the cache keeps
+  no tile alive). A query reuses them while the raw tile and the compiled layers are the ones they were placed
+  from; otherwise it lays the tile out again. A style change while a query loads tiles makes it start again (up to
+  three tries), so an answer never mixes two styles. Labels sort above every shape, because
+  they draw above every shape (top style layer first among themselves).
+- **Order and duplicates.** Top imagery layer first; in a style, labels, then shapes from the top style layer down,
+  later features in a tile first. A feature with an id is listed once per layer across tiles (MapLibre does the same
+  through its feature index); features without ids can repeat in box queries. `querySourceFeatures` reads every
+  feature of the source's tiles under held regions, once per tile, clipped, as MapLibre does.
+- **Layer events** run one `queryRenderedFeatures` per pointer event for all listeners of its type (the union of their
+  layers), one per distinct `tolerancePixels` so a listener's tolerance never widens another's. A source disposed
+  during a query answers nothing instead of failing the others. Pointer moves keep one query in flight and query the latest move next; a `pointerout` meanwhile
+  discards the answer. `pointerenter` / `pointerleave` track, per listener, whether the pointer was over its layers.
+
+Deviations from the brief:
+
+- **No flatbush dependency.** A tile holds at most a few thousand features per source layer; a fixed grid over the
+  tile (with its buffer) answers a point query with a handful of candidates and costs nothing to depend on.
+- **No worker-side id → tiles index for feature-state.** W3 already keeps, on the main thread, the exact map from
+  feature key to loaded buckets (built from each bucket's `featureStateKeys`), which is what a state change needs to
+  pick regions to redraw. A second index in the worker would duplicate it, so W3's stays.
+- Queries are asynchronous (MapLibre's are synchronous): the features live in the worker. Layer listeners therefore
+  run after the DOM event; `preventDefault` there is too late, and the docs say so.
+- Line and circle candidates are looked up within 128 map pixels of the query: a data-driven half width beyond
+  that (not known until the feature is read) can be missed near its edge.
+
+Not supported yet: custom layer types (plugins), icons, raster sources and draped layers answer nothing;
+`fill-translate` and friends are not drawn either, so not queried; hover does not follow a camera move under a still
+pointer (as in MapLibre).
+
+| Check (`?fixtures&map=vector&hover`, SwiftShader; correctness only) | Result |
+| --- | --- |
+| `queryRenderedFeatures` at Lake Kawaguchi's screen position | `water-hover` (transparent) and `water`, id 1, "Lake Kawaguchi", a Polygon |
+| at East Road 6, `tolerancePixels: 3` | `road` above `road-casing`, both "East Road 6" |
+| real mouse click on the lake | the `click` listener for `water`, `road`, labels gets `[water 1]` only |
+| hover, then leave | feature-state `hover` true, cursor `pointer`, `pointerenter` with lake 1, lake 0.15 % pink; then false, cursor restored, `pointerleave`, blue again |
+| whole screen, `layers: ['water']`; `querySourceFeatures('fixture', { sourceLayer: 'water' })` | lakes 1, 2, 3 |
+| point query round trip | 1.7 ms average (worker hit test and message, CPU-only machine) |
+| Unit tests | 33 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, visible regions only, layer events (scoping, enter / leave, one query in flight, tolerance per listener, cleanup), hover state (cleared on dispose), cursor, a whole globe inside a box |
+
+![hover](map-vector-query-hover.png)
+
 ### GeoJSON sources, clustering and line gradients (W2)
 
 `geojson` sources draw like vector sources: in a style (`data` as an object or a URL), at runtime with
@@ -412,6 +484,9 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
   across tiles with no shader change and no extra vertex attribute. Deviation from the brief: no gradient lookup in
   the line shader; colours are baked like every other line colour. Without line metrics the layer draws with
   `line-color` and warns once.
+- **Feature queries** (W4, merged first) read GeoJSON sources too: a style layer's tile layer is the source's single
+  layer, state keys have no source layer, and GeoJSON tile features answer `bbox()` and `toGeoJSON()` like decoded
+  vector tile features.
 - React: `<GeoJsonSource>` mounts its children only once the source is in the style, so their `addLayer` finds it,
   and removes the source a microtask after unmounting, once its layers are gone (React unmounts parents first). A
   source still read by the style's own layers stays with its last data.
@@ -425,7 +500,7 @@ polygons (dropped, as in MapLibre), and `line-gradient` with `line-dasharray`.
 | A new `data` prop | the area moves east; the route and clusters are unchanged |
 | `setData` 20 km from a close view | 0 of 16 detailed regions in view redrawn (50 of 66 held regions are coarser ancestors spanning both places) |
 | `updateData` on the clustered source, cluster query with a wrong id | regions redrawn; the worker's error states the fix |
-| Unit tests | 30 new: diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal, `update` after `updateData`, query order behind `setStyle`, MultiPoint clusters, cluster-radius margins |
+| Unit tests | 31 new: feature queries on a GeoJSON source, diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal, `update` after `updateData`, query order behind `setStyle`, MultiPoint clusters, cluster-radius margins |
 
 ![GeoJSON sources](geojson-sources.png) ![clusters close up](geojson-clusters-close.png)
 
@@ -571,6 +646,37 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
+
+## Map controls (W10)
+
+DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`.
+
+- **Structure.** `Controls({ earth, container, position })` owns a corner element (`.react-three-earth-controls`,
+  shared and reference-counted per container and corner, so two `Controls` in one corner stack). Items implement
+  `ControlsItem { element, onAdd, onRemove }`; `MapControl` is the base class with `addTo` and `attach`/`detach`. That
+  is the plugin seam: a third-party control is a `MapControl` subclass. The React `<Controls>` creates the vanilla object in a layout
+  effect and renders its children once it exists; each control component wraps the vanilla class of the same name and
+  rebuilds it when a primitive option changes.
+- **Controls.** `NavigationControl` (zoom by `camera.zoomTo`, summing presses made during the ease; compass from the
+  `rotate`/`pitch` events, `visualizePitch` tilts the needle and resets pitch too), `ScaleControl` (`computeScaleBar`,
+  MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`), `GeolocateControl`,
+  `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on the `update` event, `viewchange` event
+  for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
+- **Geolocate.** States `off | waiting | tracking | background | error`. The dot and the accuracy circle are two
+  `Marker`s (the circle `pitchAlignment: 'map'`, sized as accuracy over metres per pixel). "The user took the map" is a
+  a `pointerdown`, `wheel` or `touchstart` on the container (the corner stops those from the buttons; a `movestart` check
+  was dropped because viewport resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the state
+  before it and restores it on the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1 error disables the button.
+- **Phone.** `pointer: coarse` makes buttons 44 px; corners add `env(safe-area-inset-*)`; `touch-action: manipulation`.
+  iPhone Safari has no element Fullscreen API, so `FullscreenControl` falls back to a `position: fixed; 100dvh` class on
+  the container (Escape leaves), or hides with `unsupported: 'hide'`. Not tested on a real iPhone yet.
+- **Gestures.** The corner stops `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart` so a press
+  on a control never starts a map gesture or a map `click`.
+- **Not done.** `TerrainControl` (needs W8 exaggeration), disabled zoom buttons at the limits, compass dragging.
+- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
+  `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
+  fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
+  loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
 
 ## Attribution
 

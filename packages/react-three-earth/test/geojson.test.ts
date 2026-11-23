@@ -201,6 +201,20 @@ describe('GeoJSON sources in the worker', () => {
     expect(result.rebuiltAreas![0]!.marginTiles).toBe(200 / 512)
   })
 
+  it('answers feature queries on its single layer, keyed for feature-state without a source layer', async () => {
+    const processor = await createProcessor({ parks: { type: 'geojson', data: collection(square) } }, [{ id: 'park-fill', type: 'fill', source: 'parks' }])
+    processor.applyFeatureStates([{ key: featureKey('parks', undefined, 'square'), state: { picked: true } }])
+    const tile = { sourceId: 'parks', x: 0, y: 0, z: 0, zoom: 0, column: 0, labelsOnly: false }
+    const hits = await processor.queryRenderedFeatures({ geometry: [{ x: 0.5, y: 0.5 }], tiles: [tile], layers: null, filter: null, tolerancePixels: 0 })
+    expect(hits.map(hit => [hit.id, hit.layer.id, hit.state])).toEqual([['square', 'park-fill', { picked: true }]])
+    const geometry = hits[0]!.geometry
+    expect(geometry.type).toBe('Polygon')
+    const ring = (geometry as { coordinates: number[][][] }).coordinates[0]!
+    expect(Math.max(...ring.map(([longitude]) => longitude!))).toBeCloseTo(20, 1)
+    const features = await processor.querySourceFeatures({ sourceId: 'parks', sourceLayer: null, filter: ['==', ['get', 'kind'], 'park'], tiles: [{ x: 0, y: 0, z: 0 }] })
+    expect(features.map(feature => feature.id)).toEqual(['square'])
+  })
+
   it('answers queries on a source no layer reads, and states the fix for an unclustered source', async () => {
     const processor = await createProcessor({ plain: { type: 'geojson', data: collection(point(1, 0, 0)) } }, [])
     await expect(processor.querySource('plain', { kind: 'clusterExpansionZoom', clusterId: 1 })).rejects.toThrow(/set `cluster: true`/)

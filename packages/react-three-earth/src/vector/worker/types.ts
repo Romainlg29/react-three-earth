@@ -225,6 +225,75 @@ export interface TileRequest {
   zoom: number
 }
 
+/** A point in normalised Web Mercator space: x from 0 (180° W) to 1 (180° E), y from 0 (south edge) to 1 (north edge). */
+export interface MercatorPoint {
+  x: number
+  y: number
+}
+
+/** A tile a feature query looks into: the tile a region drew there, at the zoom it drew it at. */
+export interface QueryTile extends TileRequest {
+  /** Unwrapped column the query geometry is measured from (outside 0 to 2^z - 1 next to the antimeridian). */
+  column: number
+  /** True for the ring around the tiles under the query: only their labels can reach it. */
+  labelsOnly: boolean
+}
+
+/** `queryRenderedFeatures` as the worker answers it. */
+export interface RenderedFeatureQuery {
+  /**
+   * One point, or a polygon (its ring, not closed), in normalised Web Mercator, unwrapped: x may leave 0 to 1
+   * when the polygon crosses the antimeridian.
+   */
+  geometry: MercatorPoint[]
+  tiles: QueryTile[]
+  /** Only these style layers; null: every layer. */
+  layers: string[] | null
+  /** A MapLibre filter expression features must also pass; null: none. */
+  filter: unknown
+  /** Extra distance, in map pixels at each tile's zoom, within which a feature counts as hit. */
+  tolerancePixels: number
+}
+
+/** `querySourceFeatures` as the worker answers it. */
+export interface SourceFeatureQuery {
+  sourceId: string
+  /** Required for vector sources in MapLibre; here every source layer is read without it. */
+  sourceLayer: string | null
+  filter: unknown
+  tiles: Array<{ x: number; y: number; z: number }>
+}
+
+/** A GeoJSON geometry, in longitude and latitude degrees. */
+export type FeatureGeometry =
+  | { type: 'Point'; coordinates: number[] }
+  | { type: 'MultiPoint'; coordinates: number[][] }
+  | { type: 'LineString'; coordinates: number[][] }
+  | { type: 'MultiLineString'; coordinates: number[][][] }
+  | { type: 'Polygon'; coordinates: number[][][] }
+  | { type: 'MultiPolygon'; coordinates: number[][][][] }
+
+/** A feature of a source, as GeoJSON with where it comes from: MapLibre's `MapGeoJSONFeature`. */
+export interface SourceFeature {
+  type: 'Feature'
+  /** The tile's feature id, or the promoted property (`promoteId`); undefined when it has none. */
+  id: string | number | undefined
+  /** Clipped to the tile it was read from (with the tile's buffer), as in MapLibre. */
+  geometry: FeatureGeometry
+  properties: Record<string, unknown>
+  /** The style's source id. */
+  source: string
+  sourceLayer: string
+  /** The feature's state (`setFeatureState`); empty without one. */
+  state: FeatureState
+}
+
+/** A feature hit by `queryRenderedFeatures`, with the style layer that drew it. */
+export interface RenderedSourceFeature extends SourceFeature {
+  /** The style layer, as written in the style (MapLibre gives the evaluated layer; here it is the layer specification). */
+  layer: { id: string; type: string; source?: string; 'source-layer'?: string; [property: string]: unknown }
+}
+
 /** A range of indices of a bucket's shape mesh drawn for one group of consecutive style layers. */
 export interface DrawGroup {
   /** Index of the layer group in the style (consecutive layers sharing a source). */
@@ -360,6 +429,10 @@ export type WorkerRequest =
   | { type: 'layerTypes'; id: number; layerTypes: WorkerLayerTypeDescriptor[] }
   /** Asks a source a question (clusters of a `geojson` source); answers what the query says. */
   | { type: 'sourceQuery'; id: number; sourceId: string; query: GeoJsonSourceQuery }
+  /** Hit-tests features under a point or polygon; answers `RenderedSourceFeature[]`, top-most first. */
+  | { type: 'queryRendered'; id: number; query: RenderedFeatureQuery }
+  /** Reads the features of a source's tiles; answers `SourceFeature[]`. */
+  | { type: 'querySource'; id: number; query: SourceFeatureQuery }
 
 /** What an image change did, so the main thread knows what to redraw. */
 export interface ImageChange {
