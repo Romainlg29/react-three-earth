@@ -2,10 +2,16 @@ import { PMTiles, TileType } from 'pmtiles'
 
 import type { ResourceKind } from './types.js'
 
-/** Fetches the raw (decompressed) bytes of vector tiles of one style source. */
+/** Fetches the raw (decompressed) bytes of the tiles of one style source: vector tiles, or raster images. */
 export interface VectorTileFetcher {
   /** The attribution in the source's TileJSON or PMTiles metadata, when it has one. */
   attribution?: string
+  /** Where the source has tiles (west, south, east, north, in degrees), from the style or its TileJSON. */
+  bounds?: [number, number, number, number]
+  /** A raster source's `tileSize`, from the style or its TileJSON. */
+  tileSize?: number
+  /** A raster-dem source's `encoding`, from the style or its TileJSON. */
+  encoding?: string
   readonly minimumZoom: number
   readonly maximumZoom: number
   /**
@@ -28,6 +34,12 @@ export interface VectorSourceSpecification {
   attribution?: string
   /** A property to use as the feature id (feature-state), for every source layer or per source layer. */
   promoteId?: string | Record<string, string>
+  /** Raster sources: map pixels per tile. Default: 512. */
+  tileSize?: number
+  /** Where the source has tiles, in degrees: west, south, east, north. */
+  bounds?: [number, number, number, number]
+  /** Raster-dem sources: how elevation is packed into pixels. */
+  encoding?: string
 }
 
 /** `fetch`, told what the request is for (for `transformRequest` and protocol loaders on the main thread). */
@@ -39,12 +51,17 @@ export interface FetcherContext {
   fetch: ResourceFetch
 }
 
-/** Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. */
+/**
+ * Resolves a style source (`pmtiles://`, TileJSON `url`, or inline `tiles`) into a tile fetcher. Vector sources
+ * fetch vector tiles; `raster` and `raster-dem` sources fetch images.
+ */
 export async function createVectorTileFetcher(source: VectorSourceSpecification, context: FetcherContext): Promise<VectorTileFetcher> {
+  const raster = source.type === 'raster' || source.type === 'raster-dem'
   if (source.url?.startsWith('pmtiles://') === true) {
     // The style's own attribution wins, so the archive's metadata is only read when the style has none
-    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context, typeof source.attribution !== 'string')
+    const archive = await PMTilesFetcher.create(resolveUrl(source.url.slice('pmtiles://'.length), context.baseUrl), context, typeof source.attribution !== 'string', raster)
     if (typeof source.attribution === 'string') archive.attribution = source.attribution
+    copySourceMetadata(archive, source, {})
     return archive
   }
   let specification = source
@@ -58,7 +75,7 @@ export async function createVectorTileFetcher(source: VectorSourceSpecification,
     baseUrl = tileJsonUrl
   }
   const templates = specification.tiles
-  if (templates === undefined || templates.length === 0) throw new Error('MapStyleSource: a vector source needs `tiles`, a TileJSON `url` or a `pmtiles://` url.')
+  if (templates === undefined || templates.length === 0) throw new Error(`MapStyleSource: a ${source.type} source needs \`tiles\`, a TileJSON \`url\` or a \`pmtiles://\` url.`)
   const fetcher = new XYZFetcher(
     templates.map(template => resolveTemplate(template, baseUrl)),
     specification.minzoom ?? 0,
@@ -69,7 +86,18 @@ export async function createVectorTileFetcher(source: VectorSourceSpecification,
   // The style's own `attribution` on the source wins over the TileJSON's
   const attribution = source.attribution ?? specification.attribution
   if (typeof attribution === 'string') fetcher.attribution = attribution
+  copySourceMetadata(fetcher, source, specification)
   return fetcher
+}
+
+/** Bounds, tile size and encoding: the style's source wins over its TileJSON, as in MapLibre. */
+function copySourceMetadata(fetcher: VectorTileFetcher, source: VectorSourceSpecification, tileJson: Partial<VectorSourceSpecification>): void {
+  const bounds = source.bounds ?? tileJson.bounds
+  if (Array.isArray(bounds) && bounds.length === 4 && bounds.every(Number.isFinite)) fetcher.bounds = [...bounds]
+  const tileSize = source.tileSize ?? tileJson.tileSize
+  if (typeof tileSize === 'number' && tileSize > 0) fetcher.tileSize = tileSize
+  const encoding = source.encoding ?? tileJson.encoding
+  if (typeof encoding === 'string') fetcher.encoding = encoding
 }
 
 function withoutUndefined<T extends object>(value: T): Partial<T> {
@@ -99,10 +127,17 @@ export class XYZFetcher implements VectorTileFetcher {
     protected readonly context: FetcherContext,
   ) {}
 
+  /** Fills `{z}`, `{x}`, `{y}`, `{-y}` (the TMS row), `{quadkey}` and `{bbox-epsg-3857}` (WMS), as MapLibre does. */
   getUrl(x: number, y: number, z: number): string {
     const template = this.templates[Math.abs(x + y) % this.templates.length]!
     const row = this.tms ? 2 ** z - 1 - y : y
-    return template.replace(/{z}/g, String(z)).replace(/{x}/g, String(x)).replace(/{y}/g, String(row))
+    return template
+      .replace(/{z}/g, String(z))
+      .replace(/{x}/g, String(x))
+      .replace(/{y}/g, String(row))
+      .replace(/{-y}/g, String(2 ** z - 1 - y))
+      .replace(/{quadkey}/g, () => quadkey(x, y, z))
+      .replace(/{bbox-epsg-3857}/g, () => mercatorBoundingBox(x, y, z).join(','))
   }
 
   async fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate = false): Promise<Uint8Array | null> {
@@ -113,6 +148,23 @@ export class XYZFetcher implements VectorTileFetcher {
     const bytes = new Uint8Array(await response.arrayBuffer())
     return bytes.length === 0 ? null : decompressIfGzipped(bytes)
   }
+}
+
+/** Bing's tile key: one base-4 digit per zoom level. */
+export function quadkey(x: number, y: number, z: number): string {
+  let key = ''
+  for (let level = z; level > 0; level--) {
+    const mask = 1 << (level - 1)
+    key += ((x & mask) !== 0 ? 1 : 0) + ((y & mask) !== 0 ? 2 : 0)
+  }
+  return key
+}
+
+/** A tile's bounds in EPSG:3857 meters: west, south, east, north. */
+export function mercatorBoundingBox(x: number, y: number, z: number): [number, number, number, number] {
+  const half = 20037508.342789244
+  const size = (2 * half) / 2 ** z
+  return [-half + x * size, half - (y + 1) * size, -half + (x + 1) * size, half - y * size]
 }
 
 /** Some servers send gzipped tiles without a Content-Encoding header, so fetch does not unzip them. */
@@ -143,7 +195,8 @@ export class PMTilesFetcher implements VectorTileFetcher {
     protected readonly options: PMTilesFetcherState,
   ) {}
 
-  static async create(url: string, context: FetcherContext, readAttribution = false): Promise<PMTilesFetcher> {
+  /** `raster`: the archive must hold images (PNG, JPEG, WebP or AVIF) instead of vector tiles. */
+  static async create(url: string, context: FetcherContext, readAttribution = false, raster = false): Promise<PMTilesFetcher> {
     // Once invalidated, the archive may have been replaced: range requests skip the HTTP cache's freshness.
     // pmtiles caches the header and directories but not the JSON metadata. The first read (offset 0, 16 KiB) almost
     // always holds the metadata too, so later ranges inside it are answered from these bytes (`firstBytes`) instead of
@@ -180,7 +233,9 @@ export class PMTilesFetcher implements VectorTileFetcher {
     // the tiles down: attribution is optional.
     const metadata = readAttribution ? archive.getMetadata().catch(() => null) : Promise.resolve(null)
     const [header, loaded] = await Promise.all([archive.getHeader(), metadata])
-    if (header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
+    const holdsImages = header.tileType === TileType.Png || header.tileType === TileType.Jpeg || header.tileType === TileType.Webp || header.tileType === TileType.Avif
+    if (!raster && header.tileType !== TileType.Mvt) throw new Error(`MapStyleSource: ${url} holds raster tiles; use it as a raster source.`)
+    if (raster && !holdsImages) throw new Error(`MapStyleSource: ${url} holds no images (PNG, JPEG, WebP or AVIF); use it as a vector source.`)
     const fetcher = new PMTilesFetcher(archive, header.minZoom, header.maxZoom, options)
     const attribution = (loaded as { attribution?: unknown } | null)?.attribution
     if (typeof attribution === 'string') fetcher.attribution = attribution

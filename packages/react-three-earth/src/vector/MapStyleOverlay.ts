@@ -24,7 +24,8 @@ import {
   ImageAtlasTexture,
   type ShapeMaterials,
 } from './VectorTileMeshes.js'
-import { boundsToMercatorRectangles, tileOverlaps, tileOverlapsWithMargin } from './worker/rectangles.js'
+import { RasterLayerRenderer, type RasterRegionTile } from './raster/RasterLayerRenderer.js'
+import { boundsToMercatorRectangles, tileOverlaps, tileOverlapsWithMargin, type MercatorRectangle } from './worker/rectangles.js'
 import {
   TILE_EXTENT,
   TILE_SIZE_PIXELS,
@@ -32,6 +33,7 @@ import {
   type FeatureState,
   type ImageChange,
   type MapStyleProcessorOptions,
+  type MapStyleSourceSummary,
   type MapStyleSummary,
   type MercatorPoint,
   type QueryTile,
@@ -132,6 +134,12 @@ interface Recomposition extends RegionWork {
 }
 
 const MEGABYTE_BYTES = 2 ** 20
+
+/**
+ * How far around a region elevation tiles are read, in tiles: the slopes at the region's edge need two of the
+ * source's pixels beyond it (at most two strides of 256-pixel tiles).
+ */
+const ELEVATION_RING_REACH_TILES = 0.02
 
 /** A custom layer type's GPU side in this overlay, built on first use. */
 interface CustomLayerType {
@@ -254,6 +262,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly clearColor = new Color()
   /** Ranges of regions on visible terrain tiles, with how many visible tiles show each (`setRegionVisible`). */
   protected readonly visibleRegions = new Map<string, { range: number[]; count: number }>()
+  /** Raster, hillshade and colour relief layers. */
+  protected readonly rasterLayers = new RasterLayerRenderer()
+  /** Each raster source's bounds in normalised Web Mercator, by its summary. */
+  protected readonly sourceRectangles = new WeakMap<MapStyleSourceSummary, MercatorRectangle[] | null>()
 
   constructor({
     style,
@@ -329,6 +341,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       dispose: loaded => {
         this.indexFeatures(loaded, false)
         loaded.meshes?.dispose()
+        this.rasterLayers.releaseTile(loaded.bucket.raster)
       },
       getByteLength: loaded => loaded.bucket.byteLength,
       retainedBytes: retainedTileBytes,
@@ -396,7 +409,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (this.disposed) return
     this.detachSourceQueries = this.mapStyle.attachSourceQueryHandler((sourceId, query) => this.requireBackend().querySource(sourceId, query))
     if (this.summary.skippedLayers.length > 0) {
-      console.warn(`MapStyleSource: ${this.summary.skippedLayers.length} style layers are not supported yet and are skipped: ${this.summary.skippedLayers.join(', ')}`)
+      console.warn(
+        `MapStyleSource: ${this.summary.skippedLayers.length} style layers are skipped: ${this.summary.skippedLayers.join(', ')}. ` +
+          'Their type is not supported yet (heatmap), or they read a source of the wrong kind (a hillshade needs a raster-dem source, a raster layer a raster source, the others a vector source).',
+      )
     }
   }
 
@@ -572,15 +588,32 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const previous = this.summary
     this.summary = result.summary
     for (const message of result.errors) this.mapStyle.reportError(new Error(message))
-    const sources = new Set(result.rebuiltSources)
+    // A raster tile does not depend on the style's layers: their changes redraw it. It is fetched again only when
+    // its source changed (`setStyle`, or removed and added back).
+    const rasterSource = (id: string, summary: MapStyleSummary | null) => summary?.sources.find(source => source.id === id && (source.type ?? 'vector') !== 'vector')
+    const sources = new Set(result.rebuiltSources.filter(id => {
+      const before = rasterSource(id, previous)
+      const after = rasterSource(id, result.summary)
+      return (before === undefined && after === undefined) || JSON.stringify(before) !== JSON.stringify(after)
+    }))
     if (sources.size > 0) this.rebuildTiles(request => sources.has(request.sourceId))
     // GeoJSON data changes: only the tiles around what changed
     for (const { sourceId, rectangles, marginTiles } of result.rebuiltAreas ?? []) {
       if (rectangles !== null && rectangles.length === 0) continue
       this.rebuildTiles(({ sourceId: tileSource, x, y, z }) => tileSource === sourceId && tileOverlapsWithMargin(x, y, z, rectangles, marginTiles))
     }
+    const redrawn = new Set(result.rebuiltSources.filter(id => !sources.has(id)))
+    // A raster layer added, removed, moved, hidden or repainted redraws only the regions drawing its source, before
+    // or after the change.
+    const rasterLayersBefore = new Map((previous?.rasterLayers ?? []).map(layer => [layer.id, layer]))
+    const rasterLayersAfter = new Map((result.summary.rasterLayers ?? []).map(layer => [layer.id, layer]))
+    for (const [id, layer] of [...rasterLayersBefore, ...rasterLayersAfter]) {
+      if (JSON.stringify(rasterLayersBefore.get(id)) !== JSON.stringify(rasterLayersAfter.get(id))) redrawn.add(layer.source)
+    }
     const changed = (pick: (summary: MapStyleSummary) => unknown) => previous === null || JSON.stringify(pick(previous)) !== JSON.stringify(pick(result.summary))
     if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.backgroundPatternByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
+    else if (redrawn.size > 0) this.markRegionsStale(key => this.regionDrawsSource(key, redrawn) || (previous !== null && this.regionDrawsSource(key, redrawn, previous)))
+    this.rasterLayers.pruneLayers(new Set((result.summary.rasterLayers ?? []).map(layer => layer.id)))
     this.reportMissingImages(result.summary.missingBackgroundImages)
     this.reportMissingLayerTypes(result.summary)
     this.screenSymbols?.summaryChanged()
@@ -652,6 +685,46 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     }
   }
 
+  /** Whether a held region draws tiles of any of these sources, with the current summary or an earlier one. */
+  protected regionDrawsSource(key: string, sources: ReadonlySet<string>, summary: MapStyleSummary | null = this.summary): boolean {
+    const { range, level } = parseRegionKey(key)
+    const current = this.summary
+    this.summary = summary
+    try {
+      return this.getRegionTiles(range, level).some(tile => sources.has(tile.request.sourceId))
+    } finally {
+      this.summary = current
+    }
+  }
+
+  /**
+   * The zoom of a source's tiles drawn into a region at `level`: raster tiles of `tileSize` 256 come from one zoom
+   * deeper than the 512-pixel map tiles, as in MapLibre. Not clamped to the source's zoom range.
+   */
+  protected sourceTileZoom(source: MapStyleSourceSummary, level: number): number {
+    return Math.round(level + Math.log2(TILE_SIZE_PIXELS / (source.tileSizePixels ?? TILE_SIZE_PIXELS)))
+  }
+
+  /** Whether a source has tiles to draw at a region level: in its zoom range and, for raster sources, a layer drawn there. */
+  protected sourceDrawnAt(source: MapStyleSourceSummary, level: number): boolean {
+    if (this.sourceTileZoom(source, level) < source.minimumZoom) return false
+    if ((source.type ?? 'vector') === 'vector') return true
+    const zoom = Math.min(level, 24)
+    return (this.summary?.rasterLayers ?? []).some(layer => layer.source === source.id && layer.paintByZoom[zoom] != null)
+  }
+
+  /** A raster source's bounds in normalised Web Mercator; null for the whole world. */
+  protected getSourceRectangles(source: MapStyleSourceSummary): MercatorRectangle[] | null {
+    if (source.bounds == null) return null
+    let rectangles = this.sourceRectangles.get(source)
+    if (rectangles === undefined) {
+      const [westDegrees, southDegrees, eastDegrees, northDegrees] = source.bounds
+      rectangles = boundsToMercatorRectangles({ westDegrees, southDegrees, eastDegrees, northDegrees })
+      this.sourceRectangles.set(source, rectangles)
+    }
+    return rectangles
+  }
+
   /** Smallest zoom whose 512-pixel tiles have at least `resolution` pixels across the range. */
   calculateLevel(range: number[]): number {
     const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
@@ -668,7 +741,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     return (
       (summary.backgroundByZoom[zoom] ?? null) !== null ||
       (summary.backgroundPatternByZoom[zoom] ?? null) !== null ||
-      summary.sources.some(source => level >= source.minimumZoom)
+      summary.sources.some(source => this.sourceDrawnAt(source, level))
     )
   }
 
@@ -993,6 +1066,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.backgroundPattern.material.dispose()
     this.backgroundPatternMesh.geometry.dispose()
     this.featureColors.dispose()
+    this.rasterLayers.dispose()
     this.textMaterial.dispose()
     this.backgroundMaterial.dispose()
     this.background.geometry.dispose()
@@ -1008,8 +1082,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
     const tiles: RegionTile[] = []
     for (const source of this.summary?.sources ?? []) {
-      if (level < source.minimumZoom) continue
-      const z = Math.min(level, source.maximumZoom)
+      if (!this.sourceDrawnAt(source, level)) continue
+      const type = source.type ?? 'vector'
+      const tileZoom = this.sourceTileZoom(source, level)
+      const z = Math.max(0, Math.min(tileZoom, source.maximumZoom))
+      const bounds = this.getSourceRectangles(source)
       const count = 2 ** z
       const epsilon = 1e-9
       const fromColumn = Math.floor(minimumX * count + epsilon)
@@ -1020,12 +1097,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       if (fromRow > toRow) continue
       // Labels reach up to about 256 px beyond their tile, half a tile, and custom layers up to their reach
       // (at most a tile); less when overzoomed. Ring tiles further from the region are skipped.
-      const reach = Math.max(0.5, this.maximumReachPixels / TILE_SIZE_PIXELS) / 2 ** (level - z)
+      // Raster tiles have no ring; elevation tiles a thin one, for the slopes at the region's edge.
+      const reach = type === 'vector' ? Math.max(0.5, this.maximumReachPixels / TILE_SIZE_PIXELS) / 2 ** (level - z) : type === 'raster-dem' ? ELEVATION_RING_REACH_TILES : -1
       const regionLeft = minimumX * count
       const regionRight = maximumX * count
       const regionTop = (1 - maximumY) * count
       const regionBottom = (1 - minimumY) * count
       for (const textOnly of [false, true]) {
+        if (textOnly && reach < 0) continue
         const ring = textOnly ? 1 : 0
         for (let column = fromColumn - ring; column <= toColumn + ring; column++) {
           for (let row = Math.max(0, fromRow - ring); row <= Math.min(count - 1, toRow + ring); row++) {
@@ -1038,7 +1117,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
             }
             // Columns wrap at the antimeridian: the same tile can be placed at several columns (low zooms).
             const x = ((column % count) + count) % count
-            const request: TileRequest = { sourceId: source.id, x, y: row, z, zoom: level }
+            if (bounds !== null && !tileOverlaps(x, row, z, bounds)) continue
+            // A raster tile is the same image at every zoom it is drawn at: one bucket for all of them.
+            const request: TileRequest = { sourceId: source.id, x, y: row, z, zoom: type === 'vector' ? level : z }
             tiles.push({ key: bucketKey(request), request, column, textOnly })
           }
         }
@@ -1208,6 +1289,19 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       }
       if (loaded.meshes.text !== null) place(loaded.meshes.text, 100_000_000 + order)
     })
+    const rasterTiles: RasterRegionTile[] = []
+    tiles.forEach((tile, order) => {
+      const raster = buckets[order]?.bucket.raster
+      if (raster != null) rasterTiles.push({ request: tile.request, column: tile.column, textOnly: tile.textOnly, order, raster })
+    })
+    const rasterLayers = this.summary?.rasterLayers ?? []
+    if (rasterLayers.length > 0 && rasterTiles.length > 0) {
+      // Elevation fields render into their own targets now, before the region pass.
+      for (const { mesh, renderOrder } of this.rasterLayers.prepareRegion(renderer, { range, level, resolution: output.width, layers: rasterLayers, tiles: rasterTiles })) {
+        mesh.renderOrder = renderOrder
+        placed.push({ mesh, renderOrder, offscreen: null })
+      }
+    }
     for (const { mesh, offscreen } of placed) if (offscreen === null) scene.add(mesh)
     try {
       if (scene.children.length > 0 || placed.length > 0) {

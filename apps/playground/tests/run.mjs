@@ -1317,6 +1317,68 @@ async function geoJsonSources(name, query) {
   results.push({ check: `geojson sources, ${name}`, before, moved, close, regionsHeldClose, regionsRedrawnFarFromView, ...detail, regionsRedrawnAfterUpdateData, clusterQuery, errors: [...errors, ...closePage.errors] })
 }
 
+/**
+ * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
+ * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
+ */
+const SEAMS = `
+  const lightness = (x, y) => { const i = (y * width + x) * 4; return (px[i] + px[i + 1] + px[i + 2]) / 3 }
+  // Leave out the corners' controls and attribution.
+  const top = 50, bottom = height - 40
+  const step = (ax, ay, bx, by) => Math.abs(lightness(ax, ay) - lightness(bx, by))
+  const seams = []
+  for (let x = 1; x < width - 2; x++) {
+    let jumps = 0
+    for (let y = top; y < bottom; y++) if (step(x, y, x + 1, y) - Math.max(step(x - 1, y, x, y), step(x + 1, y, x + 2, y)) > 1.5) jumps++
+    if (jumps > (bottom - top) * 0.3) seams.push('x' + x)
+  }
+  for (let y = top + 1; y < bottom - 2; y++) {
+    let jumps = 0
+    for (let x = 0; x < width; x++) if (step(x, y, x, y + 1) - Math.max(step(x, y - 1, x, y), step(x, y + 1, x, y + 2)) > 1.5) jumps++
+    if (jumps > width * 0.3) seams.push('y' + y)
+  }
+  // Hillshade only: the grey background, lit slopes and shaded slopes.
+  let light = 0, shade = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const l = (px[i] + px[i + 1] + px[i + 2]) / 3
+    if (l > 170) light++
+    else if (l < 80) shade++
+  }
+  const n = px.length / 4
+  return { seams, litShare: +(light / n).toFixed(3), shadedShare: +(shade / n).toFixed(3) }
+`
+
+const RELIEF_PIXELS = `
+  // The imagery (desaturated green checker) under the colour relief, white and orange roads on top, hillshade on the hills.
+  let green = 0, road = 0, shade = 0, light = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (g > r + 25 && g > b + 25) green++
+    if (r > 200 && g > 140 && b < 120 && r > b + 90) road++
+    if (r + g + b < 90) shade++
+    if (r > 200 && g > 200 && b > 200) light++
+  }
+  const n = px.length / 4
+  return { imageryShare: +(green / n).toFixed(3), primaryRoadShare: +(road / n).toFixed(4), shadedShare: +(shade / n).toFixed(3), lightShare: +(light / n).toFixed(3) }
+`
+
+/** A style with raster, colour relief and hillshade layers (fixture imagery and Terrarium DEM) under vector roads. */
+async function reliefMap(name, query, script = RELIEF_PIXELS) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0${query}`)
+  const warnings = []
+  page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000) // remaining compositions and fades
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-relief-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const stats = await analyse(page, png, script)
+  await page.close()
+  results.push({ check: `relief style with fixtures, ${name}`, ...stats, errors, warnings })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1366,6 +1428,15 @@ try {
     await styleLayerTypes('webgpu', '')
     await styleLayerTypes('webgl2', '&webgl')
     await styleLayerTypes('registered late', '', { late: true })
+  }
+  if (!only || only === 'relief') {
+    const fuji = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
+    await reliefMap('2d', `&map=relief${fuji}`)
+    await reliefMap('2d webgl2', `&map=relief${fuji}&webgl`)
+    await reliefMap('3d', '&map=relief&camera=138.75,35.42,0,15000,-20,-60')
+    await reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)
+    await reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)
+    await reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)
   }
   if (!only || only === 'effects') {
     await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')

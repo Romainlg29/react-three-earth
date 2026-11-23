@@ -11,8 +11,11 @@ import {
   type VisibilityExpression,
 } from '@maplibre/maplibre-gl-style-spec'
 
-/** Style layer types the renderer draws. Others (raster, hillshade, heatmap…) are skipped with a warning. */
-export const SUPPORTED_LAYER_TYPES = ['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion'] as const
+/** Style layer types the renderer draws. Others (heatmap) are skipped with a warning. */
+export const SUPPORTED_LAYER_TYPES = ['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion', 'raster', 'hillshade', 'color-relief'] as const
+
+/** Layer types drawn from raster tiles, each with a draw group of its own (`assignLayerOrder`). */
+const RASTER_LAYER_TYPES = new Set(['raster', 'hillshade', 'color-relief'])
 export type SupportedLayerType = (typeof SUPPORTED_LAYER_TYPES)[number]
 
 /** The parts of a style layer read here. */
@@ -150,6 +153,22 @@ export class CompiledStyleLayer {
     return this.compile(kind, name).evaluate({ zoom }, feature as never, featureState) as T
   }
 
+  /**
+   * Evaluates a property with more globals than the zoom: `elevation` for `color-relief-color`. Feature-less, so
+   * only for properties that do not read feature data.
+   */
+  evaluateWithGlobals<T>(kind: PropertyKind, name: string, globals: { zoom: number; elevation?: number }): T {
+    return this.compile(kind, name).evaluate(globals as never, undefined as never) as T
+  }
+
+  /**
+   * The compiled expression's root (the style specification's `Interpolate`, `Step`…), or undefined for a
+   * constant. Internal API of the style specification, read to list a colour ramp's stops.
+   */
+  expressionOf(kind: PropertyKind, name: string): unknown {
+    return (this.compile(kind, name) as { _styleExpression?: { expression?: unknown } })._styleExpression?.expression
+  }
+
   /** A colour property multiplied by an opacity, as straight-alpha sRGB bytes. */
   evaluateColor(name: string, zoom: number, feature: StyleFeature | undefined, opacity = 1, featureState?: FeatureState): Rgba {
     return toRgba(this.evaluate<Color | undefined>('paint', name, zoom, feature, featureState), opacity)
@@ -251,8 +270,9 @@ export function assignLayerOrder(compiled: readonly CompiledStyleLayer[], layers
   let previousCustom = false
   for (const layer of [...compiled].sort((a, b) => positions.get(a.id)! - positions.get(b.id)!)) {
     layer.index = positions.get(layer.id)!
-    // A custom layer (plugin) draws with its own material: it gets a group of its own, and ends the one before.
-    const custom = layer.custom !== null
+    // A custom layer (plugin) or a raster layer draws with its own material: it gets a group of its own, and
+    // ends the one before.
+    const custom = layer.custom !== null || RASTER_LAYER_TYPES.has(layer.type)
     if (layer.type !== 'background' && (layer.source !== groupSource || custom || previousCustom)) {
       group++
       groupSource = layer.source

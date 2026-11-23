@@ -381,6 +381,8 @@ export class ScreenSymbols {
     })
     const requested = new Set<string>()
     for (const source of summary.sources) {
+      // Raster and elevation tiles hold no labels.
+      if (source.type !== undefined && source.type !== 'vector') continue
       for (const tile of pyramid) {
         if (tile.z < source.minimumZoom) continue
         const z = Math.min(tile.z, source.maximumZoom)

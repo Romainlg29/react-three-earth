@@ -45,7 +45,7 @@ function testStyle(source: object) {
       { id: 'background', type: 'background', paint: { 'background-color': ['interpolate', ['linear'], ['zoom'], 0, '#000000', 10, '#ffffff'] } },
       { id: 'water', type: 'fill', source: 'base', 'source-layer': 'water', paint: { 'fill-color': '#0000ff', 'fill-opacity': 0.5 } },
       { id: 'roads', type: 'line', source: 'base', 'source-layer': 'roads', filter: ['==', ['get', 'class'], 'primary'], paint: { 'line-color': '#ff0000', 'line-width': 4 } },
-      { id: 'hillshade', type: 'hillshade', source: 'unused' },
+      { id: 'heat', type: 'heatmap', source: 'unused' },
       { id: 'places', type: 'symbol', source: 'base', 'source-layer': 'places', layout: { 'text-field': '{name}', 'text-size': 24 } },
     ],
   }
@@ -69,7 +69,7 @@ describe('style layers', () => {
   it('compiles filters and properties, numbers source groups and skips unsupported layers', () => {
     const { layers, skipped } = compileStyleLayers(testStyle({ type: 'vector' }).layers)
     expect(layers.map(layer => layer.id)).toEqual(['background', 'water', 'roads', 'places'])
-    expect(skipped).toEqual(['hillshade'])
+    expect(skipped).toEqual(['heat'])
     const roads = layers.find(layer => layer.id === 'roads')!
     expect(roads.accepts(10, { type: 2, properties: { class: 'primary' } })).toBe(true)
     expect(roads.accepts(10, { type: 2, properties: { class: 'minor' } })).toBe(false)
@@ -276,7 +276,7 @@ describe('MapStyleProcessor', () => {
       { fetch, drawLocalGlyph },
     )
     expect(processor.summary.sources).toEqual([{ id: 'base', minimumZoom: 0, maximumZoom: 14 }])
-    expect(processor.summary.skippedLayers).toEqual(['hillshade'])
+    expect(processor.summary.skippedLayers).toEqual(['heat'])
     expect(processor.summary.backgroundByZoom[10]).toEqual([255, 255, 255, 255])
 
     const bucket = await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10 })

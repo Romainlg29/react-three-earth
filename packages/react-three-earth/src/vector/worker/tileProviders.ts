@@ -81,6 +81,46 @@ export const createVectorTileProvider: VectorTileProviderFactory = async (source
 }
 
 /**
+ * The tiles of a `raster` or `raster-dem` source: images, fetched as bytes (decoded by `processRasterTile`), with
+ * no features (`loadTile` answers null, so feature queries find nothing).
+ */
+export interface RasterTileProvider extends VectorTileProvider {
+  readonly raster: true
+  /** Where the source has tiles (west, south, east, north, in degrees), from the style or its TileJSON. */
+  readonly bounds?: [number, number, number, number]
+  /** Map pixels per tile, from the style or its TileJSON. */
+  readonly tileSize?: number
+  /** A raster-dem source's `encoding`, from the style or its TileJSON. */
+  readonly encoding?: string
+  /** The image's bytes; null for a tile with no data. */
+  fetchTile(x: number, y: number, z: number, signal?: AbortSignal, revalidate?: boolean): Promise<Uint8Array | null>
+}
+
+export function isRasterTileProvider(provider: VectorTileProvider | undefined): provider is RasterTileProvider {
+  return (provider as Partial<RasterTileProvider> | undefined)?.raster === true
+}
+
+/** Raster and raster-dem tiles (XYZ, TileJSON or PMTiles of PNG, JPEG, WebP or AVIF), fetched as bytes. */
+export const createRasterTileProvider: VectorTileProviderFactory = async (source, context) => {
+  const fetcher = await createVectorTileFetcher(source as unknown as VectorSourceSpecification, context)
+  const provider: RasterTileProvider = {
+    raster: true,
+    get attribution() {
+      return fetcher.attribution
+    },
+    minimumZoom: fetcher.minimumZoom,
+    maximumZoom: fetcher.maximumZoom,
+    ...(fetcher.bounds !== undefined ? { bounds: fetcher.bounds } : {}),
+    ...(fetcher.tileSize !== undefined ? { tileSize: fetcher.tileSize } : {}),
+    ...(fetcher.encoding !== undefined ? { encoding: fetcher.encoding } : {}),
+    loadTile: async () => null,
+    fetchTile: (x, y, z, signal, revalidate) => fetcher.fetchTile(x, y, z, signal, revalidate),
+    invalidate: () => fetcher.invalidate?.(),
+  }
+  return provider
+}
+
+/**
  * A feature's geometry in longitude-latitude, from its tile geometry: `@mapbox/vector-tile`'s `toGeoJSON`, for
  * features that are not decoded vector tile features (GeoJSON tiles).
  */

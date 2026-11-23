@@ -229,3 +229,39 @@ export function fixtureLabelStyle(): object {
   }
   return { ...base, layers: [...base.layers.slice(0, placeIndex), towns, ...base.layers.slice(placeIndex)] }
 }
+
+/**
+ * The relief style (`/fixtures/style-relief.json`): fixture imagery as a `raster` layer, colour relief and
+ * hillshade from a Terrarium `raster-dem` source of the fixture heights (`/fixtures/dem/{z}/{x}/{y}.png`), with
+ * the fixture's lakes, roads and labels on top. `only=hillshade` keeps a mid-grey background and the hillshade.
+ */
+export function fixtureReliefStyle({ only }: { only?: string | null } = {}): object {
+  const vector = fixtureStyle() as { sources: Record<string, unknown>; layers: Array<{ id: string }> }
+  const relief = [
+    { id: 'satellite', type: 'raster', source: 'imagery', paint: { 'raster-saturation': -0.3 } },
+    {
+      id: 'relief',
+      type: 'color-relief',
+      source: 'dem',
+      paint: {
+        'color-relief-opacity': 0.55,
+        'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, '#3f8f4f', 1000, '#e8d77a', 2500, '#9c6b3f', 3800, '#ffffff'],
+      },
+    },
+    { id: 'hillshade', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': 0.6 } },
+  ]
+  const sources = {
+    ...vector.sources,
+    imagery: { type: 'raster', tiles: ['/fixtures/imagery/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 18, attribution: 'Fixture imagery' },
+    dem: { type: 'raster-dem', tiles: ['/fixtures/dem/{z}/{x}/{y}.png'], tileSize: 256, maxzoom: 12, encoding: 'terrarium', attribution: 'Fixture elevation' },
+  }
+  if (only === 'hillshade') {
+    return {
+      version: 8,
+      sources: { dem: sources.dem },
+      layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#808080' } }, relief[2]],
+    }
+  }
+  const [background, ...rest] = vector.layers
+  return { version: 8, sources, layers: [background, ...relief, ...rest] }
+}

@@ -3,7 +3,7 @@ name: terrain-and-imagery-sources
 description: >
   Use when choosing or changing where a react-three-earth globe gets its elevation and its map pictures:
   quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), XYZ raster tiles
-  (OpenStreetMap, satellite, MapTiler raster, your own server), stacking or fading imagery layers, or
+  (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
   writing a custom terrain or imagery source class.
 metadata:
   purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
@@ -16,6 +16,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/attribution.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/ImageOverlayPlugin.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/imagery/XYZImageryOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Imagery.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
@@ -75,9 +76,13 @@ export function Basemap() {
 }
 ```
 
-- `url` must contain `{z}`, `{x}` and `{y}`; otherwise the constructor throws and says so.
-- `levels`: how many zoom levels the server has, z0 to z(levels - 1); default 20, which fits
-  OpenStreetMap's z0 to z19. Set it to the provider's maximum zoom + 1: higher requests tiles that 404,
+- `url` must contain `{z}`, `{x}` and `{y}` (or `{-y}` for a TMS server, rows counted from the south);
+  otherwise the constructor throws and says so.
+- `tileJsonUrl`, instead of `url`: a TileJSON document. Its first `tiles` template, `maxzoom` (as `levels`),
+  `scheme: 'tms'` and `attribution` are read when the layer starts (its `minzoom` and `bounds` are not: tiles
+  outside them are requested and draw nothing). Pass exactly one of `url` and `tileJsonUrl`.
+- `levels`: how many zoom levels the server has, z0 to z(levels - 1); default 20 (or the TileJSON's
+  `maxzoom` + 1), which fits OpenStreetMap's z0 to z19. Set it to the provider's maximum zoom + 1: higher requests tiles that 404,
   lower drops the sharpest zoom.
 - `tileDimensionPixels`: 256 by default; 512 for "@2x" or MapTiler-style 512 px tiles.
 - `projection`: `'EPSG:3857'` (Web Mercator, default, what XYZ servers use) or `'EPSG:4326'`.
@@ -170,8 +175,8 @@ is planned, not available.
 
 ### HIGH: A WMTS capabilities URL or `{s}` subdomain template
 
-`RasterTileSource` only understands `{z}`, `{x}`, `{y}`. Replace `{s}` with one subdomain, and convert
-WMTS to its REST tile template. `{-y}` (TMS) is not supported.
+`RasterTileSource` only understands `{z}`, `{x}`, `{y}` and `{-y}` (TMS). Replace `{s}` with one subdomain,
+and convert WMTS to its REST tile template. A TileJSON URL goes in `tileJsonUrl`, not `url`.
 
 ### MEDIUM: Imagery without terrain
 
