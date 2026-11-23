@@ -4,7 +4,7 @@ description: >
   Use when working on the text labels of a MapLibre style on a react-three-earth globe or flat map: labels that
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
-  anchors (text-variable-anchor), labels hidden behind mountains, fades
+  anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
   (symbolFadeDurationSeconds), reading the labels on the screen in tests (earth.terrain.getScreenLabels), and what
   labels do not do yet.
 metadata:
@@ -91,6 +91,12 @@ export function GroundLabels() {
 - Labels stand on the terrain as drawn, fade out behind mountains in front of them on the globe, and go behind
   the globe's horizon. They fade with the `<Imagery>`
   layer's `opacity`, and hide while the view morphs between the globe and the flat map.
+- `icon-image` draws the sprite's icon at the point, facing the viewer: `icon-size`, `icon-anchor`,
+  `icon-offset`, `icon-rotate` and `icon-opacity` apply; SDF icons (`"sdf": true` in the sprite JSON) take
+  `icon-color`, `icon-halo-color` and `icon-halo-width`. An icon with text collides as two boxes, and a variable
+  anchor moves only the text. An icon alone uses `icon-padding` (its widest side), `icon-allow-overlap` and
+  `icon-ignore-placement`; with text, both boxes take `text-padding` and the label overlaps (or ignores placement)
+  only when both the text and icon flags allow it, where MapLibre decides icon and text apart.
 - `earth.queryRenderedFeatures`, layer events and hover hit them by their box on the screen
   (`query-features-and-layer-events`).
 
@@ -105,8 +111,9 @@ export function labelsOnScreen(earth: Earth): string[] {
 ```
 
 Each entry has `text`, `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
-`opacity`, `layerIndex`, `allowOverlap` and `ignorePlacement`. Road names also have `glyphBoxes` (the boxes
-that collide) and `glyphAnglesRadians` (0 reads left to right); both are null for point labels. Labels fading in
+`opacity`, `layerIndex`, `allowOverlap` and `ignorePlacement`. Labels that collide as several boxes have
+`collisionBoxes` (a road name's glyphs, or a place's icon then text); it is null for a single box.
+`glyphAnglesRadians` (0 reads left to right) is set for road names only. Labels fading in
 count; collided ones do not.
 
 ## Common Mistakes
@@ -121,9 +128,11 @@ nothing hides labels.
 
 Each `<MapStyleSource>` places its own labels. Put the labels in one style, or turn one style's symbol layers off.
 
-### MEDIUM: Expecting icons or pitch-aligned road names
+### MEDIUM: Expecting icons along roads, icon-text-fit or pitch-aligned road names
 
-`icon-image` is not drawn yet. Road names face the viewer whatever
+Icons draw at points only: `icon-image` on a line-placed layer is skipped, and `icon-text-fit`, `icon-optional`,
+`text-optional`, stretchable icons and icon pitch or rotation alignment are not read (icon and text show and hide
+together, facing the viewer). With `symbols="draped"` icons are not drawn. Road names face the viewer whatever
 `text-pitch-alignment` and `text-rotation-alignment` say: they never lie flat on the ground in the screen mode
 (use `symbols="draped"` for that). On the flat map only the world copy nearest the camera has labels.
 
@@ -137,6 +146,6 @@ Labels wait for their tiles and a terrain height before they show, then fade in.
 - `earth.inspect().terrain.symbols` shows `labelsShown` above 0 and `elevationsPending` back to 0;
   `labelsOccluded` counts labels behind terrain. It is null
   with `symbols="draped"`.
-- `earth.terrain.getScreenLabels()` lists no two boxes that overlap (road names: compare `glyphBoxes`), except
+- `earth.terrain.getScreenLabels()` lists no two boxes that overlap (compare `collisionBoxes` when set), except
   labels that allow overlap or ignore placement.
 - The console shows no `MapStyleSource: labels of tile` warning.

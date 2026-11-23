@@ -3,7 +3,7 @@ import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smooth
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
-import type { GlyphAtlasTexture } from '../VectorTileMeshes.js'
+import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { GLYPH_EDGE } from '../worker/glyphs.js'
 import type { SymbolMesh } from '../worker/types.js'
 
@@ -149,7 +149,7 @@ function linearColor(name: string) {
  * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
  * so labels keep their style colours under the exposure; `opacity` is the imagery layer's.
  */
-export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: ImageAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
   material.name = 'MapStyleSymbols'
   const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
@@ -158,26 +158,41 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStat
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
   const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
 
-  const slot = int(attribute<'float'>('labelIndex', 'float').add(slotBase))
+  // Two texels a label: its anchor, scale and opacity, then its text's shift from the anchor (variable anchors) and
+  // its icon's scale relative to the label's.
+  const slot = int(attribute<'float'>('labelIndex', 'float').mul(2).add(slotBase))
+  const shiftSlot = slot.add(1)
   const width = int(SYMBOL_STATE_WIDTH)
   const labelState = textureLoad(state.node as never, ivec2(slot.mod(width), slot.div(width)), 0) as unknown as Node<'vec4'>
-  const corner = attribute<'vec3'>('position', 'vec3').xy.mul(labelState.z)
-  // A glyph of a label along a line: at its own place on the screen, turned with the line there.
+  const shiftState = textureLoad(state.node as never, ivec2(shiftSlot.mod(width), shiftSlot.div(width)), 0) as unknown as Node<'vec4'>
+  const shift = shiftState.xy
+  // A glyph of a label along a line: at its own place on the screen, turned with the line there. -1: a point
+  // label's text (shifted), -2 and -3: its icon (at the point, at its own scale).
   const glyphIndex = attribute<'float'>('glyphIndex', 'float')
+  const quadScale = select(glyphIndex.lessThan(-1.5), labelState.z.mul(shiftState.z), labelState.z)
+  const corner = attribute<'vec3'>('position', 'vec3').xy.mul(quadScale)
   const glyphSlot = int(max(glyphIndex, float(0)).add(glyphSlotBase))
   const glyph = textureLoad(glyphState.node as never, ivec2(glyphSlot.mod(width), glyphSlot.div(width)), 0) as unknown as Node<'vec4'>
   const cosine = cos(glyph.z)
   const sine = sin(glyph.z)
   const turned = vec2(corner.x.mul(cosine).sub(corner.y.mul(sine)), corner.x.mul(sine).add(corner.y.mul(cosine)))
-  const pixels = select(glyphIndex.lessThan(0), labelState.xy.add(corner), glyph.xy.add(turned))
+  const pointText = labelState.xy.add(corner).add(shift)
+  const icon = labelState.xy.add(corner)
+  const pixels = select(glyphIndex.lessThan(-1.5), icon, select(glyphIndex.lessThan(0), pointText, glyph.xy.add(turned)))
   const ndc = vec2(pixels.x.div(viewport.x).mul(2).sub(1), float(1).sub(pixels.y.div(viewport.y).mul(2)))
   // Hidden labels collapse outside the clip volume.
   material.vertexNode = vec4(select(labelState.w.greaterThan(0), ndc, vec2(4, 4)), 0, 1)
 
   const labelOpacity = varying(labelState.w)
-  const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(labelState.z, float(1e-3)).mul(8))), float(0.05)))
+  const kind = varying(glyphIndex)
+  const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(quadScale, float(1e-3)).mul(8))), float(0.05)))
   material.colorNode = Fn(() => {
-    const distance = (atlas.node.sample(attribute<'vec2'>('atlasUv', 'vec2').div(atlas.size)) as unknown as Node<'vec4'>).r
+    const uv = attribute<'vec2'>('atlasUv', 'vec2')
+    const isIcon = kind.lessThan(-1.5)
+    const isColorIcon = isIcon.and(kind.greaterThan(-2.5))
+    // Icons read the style's image atlas (premultiplied): an SDF icon's distance is in its alpha.
+    const image = imageAtlas.node.sample(uv.div(imageAtlas.size)) as unknown as Node<'vec4'>
+    const distance = select(isIcon, image.a, (atlas.node.sample(uv.div(atlas.size)) as unknown as Node<'vec4'>).r)
     const smoothing = max(fwidth(distance).mul(0.7), float(1 / 255))
     const edge = float(GLYPH_EDGE)
     const fill = linearColor('fillColor')
@@ -186,7 +201,11 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStat
     const haloAlpha = halo.a.mul(smoothstep(haloEdge.sub(smoothing), haloEdge.add(smoothing), distance)).mul(fillAlpha.oneMinus())
     const alpha = fillAlpha.add(haloAlpha)
     const rgb = fill.rgb.mul(fillAlpha).add(halo.rgb.mul(haloAlpha)).div(max(alpha, float(1e-4)))
-    return vec4(rgb.mul(brightness), alpha.mul(labelOpacity).mul(layerOpacity))
+    const sdfColor = vec4(rgb.mul(brightness), alpha.mul(labelOpacity).mul(layerOpacity))
+    // A colour icon: its own colours (straight, linear), faded by icon-opacity (the fill colour's alpha).
+    const straight = sRGBTransferEOTF(image.rgb.div(max(image.a, float(1 / 255)))) as unknown as Node<'vec3'>
+    const colorIcon = vec4(straight.mul(brightness), image.a.mul(fill.a).mul(labelOpacity).mul(layerOpacity))
+    return select(isColorIcon, colorIcon, sdfColor)
   })()
   return material
 }

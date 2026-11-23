@@ -1195,7 +1195,7 @@ async function screenSymbols(name, query, map = 'labels') {
     let overlaps = 0
     for (let i = 0; i < colliding.length; i++) {
       for (let j = i + 1; j < colliding.length; j++) {
-        const [a, b] = [colliding[i].glyphBoxes ?? [colliding[i].box], colliding[j].glyphBoxes ?? [colliding[j].box]]
+        const [a, b] = [colliding[i].collisionBoxes ?? [colliding[i].box], colliding[j].collisionBoxes ?? [colliding[j].box]]
         if (a.some(boxA => b.some(boxB => meets(boxA, boxB)))) overlaps++
       }
     }
@@ -1220,6 +1220,8 @@ async function screenSymbols(name, query, map = 'labels') {
       // Variable anchors: a town whose box is no longer centred on its point.
       townsBesideTheirPoint: labels.filter(l => l.text.startsWith('Town') && Math.abs((l.box[0] + l.box[2]) / 2 - l.xPixels) + Math.abs((l.box[1] + l.box[3]) / 2 - l.yPixels) > 4).length,
       roadNames: roads.length,
+      // Places: an icon's box and its text's (collisionBoxes of 2), the icon at the point.
+      iconLabels: labels.filter(l => l.glyphAnglesRadians === null && l.collisionBoxes?.length === 2).length,
       roadNamesUpsideDown: upsideDown,
       overlaps,
       duplicates,
@@ -1242,7 +1244,14 @@ async function screenSymbols(name, query, map = 'labels') {
       const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
       if (r < 110 && r > g && g > b && r - b > 15 && r - b < 60) text++
     }
-    return { textShare: +(text / (px.length / 4)).toFixed(4) }
+    // The pin's red and the summit's blue SDF disc.
+    let red = 0, blue = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (r > 150 && g < 80 && b < 80) red++
+      if (b > 150 && r < 80 && g < 120) blue++
+    }
+    return { textShare: +(text / (px.length / 4)).toFixed(4), redPixels: red, bluePixels: blue }
   `)
   await page.close()
   results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })

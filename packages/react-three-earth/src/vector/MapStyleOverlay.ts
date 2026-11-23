@@ -986,7 +986,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     // the image before the change.
     const affected = new Set(this.imageUsers.get(id))
     for (const key of this.buckets.keys()) if (this.buckets.isPending(key)) affected.add(key)
-    if (change.rebuild) for (const key of affected) this.buckets.discard(key)
+    if (change.rebuild) {
+      for (const key of affected) this.buckets.discard(key)
+      // Labels facing the viewer hold their tiles' meshes: process them again for the icon's new place.
+      this.screenSymbols?.refresh(request => affected.has(bucketKey({ ...request, symbols: true })))
+    }
     // Patterns are shapes: regions that draw these tiles for their labels only are unaffected.
     this.redrawRegions(affected, true)
   }

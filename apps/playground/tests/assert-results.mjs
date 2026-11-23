@@ -279,6 +279,8 @@ const screenLabels = (r, textShare = 0.005) => [
   ['all terrain heights read', r.inspection?.elevationsPending === 0],
   ['no label hidden behind the flat fixture ground', r.inspection?.labelsOccluded === 0],
   ['some towns moved beside their point (variable anchors)', r.townsBesideTheirPoint > 0],
+  ['places show their icons, which collide apart from their text', r.iconLabels >= 2],
+  ...(textShare === null ? [] : [['red pins and the blue summit disc draw', r.redPixels > 20 && r.bluePixels > 20]]),
   ['a feature query at a label answers its town', r.queryAtLabel !== null && r.queryAtLabel.names[0] === r.queryAtLabel.text],
 ]
 for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectations[`screen-space labels, ${name}`] = r => screenLabels(r)

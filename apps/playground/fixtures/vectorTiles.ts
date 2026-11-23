@@ -91,13 +91,17 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
 type Rgba = [number, number, number, number]
 
 /** Fixture sprite images at pixel ratio 1, as functions of the pixel: placed side by side in the sheet. */
-const SPRITE_IMAGES: Array<{ name: string; width: number; height: number; pixel: (x: number, y: number) => Rgba }> = [
+const SPRITE_IMAGES: Array<{ name: string; width: number; height: number; sdf?: boolean; pixel: (x: number, y: number) => Rgba }> = [
   // Green checks for the background
   { name: 'meadow', width: 8, height: 8, pixel: (x, y) => ((x >> 2) + (y >> 2)) % 2 === 0 ? [80, 170, 60, 255] : [170, 225, 120, 255] },
   // Dark and light blue stripes for the lakes
   { name: 'waves', width: 8, height: 8, pixel: (_x, y) => (y < 4 ? [20, 70, 200, 255] : [140, 200, 255, 255]) },
   // Red and white dashes along the primary roads, transparent at the edges
   { name: 'arrows', width: 16, height: 8, pixel: (x, y) => (y === 0 || y === 7 ? [0, 0, 0, 0] : x < 8 ? [225, 30, 30, 255] : [255, 255, 255, 255]) },
+  // A red disc with a white rim, transparent around: the place icon
+  { name: 'pin', width: 16, height: 16, pixel: (x, y) => { const distance = Math.hypot(x - 7.5, y - 7.5); return distance > 7 ? [0, 0, 0, 0] : distance > 5 ? [255, 255, 255, 255] : [230, 30, 30, 255] } },
+  // A disc as a signed distance field in alpha (192 at its edge, 24 a pixel), tinted by icon-color: the summit icon
+  { name: 'peak', width: 16, height: 16, sdf: true, pixel: (x, y) => [0, 0, 0, Math.max(0, Math.min(255, Math.round(192 + (5 - Math.hypot(x - 7.5, y - 7.5)) * 24)))] },
 ]
 
 /** The fixture sprite sheet and index at a pixel ratio (1 or 2; the @2x images are the 1x ones doubled). */
@@ -105,7 +109,7 @@ export function fixtureSprite(pixelRatio: 1 | 2): { json: object; png: Uint8Arra
   const json: Record<string, object> = {}
   let x = 0
   for (const image of SPRITE_IMAGES) {
-    json[image.name] = { x: x * pixelRatio, y: 0, width: image.width * pixelRatio, height: image.height * pixelRatio, pixelRatio }
+    json[image.name] = { x: x * pixelRatio, y: 0, width: image.width * pixelRatio, height: image.height * pixelRatio, pixelRatio, ...(image.sdf === true ? { sdf: true } : {}) }
     x += image.width
   }
   const width = x * pixelRatio
@@ -208,7 +212,8 @@ export function fixtureStyle({ live = false }: { live?: boolean } = {}): object 
 
 /**
  * The fixture style with a dense grid of town labels under the place labels: they collide with each other and with
- * the places, sort by rank, grow with zoom (12 px at zoom 9 to 16 px at zoom 13) and try five anchors.
+ * the places, sort by rank, grow with zoom (12 px at zoom 9 to 16 px at zoom 13) and try five anchors. Places
+ * have icons from the fixture sprite: a red pin, and Mount Fuji a blue SDF disc with a white halo, text below.
  */
 export function fixtureLabelStyle(): object {
   const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
@@ -229,7 +234,13 @@ export function fixtureLabelStyle(): object {
     },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
   }
-  return { ...base, layers: [...base.layers.slice(0, placeIndex), towns, ...base.layers.slice(placeIndex)] }
+  const places = base.layers[placeIndex] as { layout: Record<string, unknown>; paint: Record<string, unknown> }
+  const placesWithIcons = {
+    ...places,
+    layout: { ...places.layout, 'icon-image': ['match', ['get', 'name'], 'Mount Fuji', 'peak', 'pin'], 'icon-size': 1.25, 'text-anchor': 'top', 'text-offset': [0, 0.8] },
+    paint: { ...places.paint, 'icon-color': '#1040e0', 'icon-halo-color': '#ffffff', 'icon-halo-width': 1.5 },
+  }
+  return { ...base, sprite: '/fixtures/sprite', layers: [...base.layers.slice(0, placeIndex), towns, placesWithIcons, ...base.layers.slice(placeIndex + 1)] }
 }
 
 /**

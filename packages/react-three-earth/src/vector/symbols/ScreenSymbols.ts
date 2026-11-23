@@ -7,10 +7,10 @@ import type { ViewMorph } from '../../view/ViewMorph.js'
 import { longitudeToMercatorX, wrapMercatorXNear } from '../../view/webMercator.js'
 import { computeCameraTilePyramid, horizonCap, tileRowToLatitude } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
-import type { GlyphAtlasTexture } from '../VectorTileMeshes.js'
-import { SYMBOL_ALLOW_OVERLAP, SYMBOL_IGNORE_PLACEMENT, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../worker/symbols.js'
+import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
+import { SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_IGNORE_PLACEMENT, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../worker/symbols.js'
 import { TILE_EXTENT, type MapStyleSummary, type ScreenLabelHit, type SymbolMesh, type TileBucket, type TileRequest } from '../worker/types.js'
-import { SymbolPlacement, type PlacementCandidate, type SymbolFade } from './SymbolPlacement.js'
+import { boundBoxes, SymbolPlacement, type PlacementCandidate, type SymbolFade } from './SymbolPlacement.js'
 import { createSymbolMaterial, createSymbolTileMesh, SymbolStateTexture, type SymbolMeshUserData } from './symbolMaterial.js'
 
 /** What labels facing the viewer need from the earth in a frame. `Earth.update` builds it once for every source. */
@@ -37,6 +37,8 @@ export interface SymbolFrame {
 export interface ScreenSymbolsHost {
   readonly summary: MapStyleSummary | null
   readonly glyphAtlas: GlyphAtlasTexture
+  /** The style's image atlas: icons read it. */
+  readonly imageAtlas: ImageAtlasTexture
   /** Deepest zoom labels are laid out at (the overlay's `maximumZoom`). */
   readonly maximumZoom: number
   /** The imagery layer's opacity: labels fade with it. */
@@ -70,7 +72,7 @@ export interface ScreenLabelInspection {
   /** Collision box, padding included: left, top, right, bottom. */
   box: [number, number, number, number]
   /** A label along a line: one box per glyph (padding included), which collide; null for a point label. */
-  glyphBoxes: Array<[number, number, number, number]> | null
+  collisionBoxes: Array<[number, number, number, number]> | null
   /** A label along a line: each glyph's angle on the screen in radians (0 reads left to right); null for a point label. */
   glyphAnglesRadians: number[] | null
   opacity: number
@@ -123,6 +125,8 @@ interface SymbolTile {
   /** This frame: projected (1) or culled (0), and where. */
   projected: Uint8Array
   screen: Float32Array
+  /** This frame: an icon's scale relative to its label's (icon-size against text-size at the camera's zoom), else 1. */
+  iconScales: Float32Array
   slotBase: number
   /** Line labels: ECEF surface point and up per path point (`SymbolMesh.linePoints`), geographic too for the map. */
   pathSurface: Float64Array
@@ -290,7 +294,7 @@ export class ScreenSymbols {
   constructor(host: ScreenSymbolsHost, { fadeDurationSeconds = 0.3 }: { fadeDurationSeconds?: number } = {}) {
     this.host = host
     this.placement = new SymbolPlacement({ fadeDurationSeconds })
-    this.material = createSymbolMaterial(host.glyphAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
+    this.material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
     this.object.name = 'MapStyleSymbols'
     this.object.matrixAutoUpdate = false
     this.object.raycast = () => {}
@@ -346,12 +350,12 @@ export class ScreenSymbols {
         const key = symbols.keys[index]!
         labels.push({
           layerIndex: candidate.layerIndex,
-          text: key.slice(key.indexOf('\u0000') + 1),
+          text: key.split('\u0000')[1]!,
           xPixels: candidate.xPixels,
           yPixels: candidate.yPixels,
           box: [candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels],
-          glyphBoxes: candidate.boxes === null ? null : Array.from({ length: candidate.boxes.length / 4 }, (_, box) => candidate.boxes!.slice(box * 4, box * 4 + 4) as [number, number, number, number]),
-          glyphAnglesRadians: candidate.boxes === null ? null : Array.from({ length: symbols.glyphCounts[index]! }, (_, glyph) => tile.glyphScreen[(symbols.glyphStarts[index]! + glyph) * 3 + 2]!),
+          collisionBoxes: candidate.boxes === null ? null : Array.from({ length: candidate.boxes.length / 4 }, (_, box) => candidate.boxes!.slice(box * 4, box * 4 + 4) as [number, number, number, number]),
+          glyphAnglesRadians: (symbols.flags[index]! & SYMBOL_LINE) === 0 ? null : Array.from({ length: symbols.glyphCounts[index]! }, (_, glyph) => tile.glyphScreen[(symbols.glyphStarts[index]! + glyph) * 3 + 2]!),
           opacity: fade.opacity,
           ignorePlacement: candidate.ignorePlacement,
           allowOverlap: candidate.allowOverlap,
@@ -391,6 +395,7 @@ export class ScreenSymbols {
     this.viewportPixels.value.set(frame.widthPixels, frame.heightPixels)
     this.luminance.value = view.flatMapLuminance
     this.host.glyphAtlas.upload()
+    this.host.imageAtlas.upload()
 
     // The morph moves the ground on the GPU between two projections: labels wait for it to settle.
     const morphing = view.transitioning || (view.morph > 0 && view.morph < 1)
@@ -552,6 +557,7 @@ export class ScreenSymbols {
       candidates: [],
       projected: new Uint8Array(0),
       screen: new Float32Array(0),
+      iconScales: new Float32Array(0),
       slotBase: -1,
       pathSurface: new Float64Array(0),
       pathUp: new Float64Array(0),
@@ -591,7 +597,7 @@ export class ScreenSymbols {
       tile.mesh.geometry.dispose()
       tile.mesh = null
     }
-    if (tile.slotBase !== -1) this.state.release(tile.slotBase, tile.symbols?.keys.length ?? 0)
+    if (tile.slotBase !== -1) this.state.release(tile.slotBase, (tile.symbols?.keys.length ?? 0) * 2)
     tile.slotBase = -1
     if (tile.glyphSlotBase !== -1) this.glyphState.release(tile.glyphSlotBase, tile.symbols?.glyphOffsets.length ?? 0)
     tile.glyphSlotBase = -1
@@ -615,6 +621,7 @@ export class ScreenSymbols {
     tile.fades = new Array<SymbolFade | null>(count).fill(null)
     tile.projected = new Uint8Array(count)
     tile.screen = new Float32Array(count * 3)
+    tile.iconScales = new Float32Array(count).fill(1)
     tile.candidates = []
     const pathPointCount = (symbols?.linePoints.length ?? 0) / 2
     tile.pathSurface = new Float64Array(pathPointCount * 3)
@@ -659,7 +666,9 @@ export class ScreenSymbols {
         minimumYPixels: 0,
         maximumXPixels: 0,
         maximumYPixels: 0,
-        boxes: (flags & SYMBOL_LINE) !== 0 ? [] : null,
+        // Per-glyph boxes along a line; an icon's box and its text's beside it.
+        boxes: (flags & SYMBOL_LINE) !== 0 || (flags & (SYMBOL_ICON | SYMBOL_ICON_ONLY)) === SYMBOL_ICON ? [] : null,
+        anchorBoxStart: 4,
         hidden: false,
         anchorShifts: symbols.anchorShiftCounts[index]! > 0 ? symbols.anchorShifts.subarray(symbols.anchorShiftStarts[index]! * 2, (symbols.anchorShiftStarts[index]! + symbols.anchorShiftCounts[index]!) * 2) : null,
         anchorScale: 1,
@@ -715,7 +724,8 @@ export class ScreenSymbols {
         }
       }
     }
-    tile.slotBase = this.state.allocate(count)
+    // Two state texels a label: where its anchor is, and how far its text moves from there (variable anchors).
+    tile.slotBase = this.state.allocate(count * 2)
     if (symbols.glyphOffsets.length > 0) tile.glyphSlotBase = this.glyphState.allocate(symbols.glyphOffsets.length)
     const mesh = createSymbolTileMesh(symbols, this.material)
     ;(mesh.userData as SymbolMeshUserData).symbolSlotBase = tile.slotBase
@@ -765,7 +775,7 @@ export class ScreenSymbols {
       tile.mesh.geometry.dispose()
       tile.mesh = null
     }
-    if (tile.slotBase !== -1) this.state.release(tile.slotBase, tile.symbols?.keys.length ?? 0)
+    if (tile.slotBase !== -1) this.state.release(tile.slotBase, (tile.symbols?.keys.length ?? 0) * 2)
     tile.slotBase = -1
     if (tile.glyphSlotBase !== -1) this.glyphState.release(tile.glyphSlotBase, tile.symbols?.glyphOffsets.length ?? 0)
     tile.glyphSlotBase = -1
@@ -843,6 +853,10 @@ export class ScreenSymbols {
         const perspectiveRatio = Math.min(4, Math.max(0, 0.5 + (0.5 * frame.centerDistanceMeters) / clipW))
         const sizePixels = symbols.sizes[index * 2]! + (symbols.sizes[index * 2 + 1]! - symbols.sizes[index * 2]!) * sizeFraction
         const scale = (sizePixels / 24) * perspectiveRatio
+        const iconSizePixels = symbols.iconSizes[index * 2]! + (symbols.iconSizes[index * 2 + 1]! - symbols.iconSizes[index * 2]!) * sizeFraction
+        // An icon follows icon-size, its text text-size: the icon's scale relative to the label's.
+        const iconScale = iconSizePixels > 0 && sizePixels > 0 ? iconSizePixels / sizePixels : 1
+        tile.iconScales[index] = iconScale
         const alongLine = (symbols.flags[index]! & SYMBOL_LINE) !== 0
         // Along a line: glyphs follow the projected line, or the label waits where the line turns too sharply on the
         // screen or leaves the stretch the worker kept. One shown keeps its last glyphs and fades out from there at
@@ -881,10 +895,31 @@ export class ScreenSymbols {
         const shiftX = shifts === null ? 0 : shifts[candidate.anchorIndex * 2]!
         const shiftY = shifts === null ? 0 : shifts[candidate.anchorIndex * 2 + 1]!
         candidate.anchorScale = scale
-        candidate.minimumXPixels = xPixels + (symbols.boxes[index * 4]! + shiftX) * scale - padding
-        candidate.minimumYPixels = yPixels + (symbols.boxes[index * 4 + 1]! + shiftY) * scale - padding
-        candidate.maximumXPixels = xPixels + (symbols.boxes[index * 4 + 2]! + shiftX) * scale + padding
-        candidate.maximumYPixels = yPixels + (symbols.boxes[index * 4 + 3]! + shiftY) * scale + padding
+        const left = xPixels + (symbols.boxes[index * 4]! + shiftX) * scale - padding
+        const top = yPixels + (symbols.boxes[index * 4 + 1]! + shiftY) * scale - padding
+        const right = xPixels + (symbols.boxes[index * 4 + 2]! + shiftX) * scale + padding
+        const bottom = yPixels + (symbols.boxes[index * 4 + 3]! + shiftY) * scale + padding
+        const boxes = candidate.boxes
+        if (boxes === null) {
+          candidate.minimumXPixels = left
+          candidate.minimumYPixels = top
+          candidate.maximumXPixels = right
+          candidate.maximumYPixels = bottom
+        } else {
+          // An icon beside its text: the icon stays at the point, the text box (after it) moves with the anchor.
+          boxes.length = 0
+          boxes.push(
+            xPixels + symbols.iconBoxes[index * 4]! * scale * iconScale - padding,
+            yPixels + symbols.iconBoxes[index * 4 + 1]! * scale * iconScale - padding,
+            xPixels + symbols.iconBoxes[index * 4 + 2]! * scale * iconScale + padding,
+            yPixels + symbols.iconBoxes[index * 4 + 3]! * scale * iconScale + padding,
+            left,
+            top,
+            right,
+            bottom,
+          )
+          boundBoxes(candidate)
+        }
         candidates.push(candidate)
       }
     }
@@ -1020,9 +1055,12 @@ export class ScreenSymbols {
         return true
       }
       // The ray ends on the terrain the reads see now, not under it: the label's height may come from a coarser
-      // tile, which sags below finer ones nearby.
+      // tile, which sags below finer ones nearby. No terrain under the label (not loaded, or off screen): undecided, it
+      // keeps its last answer until the cursor comes back (its height may be a clamped read, and a ray from under the
+      // ground would hide it).
       const ground = sample!(tile.longitudes[index]!, tile.latitudes[index]!)
-      const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground ?? height))
+      if (ground === null) return true
+      const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground))
       tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!) ? 1 : 0
       return true
     }
@@ -1157,7 +1195,7 @@ export class ScreenSymbols {
       if (tile.slotBase === -1) continue
       const count = tile.symbols?.keys.length ?? 0
       for (let index = 0; index < count; index++) {
-        const slot = tile.slotBase + index
+        const slot = tile.slotBase + index * 2
         const fade = tile.fades[index]
         if (morphing || !tile.drawn || tile.projected[index] === 0 || fade == null || fade.opacity <= 0) {
           this.state.hide(slot)
@@ -1165,12 +1203,13 @@ export class ScreenSymbols {
         }
         shown++
         const scale = tile.screen[index * 3 + 2]!
-        // Variable anchors: drawn shifted to the anchor placement chose.
+        // Variable anchors: the text drawn shifted to the anchor placement chose (an icon stays at the point).
         const shifts = tile.candidates[index]!.anchorShifts
         const anchor = tile.candidates[index]!.anchorIndex
         const shiftX = shifts === null ? 0 : shifts[anchor * 2]! * scale
         const shiftY = shifts === null ? 0 : shifts[anchor * 2 + 1]! * scale
-        this.state.write(slot, tile.screen[index * 3]! + shiftX, tile.screen[index * 3 + 1]! + shiftY, scale, fade.opacity)
+        this.state.write(slot, tile.screen[index * 3]!, tile.screen[index * 3 + 1]!, scale, fade.opacity)
+        this.state.write(slot + 1, shiftX, shiftY, tile.iconScales[index]!, 1)
         const symbols = tile.symbols!
         const glyphCount = symbols.glyphCounts[index]!
         for (let glyph = symbols.glyphStarts[index]!, end = glyph + glyphCount; glyph < end; glyph++) {
