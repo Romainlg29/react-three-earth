@@ -1055,14 +1055,11 @@ export class ScreenSymbols {
         return true
       }
       // The ray ends on the terrain the reads see now, not under it: the label's height may come from a coarser
-      // tile, which sags below finer ones nearby. No terrain under the label yet: undecided, read again next pass
-      // (its height may be a stale or clamped read, and a ray from under the ground would hide it).
+      // tile, which sags below finer ones nearby. No terrain under the label (not loaded, or off screen): undecided, it
+      // keeps its last answer until the cursor comes back (its height may be a clamped read, and a ray from under the
+      // ground would hide it).
       const ground = sample!(tile.longitudes[index]!, tile.latitudes[index]!)
-      if (ground === null) {
-        tile.occluded[index] = 0
-        tile.occlusionRead[index] = 0
-        return true
-      }
+      if (ground === null) return true
       const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground))
       tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!) ? 1 : 0
       return true

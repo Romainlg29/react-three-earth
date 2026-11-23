@@ -475,7 +475,7 @@ applied along lines.
   ray hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another
   tile can take over. Each style's pass stops after 1 ms: labels never read go first (a tile that just arrived), then
   the rest in turn from where the last pass stopped; with the camera still, the once-a-second pass places again, so
-  terrain that loaded finer hides or shows labels. With no terrain under the label yet, it is left visible and read again next pass (a height read near a tile edge can come back as the -500 m floor, and a ray ending under the ground would hide it; this made the road-name check flaky). Globe only. `inspect().terrain.symbols.labelsOccluded`.
+  terrain that loaded finer hides or shows labels. With no terrain under the label (not loaded, or off screen), it keeps its last answer (visible at first) until the cursor comes back (a height read near a tile edge can come back as the -500 m floor, and a ray ending under the ground would hide it; this made the road-name check flaky). Globe only. `inspect().terrain.symbols.labelsOccluded`.
   The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; unit
   tests cover a ridge, a low hill, missing tiles, a slope and a wall in front of a label.
 
