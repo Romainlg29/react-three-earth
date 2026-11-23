@@ -177,6 +177,7 @@ function candidate(key: string, x: number, y: number, options: Partial<Placement
     maximumXPixels: x + 20,
     maximumYPixels: y + 8,
     boxes: null,
+    hidden: false,
     layerIndex: 0,
     sortKey: 0,
     allowOverlap: false,
@@ -326,5 +327,22 @@ describe('placing labels with one box per glyph', () => {
     const crossing = candidate('crossing', 200, 200, { layerIndex: 0, minimumXPixels: 100, minimumYPixels: 195, maximumXPixels: 300, maximumYPixels: 205, boxes: [100, 195, 300, 205] })
     placement.place([point, road, crossing], 800, 600)
     expect([point.placed, road.placed, crossing.placed]).toEqual([true, true, false])
+  })
+
+  it('fades out a hidden label where it is, leaving its room to others', () => {
+    const placement = new SymbolPlacement({ fadeDurationSeconds: 1 })
+    const road = candidate('road', 200, 200, { layerIndex: 2 })
+    placement.place([road], 800, 600)
+    placement.fade(1)
+    expect(road.fade?.opacity).toBe(1)
+    // Its road no longer fits it on the screen: it keeps its fade state, fading out, and a label below takes the room.
+    const hidden = candidate('road', 202, 200, { layerIndex: 2, hidden: true })
+    const below = candidate('below', 200, 200, { layerIndex: 1 })
+    placement.place([hidden, below], 800, 600)
+    expect(hidden.fade).toBe(road.fade)
+    expect(hidden.placed).toBe(false)
+    expect(below.placed).toBe(true)
+    placement.fade(0.5)
+    expect(hidden.fade?.opacity).toBeCloseTo(0.5)
   })
 })

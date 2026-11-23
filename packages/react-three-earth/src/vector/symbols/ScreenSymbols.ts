@@ -133,8 +133,8 @@ interface SymbolTile {
   glyphSlotBase: number
   /** Line labels, per label: 1 while turned around to read left to right (kept near vertical, so it does not flip back and forth). */
   lineFlipped: Uint8Array
-  /** Line labels, per label: 1 once laid out, so a label whose layout fails for a frame stays where it was while it fades. */
-  lineLaidOut: Uint8Array
+  /** Per label: `projected` of the previous pass, so a road name whose layout fails keeps its glyphs only if it showed then. */
+  projectedBefore: Uint8Array
   drawn: boolean
 }
 
@@ -167,6 +167,16 @@ const lineWalk = {
 }
 /** A road name turns to read left to right only once it runs this far (a fraction of its length) right to left. */
 const UPRIGHT_SLACK = 0.1
+/** A road name's glyphs as `walkGlyphs` lays them out (x, y, angle each), copied to the tile once they fit. */
+let glyphScratch = new Float32Array(96)
+
+/** Whether the glyphs in `glyphScratch` run right to left, past the slack. */
+function readsBackwards(glyphCount: number): boolean {
+  const last = (glyphCount - 1) * 3
+  const dx = glyphScratch[last]! - glyphScratch[0]!
+  const dy = glyphScratch[last + 1]! - glyphScratch[1]!
+  return dx < -UPRIGHT_SLACK * Math.hypot(dx, dy)
+}
 const cartographic = { lat: 0, lon: 0, height: 0 }
 const viewProjection = new Matrix4()
 
@@ -479,7 +489,7 @@ export class ScreenSymbols {
       glyphScreen: new Float32Array(0),
       glyphSlotBase: -1,
       lineFlipped: new Uint8Array(0),
-      lineLaidOut: new Uint8Array(0),
+      projectedBefore: new Uint8Array(0),
       drawn: false,
     }
     this.tiles.set(key, tile)
@@ -515,7 +525,7 @@ export class ScreenSymbols {
     // place on the screen, so they neither blink nor stop answering feature queries until the next placement.
     const previous = tile.symbols
     const same = previous !== null && symbols !== null && sameLabels(previous, symbols)
-    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, lineLaidOut: tile.lineLaidOut, candidates: tile.candidates } : null
+    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, projectedBefore: tile.projectedBefore, candidates: tile.candidates } : null
     tile.symbols = symbols
     tile.loaded = true
     this.tilesChanged = true
@@ -539,7 +549,7 @@ export class ScreenSymbols {
     tile.pathLatitudes = new Float64Array(pathPointCount)
     tile.glyphScreen = new Float32Array((symbols?.glyphOffsets.length ?? 0) * 3)
     tile.lineFlipped = new Uint8Array(count)
-    tile.lineLaidOut = new Uint8Array(count)
+    tile.projectedBefore = new Uint8Array(count)
     if (symbols === null || count === 0) return
     for (let pathPoint = 0; pathPoint < pathPointCount; pathPoint++) {
       const longitude = ((tile.request.x + symbols.linePoints[pathPoint * 2]! / TILE_EXTENT) / 2 ** tile.request.z) * 2 * Math.PI - Math.PI
@@ -573,6 +583,7 @@ export class ScreenSymbols {
         maximumXPixels: 0,
         maximumYPixels: 0,
         boxes: (flags & SYMBOL_LINE) !== 0 ? [] : null,
+        hidden: false,
         layerIndex: symbols.layerIndices[index]!,
         sortKey: symbols.sortKeys[index]!,
         allowOverlap: (flags & SYMBOL_ALLOW_OVERLAP) !== 0,
@@ -595,7 +606,7 @@ export class ScreenSymbols {
       if (kept.glyphScreen.length === tile.glyphScreen.length) {
         tile.glyphScreen = kept.glyphScreen
         tile.lineFlipped = kept.lineFlipped
-        tile.lineLaidOut = kept.lineLaidOut
+        tile.projectedBefore = kept.projectedBefore
       }
       for (let index = 0; index < count; index++) {
         const from = kept.candidates[index]!
@@ -683,6 +694,7 @@ export class ScreenSymbols {
     let labels = 0
     for (const tile of this.tiles.values()) {
       const symbols = tile.symbols
+      tile.projectedBefore.set(tile.projected)
       tile.projected.fill(0)
       if (!tile.drawn || symbols === null) continue
       const count = symbols.keys.length
@@ -742,15 +754,17 @@ export class ScreenSymbols {
         // Along a line: glyphs follow the projected line, or the label waits where the line turns too sharply on the
         // screen or leaves the stretch the worker kept. One shown keeps its last glyphs and fades out from there at
         // the next placement, instead of blinking off for the frames its layout fails.
-        let laidOut = true
+        const candidate = tile.candidates[index]!
         if (alongLine) {
-          laidOut = this.layoutLineGlyphs(tile, index, scale, Number.isNaN(height) ? 0 : height, flat, view, matrix, widthPixels, heightPixels)
+          const laidOut = this.layoutLineGlyphs(tile, index, scale, Number.isNaN(height) ? 0 : height, flat, view, matrix, widthPixels, heightPixels)
+          candidate.hidden = !laidOut
           if (!laidOut) {
-            const shown = tile.fades[index] != null && tile.fades[index]!.opacity > 0
-            if (tile.lineLaidOut[index] === 0 || !shown) continue
-            if (tile.fades[index]!.target !== 0) this.placementDue = true
+            const fade = tile.fades[index]
+            if (tile.projectedBefore[index] === 0 || fade == null || fade.opacity <= 0) continue
+            // Fades out where it was, following its anchor; the next placement hides it.
+            this.shiftLineGlyphs(tile, index, xPixels - candidate.xPixels, yPixels - candidate.yPixels)
+            if (fade.target !== 0) this.placementDue = true
           }
-          tile.lineLaidOut[index] = 1
         }
         tile.projected[index] = 1
         tile.screen[index * 3] = xPixels
@@ -761,12 +775,11 @@ export class ScreenSymbols {
           fade.xPixels = xPixels
           fade.yPixels = yPixels
         }
-        const candidate = tile.candidates[index]!
         const padding = symbols.paddings[index]!
         candidate.xPixels = xPixels
         candidate.yPixels = yPixels
         if (alongLine) {
-          if (laidOut) candidates.push(candidate)
+          candidates.push(candidate)
           continue
         }
         candidate.minimumXPixels = xPixels + symbols.boxes[index * 4]! * scale - padding
@@ -815,29 +828,25 @@ export class ScreenSymbols {
     if (!this.projectPathPoint(anchor)) return false
     // Upright: turned around when the first glyph would come out right of the last, with some slack around
     // vertical so a label on a road running up the screen does not turn back and forth as the camera rotates.
+    // Laid out in `glyphScratch`: the label's glyphs change only once it fits.
     const keepUpright = (symbols.flags[index]! & SYMBOL_KEEP_UPRIGHT) !== 0
-    const wasFlipped = (tile.lineFlipped[index]! & 1) === 1
-    let flip = keepUpright && wasFlipped
-    if (!this.walkGlyphs(tile, index, scale, flip)) return false
-    if (keepUpright) {
-      const first = glyphStart * 3
-      const last = (glyphStart + glyphCount - 1) * 3
-      const dx = tile.glyphScreen[last]! - tile.glyphScreen[first]!
-      const dy = tile.glyphScreen[last + 1]! - tile.glyphScreen[first + 1]!
-      const slack = UPRIGHT_SLACK * Math.hypot(dx, dy)
-      if (dx < -slack) {
-        flip = !flip
-        if (!this.walkGlyphs(tile, index, scale, flip)) return false
-      }
+    let flip = keepUpright && tile.lineFlipped[index] === 1
+    let fits = this.walkGlyphs(tile, index, scale, flip)
+    // The other way round where it reads right to left, or does not fit this way.
+    if (keepUpright && (!fits || readsBackwards(glyphCount))) {
+      fits = this.walkGlyphs(tile, index, scale, !flip) && !readsBackwards(glyphCount)
+      flip = !flip
     }
+    if (!fits) return false
     tile.lineFlipped[index] = flip ? 1 : 0
+    tile.glyphScreen.set(glyphScratch.subarray(0, glyphCount * 3), glyphStart * 3)
     this.lineGlyphBoxes(tile, index, scale)
     return true
   }
 
   /**
    * Places every glyph of a line label along the projected path in `lineWalk`, one incremental walk each way from
-   * the anchor (glyph offsets are sorted along the label). Writes `glyphScreen`; false where the label does not fit.
+   * the anchor (glyph offsets are sorted along the label). Writes `glyphScratch`; false where the label does not fit.
    */
   protected walkGlyphs(tile: SymbolTile, index: number, scale: number, flip: boolean): boolean {
     const symbols = tile.symbols!
@@ -847,7 +856,8 @@ export class ScreenSymbols {
     // Glyphs before the label's middle (offsets are sorted): those behind the anchor along the path, unless flipped.
     let beforeMiddle = 0
     while (beforeMiddle < glyphCount && symbols.glyphOffsets[glyphStart + beforeMiddle]! < 0) beforeMiddle++
-    for (const step of [1, -1] as const) {
+    if (glyphScratch.length < glyphCount * 3) glyphScratch = new Float32Array(glyphCount * 6)
+    for (let step = 1; step >= -1; step -= 2) {
       let from = lineWalk.anchor
       let travelled = 0
       let segmentLength = -1
@@ -855,8 +865,7 @@ export class ScreenSymbols {
       const nearest = flip ? (step > 0 ? beforeMiddle - 1 : beforeMiddle) : step > 0 ? beforeMiddle : beforeMiddle - 1
       const direction = flip ? -step : step
       for (let glyph = nearest; glyph >= 0 && glyph < glyphCount; glyph += direction) {
-        const glyphIndex = glyphStart + glyph
-        const distance = Math.abs(symbols.glyphOffsets[glyphIndex]! * scale)
+        const distance = Math.abs(symbols.glyphOffsets[glyphStart + glyph]! * scale)
         for (;;) {
           if (segmentLength < 0) {
             const to = from + step
@@ -872,21 +881,44 @@ export class ScreenSymbols {
         const t = segmentLength > 0 ? (distance - travelled) / segmentLength : 0
         const dx = pathScreen[to * 2]! - pathScreen[from * 2]!
         const dy = pathScreen[to * 2 + 1]! - pathScreen[from * 2 + 1]!
-        tile.glyphScreen[glyphIndex * 3] = pathScreen[from * 2]! + dx * t
-        tile.glyphScreen[glyphIndex * 3 + 1] = pathScreen[from * 2 + 1]! + dy * t
+        glyphScratch[glyph * 3] = pathScreen[from * 2]! + dx * t
+        glyphScratch[glyph * 3 + 1] = pathScreen[from * 2 + 1]! + dy * t
         // The forward direction of the path, turned around when the label reads the other way.
-        tile.glyphScreen[glyphIndex * 3 + 2] = (step > 0 ? Math.atan2(dy, dx) : Math.atan2(-dy, -dx)) + (flip ? Math.PI : 0)
+        glyphScratch[glyph * 3 + 2] = (step > 0 ? Math.atan2(dy, dx) : Math.atan2(-dy, -dx)) + (flip ? Math.PI : 0)
       }
     }
     // text-max-angle over the whole label (MapLibre sums the turns over about a label length).
     let turned = 0
     for (let glyph = 1; glyph < glyphCount; glyph++) {
-      let turn = Math.abs(tile.glyphScreen[(glyphStart + glyph) * 3 + 2]! - tile.glyphScreen[(glyphStart + glyph - 1) * 3 + 2]!) % (2 * Math.PI)
+      let turn = Math.abs(glyphScratch[glyph * 3 + 2]! - glyphScratch[(glyph - 1) * 3 + 2]!) % (2 * Math.PI)
       if (turn > Math.PI) turn = 2 * Math.PI - turn
       turned += turn
       if (turned > maximumAngle) return false
     }
     return true
+  }
+
+  /** Moves a road name's glyphs and boxes by (dx, dy) pixels as they are: it follows its anchor while it fades out. */
+  protected shiftLineGlyphs(tile: SymbolTile, index: number, dx: number, dy: number): void {
+    const symbols = tile.symbols!
+    const glyphStart = symbols.glyphStarts[index]!
+    const glyphCount = symbols.glyphCounts[index]!
+    for (let glyph = glyphStart; glyph < glyphStart + glyphCount; glyph++) {
+      tile.glyphScreen[glyph * 3] = tile.glyphScreen[glyph * 3]! + dx
+      tile.glyphScreen[glyph * 3 + 1] = tile.glyphScreen[glyph * 3 + 1]! + dy
+    }
+    const candidate = tile.candidates[index]!
+    const boxes = candidate.boxes!
+    for (let box = 0; box < boxes.length; box += 4) {
+      boxes[box] = boxes[box]! + dx
+      boxes[box + 1] = boxes[box + 1]! + dy
+      boxes[box + 2] = boxes[box + 2]! + dx
+      boxes[box + 3] = boxes[box + 3]! + dy
+    }
+    candidate.minimumXPixels += dx
+    candidate.minimumYPixels += dy
+    candidate.maximumXPixels += dx
+    candidate.maximumYPixels += dy
   }
 
   /** The candidate's boxes: one per glyph, its rotated advance and the text height, centred on the text row. */

@@ -21,6 +21,8 @@ export interface PlacementCandidate {
    * per glyph; the box above then bounds them all. Null for one box.
    */
   boxes: number[] | null
+  /** Placed nowhere this time, only kept so it fades out (a road name whose road on the screen no longer fits it). */
+  hidden: boolean
   /** The style layer's index: higher places first. */
   layerIndex: number
   sortKey: number
@@ -173,7 +175,7 @@ export class SymbolPlacement {
       fade.yPixels = candidate.yPixels
       candidate.fade = fade
       const onScreen = candidate.maximumXPixels > 0 && candidate.minimumXPixels < widthPixels && candidate.maximumYPixels > 0 && candidate.minimumYPixels < heightPixels
-      const placed = onScreen && (candidate.allowOverlap || !this.hitsPlaced(candidate))
+      const placed = onScreen && !candidate.hidden && (candidate.allowOverlap || !this.hitsPlaced(candidate))
       if (placed && !candidate.ignorePlacement) this.insertBoxes(candidate)
       candidate.placed = placed
       fade.target = placed ? 1 : 0
