@@ -1199,9 +1199,10 @@ async function screenSymbols(name, query, map = 'labels') {
         if (a.some(boxA => b.some(boxB => meets(boxA, boxB)))) overlaps++
       }
     }
-    // Road names read left to right: every glyph turned less than a quarter turn from the horizontal.
+    // Road names read left to right: no glyph turned past a quarter turn from the horizontal, beyond the slack
+    // that keeps a name on a vertical road from turning back and forth (a tenth of its length, about 6°).
     const roads = labels.filter(l => l.glyphAnglesRadians !== null)
-    const upsideDown = roads.filter(l => l.glyphAnglesRadians.some(angle => Math.cos(angle) < -1e-6)).length
+    const upsideDown = roads.filter(l => l.glyphAnglesRadians.some(angle => Math.cos(angle) < -0.2)).length
     let duplicates = 0
     for (let i = 0; i < labels.length; i++) {
       for (let j = i + 1; j < labels.length; j++) {

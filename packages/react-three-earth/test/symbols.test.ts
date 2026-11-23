@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { bucketKey } from '../src/vector/MapStyleOverlay.js'
-import { walkScreenPath } from '../src/vector/symbols/ScreenSymbols.js'
 import { CollisionGrid, SymbolPlacement, type PlacementCandidate } from '../src/vector/symbols/SymbolPlacement.js'
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
@@ -315,24 +314,6 @@ describe('line labels on the screen', () => {
     // Too short for the label, or an anchor outside the tile: nothing.
     expect(lineLabelPaths(line, 5000, { spacingUnits: 3000, center: false, extent: 4096, windowUnits: 300 })).toEqual([])
     expect(lineLabelPaths(line, 200, { spacingUnits: 3000, center: false, extent: 1000, windowUnits: 300 })).toEqual([])
-  })
-
-  it('walks along the projected line from the anchor, both ways, and stops at its ends', () => {
-    // An L on the screen: right 100 pixels, then down 100.
-    const screen = [0, 0, 100, 0, 100, 100]
-    const walked = { x: 0, y: 0, angle: 0 }
-    expect(walkScreenPath(screen, 3, 1, 30, walked)).toBe(true)
-    expect(walked).toEqual({ x: 100, y: 30, angle: Math.PI / 2 })
-    expect(walkScreenPath(screen, 3, 1, -40, walked)).toBe(true)
-    expect([walked.x, walked.y, Math.abs(walked.angle)]).toEqual([60, 0, 0])
-    expect(walkScreenPath(screen, 3, 0, 150, walked)).toBe(true)
-    expect(walked.x).toBeCloseTo(100)
-    expect(walked.y).toBeCloseTo(50)
-    expect(walkScreenPath(screen, 3, 1, 101, walked)).toBe(false)
-    expect(walkScreenPath(screen, 3, 1, -101, walked)).toBe(false)
-    // A single point: only the anchor itself.
-    expect(walkScreenPath([5, 6], 1, 0, 0, walked)).toBe(true)
-    expect(walkScreenPath([5, 6], 1, 0, 1, walked)).toBe(false)
   })
 })
 
