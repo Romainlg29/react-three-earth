@@ -223,7 +223,11 @@ export class FlatMapPlugin {
     if (exaggeration === 1) return false
     const hits: Intersection[] = []
     scene.traverse(object => {
-      if (!(object instanceof Mesh)) return
+      if (!object.layers.test(raycaster.layers)) return
+      if (!(object instanceof Mesh)) {
+        raycaster.intersectObject(object, false, intersects)
+        return
+      }
       const geometry = exaggeratedGeometry(object.geometry, exaggeration)
       if (geometry === null) {
         raycaster.intersectObject(object, false, intersects)

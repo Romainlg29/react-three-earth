@@ -120,8 +120,10 @@ export function DramaticGround({ exaggeration }: { exaggeration: number }) {
 
 - MapLibre's terrain `exaggeration`: heights are multiplied by it (1.5 draws mountains half again as high, 0 flattens the
   ground onto the ellipsoid; seas below 0 m go deeper). Any terrain source, globe and flat map alike. Default 1.
-- Changing it is cheap: a shader uniform, no reload (vanilla: `terrain.exaggeration = 2`). Animate it freely; raycasts
-  rebuild a scaled copy of each tile they test once per new value.
+- Changing it needs no reload (vanilla: `terrain.exaggeration = 2`): the drawing is a shader uniform, but each new value
+  refits every tile's bounding volume, and raycasts copy each tile they test once per value. Set it from a slider or a
+  short transition, not on every frame of a long animation.
+- Below 1 the skirts that hide seams between tile levels shrink too; keep it at 1 or more unless you flatten on purpose.
 - `queryTerrainElevation`, `unproject`, pointer events, controls, labels and markers on the terrain read the heights as
   drawn (exaggerated). Tile culling and level of detail use the scaled heights.
 - Shading keeps the data's normals: slopes are lit as if not exaggerated.

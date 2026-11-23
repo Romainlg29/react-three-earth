@@ -181,9 +181,7 @@ export class Terrain implements AttributionProvider {
    * tile there; null where no visible tile covers it. Cheaper than a raycast: for many reads per frame (labels).
    */
   sampleElevation(longitudeRadians: number, latitudeRadians: number): number | null {
-    const height = sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians)
-    // Interpolating exaggerated vertices scales the interpolated height alike.
-    return height === null ? null : height * this.flatMap.exaggeration
+    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians, this.flatMap.exaggeration)
   }
 
   /** True when a map style source draws labels that face the viewer. */

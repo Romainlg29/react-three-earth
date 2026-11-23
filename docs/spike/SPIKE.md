@@ -789,8 +789,12 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 - **Reading heights.** Raycasts go through 3DTilesRenderer's `raycastTile` hook: `FlatMapPlugin` tests each mesh
   through a copy of its positions with the offsets applied, built once per exaggeration value (lazily, only for
   tiles whose volume the ray crosses on the accelerated path). So `queryTerrainElevation`, `unproject`, pointer events
-  and controls read the ground as drawn. `Terrain.sampleElevation` (labels, markers) multiplies the sampled height:
-  interpolating exaggerated vertices scales the height alike.
+  and controls read the ground as drawn. `Terrain.sampleElevation` (labels, markers) adds `(exaggeration − 1)` times
+  the interpolated vertex heights to the sampled chord, as the shader draws it (not height × exaggeration, which would
+  scale the chord sag too). Label occlusion rays, the label cache and the controls' camera floor scale with it.
+- **Cost of a change.** Drawing is a uniform, but each new value traverses every tile to refit volumes and raycasts copy
+  the tiles they test, so the skill advises sliders and short transitions, not a per-frame animation. Below 1 the
+  skirts shrink with the heights.
 - Deviation from the brief: none in substance. Normals are not steepened (slopes are lit as unexaggerated);
   a TSL normal tweak could follow if it looks flat at high values.
 
@@ -800,7 +804,7 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 | Quantized-mesh terrain: same grid | 5.6 m at 2 (4.6 m at 1) |
 | Flat map, raster-dem | 3.5 m at 2, 1.8 m at 1 |
 | Changing the prop | the relief redraws (11 to 13 % of pixels change), same `Terrain` object (no reload), no errors |
-| Unit tests | 3 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, flat boxes scaled, volumes refit and restored with value checks |
+| Unit tests | 4 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, sampler agrees with the raycast, flat boxes scaled, volumes refit and restored with value checks |
 
 ![exaggeration 2](terrain-exaggeration.png)
 

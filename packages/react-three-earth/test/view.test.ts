@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { setCameraView } from '../src/core/camera.js'
 import { getFlatRegionBox } from '../src/tiles/EarthTilesRenderer.js'
 import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, FlatMapPlugin, HEIGHT_OFFSET_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
+import { sampleTerrainHeight } from '../src/tiles/terrainHeights.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 import {
   ecefToGeodetic,
@@ -289,6 +290,16 @@ describe('terrain exaggeration', () => {
     const up = WGS84_ELLIPSOID.getCartographicToPosition(degrees(35.357), degrees(138.73), 0, new Vector3()).normalize()
     plugin.raycastTile({} as never, scene, new Raycaster(up.clone().multiplyScalar(6_500_000), up.clone().negate()), hits)
     expect(hits[0]?.object).toBe(mesh)
+  })
+
+  it('samples the height the raycast hits', () => {
+    const plugin = new FlatMapPlugin()
+    const scene = summitTile()
+    const tile = { boundingVolume: { region: [degrees(138.72), degrees(35.35), degrees(138.74), degrees(35.37), 0, 4000] }, engineData: { scene } }
+    for (const exaggeration of [1, 2, 0.5]) {
+      plugin.exaggeration = exaggeration
+      expect(sampleTerrainHeight([tile], degrees(138.73), degrees(35.357), exaggeration)! - hitHeight(plugin, scene)!).toBeCloseTo(0, 1)
+    }
   })
 })
 

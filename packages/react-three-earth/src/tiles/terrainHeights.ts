@@ -15,6 +15,8 @@ interface TerrainTile {
 interface TriangleGrid {
   longitudes: Float64Array
   latitudes: Float64Array
+  /** Each vertex's height above the ellipsoid, in metres (what exaggeration scales). */
+  heights: Float64Array
   west: number
   south: number
   cellWidth: number
@@ -39,9 +41,15 @@ const cartographic = { lat: 0, lon: 0, height: 0 }
  * Height of the terrain as drawn at a position, in metres above the ellipsoid: the deepest visible tile there, its
  * triangle under the point, interpolated in ECEF (so the chord a coarse tile cuts below the curved Earth counts).
  * Null where no visible tile covers the point. Much cheaper than a raycast through the tiles: a tile's triangle grid
- * is built once, then each read tests a few triangles.
+ * is built once, then each read tests a few triangles. With an `exaggeration` other than 1, the height is the one the
+ * vertex shader draws: each vertex lifted by (exaggeration − 1) times its own height, so the chord stays unscaled.
  */
-export function sampleTerrainHeight(visibleTiles: Iterable<unknown>, longitudeRadians: number, latitudeRadians: number): number | null {
+export function sampleTerrainHeight(
+  visibleTiles: Iterable<unknown>,
+  longitudeRadians: number,
+  latitudeRadians: number,
+  exaggeration = 1,
+): number | null {
   let best: TerrainTile | null = null
   let bestArea = Infinity
   for (const candidate of visibleTiles as Iterable<TerrainTile>) {
@@ -60,7 +68,7 @@ export function sampleTerrainHeight(visibleTiles: Iterable<unknown>, longitudeRa
   const mesh = findMesh(best.engineData!.scene!)
   if (mesh === null) return null
   const region = best.boundingVolume!.region!
-  return sampleMesh(mesh, region[0]!, region[2]!, longitudeRadians, latitudeRadians)
+  return sampleMesh(mesh, region[0]!, region[2]!, longitudeRadians, latitudeRadians, exaggeration)
 }
 
 function findMesh(scene: Object3D): Mesh | null {
@@ -72,7 +80,7 @@ function findMesh(scene: Object3D): Mesh | null {
   return null
 }
 
-function sampleMesh(mesh: Mesh, west: number, east: number, longitude: number, latitude: number): number | null {
+function sampleMesh(mesh: Mesh, west: number, east: number, longitude: number, latitude: number, exaggeration: number): number | null {
   const geometry = mesh.geometry
   // A tile added this frame has not been through a render's matrix update yet.
   mesh.updateWorldMatrix(true, false)
@@ -117,14 +125,24 @@ function sampleMesh(mesh: Mesh, west: number, east: number, longitude: number, l
       }
       continue
     }
-    return interpolateHeight(mesh, index.getX(first), index.getX(first + 1), index.getX(first + 2), w0, w1, w2)
+    return interpolateHeight(mesh, grid, exaggeration, i0, i1, i2, w0, w1, w2)
   }
   if (nearestFirst === -1) return null
   const [w0, w1, w2] = nearestWeights as [number, number, number]
-  return interpolateHeight(mesh, index.getX(nearestFirst), index.getX(nearestFirst + 1), index.getX(nearestFirst + 2), w0, w1, w2)
+  return interpolateHeight(mesh, grid, exaggeration, index.getX(nearestFirst), index.getX(nearestFirst + 1), index.getX(nearestFirst + 2), w0, w1, w2)
 }
 
-function interpolateHeight(mesh: Mesh, i0: number, i1: number, i2: number, w0: number, w1: number, w2: number): number {
+function interpolateHeight(
+  mesh: Mesh,
+  grid: TriangleGrid,
+  exaggeration: number,
+  i0: number,
+  i1: number,
+  i2: number,
+  w0: number,
+  w1: number,
+  w2: number,
+): number {
   const positions = mesh.geometry.getAttribute('position')
   a.fromBufferAttribute(positions, i0)
   b.fromBufferAttribute(positions, i1)
@@ -136,7 +154,9 @@ function interpolateHeight(mesh: Mesh, i0: number, i1: number, i2: number, w0: n
     .addScaledVector(c, w2)
     .applyMatrix4(mesh.matrixWorld)
   WGS84_ELLIPSOID.getPositionToCartographic(vertex, cartographic)
-  return cartographic.height
+  if (exaggeration === 1) return cartographic.height
+  const { heights } = grid
+  return cartographic.height + (exaggeration - 1) * (heights[i0]! * w0 + heights[i1]! * w1 + heights[i2]! * w2)
 }
 
 function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number, east: number): TriangleGrid | null {
@@ -146,6 +166,7 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
   const count = positions.count
   const longitudes = new Float64Array(count)
   const latitudes = new Float64Array(count)
+  const heights = new Float64Array(count)
   let minimumX = Infinity
   let minimumY = Infinity
   let maximumX = -Infinity
@@ -159,6 +180,7 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
     else if (longitude > east + Math.PI) longitude -= 2 * Math.PI
     longitudes[i] = longitude
     latitudes[i] = cartographic.lat
+    heights[i] = cartographic.height
     minimumX = Math.min(minimumX, longitude)
     maximumX = Math.max(maximumX, longitude)
     minimumY = Math.min(minimumY, cartographic.lat)
@@ -188,5 +210,5 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
     const toRow = Math.min(GRID_SIZE - 1, Math.floor((Math.max(y0, y1, y2) - minimumY) / cellHeight))
     for (let row = fromRow; row <= toRow; row++) for (let column = fromColumn; column <= toColumn; column++) lists[row * GRID_SIZE + column]!.push(first)
   }
-  return { longitudes, latitudes, west: minimumX, south: minimumY, cellWidth, cellHeight, minimumDeterminant, cells: lists.map(list => Int32Array.from(list)) }
+  return { longitudes, latitudes, heights, west: minimumX, south: minimumY, cellWidth, cellHeight, minimumDeterminant, cells: lists.map(list => Int32Array.from(list)) }
 }

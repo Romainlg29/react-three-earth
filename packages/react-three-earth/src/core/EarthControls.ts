@@ -280,7 +280,8 @@ export class EarthViewControls {
       if (longitudeRadians < west || longitudeRadians > east || latitudeRadians < south || latitudeRadians > north) continue
       highest = Math.max(highest, maximumHeight)
     }
-    return highest * mercatorScaleFactor(latitudeRadians) * view.scale
+    // The ground as drawn: exaggerated (raw tile regions hold the data's heights).
+    return highest * (this.earth.terrain?.exaggeration ?? 1) * mercatorScaleFactor(latitudeRadians) * view.scale
   }
 
   dispose(): void {
