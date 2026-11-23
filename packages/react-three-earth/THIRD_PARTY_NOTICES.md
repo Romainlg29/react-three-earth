@@ -28,6 +28,26 @@ react-three-earth depends on, and in places adapts code from, the projects below
 > THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
 > IMPLIED WARRANTIES ARE DISCLAIMED.
 
+## geojson-vt and supercluster
+
+- Projects: https://github.com/mapbox/geojson-vt and https://github.com/mapbox/supercluster (npm `geojson-vt`,
+  `supercluster`)
+- License: ISC, Copyright (c) Mapbox
+- Used as dependencies, in the vector tile worker (`src/vector/worker/geoJsonSource.ts`): GeoJSON tiling and point
+  clustering.
+
+> Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby
+> granted, provided that the above copyright notice and this permission notice appear in all copies.
+> THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE.
+
+## MapLibre GL JS
+
+- Project: https://github.com/maplibre/maplibre-gl-js
+- License: BSD 3-Clause, Copyright (c) 2023 MapLibre contributors
+- Not a dependency (its `@maplibre/maplibre-gl-style-spec` is). `src/vector/worker/geoJsonSource.ts` follows its
+  GeoJSON worker source: option defaults scaled to the tile extent, and `clusterProperties` compiled into
+  supercluster's `map` and `reduce`.
+
 ## three-geospatial (takram)
 
 - Project: https://github.com/takram-design-engineering/three-geospatial

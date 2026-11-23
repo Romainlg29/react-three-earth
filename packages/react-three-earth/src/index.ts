@@ -195,6 +195,8 @@ export {
   type TransformRequest,
 } from './vector/MapStyle.js'
 export { StyleLayer, type StyleLayerOptions } from './vector/StyleLayer.js'
+export { GeoJsonSource, type GeoJsonSourceOptions } from './vector/GeoJsonSource.js'
+export type { GeoJsonFeatureId, GeoJsonFeatureUpdate, GeoJsonSourceDiff } from './vector/worker/geoJsonData.js'
 export { featureKey, type FeatureIdentifier } from './vector/worker/featureState.js'
 export type { StyleDocument, StyleDocumentLayer } from './vector/worker/styleDocument.js'
 export type { FeatureState, ResourceKind } from './vector/worker/types.js'

@@ -180,7 +180,8 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
 | `map-controls` | zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle, translated labels, phone use |
 | `terrain-and-imagery-sources` | choosing terrain and imagery providers, stacking layers, custom sources |
-| `map-styles` | MapLibre vector styles: sources, fonts, labels facing the viewer, sprite patterns, `addImage`, `invalidate` after data changes |
+| `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, GeoJSON and clusters, `invalidate` after data changes |
+| `map-labels` | labels facing the viewer or on the ground, collision, priorities, fades, reading labels in tests |
 | `query-features-and-layer-events` | `queryRenderedFeatures`, `querySourceFeatures`, layer click / enter / leave events, cursor, hover feature-state |
 | `flat-map-2d` | a flat 2D map (Web Mercator, like MapLibre) and the globe-to-map transition |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |

@@ -5,6 +5,7 @@ import type {
   AtlasUpdate,
   FeatureColorUpdate,
   FeatureStateChange,
+  GeoJsonSourceQuery,
   ImageAtlasUpdate,
   ImageChange,
   MapStyleProcessorOptions,
@@ -41,6 +42,8 @@ export interface MapStyleBackend {
   setImage(id: string, image: StyleImage | null): Promise<ImageChange>
   /** Replaces the custom layer types (plugins), keeping the raw tiles; requests sent after it see them. */
   setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult>
+  /** Asks a source a question (the clusters of a `geojson` source); sees every change sent before it. */
+  querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown>
   /** Hit-tests the features drawn under a point or polygon, top-most first. */
   queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]>
   /** Reads every feature of a source in the given tiles. */
@@ -138,6 +141,10 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
 
   setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult> {
     return this.call<StyleUpdateResult>({ type: 'layerTypes', id: this.nextId++, layerTypes })
+  }
+
+  querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown> {
+    return this.call<unknown>({ type: 'sourceQuery', id: this.nextId++, sourceId, query })
   }
 
   async updateFeatureStates(changes: FeatureStateChange[]): Promise<void> {
@@ -291,6 +298,11 @@ export class InlineMapStyleBackend implements MapStyleBackend {
     const result = await processor.setLayerTypes(layerTypes)
     this.flushUpdates(processor)
     return result
+  }
+
+  async querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown> {
+    const processor = await this.requireProcessor()
+    return processor.querySource(sourceId, query)
   }
 
   async queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]> {

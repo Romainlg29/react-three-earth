@@ -24,7 +24,7 @@ import {
   ImageAtlasTexture,
   type ShapeMaterials,
 } from './VectorTileMeshes.js'
-import { boundsToMercatorRectangles, tileOverlaps } from './worker/rectangles.js'
+import { boundsToMercatorRectangles, tileOverlaps, tileOverlapsWithMargin } from './worker/rectangles.js'
 import {
   TILE_EXTENT,
   TILE_SIZE_PIXELS,
@@ -215,6 +215,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   /** Backend answers to style changes, applied in the order the changes were sent. */
   protected styleWork: Promise<void> = Promise.resolve()
   protected unsubscribe: (() => void) | null = null
+  /** Stops answering source queries (clusters) for the style. */
+  protected detachSourceQueries: (() => void) | null = null
   protected backend: MapStyleBackend | null = null
   protected resolution = 256
   protected readonly atlas = new GlyphAtlasTexture()
@@ -392,6 +394,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       this.summary = await backend.init(this.takeSnapshot())
     }
     if (this.disposed) return
+    this.detachSourceQueries = this.mapStyle.attachSourceQueryHandler((sourceId, query) => this.requireBackend().querySource(sourceId, query))
     if (this.summary.skippedLayers.length > 0) {
       console.warn(`MapStyleSource: ${this.summary.skippedLayers.length} style layers are not supported yet and are skipped: ${this.summary.skippedLayers.join(', ')}`)
     }
@@ -571,6 +574,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     for (const message of result.errors) this.mapStyle.reportError(new Error(message))
     const sources = new Set(result.rebuiltSources)
     if (sources.size > 0) this.rebuildTiles(request => sources.has(request.sourceId))
+    // GeoJSON data changes: only the tiles around what changed
+    for (const { sourceId, rectangles, marginTiles } of result.rebuiltAreas ?? []) {
+      if (rectangles !== null && rectangles.length === 0) continue
+      this.rebuildTiles(({ sourceId: tileSource, x, y, z }) => tileSource === sourceId && tileOverlapsWithMargin(x, y, z, rectangles, marginTiles))
+    }
     const changed = (pick: (summary: MapStyleSummary) => unknown) => previous === null || JSON.stringify(pick(previous)) !== JSON.stringify(pick(result.summary))
     if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.backgroundPatternByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
     this.reportMissingImages(result.summary.missingBackgroundImages)
@@ -966,6 +974,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.screenSymbols?.dispose()
     this.unsubscribe?.()
     this.unsubscribe = null
+    this.detachSourceQueries?.()
+    this.detachSourceQueries = null
     this.unsubscribeLayerTypes?.()
     this.unsubscribeLayerTypes = null
     this.styleLayerTypes = null

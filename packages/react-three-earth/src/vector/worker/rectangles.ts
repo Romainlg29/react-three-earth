@@ -87,3 +87,20 @@ export function tileOverlaps(x: number, y: number, z: number, rectangles: readon
   const tile = tileRectangle(x, y, z)
   return rectangles.some(rectangle => rectanglesOverlap(tile, rectangle))
 }
+
+/**
+ * Whether tile x, y, z, widened by `marginTiles` of its own tiles on every side (data a tile holds from beyond its
+ * edges: GeoJSON's buffer), overlaps any of the rectangles; `null` stands for everywhere. Wraps at the antimeridian.
+ */
+export function tileOverlapsWithMargin(x: number, y: number, z: number, rectangles: readonly MercatorRectangle[] | null, marginTiles: number): boolean {
+  if (rectangles === null) return true
+  const tile = tileRectangle(x, y, z)
+  const margin = marginTiles / 2 ** z
+  const widened = { minimumX: tile.minimumX - margin, minimumY: tile.minimumY - margin, maximumX: tile.maximumX + margin, maximumY: tile.maximumY + margin }
+  return rectangles.some(
+    rectangle =>
+      rectanglesOverlap(widened, rectangle) ||
+      rectanglesOverlap(widened, { ...rectangle, minimumX: rectangle.minimumX - 1, maximumX: rectangle.maximumX - 1 }) ||
+      rectanglesOverlap(widened, { ...rectangle, minimumX: rectangle.minimumX + 1, maximumX: rectangle.maximumX + 1 }),
+  )
+}

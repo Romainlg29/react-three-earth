@@ -1,11 +1,10 @@
 import { classifyRings, featureFilter, Formatted, type Color, type FeatureFilter } from '@maplibre/maplibre-gl-style-spec'
-import { VectorTile, type VectorTileFeature } from '@mapbox/vector-tile'
-import Pbf from 'pbf'
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
 import { createCustomLayerBuilder, loadLayerTypes, type CustomLayerBuilder, type LoadedLayerType } from './customLayers.js'
 import { clipQueryToTile, featureHitTesters, getTileFeatureIndex, MAXIMUM_QUERY_RADIUS_PIXELS, polygonIntersectsBoxes, queryBounds, type QueryGeometry } from './featureIndex.js'
 import { FeatureColorTable, featureKey } from './featureState.js'
+import { createGeoJsonTileProvider, GeoJsonTileSource } from './geoJsonSource.js'
 import { GlyphProvider, type Glyph } from './glyphs.js'
 import {
   CollisionGrid,
@@ -21,10 +20,11 @@ import {
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
 import { SymbolBuilder, symbolMeshByteLength } from './symbols.js'
 import { applyStyleCommand, copyStyleDocument, type StyleDocument } from './styleDocument.js'
-import { ShapeBuilder, type LineCap, type LineJoin, type Point } from './ShapeBuilder.js'
+import { ShapeBuilder, type LineCap, type LineGradient, type LineJoin, type Point } from './ShapeBuilder.js'
 import { StyleImages, type ImageDecoder } from './sprites.js'
 import { assignLayerOrder, compileStyleLayer, toRgba, type CompiledStyleLayer, type Rgba, type StyleFeature, type StyleLayerSpecification } from './styleLayers.js'
-import { createVectorTileFetcher, resolveTemplate, type ResourceFetch, type VectorSourceSpecification, type VectorTileFetcher } from './tileSources.js'
+import { createVectorTileProvider, type TileSourceSpecification, type VectorTileFeatureLike, type VectorTileLike, type VectorTileProvider, type VectorTileProviderFactory } from './tileProviders.js'
+import { resolveTemplate, type ResourceFetch, type VectorSourceSpecification } from './tileSources.js'
 import {
   TILE_EXTENT,
   TILE_SIZE_PIXELS,
@@ -33,6 +33,7 @@ import {
   type FeatureColorUpdate,
   type FeatureState,
   type FeatureStateChange,
+  type GeoJsonSourceQuery,
   type ImageAtlasUpdate,
   type ImageChange,
   type MapStyleProcessorOptions,
@@ -40,6 +41,7 @@ import {
   type PatternRectangle,
   type ResourceAnswer,
   type ResourceRequest,
+  type SourceArea,
   type StyleCommand,
   type StyleImage,
   type StyleUpdateResult,
@@ -87,6 +89,20 @@ const PLACED_LABEL_CACHE_SIZE = 256
 const MAXIMUM_SOURCE_FEATURES = 100_000
 const MAXIMUM_ZOOM = 24
 const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
+/**
+ * The style source types drawn, and how their tiles are made: a new source type only adds a provider here. Sources
+ * of other types (raster…) are skipped with their layers.
+ */
+export const TILE_PROVIDER_FACTORIES: ReadonlyMap<string, VectorTileProviderFactory> = new Map([
+  ['vector', createVectorTileProvider],
+  ['geojson', createGeoJsonTileProvider],
+])
+
+/** Line gradients are evaluated at this many points from start to end (MapLibre's ramp texture width). */
+const LINE_GRADIENT_SAMPLES = 256
+/** A line with a gradient is split so that each piece spans at most this much of its progress. */
+const LINE_GRADIENT_STEP = 1 / 128
+
 /** Layer types MapLibre defines; a style layer of another type needs a plugin. */
 const MAPLIBRE_LAYER_TYPES = new Set(['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion', 'raster', 'hillshade', 'heatmap', 'color-relief'])
 
@@ -97,7 +113,7 @@ interface SymbolCandidate {
   sourceLayer: string
   featureIndex: number
   state: FeatureState
-  type: VectorTileFeature['type']
+  type: VectorTileFeatureLike['type']
   geometry: Point[][]
   sections: TextSection[]
   sortKey: number
@@ -108,7 +124,7 @@ interface RawTileEntry {
   x: number
   y: number
   z: number
-  promise: Promise<VectorTile | null>
+  promise: Promise<VectorTileLike | null>
   waiters: number
   controller: AbortController
 }
@@ -158,13 +174,18 @@ export class MapStyleProcessor {
   protected layers: CompiledStyleLayer[] = []
   /** The worker's own copy of the style: commands edit it in place. */
   protected readonly document: StyleDocument
-  protected readonly fetchers = new Map<string, VectorTileFetcher>()
+  /** The tile providers of the loaded sources (vector tiles, GeoJSON), by source id. */
+  protected readonly fetchers = new Map<string, VectorTileProvider>()
   /** Sources that failed to load, by their specification: retried only when replaced (`addSource`, a reload). */
-  protected readonly failedSources = new WeakSet<VectorSourceSpecification>()
+  protected readonly failedSources = new WeakSet<TileSourceSpecification>()
+  /** Gradient ramps of line layers, by zoom (layers are replaced, never mutated, when the style changes). */
+  protected readonly lineGradients = new WeakMap<CompiledStyleLayer, Map<number, Rgba[]>>()
+  /** Line layers with a `line-gradient` on a source without line metrics, warned about once. */
+  protected readonly warnedLineGradients = new Set<string>()
   /** Which processor the glyph provider fetches through; shared with the processors that reload this one. */
   protected glyphRoute!: { processor: MapStyleProcessor }
   /** Sources whose TileJSON or PMTiles header is loading. */
-  protected readonly pendingSources = new Map<string, { source: VectorSourceSpecification; load: Promise<void> }>()
+  protected readonly pendingSources = new Map<string, { source: TileSourceSpecification; load: Promise<void> }>()
   protected glyphs: GlyphProvider
   /** Sprite and runtime images; set by `load`. */
   protected images!: StyleImages
@@ -275,8 +296,8 @@ export class MapStyleProcessor {
 
   /** Loads a source's fetcher once: a second style change while it loads waits for the same load. */
   protected loadSource(id: string, errors: string[]): Promise<void> {
-    const source = this.document.sources[id] as VectorSourceSpecification | undefined
-    if (source === undefined || source.type !== 'vector' || this.fetchers.has(id) || this.failedSources.has(source)) return Promise.resolve()
+    const source = this.document.sources[id] as TileSourceSpecification | undefined
+    if (source === undefined || !TILE_PROVIDER_FACTORIES.has(source.type) || this.fetchers.has(id) || this.failedSources.has(source)) return Promise.resolve()
     const pending = this.pendingSources.get(id)
     if (pending?.source === source) return pending.load
     const load = this.fetchSource(id, source, errors).finally(() => {
@@ -286,9 +307,10 @@ export class MapStyleProcessor {
     return load
   }
 
-  protected async fetchSource(id: string, source: VectorSourceSpecification, errors: string[]): Promise<void> {
+  protected async fetchSource(id: string, source: TileSourceSpecification, errors: string[]): Promise<void> {
     try {
-      const fetcher = await createVectorTileFetcher(source, { baseUrl: this.options.baseUrl, requestHeaders: this.options.requestHeaders, fetch: this.fetchResource })
+      const create = TILE_PROVIDER_FACTORIES.get(source.type)!
+      const fetcher = await create(source, { baseUrl: this.options.baseUrl, requestHeaders: this.options.requestHeaders, fetch: this.fetchResource }, id)
       if (this.document.sources[id] === source) this.fetchers.set(id, fetcher) // not removed or replaced meanwhile
     } catch (error) {
       this.failedSources.add(source)
@@ -309,7 +331,7 @@ export class MapStyleProcessor {
         return []
       }
       if (!compiled.has(layer.id)) return [layer.id]
-      return layer.type !== 'background' && layer.source !== undefined && sources[layer.source] !== undefined && sources[layer.source]!.type !== 'vector' ? [layer.id] : []
+      return layer.type !== 'background' && layer.source !== undefined && sources[layer.source] !== undefined && !TILE_PROVIDER_FACTORIES.has(sources[layer.source]!.type) ? [layer.id] : []
     })
     const used = this.usedSources()
     // In the style's source order, not in the order the requests finished, and only for sources a drawn layer uses
@@ -372,10 +394,11 @@ export class MapStyleProcessor {
     const rebuilt = new Set<string>()
     const errors: string[] = []
     const sourceLoads: Array<Promise<void>> = []
+    const areas: SourceArea[] = []
     const layers = [...this.layers]
     for (const command of commands) {
       try {
-        this.applyCommand(command, layers, rebuilt, sourceLoads, errors)
+        this.applyCommand(command, layers, rebuilt, sourceLoads, errors, areas)
       } catch (error) {
         const message = `MapStyleSource: ${command.command} failed: ${(error as Error).message}`
         console.warn(message)
@@ -391,10 +414,18 @@ export class MapStyleProcessor {
     for (const source of new Set([...before.keys(), ...after.keys()])) if (before.get(source) !== after.get(source)) rebuilt.add(source)
     await Promise.all(sourceLoads)
     this.summary = this.computeSummary()
-    return { summary: this.summary, rebuiltSources: [...rebuilt], errors }
+    const rebuiltAreas = areas.filter(area => !rebuilt.has(area.sourceId))
+    return { summary: this.summary, rebuiltSources: [...rebuilt], errors, ...(rebuiltAreas.length > 0 ? { rebuiltAreas } : {}) }
   }
 
-  protected applyCommand(command: StyleCommand, layers: CompiledStyleLayer[], rebuilt: Set<string>, sourceLoads: Array<Promise<void>>, errors: string[]): void {
+  protected applyCommand(
+    command: StyleCommand,
+    layers: CompiledStyleLayer[],
+    rebuilt: Set<string>,
+    sourceLoads: Array<Promise<void>>,
+    errors: string[],
+    areas: SourceArea[] = [],
+  ): void {
     const document = this.document
     const layerId = typeof command.args[0] === 'string' ? command.args[0] : undefined
     const previous = command.command === 'addLayer' ? undefined : document.layers.find(layer => layer.id === layerId)
@@ -428,11 +459,33 @@ export class MapStyleProcessor {
       case 'addSource':
         if (layers.some(layer => layer.source === command.args[0])) sourceLoads.push(this.loadSource(command.args[0], errors))
         return
-      case 'removeSource': {
+      case 'removeSource':
+      case 'setSource': {
+        // A replaced source loads again (below, in applyCommands) when a layer reads it
         const [sourceId] = command.args
         this.fetchers.delete(sourceId)
-        for (const key of this.rawTiles.keys()) if (key.startsWith(`${sourceId}/`) && key.slice(sourceId.length + 1).split('/').length === 3) this.rawTiles.delete(key)
+        this.dropRawTiles(sourceId)
         rebuilt.add(sourceId)
+        return
+      }
+      case 'setGeoJSONSourceData':
+      case 'updateGeoJSONSourceData': {
+        const [sourceId] = command.args
+        const provider = this.fetchers.get(sourceId)
+        // Not loaded yet: it loads from the document, which holds the new data, when a layer reads it
+        if (!(provider instanceof GeoJsonTileSource)) return
+        this.dropRawTiles(sourceId)
+        const change = command.command === 'setGeoJSONSourceData' ? provider.setData(command.args[1]) : provider.updateData(command.args[1])
+        sourceLoads.push(
+          change.then(
+            ({ rectangles, marginTiles }) => void areas.push({ sourceId, rectangles, marginTiles }),
+            (error: unknown) => {
+              const message = `MapStyleSource: the data of source "${sourceId}" did not change, it keeps the previous data. ${(error as Error).message}`
+              console.warn(message)
+              errors.push(message)
+            },
+          ),
+        )
         return
       }
       case 'setGlobalState':
@@ -445,6 +498,26 @@ export class MapStyleProcessor {
         this.rebuildForGlobalState(this.refreshGlobalState(), layers, rebuilt)
       }
     }
+  }
+
+  /** Forgets the decoded tiles of a source. */
+  protected dropRawTiles(sourceId: string): void {
+    for (const key of this.rawTiles.keys()) if (key.startsWith(`${sourceId}/`) && key.slice(sourceId.length + 1).split('/').length === 3) this.rawTiles.delete(key)
+  }
+
+  /**
+   * Answers a question about a source: the clusters of a `geojson` source. Loads the source first when no layer
+   * reads it.
+   */
+  async querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown> {
+    const errors: string[] = []
+    if (!this.fetchers.has(sourceId)) await this.loadSource(sourceId, errors)
+    const provider = this.fetchers.get(sourceId)
+    if (provider instanceof GeoJsonTileSource) return provider.query(query)
+    const type = this.document.sources[sourceId]?.type
+    if (type === undefined) throw new Error(`GeoJsonSource: there is no source "${sourceId}" in the style; use a source id from getStyle().sources.`)
+    if (type !== 'geojson') throw new Error(`GeoJsonSource: source "${sourceId}" is a ${type} source; clusters belong to geojson sources.`)
+    throw new Error(errors[0] ?? `GeoJsonSource: source "${sourceId}" did not load.`)
   }
 
   /** Recomputes the live `global-state` values in place; returns the names whose value changed. */
@@ -530,6 +603,8 @@ export class MapStyleProcessor {
     // The version and layers of this moment: a style change meanwhile replaces `this.layers`, not this list.
     const layers = this.layers
     const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
+    // GeoJSON tiles have one layer, which every layer of the source reads; feature-state keys have no source layer.
+    const singleLayer = this.fetchers.get(sourceId)?.singleLayer
     const unitsPerPixel = TILE_EXTENT / (TILE_SIZE_PIXELS * 2 ** (zoom - z))
     const placement: TilePlacement = { x, y, tileSizePixels: TILE_SIZE_PIXELS * 2 ** (zoom - z) }
     const images: TileImages = { used: new Set(), missing: new Set() }
@@ -540,25 +615,27 @@ export class MapStyleProcessor {
     if (request.symbols === true) return this.processSymbolTile(tile, request, empty, signal)
     for (const layer of layers) {
       if (layer.source !== sourceId || layer.type === 'background' || !layer.isVisibleAtZoom(zoom)) continue
-      const sourceLayer = layer.sourceLayer === undefined ? undefined : tile.layers[layer.sourceLayer]
+      const layerName = singleLayer ?? layer.sourceLayer
+      const sourceLayer = layerName === undefined ? undefined : tile.layers[layerName]
       if (sourceLayer === undefined) continue
+      const stateLayer = singleLayer === undefined ? layer.sourceLayer : undefined
       const factor = TILE_EXTENT / sourceLayer.extent
       const customType = layer.custom === null ? undefined : this.layerTypes.get(layer.type)
       const custom = customType === undefined ? null : createCustomLayerBuilder(layer, customType, { zoom, unitsPerPixel, tile: { x, y, z } })
       if (custom !== null) customBuilders.push(custom)
-      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layer.sourceLayer!]
+      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layerName!]
       for (let index = 0; index < sourceLayer.length; index++) {
         const vectorFeature = sourceLayer.feature(index)
         const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
         const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
         if (!layer.accepts(zoom, feature)) continue
-        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, layer.sourceLayer, id)
+        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, stateLayer, id)
         const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
         if (key !== undefined && layer.featureStateDependence === 'geometry') uses.rebuildKeys.add(key)
         const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
         if (custom !== null) custom.addFeature(feature, state, geometry)
         else if (layer.type === 'symbol') {
-          const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length, layer.sourceLayer!, index)
+          const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length, layerName!, index)
           if (candidate !== null) symbols.push(candidate)
         } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images, key, state, uses)
       }
@@ -590,7 +667,7 @@ export class MapStyleProcessor {
    * The labels of a tile that face the viewer (`screenSymbols`): point-placed text, laid out once around its
    * anchor. Collision is left to the main thread, which sees every tile on the screen.
    */
-  protected async processSymbolTile(tile: VectorTile, request: TileRequest, empty: TileBucket, signal?: AbortSignal): Promise<TileBucket> {
+  protected async processSymbolTile(tile: VectorTileLike, request: TileRequest, empty: TileBucket, signal?: AbortSignal): Promise<TileBucket> {
     const { sourceId, zoom } = request
     const layers = this.layers
     const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
@@ -738,7 +815,7 @@ export class MapStyleProcessor {
     shapes: ShapeBuilder,
     layer: CompiledStyleLayer,
     feature: StyleFeature,
-    type: VectorTileFeature['type'],
+    type: VectorTileFeatureLike['type'],
     geometry: Point[][],
     zoom: number,
     unitsPerPixel: number,
@@ -809,6 +886,29 @@ export class MapStyleProcessor {
       const pattern = patternName(layer, 'line-pattern', zoom, feature, state)
       const rectangle = pattern === null ? null : this.lookUpPattern(pattern, images)
       if (pattern !== null && rectangle === null) return // missing image: nothing, as in MapLibre
+      // A gradient replaces the colour (and dashes), and needs the line metrics of a GeoJSON source with `lineMetrics`
+      const ramp = rectangle === null && layer.has('paint', 'line-gradient') ? this.lineGradientRamp(layer, zoom, feature) : null
+      if (ramp !== null) {
+        // Baked: a state-dependent opacity processes the tile again.
+        if (key !== undefined && layer.featureStateDependence !== 'none') uses.rebuildKeys.add(key)
+        const opacity = lineOpacity(state)
+        if (opacity <= 0) return
+        const start = Number(feature.properties['mapbox_clip_start'])
+        const end = Number(feature.properties['mapbox_clip_end'])
+        shapes.setColor([0, 0, 0, 0])
+        for (const line of geometry) {
+          shapes.addLine(line, {
+            width: widthPixels * unitsPerPixel,
+            gapWidth: gapPixels * unitsPerPixel,
+            offset: layer.evaluate<number>('paint', 'line-offset', zoom, feature, state) * unitsPerPixel,
+            cap: layer.evaluate<LineCap>('layout', 'line-cap', zoom, feature),
+            join: layer.evaluate<LineJoin>('layout', 'line-join', zoom, feature),
+            miterLimit: layer.evaluate<number>('layout', 'line-miter-limit', zoom, feature),
+            gradient: lineGradientAlong(line, start, end, ramp, opacity),
+          })
+        }
+        return
+      }
       if (rectangle !== null) {
         // Patterned lines bake their opacity: a state-dependent opacity processes the tile again.
         if (key !== undefined && layer.featureStateDependence !== 'none') uses.rebuildKeys.add(key)
@@ -852,11 +952,33 @@ export class MapStyleProcessor {
     }
   }
 
+  /**
+   * The layer's `line-gradient` sampled from progress 0 to 1, or null when the feature carries no line metrics (the
+   * line is then drawn with `line-color`, as a warning says once per layer).
+   */
+  protected lineGradientRamp(layer: CompiledStyleLayer, zoom: number, feature: StyleFeature): Rgba[] | null {
+    if (typeof feature.properties['mapbox_clip_start'] !== 'number' || typeof feature.properties['mapbox_clip_end'] !== 'number') {
+      if (!this.warnedLineGradients.has(layer.id)) {
+        this.warnedLineGradients.add(layer.id)
+        console.warn(`MapStyleSource: layer "${layer.id}" has a line-gradient, which needs a geojson source with \`lineMetrics: true\`; it is drawn with line-color.`)
+      }
+      return null
+    }
+    let byZoom = this.lineGradients.get(layer)
+    if (byZoom === undefined) this.lineGradients.set(layer, (byZoom = new Map()))
+    let ramp = byZoom.get(zoom)
+    if (ramp === undefined) {
+      ramp = Array.from({ length: LINE_GRADIENT_SAMPLES }, (_, index) => layer.evaluateLineGradient(zoom, index / (LINE_GRADIENT_SAMPLES - 1)))
+      byZoom.set(zoom, ramp)
+    }
+    return ramp
+  }
+
   protected createSymbolCandidate(
     layer: CompiledStyleLayer,
     feature: StyleFeature,
     state: FeatureState,
-    type: VectorTileFeature['type'],
+    type: VectorTileFeatureLike['type'],
     geometry: Point[][],
     zoom: number,
     order: number,
@@ -977,7 +1099,7 @@ export class MapStyleProcessor {
    * The labels a tile placed, as drawn. Laid out again when the tile was processed too long ago, or before its raw
    * tile or the style changed (the boxes would no longer match what a fresh bucket draws).
    */
-  protected async getPlacedLabels(request: TileRequest, tile: VectorTile, layers: readonly CompiledStyleLayer[]): Promise<PlacedLabel[]> {
+  protected async getPlacedLabels(request: TileRequest, tile: VectorTileLike, layers: readonly CompiledStyleLayer[]): Promise<PlacedLabel[]> {
     const key = bucketKeyOf(request)
     const serial = tileSerial(tile)
     const known = this.placedLabels.get(key)
@@ -999,7 +1121,7 @@ export class MapStyleProcessor {
     const filter = compileQueryFilter(query.filter)
     const hits: QueryHit[] = []
     const seen = new Set<string>()
-    const add = (layer: CompiledStyleLayer, tileRequest: QueryTile, tile: VectorTile, sourceLayer: string, index: number, label: boolean): void => {
+    const add = (layer: CompiledStyleLayer, tileRequest: QueryTile, tile: VectorTileLike, sourceLayer: string, index: number, label: boolean): void => {
       const vectorFeature = tile.layers[sourceLayer]?.feature(index)
       if (vectorFeature === undefined) return
       const id = this.featureId(tileRequest.sourceId, sourceLayer, vectorFeature)
@@ -1061,21 +1183,22 @@ export class MapStyleProcessor {
       for (let position = layers.length - 1; position >= 0; position--) {
         const layer = layers[position]!
         const hitTest = featureHitTesters.get(layer.type)
-        if (hitTest === undefined || layer.custom !== null || layer.source !== tileRequest.sourceId || layer.sourceLayer === undefined) continue
+        const layerName = this.layerNameOf(layer)
+        if (hitTest === undefined || layer.custom !== null || layer.source !== tileRequest.sourceId || layerName === undefined) continue
         if (!layer.isVisibleAtZoom(zoom) || (wanted !== null && !wanted.has(layer.id))) continue
-        const index = getTileFeatureIndex(tile, layer.sourceLayer)
+        const index = getTileFeatureIndex(tile, layerName)
         if (index === null) continue
-        const sourceLayer = tile.layers[layer.sourceLayer]!
+        const sourceLayer = tile.layers[layerName]!
         const margin = toleranceUnits + (layer.type === 'line' || layer.type === 'circle' ? MAXIMUM_QUERY_RADIUS_PIXELS * unitsPerPixel : 0)
         const factor = TILE_EXTENT / sourceLayer.extent
         for (const featureIndex of index.query(...queryBounds(clipped, margin))) {
           const vectorFeature = sourceLayer.feature(featureIndex)
-          const id = this.featureId(tileRequest.sourceId, layer.sourceLayer, vectorFeature)
+          const id = this.featureId(tileRequest.sourceId, layerName, vectorFeature)
           const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
           if (!accepts(layer, feature)) continue
-          const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tileRequest.sourceId, layer.sourceLayer, id)) ?? NO_STATE)
+          const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tileRequest.sourceId, this.stateLayerOf(tileRequest.sourceId, layerName), id)) ?? NO_STATE)
           const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
-          if (hitTest({ layer, feature, state, type: vectorFeature.type, geometry, query: clipped, zoom, unitsPerPixel, toleranceUnits })) add(layer, tileRequest, tile, layer.sourceLayer, featureIndex, false)
+          if (hitTest({ layer, feature, state, type: vectorFeature.type, geometry, query: clipped, zoom, unitsPerPixel, toleranceUnits })) add(layer, tileRequest, tile, layerName, featureIndex, false)
         }
       }
     }
@@ -1111,15 +1234,25 @@ export class MapStyleProcessor {
     return features
   }
 
+  /** The tile layer a style layer reads: the source's single layer (GeoJSON), or its `source-layer`. */
+  protected layerNameOf(layer: CompiledStyleLayer): string | undefined {
+    return (layer.source === undefined ? undefined : this.fetchers.get(layer.source)?.singleLayer) ?? layer.sourceLayer
+  }
+
+  /** The source layer feature-state keys use: none for a single-layer (GeoJSON) source. */
+  protected stateLayerOf(sourceId: string, layerName: string): string | undefined {
+    return this.fetchers.get(sourceId)?.singleLayer === undefined ? layerName : undefined
+  }
+
   /** The feature's id: its own, or the property `promoteId` names. */
-  protected featureId(sourceId: string, sourceLayer: string, feature: VectorTileFeature): string | number | undefined {
+  protected featureId(sourceId: string, sourceLayer: string, feature: VectorTileFeatureLike): string | number | undefined {
     const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
     const promoted = typeof promoteId === 'string' ? promoteId : promoteId?.[sourceLayer]
     return promoted === undefined ? feature.id : asFeatureId(feature.properties[promoted])
   }
 
-  protected toSourceFeature(tile: { sourceId: string; x: number; y: number; z: number }, sourceLayer: string, feature: VectorTileFeature, id: string | number | undefined): SourceFeature {
-    const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tile.sourceId, sourceLayer, id)) ?? NO_STATE)
+  protected toSourceFeature(tile: { sourceId: string; x: number; y: number; z: number }, sourceLayer: string, feature: VectorTileFeatureLike, id: string | number | undefined): SourceFeature {
+    const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tile.sourceId, this.stateLayerOf(tile.sourceId, sourceLayer), id)) ?? NO_STATE)
     return {
       type: 'Feature',
       id,
@@ -1157,7 +1290,7 @@ export class MapStyleProcessor {
   }
 
   /** Fetches and decodes a tile once, shared by concurrent requests; aborted only when every waiter is. */
-  protected getRawTile(sourceId: string, x: number, y: number, z: number, signal?: AbortSignal): Promise<VectorTile | null> {
+  protected getRawTile(sourceId: string, x: number, y: number, z: number, signal?: AbortSignal): Promise<VectorTileLike | null> {
     const fetcher = this.fetchers.get(sourceId)
     if (fetcher === undefined) return Promise.resolve(null)
     const key = `${sourceId}/${z}/${x}/${y}`
@@ -1171,7 +1304,7 @@ export class MapStyleProcessor {
         z,
         controller,
         waiters: 0,
-        promise: fetcher.fetchTile(x, y, z, controller.signal, revalidate).then(bytes => (bytes === null ? null : new VectorTile(new Pbf(bytes)))),
+        promise: fetcher.loadTile(x, y, z, controller.signal, revalidate),
       }
       created.promise.catch(() => {
         if (revalidate) this.revalidatedTiles.add(key) // an aborted or failed refetch must not use up the revalidation
@@ -1212,11 +1345,30 @@ export class MapStyleProcessor {
   }
 }
 
-const tileSerials = new WeakMap<VectorTile, number>()
+/**
+ * A gradient along one line of a tile: the line runs from progress `start` to `end` of the whole feature (geojson-vt's
+ * clip metrics), so its colours continue across tiles.
+ */
+function lineGradientAlong(line: readonly Point[], start: number, end: number, ramp: readonly Rgba[], opacity: number): LineGradient {
+  let length = 0
+  for (let index = 1; index < line.length; index++) length += Math.hypot(line[index]!.x - line[index - 1]!.x, line[index]!.y - line[index - 1]!.y)
+  const span = end - start
+  const last = ramp.length - 1
+  return {
+    colorAt: distance => {
+      const progress = Math.min(Math.max(start + (length > 0 ? (span * distance) / length : 0), 0), 1)
+      const [r, g, b, a] = ramp[Math.round(progress * last)]!
+      return [r, g, b, Math.round(a * opacity)]
+    },
+    stepUnits: length / Math.max(1, Math.ceil(Math.abs(span) / LINE_GRADIENT_STEP)),
+  }
+}
+
+const tileSerials = new WeakMap<VectorTileLike, number>()
 let nextTileSerial = 1
 
 /** A number naming a decoded tile, without keeping it alive. */
-function tileSerial(tile: VectorTile): number {
+function tileSerial(tile: VectorTileLike): number {
   let serial = tileSerials.get(tile)
   if (serial === undefined) tileSerials.set(tile, (serial = nextTileSerial++))
   return serial
@@ -1279,7 +1431,7 @@ function scaleGeometry(geometry: Point[][], factor: number): Point[][] {
 }
 
 /** Where a point-placed label goes: the point itself, the middle of a line, the centre of a polygon's box. */
-function representativePoint(type: VectorTileFeature['type'], geometry: Point[][]): Point | null {
+function representativePoint(type: VectorTileFeatureLike['type'], geometry: Point[][]): Point | null {
   const first = geometry[0]
   if (first === undefined || first.length === 0) return null
   if (type === 1) return first[0]!

@@ -5,10 +5,12 @@ description: >
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
   fonts, labels facing the viewer or draped (symbols, symbolFadeDurationSeconds), sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
   updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
-  setFilter, addLayer, setStyle diff, StyleLayer), feature-state for hover and selection, global-state,
-  transformRequest and addProtocol, and redrawing after tile data changed on the server with invalidate(bounds).
+  setFilter, addLayer, setStyle diff, StyleLayer), app data with GeoJsonSource (geojson sources, setData,
+  updateData, clustering with point_count and cluster queries, line-gradient with lineMetrics), feature-state for
+  hover and selection, global-state, transformRequest and addProtocol, and redrawing after tile data changed on
+  the server with invalidate(bounds).
 metadata:
-  purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, feature-state, invalidate and what is not supported yet.'
+  purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, GeoJSON sources and clusters, feature-state, invalidate and what is not supported yet.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -19,6 +21,10 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyle.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/GeoJsonSource.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/GeoJsonSource.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/geoJsonSource.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/geoJsonData.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/sprites.ts'
@@ -33,8 +39,8 @@ requires:
 Read `terrain-and-imagery-sources` first: a map style is an imagery source, so it sits in an `<Imagery>`
 layer and drapes on terrain.
 
-`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles
-(fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
+`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, and
+tiles GeoJSON (fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
 on the GPU. Point labels (place names) face the viewer at a constant size above the terrain, collide across the
 whole screen and fade, as in MapLibre; line labels (road names) lie on the ground.
 
@@ -95,33 +101,10 @@ export function OwnStyle({ token }: { token: string }) {
 - `localFontFamily` draws labels when the style has no `glyphs` URL or the server lacks a glyph.
 - `maximumZoom` (default 20): deepest zoom terrain is textured at; past the data's maximum, tiles overzoom.
 
-### Labels facing the viewer or on the ground: `symbols`
+### Labels: `symbols`
 
-```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
-
-export function GroundLabels() {
-  return (
-    <Imagery>
-      <MapStyleSource url="https://demotiles.maplibre.org/style.json" symbols="draped" symbolFadeDurationSeconds={0} />
-    </Imagery>
-  )
-}
-```
-
-- `symbols="screen"` (default): point-placed labels stand upright on the screen at their `text-size`, readable at
-  any pitch, a little smaller towards the horizon (as MapLibre's perspective ratio). They are placed together on
-  the whole screen: higher style layers first, then `symbol-sort-key`, then labels already showing, so the same
-  label never shows twice where tiles of two zooms meet. `text-allow-overlap` and `text-ignore-placement` apply.
-  They stand on the terrain as drawn and go behind the globe's horizon, but draw over mountains in front of
-  them. They hide while the view morphs between the globe and the flat map; on the flat map only the world copy
-  nearest the camera has labels. They fade with the `<Imagery>` layer's `opacity`. Each `<MapStyleSource>` places
-  its own labels, so the labels of two styles can overlap.
-- `symbols="draped"`: every label is drawn into the terrain's texture, flat on the ground, colliding only within
-  its tile.
-- `symbolFadeDurationSeconds` (default 0.3): how long a label takes to fade in or out; 0 switches at once.
-- `earth.terrain.getScreenLabels()` lists the labels on the screen this frame: text, anchor, collision box,
-  opacity. Use it in tests, or to find which label is under the pointer.
+Point labels face the viewer at a constant size by default, collide across the screen and fade;
+`symbols="draped"` lays them on the ground. Read `map-labels`.
 
 ### Change the style at runtime
 
@@ -201,6 +184,64 @@ export function Highlights({ selectedClass }: { selectedClass: string }) {
   `source` or `sourceLayer` replaces the layer where it is. Zoom props are `minimumZoom` / `maximumZoom`.
 - `<StyleLayer>` layers survive `setStyle` and a new `style` prop.
 - Vanilla: `new StyleLayer(options).addTo(source)`, then `layer.update(options)` and `layer.remove()`.
+
+### App data: `<GeoJsonSource>` (routes, points, clusters)
+
+GeoJSON from the app is tiled in the worker (geojson-vt, and supercluster for clusters, as MapLibre does). Put
+`<GeoJsonSource>` inside `<MapStyleSource>`; the `<StyleLayer>`s inside it read it (their `source` defaults to it).
+
+```tsx
+import type { FeatureCollection } from 'geojson'
+import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+
+export function Stations({ stations, route }: { stations: FeatureCollection; route: FeatureCollection }) {
+  return (
+    <Imagery>
+      <MapStyleSource url="https://example.com/style.json">
+        <GeoJsonSource id="route" data={route} lineMetrics>
+          <StyleLayer id="route-line" type="line" paint={{ 'line-width': 6, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, '#ff0000', 1, '#00e0ff'] }} />
+        </GeoJsonSource>
+        <GeoJsonSource id="stations" data={stations} cluster clusterRadiusPixels={40} clusterProperties={{ seats: ['+', ['get', 'seats']] }}>
+          <StyleLayer id="clusters" type="circle" filter={['has', 'point_count']} paint={{ 'circle-color': '#20c040', 'circle-radius': 16 }} />
+          <StyleLayer id="cluster-counts" type="symbol" filter={['has', 'point_count']} layout={{ 'text-field': '{point_count_abbreviated}' }} />
+          <StyleLayer id="stations" type="circle" filter={['!', ['has', 'point_count']]} paint={{ 'circle-radius': 5 }} />
+        </GeoJsonSource>
+      </MapStyleSource>
+    </Imagery>
+  )
+}
+```
+
+- `data` is GeoJSON or a URL (the app's; fetched through `transformRequest` and protocols). A **new object** is sent
+  with `setData`; keep it memoised and never mutate it after passing it. Only the regions where the old or the new
+  data lie are redrawn. Other prop changes (`cluster`, `filter`…) cut the tiles again.
+- Options are MapLibre's with units: `maximumZoom` (18), `bufferPixels` (128), `tolerancePixels` (0.375),
+  `cluster`, `clusterRadiusPixels` (50), `clusterMaximumZoom`, `clusterMinimumPoints` (2), `clusterProperties`,
+  `lineMetrics`, `generateId`, `promoteId`, `filter`, `attribution`.
+- Clusters carry `cluster: true`, `cluster_id`, `point_count` and `point_count_abbreviated`. Only points cluster;
+  lines and polygons of a clustered source are dropped, as in MapLibre: use a second source for them.
+- A `geojson` source written in the style itself works the same; a `<GeoJsonSource>` of the same id replaces it
+  (its layers keep reading it) and survives `setStyle`.
+
+Change a few features by id without sending everything (moving vehicles), and ask about clusters, on the ref or
+the vanilla class:
+
+```ts
+import { GeoJsonSource, MapStyleSource } from 'react-three-earth'
+
+const style = new MapStyleSource({ url: 'https://example.com/style.json' })
+const buses = new GeoJsonSource({ id: 'buses', data: { type: 'FeatureCollection', features: [] }, cluster: true })
+style.addGeoJsonSource(buses)
+buses.updateData({ add: [{ type: 'Feature', id: 12, geometry: { type: 'Point', coordinates: [2.35, 48.85] }, properties: {} }] })
+buses.updateData({ update: [{ id: 12, newGeometry: { type: 'Point', coordinates: [2.36, 48.86] } }], remove: [7] })
+const zoom: number = await buses.getClusterExpansionZoom(42) // a cluster_id read from a drawn cluster
+const leaves = await buses.getClusterLeaves(42, Infinity)
+style.setGeoJsonSourceData('buses', { type: 'FeatureCollection', features: [] }) // by source id, style sources too
+```
+
+- `updateData` needs every feature to have an id (`id`, or the `promoteId` property) and the data as an object.
+  It redraws around the changed features only, or around the whole data when points are clustered.
+- Feature-state on GeoJSON: `setFeatureState({ source: 'buses', id: 12 }, { hover: true })`, no `sourceLayer`.
 
 ### Hover and selection: feature-state
 
@@ -423,16 +464,24 @@ server can still answer with the old tile. Purge it, or serve changing tiles wit
 `addImage` reads the pixels immediately and throws on an image element that has not loaded. `await
 image.decode()` first, or pass `{ width, height, data }`.
 
+### HIGH: Mutating GeoJSON data after passing it
+
+`data` is kept by reference and only a new object is sent: `features.push(…)` then the same object changes nothing
+on the map (and confuses later snapshots). Pass a new object, or use `updateData` for a few features.
+
+### MEDIUM: `line-gradient` without `lineMetrics`
+
+A gradient needs the line's progress, which only a `geojson` source with `lineMetrics` (or `lineMetrics` on
+`<GeoJsonSource>`) carries. Without it the line draws with `line-color` and one warning names the layer.
+
 ### MEDIUM: Expecting icons
 
-The sprite is loaded and its images can be patterns, but `icon-image` is not drawn yet (screen-space
-symbols come later). Labels still draw.
+The sprite is loaded and its images can be patterns, but `icon-image` is not drawn yet. Labels still draw.
 
 ### MEDIUM: Unsupported layers
 
 Raster, hillshade and heatmap layers are skipped with one console warning listing them. `fill-extrusion`
-draws flat. Line labels (road names) stay on the ground and collide only within their terrain tile;
-`text-variable-anchor` uses its first anchor. A layer of a type MapLibre does not define is drawn by the
+draws flat. Label limits are in `map-labels`. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
 ## Completion
@@ -444,6 +493,4 @@ plugin that registers it (`write-a-plugin`); without one, it is skipped with a w
 - `source.getStyle()` shows the change; `source.getFeatureState(feature)` returns what was set.
 - The console shows no `MapStyleSource:` error; a warning lists skipped layers, if any. A sprite that cannot
   load warns once, naming its URL.
-- `earth.inspect().terrain.symbols` counts the labels facing the viewer: `labelsShown`, `labelsCollided`, and
-  `elevationsPending` back to 0 once each stands on the terrain. It is null with `symbols="draped"`.
 - `source.hasImage('name')` is true for sprite images once the style has loaded.

@@ -1,4 +1,5 @@
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
+import type { Feature, GeoJSON, Point } from 'geojson'
 
 import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
@@ -6,6 +7,8 @@ import type { GeographicBounds } from './camera.js'
 import { MapStyle, type MapStyleEventMap, type ProtocolLoader, type TransformRequest } from '../vector/MapStyle.js'
 import { MapStyleOverlay, type SourceFeatureQueryOptions } from '../vector/MapStyleOverlay.js'
 import type { StyleLayer } from '../vector/StyleLayer.js'
+import type { GeoJsonSource } from '../vector/GeoJsonSource.js'
+import type { GeoJsonSourceDiff } from '../vector/worker/geoJsonData.js'
 import type { FeatureIdentifier } from '../vector/worker/featureState.js'
 import type { StyleDocument, StyleDocumentLayer } from '../vector/worker/styleDocument.js'
 import type { FeatureState, SourceFeature } from '../vector/worker/types.js'
@@ -139,7 +142,7 @@ export class RasterTileSource extends AttributionTracker implements ImagerySourc
 export interface MapStyleSourceOptions {
   /**
    * A MapLibre style (version 8): its URL, or the style document. Vector sources can be XYZ `tiles`, a
-   * TileJSON `url`, or a PMTiles archive (`pmtiles://https://…`).
+   * TileJSON `url`, or a PMTiles archive (`pmtiles://https://…`); `geojson` sources hold GeoJSON or its URL.
    * @example 'https://demotiles.maplibre.org/style.json'
    */
   url?: string
@@ -194,7 +197,10 @@ export interface MapStyleSourceOptions {
 
 /**
  * A MapLibre style rendered onto the terrain: fills, lines, circles and text labels from vector tiles (XYZ,
- * TileJSON or PMTiles). Point labels face the viewer by default (`symbols`).
+ * TileJSON or PMTiles) and GeoJSON (tiled in the worker, points optionally clustered, `line-gradient` with
+ * `lineMetrics`). App data goes in with `addGeoJsonSource` (`<GeoJsonSource>` in React) and changes with
+ * `setGeoJsonSourceData` / `updateGeoJsonSourceData`, redrawing only where it changed. Point labels
+ * face the viewer by default (`symbols`).
  *
  * Tiles are decoded and tessellated in a worker, then drawn on the GPU straight into each terrain tile's
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
@@ -422,9 +428,53 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
     this.mapStyle.moveLayer(layerId, beforeId)
   }
 
-  /** Adds a source (MapLibre source object; `vector` sources draw, with `promoteId` for feature-state ids). */
+  /**
+   * Adds a source: a MapLibre source object (`vector` and `geojson` sources draw, with `promoteId` for feature-state
+   * ids). A `geojson` source's `data` object is kept, not copied.
+   */
   addSource(sourceId: string, source: object): void {
     this.mapStyle.addSource(sourceId, source)
+  }
+
+  /**
+   * Adds a `GeoJsonSource` (app data that forwards its `setData` and `updateData`), replacing a source of the same id;
+   * it survives `setStyle`.
+   * @example source.addGeoJsonSource(new GeoJsonSource({ id: 'route', data: route, lineMetrics: true }))
+   */
+  addGeoJsonSource(source: GeoJsonSource): void {
+    source.addTo(this)
+  }
+
+  /**
+   * Replaces a `geojson` source's data (GeoJSON, or a URL). Keep the object unchanged afterwards. Only the regions where
+   * the old or the new data lie are redrawn.
+   */
+  setGeoJsonSourceData(sourceId: string, data: GeoJSON | string): void {
+    this.mapStyle.setGeoJsonSourceData(sourceId, data)
+  }
+
+  /**
+   * Changes a `geojson` source's features by id (MapLibre's `updateData`); every feature needs an id. Only the regions
+   * around the changed features are redrawn.
+   * @example source.updateGeoJsonSourceData('buses', { update: [{ id: 12, newGeometry: { type: 'Point', coordinates: [2.35, 48.86] } }] })
+   */
+  updateGeoJsonSourceData(sourceId: string, diff: GeoJsonSourceDiff): void {
+    this.mapStyle.updateGeoJsonSourceData(sourceId, diff)
+  }
+
+  /** The zoom at which a cluster of a clustered `geojson` source splits (`cluster_id` from a drawn cluster). */
+  async getClusterExpansionZoom(sourceId: string, clusterId: number): Promise<number> {
+    return (await this.mapStyle.querySource(sourceId, { kind: 'clusterExpansionZoom', clusterId })) as number
+  }
+
+  /** A cluster's children one zoom deeper (clusters and points), as GeoJSON features. */
+  async getClusterChildren(sourceId: string, clusterId: number): Promise<Array<Feature<Point>>> {
+    return (await this.mapStyle.querySource(sourceId, { kind: 'clusterChildren', clusterId })) as Array<Feature<Point>>
+  }
+
+  /** A cluster's points, `limit` of them (default 10; `Infinity` for all) from `offset`, as GeoJSON features. */
+  async getClusterLeaves(sourceId: string, clusterId: number, limit = 10, offset = 0): Promise<Array<Feature<Point>>> {
+    return (await this.mapStyle.querySource(sourceId, { kind: 'clusterLeaves', clusterId, limit, offset })) as Array<Feature<Point>>
   }
 
   /** Removes a source; remove the layers reading it first. */
@@ -484,7 +534,7 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
     this.mapStyle.removeEventListener(type, listener as never)
   }
 
-  /** The style model, for `StyleLayer`. */
+  /** The style model, for `StyleLayer` and `GeoJsonSource`. */
   getMapStyle(): MapStyle {
     return this.mapStyle
   }

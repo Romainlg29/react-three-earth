@@ -11,7 +11,7 @@ import {
 import type { AttributionTracker } from '../core/attribution.js'
 import type { TransformRequest } from '../vector/MapStyle.js'
 import { StyleLayer as StyleLayerImpl, type StyleLayerOptions } from '../vector/StyleLayer.js'
-import { ImagerySourceContext, MapStyleSourceContext, TerrainSourceContext, useRegisterSource } from './context.js'
+import { GeoJsonSourceContext, ImagerySourceContext, MapStyleSourceContext, TerrainSourceContext, useRegisterSource } from './context.js'
 
 /** Applies a changed `attribution` prop to the source without rebuilding it (which would reload tiles). */
 function useAttribution(source: AttributionTracker, attribution: string | readonly string[] | undefined): void {
@@ -146,11 +146,15 @@ export type StyleLayerProps = StyleLayerOptions
 /**
  * A style layer the app adds to its `<MapStyleSource>`, MapLibre style: `<StyleLayer id="hover" type="fill"
  * source="base" sourceLayer="buildings" paint={{ 'fill-color': '#f80' }} />`. Prop changes send only what changed;
- * `beforeId` places it below another layer. Wraps the vanilla `StyleLayer`.
+ * `beforeId` places it below another layer. Inside a `<GeoJsonSource>`, `source` defaults to it. Wraps the vanilla
+ * `StyleLayer`.
  */
-export function StyleLayer(props: StyleLayerProps) {
+export function StyleLayer(layerProps: StyleLayerProps) {
   const source = use(MapStyleSourceContext)
   if (source === null) throw new Error('<StyleLayer> must sit inside <MapStyleSource>.')
+  // Inside <GeoJsonSource>, layers read it unless they name another source
+  const geoJsonSourceId = use(GeoJsonSourceContext)
+  const props = layerProps.source === undefined && geoJsonSourceId !== null && layerProps.type !== 'background' ? { ...layerProps, source: geoJsonSourceId } : layerProps
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const layer = useMemo(() => new StyleLayerImpl(props), [props.id])
   // A change that does not apply (a `beforeId` naming no layer, for example) is reported as an `error` event

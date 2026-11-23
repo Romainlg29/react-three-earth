@@ -105,6 +105,11 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
         .then(async created => post(created, { type: 'result', id: data.id, value: await created.setLayerTypes(data.layerTypes) }))
         .catch(error => fail(data.id, error))
       return
+    case 'sourceQuery':
+      requireProcessor()
+        .then(async created => post(created, { type: 'result', id: data.id, value: await created.querySource(data.sourceId, data.query) }))
+        .catch(error => fail(data.id, error))
+      return
     case 'featureState':
       requireProcessor()
         .then(created => {
