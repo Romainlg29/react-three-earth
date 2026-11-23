@@ -1,4 +1,8 @@
+import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
 import { Frustum, Matrix4, Sphere, Vector3, Vector4, type Camera } from 'three'
+
+import type { ViewMorph } from '../view/ViewMorph.js'
+import { longitudeToMercatorX, wrapMercatorXNear } from '../view/webMercator.js'
 
 /** A Web Mercator tile (XYZ, y down from the north). */
 export interface PyramidTile {
@@ -208,4 +212,46 @@ function forEachEdge(visit: (a: number, b: number) => void): void {
 
 function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
   return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+/**
+ * The camera's tiles on the globe (`view.morph` 0) or on the flat map (1), for labels facing the viewer and 3D
+ * extrusions, with the ground taken at `groundHeightMeters` (the terrain at the screen centre): on a plateau tiles are
+ * nearer than the ellipsoid, so deeper. Not meant for frames inside the morph, where the ground is between the two.
+ */
+export function computeViewTilePyramid(camera: Camera, widthPixels: number, heightPixels: number, view: ViewMorph, maximumZoom: number, groundHeightMeters = 0): PyramidTile[] {
+  const flat = view.morph === 1
+  camera.updateMatrixWorld()
+  const position = new Vector3().setFromMatrixPosition(camera.matrixWorld)
+  return computeCameraTilePyramid({
+    camera,
+    widthPixels,
+    heightPixels,
+    toScenePosition: (longitude, latitude, target, centerLongitude) => toScenePosition(view, flat, longitude, latitude, groundHeightMeters, target, centerLongitude),
+    visibleCap: flat ? null : horizonCap(position),
+    cameraHeightMeters: Math.max(1, cameraHeightAboveSurface(view, flat, position) - groundHeightMeters),
+    maximumZoom,
+  })
+}
+
+/**
+ * Scene position of a geographic point: on the globe, or on the flat map's world copy nearest the camera (the copy of
+ * `referenceLongitudeRadians`, when given, so points of one tile stay together).
+ */
+export function toScenePosition(view: ViewMorph, flat: boolean, longitudeRadians: number, latitudeRadians: number, heightMeters: number, target: Vector3, referenceLongitudeRadians = longitudeRadians): Vector3 {
+  if (!flat) return WGS84_ELLIPSOID.getCartographicToPosition(latitudeRadians, longitudeRadians, heightMeters, target) as Vector3
+  const flatPoint = view.geodeticToFlat(longitudeRadians, latitudeRadians, heightMeters, target)
+  const referenceX = longitudeToMercatorX(referenceLongitudeRadians)
+  flatPoint.x += wrapMercatorXNear(referenceX, view.worldCopyReferenceXMeters) - referenceX
+  return flatPoint.applyMatrix4(view.flatToEarth)
+}
+
+const surfacePoint = new Vector3()
+const cartographic = { lat: 0, lon: 0, height: 0 }
+
+/** The camera's height above the ellipsoid (the map's plane on the flat map), in scene metres. */
+export function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition: Vector3): number {
+  if (flat) return surfacePoint.copy(cameraPosition).applyMatrix4(view.earthToFlat).z * view.scale
+  WGS84_ELLIPSOID.getPositionToCartographic(cameraPosition, cartographic)
+  return cartographic.height
 }

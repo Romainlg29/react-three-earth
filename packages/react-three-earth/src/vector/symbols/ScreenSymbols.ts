@@ -4,8 +4,7 @@ import type { MeshBasicNodeMaterial } from 'three/webgpu'
 
 import { isOccludedByEllipsoid } from '../../core/projection.js'
 import type { ViewMorph } from '../../view/ViewMorph.js'
-import { longitudeToMercatorX, wrapMercatorXNear } from '../../view/webMercator.js'
-import { computeCameraTilePyramid, horizonCap, tileRowToLatitude } from '../CameraTilePyramid.js'
+import { cameraHeightAboveSurface, computeViewTilePyramid, tileRowToLatitude, toScenePosition } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_IGNORE_PLACEMENT, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../worker/symbols.js'
@@ -22,6 +21,8 @@ export interface SymbolFrame {
   zoom: number
   /** Distance from the camera to the screen centre, in scene metres: labels further away shrink a little (MapLibre). */
   centerDistanceMeters: number
+  /** Height of the terrain at the screen centre, in metres (0 without terrain): the camera's tiles are chosen at it. */
+  centerHeightMeters: number
   view: ViewMorph
   /** Height of the terrain as drawn (radians in), or null where no tile is loaded. Null without terrain. */
   sampleTerrainElevation: ((longitudeRadians: number, latitudeRadians: number) => number | null) | null
@@ -189,7 +190,6 @@ function readsBackwards(glyphCount: number): boolean {
   const dy = glyphScratch[last + 1]! - glyphScratch[1]!
   return dx < -UPRIGHT_SLACK * Math.hypot(dx, dy)
 }
-const cartographic = { lat: 0, lon: 0, height: 0 }
 const cameraPoint = new Vector3()
 
 /** Whether two labels' variable anchor shifts are the same (both without, or equal values). */
@@ -500,19 +500,7 @@ export class ScreenSymbols {
 
   /** Asks for the pyramid's tiles of every source, keeping tiles already held. */
   protected requestTiles(frame: SymbolFrame, summary: MapStyleSummary): void {
-    const { view, camera } = frame
-    const flat = view.morph === 1
-    camera.updateMatrixWorld()
-    const cameraPosition = point.setFromMatrixPosition(camera.matrixWorld).clone()
-    const pyramid = computeCameraTilePyramid({
-      camera,
-      widthPixels: frame.widthPixels,
-      heightPixels: frame.heightPixels,
-      toScenePosition: (longitude, latitude, target, centerLongitude) => toScenePosition(view, flat, longitude, latitude, 0, target, centerLongitude),
-      visibleCap: flat ? null : horizonCap(cameraPosition),
-      cameraHeightMeters: cameraHeightAboveSurface(view, flat, cameraPosition),
-      maximumZoom: this.host.maximumZoom,
-    })
+    const pyramid = computeViewTilePyramid(frame.camera, frame.widthPixels, frame.heightPixels, frame.view, this.host.maximumZoom, frame.centerHeightMeters)
     const requested = new Set<string>()
     for (const source of summary.sources) {
       // Raster and elevation tiles hold no labels.
@@ -1221,25 +1209,6 @@ export class ScreenSymbols {
     this.state.upload()
     this.glyphState.upload()
   }
-}
-
-/**
- * Scene position of a geographic point: on the globe, or on the flat map's world copy nearest the camera (the copy of
- * `referenceLongitudeRadians`, when given, so points of one tile stay together).
- */
-function toScenePosition(view: ViewMorph, flat: boolean, longitudeRadians: number, latitudeRadians: number, heightMeters: number, target: Vector3, referenceLongitudeRadians = longitudeRadians): Vector3 {
-  if (!flat) return WGS84_ELLIPSOID.getCartographicToPosition(latitudeRadians, longitudeRadians, heightMeters, target) as Vector3
-  const flatPoint = view.geodeticToFlat(longitudeRadians, latitudeRadians, heightMeters, target)
-  const referenceX = longitudeToMercatorX(referenceLongitudeRadians)
-  flatPoint.x += wrapMercatorXNear(referenceX, view.worldCopyReferenceXMeters) - referenceX
-  return flatPoint.applyMatrix4(view.flatToEarth)
-}
-
-/** The camera's height above the ellipsoid (the map's plane on the flat map), in scene metres. */
-function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition: Vector3): number {
-  if (flat) return point.copy(cameraPosition).applyMatrix4(view.earthToFlat).z * view.scale
-  WGS84_ELLIPSOID.getPositionToCartographic(cameraPosition, cartographic)
-  return cartographic.height
 }
 
 function meetsBox(left: number, top: number, right: number, bottom: number, box: readonly [number, number, number, number], tolerancePixels: number): boolean {

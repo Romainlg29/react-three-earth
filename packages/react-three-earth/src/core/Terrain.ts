@@ -12,6 +12,7 @@ import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import { sampleTerrainHeight } from '../tiles/terrainHeights.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { ViewMorph } from '../view/ViewMorph.js'
+import type { ExtrusionFrame, Extrusions, ExtrusionsInspection } from '../vector/extrusions/Extrusions.js'
 import type { ScreenLabelInspection, ScreenSymbols, ScreenSymbolsInspection, SymbolFrame } from '../vector/symbols/ScreenSymbols.js'
 import type { AttributionProvider } from './attribution.js'
 import type { Imagery } from './Imagery.js'
@@ -56,6 +57,8 @@ export class Terrain implements AttributionProvider {
   readonly flatMap: FlatMapPlugin
   /** Labels of its map style sources that face the viewer, drawn over the tiles. `Earth.setTerrain` adds it to the earth. */
   readonly symbols = new Group()
+  /** Buildings (`fill-extrusion` layers) of its map style sources standing in 3D. `Earth.setTerrain` adds it to the earth. */
+  readonly extrusions = new Group()
   protected readonly imagery = new Set<Imagery>()
   protected readonly source: TerrainSource
   /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
@@ -140,6 +143,8 @@ export class Terrain implements AttributionProvider {
       this.overlays.addOverlay(overlay as never)
       const symbols = screenSymbolsOf(overlay)
       if (symbols !== null) this.symbols.add(symbols.object)
+      const extrusions = extrusionsOf(overlay)
+      if (extrusions !== null) this.extrusions.add(extrusions.object)
     }
   }
 
@@ -149,6 +154,8 @@ export class Terrain implements AttributionProvider {
       this.overlays.deleteOverlay(overlay as never)
       const symbols = screenSymbolsOf(overlay)
       if (symbols !== null) this.symbols.remove(symbols.object)
+      const extrusions = extrusionsOf(overlay)
+      if (extrusions !== null) this.extrusions.remove(extrusions.object)
     }
   }
 
@@ -173,6 +180,38 @@ export class Terrain implements AttributionProvider {
     let needsFrame = false
     for (const symbols of this.screenSymbols()) needsFrame = symbols.update(frame) || needsFrame
     return needsFrame
+  }
+
+  /** True when a map style source draws `fill-extrusion` layers in 3D. */
+  get hasExtrusions(): boolean {
+    return this.extrusions.children.length > 0
+  }
+
+  /** Sets the buildings standing in 3D for this frame (after `update`, so terrain heights are current). Returns true while they need another frame. */
+  updateExtrusions(frame: ExtrusionFrame): boolean {
+    let needsFrame = false
+    for (const extrusions of this.allExtrusions()) needsFrame = extrusions.update(frame) || needsFrame
+    return needsFrame
+  }
+
+  /** Buildings standing in 3D, summed over the map style sources. Null when none draws them. */
+  inspectExtrusions(): ExtrusionsInspection | null {
+    let total: ExtrusionsInspection | null = null
+    for (const extrusions of this.allExtrusions()) {
+      const inspection = extrusions.inspect()
+      if (total === null) total = inspection
+      else for (const key of Object.keys(total) as Array<keyof ExtrusionsInspection>) total[key] += inspection[key]
+    }
+    return total
+  }
+
+  protected *allExtrusions(): Iterable<Extrusions> {
+    for (const imagery of this.imagery) {
+      for (const overlay of imagery.overlays) {
+        const extrusions = extrusionsOf(overlay)
+        if (extrusions !== null) yield extrusions
+      }
+    }
   }
 
   /** Labels facing the viewer, summed over the map style sources. Null when none draws them. */
@@ -240,6 +279,7 @@ export class Terrain implements AttributionProvider {
     }
     if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
     for (const symbols of this.screenSymbols()) if (symbols.loading) return true
+    for (const extrusions of this.allExtrusions()) if (extrusions.loading) return true
     const { queued, downloading, parsing } = stats
     return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0 || this.imageryRecompositionsPending > 0
   }
@@ -272,6 +312,10 @@ export class Terrain implements AttributionProvider {
   dispose(): void {
     this.tiles.dispose()
   }
+}
+
+function extrusionsOf(overlay: unknown): Extrusions | null {
+  return (overlay as { extrusions?: Extrusions | null }).extrusions ?? null
 }
 
 function screenSymbolsOf(overlay: unknown): ScreenSymbols | null {

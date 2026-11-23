@@ -3,7 +3,8 @@ import { PerspectiveCamera, Vector3 } from 'three'
 import { describe, expect, it } from 'vitest'
 
 import { setCameraView } from '../src/core/camera.js'
-import { computeCameraTilePyramid, horizonCap, type PyramidTile } from '../src/vector/CameraTilePyramid.js'
+import { computeCameraTilePyramid, computeViewTilePyramid, horizonCap, type PyramidTile } from '../src/vector/CameraTilePyramid.js'
+import { ViewMorph } from '../src/view/ViewMorph.js'
 
 const WIDTH = 1000
 const HEIGHT = 650
@@ -69,5 +70,17 @@ describe('computeCameraTilePyramid, pitched and from afar', () => {
       })
     expect(covers(138, 36)).toBe(true)
     expect(covers(-30, 30)).toBe(false)
+  })
+})
+
+describe('computeViewTilePyramid', () => {
+  it('takes the ground at the terrain height under the view: on a plateau tiles are deeper', () => {
+    const view = new ViewMorph()
+    const camera = new PerspectiveCamera(60, WIDTH / HEIGHT, 1, 1e8)
+    // 1.2 km straight down onto a 3900 m plateau: the camera stands 5.1 km above the ellipsoid.
+    setCameraView(camera, { longitudeDegrees: -90, latitudeDegrees: 0, heightMeters: 3900, distanceMeters: 1200, headingDegrees: 0, pitchDegrees: -90 })
+    const onEllipsoid = Math.max(...computeViewTilePyramid(camera, WIDTH, HEIGHT, view, 22).map(tile => tile.z))
+    const onPlateau = Math.max(...computeViewTilePyramid(camera, WIDTH, HEIGHT, view, 22, 3900).map(tile => tile.z))
+    expect(onPlateau - onEllipsoid).toBe(2)
   })
 })

@@ -44,7 +44,7 @@ layer and drapes on terrain.
 `MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, tiles
 GeoJSON (fills, lines, circles, text labels) and decodes raster and elevation tiles; the main thread draws them
 straight into each terrain tile's texture on the GPU. Labels, place and road names alike, face the viewer
-(`map-labels`).
+(`map-labels`), and `fill-extrusion` layers stand as 3D buildings.
 
 ## Setup
 
@@ -417,6 +417,10 @@ export function PatternedMap() {
   `onStyleImageMissing` once per id until it is added).
 - Vanilla: `new MapStyleSource({ url, onStyleImageMissing })`, then `source.addImage(…)`.
 
+### 3D buildings
+
+`fill-extrusion` layers stand as 3D buildings on the terrain by default: see `3d-buildings`.
+
 ### Satellite and relief layers
 
 A style's `raster` and `raster-dem` sources draw `raster`, `hillshade` and `color-relief` layers in style order
@@ -480,7 +484,7 @@ A gradient needs the line's progress, which only a `geojson` source with `lineMe
 
 Heatmap layers are skipped with one console warning listing them, as are layers reading a source of the
 wrong kind (a hillshade on a vector source, a fill on a raster source). `fill-extrusion`
-draws flat. Labels (`symbols`, icons not drawn yet, other limits) are in `map-labels`. A layer of a type MapLibre does not define is drawn by the
+stands in 3D (`3d-buildings`). Labels (`symbols`, icons not drawn yet, other limits) are in `map-labels`. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
 ## Completion

@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Not supported yet: icons along lines and on draped labels (point icons face the viewer, see W6 part 3 below), heatmap layers (skipped with one
-warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
+warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts (`fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -706,6 +706,56 @@ and `{-y}`.
 | Unit tests | 21 new: DEM encodings, raster decoding, worker raster cache and undecodable tiles, paint factors, slope boost, colour relief ramps (interpolate, step, constant, resampling), per-zoom summaries and lights, draw groups, processor raster tiles (TMS `{-y}`, TileJSON metadata, PMTiles raster, 404s, wrong source kind), URL templates, TileJSON for `RasterTileSource`, elevation field grids |
 
 ![relief](map-relief-2d.png) ![hillshade](map-relief-hillshade-seams.png)
+
+## 3D buildings (W12)
+
+`fill-extrusion` layers stand in 3D on the terrain (`MapStyleSource` `extrusions: '3d'`, the default;
+`'draped'` keeps the old flat footprints). Skill: `skills/3d-buildings`.
+
+- **Tiles.** `Extrusions` (`src/vector/extrusions/`) picks tiles with W6's `CameraTilePyramid`, as screen labels
+  do, only for sources with extrusion layers and within a layer's zoom range. Tiles past the source's `maxzoom`
+  overzoom; one data tile is requested per source and pyramid tile (`e:` bucket keys). An old tile stays drawn while
+  a tile overlapping it is not ready, so zooming never leaves a hole and never draws two tiles over the same ground.
+- **Worker meshes.** `processExtrusionTile` evaluates height, base (clamped to the roof), colour and opacity at the
+  tile's zoom and the next; `ExtrusionBuilder` clips each polygon to the tile square (no walls along cut edges),
+  builds walls with outward normals and roofs with earcut, bakes the vertical gradient into vertex colours, and
+  writes positions in the tile centre's east-north-up frame (`highPrecision`: the mesh matrix carries the ECEF
+  origin) plus Web Mercator positions for the flat map. `fill-extrusion` layers leave the draped pass.
+- **Terrain.** Each tile reads `terrain.sampleElevation` on a grid (4 to 32 cells, about 40 m) under a per-frame
+  budget (1024 reads, 1 ms); a building takes the lowest of its footprint's corner and centre samples, so on a slope
+  it sinks in uphill instead of floating downhill. A tile shows after its first complete pass, re-reads every 5 s to
+  follow finer terrain, and retries unknown points every 500 ms. The elevation is a vertex attribute, uploaded only
+  when it moves by more than 5 cm.
+- **Shading.** `MeshStandardNodeMaterial` lit by the scene's lights (the atmosphere's sun), so aerial perspective
+  hazes buildings like the ground. Translucent layers draw a depth prepass then colour with `LessEqual` and no depth
+  write (MapLibre's approach): only the front-most surface blends. On the flat map the morph (`enableFlatMorph`,
+  shared with `FlatMapPlugin`) unrolls them, heights grow by the Mercator scale factor, and they are shaded by
+  MapLibre's default light, unlit.
+- **Zoom.** Heights and opacity interpolate in the shader between the tile's zoom and the next by the camera's
+  zoom, so a style growing buildings from 0 at z14 to full height at z15 grows them smoothly.
+- **Camera zoom over high ground.** `Earth` now measures the camera's zoom and the tile pyramid from the ground
+  under the screen centre, not the ellipsoid: on the fixture's 3900 m plateau a top-down view asked for no tiles
+  before. Labels use the same correction.
+
+Deviations from the brief and from MapLibre:
+
+- Data-driven heights interpolate between integer zooms (the tile's and the next), not along the expression's own
+  stops; tiles towards the horizon read zoom+1 at most.
+- The style's root `light` is not read on the globe (the sun lights buildings); `fill-extrusion-pattern` draws with
+  the colour, `fill-extrusion-translate` is ignored, and a colour that changes with zoom is read at the tile's zoom.
+- Feature queries hit the footprint on the ground, not the 3D shape.
+- A building's ground is the minimum of five samples on a grid of up to 32 cells per tile, not the exact footprint.
+- Fade by zoom is the layer's `fill-extrusion-opacity` by zoom plus the `minzoom` cut, as MapLibre (no extra fade).
+
+Not supported yet: hit-testing the 3D shape, `fill-extrusion-pattern`, `fill-extrusion-translate`, the style `light`,
+shadows.
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/extrusions.test.ts`: box walls and roof orientation, heights and zoom deltas, clipping to the tile, courtyard walls, vertical gradient, ring clipping, building elevation on a grid, filling unknown grid points, processor tiles and summary, bucket keys; `cameraTilePyramid.test.ts`: deeper tiles over a plateau |
+| Browser (`?fixtures&map=buildings`, SwiftShader) | pitched: 33 tiles (z15, z17, z19), 40 building pieces, every building at 3899.9 to 3900 m on 3900 m ground, red buildings cover 5.5 % of the screen against 0.84 % draped |
+| | top-down 16 tiles, flat map 12 tiles, with the atmosphere at dusk, WebGL2 and StrictMode: buildings drawn, no `MapStyleSource:` error |
+| Frame cost | main-thread `updateMilliseconds` 1.3 to 3.6 ms on SwiftShader while tiles and elevations load; one draw per layer and tile (two for translucent layers) |
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 

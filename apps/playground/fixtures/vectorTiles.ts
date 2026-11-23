@@ -35,6 +35,43 @@ function roads(): Array<{ name: string; kind: string; line: Array<[number, numbe
   return result
 }
 
+/** Where the fixture buildings stand: the fixture terrain's peak plateau (3900 m), on the corner of four tiles at every zoom. */
+export const BUILDINGS_CENTER = [-90, 0] as const
+const METERS_PER_DEGREE = 111_320
+
+interface FixtureBuilding {
+  /** Outer ring then holes, each as [east, north] metres from `BUILDINGS_CENTER`, counter-clockwise. */
+  rings: Array<Array<[number, number]>>
+  properties: { height: number; base: number; color: string; kind: string }
+}
+
+function rectangle(east: number, north: number, width: number, depth: number): Array<[number, number]> {
+  return [
+    [east - width / 2, north - depth / 2],
+    [east + width / 2, north - depth / 2],
+    [east + width / 2, north + depth / 2],
+    [east - width / 2, north + depth / 2],
+  ]
+}
+
+/**
+ * A block of buildings: a 5 × 5 grid of 40 m squares 100 m apart, 20 to 120 m tall (the 100 m and taller ones red);
+ * in the middle, across the corner of four tiles, a red courtyard building (80 m square, 30 m hole, 100 m); a blue
+ * glass tower east (layer `building-glass`, translucent) and a raised block west (base 40 m, roof 60 m).
+ */
+const BUILDINGS: FixtureBuilding[] = [
+  ...Array.from({ length: 25 }, (_, index): FixtureBuilding | null => {
+    const column = index % 5
+    const row = Math.floor(index / 5)
+    if (column === 2 && row === 2) return null
+    const height = 20 + ((column * 7 + row * 13) % 6) * 20
+    return { rings: [rectangle((column - 2) * 100, (row - 2) * 100, 40, 40)], properties: { height, base: 0, color: height >= 100 ? '#d03030' : '#c8b89a', kind: 'block' } }
+  }).filter(building => building !== null),
+  { rings: [rectangle(0, 0, 80, 80), rectangle(0, 0, 30, 30).reverse()], properties: { height: 100, base: 0, color: '#d03030', kind: 'courtyard' } },
+  { rings: [rectangle(320, 0, 60, 40)], properties: { height: 150, base: 0, color: '#2050e0', kind: 'glass' } },
+  { rings: [rectangle(-320, 0, 60, 40)], properties: { height: 60, base: 40, color: '#c8b89a', kind: 'raised' } },
+]
+
 function project(longitude: number, latitude: number, z: number, x: number, y: number): [number, number] {
   const scale = 2 ** z
   const latitudeRadians = (latitude * Math.PI) / 180
@@ -80,7 +117,19 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
       if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) towns.push({ type: 'Point', geometry: [[point]], properties: { name: town.name, rank: town.rank } })
     }
   }
+  const buildings: EncodedFeature[] = []
+  if (z >= 13) {
+    for (const [index, building] of BUILDINGS.entries()) {
+      // Tile rows run south: counter-clockwise rings in east-north turn clockwise in tile units, as MVT outer rings.
+      const rings = building.rings.map(ring => {
+        const points = ring.map(([east, north]) => project(BUILDINGS_CENTER[0] + east / METERS_PER_DEGREE, BUILDINGS_CENTER[1] + north / METERS_PER_DEGREE, z, x, y))
+        return [...points, points[0]!]
+      })
+      if (inTile(rings[0]!)) buildings.push({ type: 'Polygon', id: index + 1, geometry: rings, properties: building.properties })
+    }
+  }
   return encodeVectorTile([
+    { name: 'buildings', features: buildings },
     { name: 'water', features: water },
     { name: 'roads', features: roadFeatures },
     { name: 'places', features: places },
@@ -277,4 +326,31 @@ export function fixtureReliefStyle({ only }: { only?: string | null } = {}): obj
   }
   const [background, ...rest] = vector.layers
   return { version: 8, sources, layers: [background, ...relief, ...rest] }
+}
+
+/** The fixture style with the buildings standing in 3D (`fill-extrusion`), from zoom 13. */
+export function fixtureBuildingStyle(): object {
+  const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
+  const roadLabel = base.layers.findIndex(layer => layer.id === 'road-label')
+  const buildings = [
+    {
+      id: 'building-3d',
+      type: 'fill-extrusion',
+      source: 'fixture',
+      'source-layer': 'buildings',
+      minzoom: 13,
+      filter: ['!=', ['get', 'kind'], 'glass'],
+      paint: { 'fill-extrusion-color': ['get', 'color'], 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-base': ['get', 'base'] },
+    },
+    {
+      id: 'building-glass',
+      type: 'fill-extrusion',
+      source: 'fixture',
+      'source-layer': 'buildings',
+      minzoom: 13,
+      filter: ['==', ['get', 'kind'], 'glass'],
+      paint: { 'fill-extrusion-color': ['get', 'color'], 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-opacity': 0.6 },
+    },
+  ]
+  return { ...base, layers: [...base.layers.slice(0, roadLabel), ...buildings, ...base.layers.slice(roadLabel)] }
 }

@@ -302,6 +302,30 @@ expectations['screen-space labels, draped'] = r => [
   ['labels are drawn on the ground instead', r.textShare > 0.005],
 ]
 
+// 3D buildings on the fixture peak plateau (3900 m): 26 blocks, a courtyard across four tiles, a glass tower.
+const standing = r => [
+  ['building tiles drawn, deeper than the source maximum zoom (overzoomed)', r.inspection?.tilesDrawn > 0 && Math.max(...r.tileZooms) >= 15],
+  ['every building stands on the terrain as read (3900 m plateau, within 10 m)', r.lowestElevation !== null && r.lowestElevation > r.groundAtCenter - 10 && r.highestElevation < r.groundAtCenter + 1],
+  ['the terrain under every building shown is read', r.inspection?.elevationsPending === 0],
+]
+const pitchedBuildings = r => [
+  ...standing(r),
+  ['walls and roofs draw: over 3 % red pixels (footprints alone: under 1 %)', r.redShare > 0.03],
+  ['the translucent glass tower draws', r.blueShare > 0.003],
+]
+for (const name of ['pitched', 'webgl2', 'strict mode']) expectations[`3d buildings, ${name}`] = pitchedBuildings
+expectations['3d buildings, atmosphere on'] = r => [...standing(r), ['lit and hazed walls and roofs draw', r.redShare > 0.03]]
+expectations['3d buildings, top-down'] = r => [
+  ...standing(r),
+  ['roofs draw', r.redShare > 0.005],
+  ['the courtyard shows the ground through its hole (screen centre)', r.center[0] - r.center[1] < 40],
+]
+expectations['3d buildings, 2d'] = r => [...standing(r), ['buildings draw on the flat map', r.redShare > 0.005]]
+expectations['3d buildings, draped'] = r => [
+  ['nothing stands in 3D', r.inspection === null],
+  ['footprints are drawn on the ground instead', r.redShare > 0.004 && r.redShare < 0.02],
+]
+
 let failures = 0
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)

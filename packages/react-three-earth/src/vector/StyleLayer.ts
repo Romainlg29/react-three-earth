@@ -4,7 +4,7 @@ import type { StyleDocumentLayer } from './worker/styleDocument.js'
 /** A style layer, in MapLibre's terms with the library's names for the zoom range and source layer. */
 export interface StyleLayerOptions {
   id: string
-  /** `fill`, `line`, `circle`, `symbol`, `background` or `fill-extrusion` (drawn flat). */
+  /** `fill`, `line`, `circle`, `symbol`, `background` or `fill-extrusion` (3D buildings, see `MapStyleSource` `extrusions`). */
   type: 'fill' | 'line' | 'circle' | 'symbol' | 'background' | 'fill-extrusion' | (string & {})
   /** The style source the layer reads; not for `background`. */
   source?: string

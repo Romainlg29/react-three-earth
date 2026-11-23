@@ -1257,6 +1257,58 @@ async function screenSymbols(name, query, map = 'labels') {
   results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })
 }
 
+const BUILDING_PIXELS = `
+  // Red buildings (roofs bright, walls darker), the blue glass tower blended over the ground, and the courtyard's
+  // middle (the screen centre in the top-down view).
+  let red = 0, blue = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (r > 40 && r - g > 40 && r - b > 40) red++
+    if (b - r > 20 && b - g > 10) blue++
+  }
+  const at = (x, y) => { const i = (Math.round(y) * width + Math.round(x)) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  return { redShare: +(red / (px.length / 4)).toFixed(4), blueShare: +(blue / (px.length / 4)).toFixed(4), center: at(width / 2, height / 2) }
+`
+
+/**
+ * 3D buildings (`?map=buildings`): the fixture block on the 3900 m peak plateau, across the corner of four tiles.
+ * Checks that they stand on the terrain (each building's elevation read from it), and counts red and blue pixels.
+ */
+async function buildings(name, query, { settle = true } = {}) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=buildings${query}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    const atmosphereReady = inspection?.atmosphere === null || inspection?.atmosphere?.ready === true
+    const settledView = inspection?.view.morph === (inspection?.view.mode === '2d' ? 1 : 0)
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && atmosphereReady && settledView && inspection.idle
+  }, null, { timeout: 240_000, polling: 500 })
+  if (settle) await page.waitForTimeout(1500)
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-buildings-${name.replaceAll(/[^a-z0-9]+/gi, '-')}.png`, OUT), png)
+  const result = await page.evaluate(() => {
+    const inspection = window.earth.inspect().terrain.extrusions
+    // Protected state, read for the check only: the elevation each drawn building stands at.
+    const overlay = [...window.mapStyleSource.overlays][0]
+    const tiles = overlay.extrusions === null ? [] : [...overlay.extrusions.tiles.values()].filter(tile => tile.drawn && tile.attributes !== null)
+    const elevations = tiles.flatMap(tile => {
+      const array = tile.attributes.elevation.array
+      return Array.from(tile.extrusions.buildingVertexStarts.slice(0, -1), start => array[start])
+    })
+    const ground = window.earth.terrain.sampleElevation(-Math.PI / 2, 0)
+    return {
+      inspection,
+      tileZooms: [...new Set(tiles.map(tile => tile.request.zoom))].sort(),
+      lowestElevation: elevations.length === 0 ? null : Math.min(...elevations),
+      highestElevation: elevations.length === 0 ? null : Math.max(...elevations),
+      groundAtCenter: ground,
+    }
+  })
+  const stats = await analyse(page, png, BUILDING_PIXELS)
+  await page.close()
+  results.push({ check: `3d buildings, ${name}`, ...result, ...stats, errors })
+}
+
 const GEOJSON_PIXELS = `
   // The ?geojson example, by hue (the terrain is lit dimly): a magenta area, a red-to-cyan route, green clusters.
   let magenta = 0, magentaX = 0, green = 0, red = 0, cyan = 0
@@ -1470,6 +1522,18 @@ try {
     await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
+  }
+  if (!only || only === 'buildings') {
+    // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
+    const pitched = '&camera=-90,0,3900,700,20,-25'
+    await buildings('pitched', `&atmosphere=0${pitched}`)
+    await buildings('top-down', '&atmosphere=0&camera=-90,0,3900,1200,0,-90')
+    // Midday at -90° (19:00 UTC): lit by the sun, hazed.
+    await buildings('atmosphere on', `&date=2026-11-22T19:00:00Z${pitched}`)
+    await buildings('2d', '&atmosphere=0&view=2d&camera=-90,0,3900,1200,20,-90')
+    await buildings('webgl2', `&atmosphere=0&webgl${pitched}`)
+    await buildings('strict mode', `&atmosphere=0&strict${pitched}`)
+    await buildings('draped', `&atmosphere=0&extrusions=draped${pitched}`)
   }
   if (!only || only === 'labels' || only === 'roads') {
     // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
