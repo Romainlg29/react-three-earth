@@ -43,8 +43,8 @@ layer and drapes on terrain.
 
 `MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, tiles
 GeoJSON (fills, lines, circles, text labels) and decodes raster and elevation tiles; the main thread draws them
-straight into each terrain tile's texture on the GPU. Point labels face the viewer
-(`map-labels`); line labels (road names) lie on the ground.
+straight into each terrain tile's texture on the GPU. Labels, place and road names alike, face the viewer
+(`map-labels`).
 
 ## Setup
 

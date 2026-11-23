@@ -4,8 +4,9 @@ import { bucketKey } from '../src/vector/MapStyleOverlay.js'
 import { CollisionGrid, SymbolPlacement, type PlacementCandidate } from '../src/vector/symbols/SymbolPlacement.js'
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
+import { lineLabelPaths } from '../src/vector/worker/labels.js'
 import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
-import { SYMBOL_ALLOW_OVERLAP } from '../src/vector/worker/symbols.js'
+import { SYMBOL_ALLOW_OVERLAP, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
 
@@ -75,8 +76,8 @@ describe('labels facing the viewer, in the worker', () => {
     const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
     const processor = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
     const symbols = (await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })).symbols!
-    expect(symbols.sourceLayers).toEqual(['places', 'places'])
-    expect([...symbols.featureIndices]).toEqual([0, 1])
+    expect(symbols.sourceLayers).toEqual(['roads', 'roads', 'places', 'places'])
+    expect([...symbols.featureIndices]).toEqual([0, 0, 0, 1])
     const hit = { sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, layerId: 'places', sourceLayer: 'places', featureIndex: 0 }
     const features = await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: null, filter: null, tolerancePixels: 0, screenLabels: [hit] })
     expect(features.map(feature => [feature.layer.id, feature.properties.name])).toEqual([['places', 'Fuji']])
@@ -92,39 +93,71 @@ describe('labels facing the viewer, in the worker', () => {
     expect(bucket.shapes).toBeNull()
     expect(bucket.text).toBeNull()
     const symbols = bucket.symbols!
-    expect(symbols.keys).toEqual(['places\u0000Fuji', 'over\u0000Over'])
-    expect([...symbols.anchors]).toEqual([1000, 1000, 2000, 1000])
-    expect([...symbols.sizes]).toEqual([12, 20, 12, 12])
-    expect([...symbols.sortKeys]).toEqual([2, 0])
-    expect([...symbols.paddings]).toEqual([3, 2])
-    expect(symbols.flags[0]).toBe(0)
-    expect(symbols.flags[1]).toBe(SYMBOL_ALLOW_OVERLAP)
-    expect([...symbols.layerIndices]).toEqual([2, 3])
+    // The two road names come first, in layer order; point labels follow.
+    expect(symbols.keys).toEqual(['road-names\u0000Long Road Name', 'road-names\u0000Long Road Name', 'places\u0000Fuji', 'over\u0000Over'])
+    const points = 2
+    expect([...symbols.anchors.subarray(points * 2)]).toEqual([1000, 1000, 2000, 1000])
+    expect([...symbols.sizes.subarray(points * 2)]).toEqual([12, 20, 12, 12])
+    expect([...symbols.sortKeys.subarray(points)]).toEqual([2, 0])
+    expect([...symbols.paddings.subarray(points)]).toEqual([3, 2])
+    expect(symbols.flags[points]).toBe(0)
+    expect(symbols.flags[points + 1]).toBe(SYMBOL_ALLOW_OVERLAP)
+    expect([...symbols.layerIndices.subarray(points)]).toEqual([2, 3])
     // "Fuji": 4 glyphs of 12-pixel advances, centred on the anchor, in pixels of a 24 px font.
-    const [left, top, right, bottom] = symbols.boxes.subarray(0, 4)
+    const [left, top, right, bottom] = symbols.boxes.subarray(points * 4, points * 4 + 4)
     expect(left).toBeCloseTo(-24)
     expect(right).toBeCloseTo(24)
     expect(top!).toBeLessThan(0)
     expect(bottom!).toBeGreaterThan(0)
-    expect(symbols.indices.length).toBe((4 + 4) * 6)
-    expect(symbols.labelIndices.length).toBe((4 + 4) * 4)
+    const roadGlyphs = 'LongRoadName'.length * 2
+    expect(symbols.indices.length).toBe((roadGlyphs + 4 + 4) * 6)
     expect(symbols.labelIndices[0]).toBe(0)
-    expect(symbols.labelIndices.at(-1)).toBe(1)
+    expect(symbols.labelIndices.at(-1)).toBe(3)
+    // Point glyphs carry no glyph index; line glyphs carry their own.
+    expect(symbols.glyphIndices.at(-1)).toBe(-1)
+    expect(symbols.glyphIndices[0]).toBe(0)
     // text-opacity is baked into the colours; the halo width stays in pixels.
-    expect([...symbols.colors.subarray(0, 4)]).toEqual([16, 32, 48, 128])
-    expect(symbols.haloWidths[0]).toBe(2)
+    const fujiVertex = roadGlyphs * 4
+    expect([...symbols.colors.subarray(fujiVertex * 4, fujiVertex * 4 + 4)]).toEqual([16, 32, 48, 128])
+    expect(symbols.haloWidths[fujiVertex]).toBe(2)
   })
 
-  it('leaves point labels out of draped tiles, keeping line labels there', async () => {
+  it('leaves every label out of draped tiles when labels face the viewer', async () => {
     const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
     const draped = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x' }, { fetch, drawLocalGlyph })
     const screen = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
     const request = { sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10 }
-    const glyphQuads = (indices: Uint32Array | undefined) => (indices?.length ?? 0) / 6
-    const all = glyphQuads((await draped.processTile(request)).text?.indices)
-    const linesOnly = glyphQuads((await screen.processTile(request)).text?.indices)
-    expect(linesOnly).toBeGreaterThan(0)
-    expect(all - linesOnly).toBe(4 + 4) // Fuji and Over
+    expect((await draped.processTile(request)).text?.indices.length).toBeGreaterThan(0)
+    expect((await screen.processTile(request)).text).toBeNull()
+  })
+
+  it('stores the road around each line label anchor and every glyph offset along it', async () => {
+    const { fetch } = createFakeFetch({ 'https://maps.test/tiles/10/1/2.pbf': labelTile() })
+    const processor = await MapStyleProcessor.create({ style: labelStyle(), baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
+    const symbols = (await processor.processTile({ sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10, symbols: true })).symbols!
+    expect(symbols.flags[0]! & SYMBOL_LINE).toBe(SYMBOL_LINE)
+    expect(symbols.flags[0]! & SYMBOL_KEEP_UPRIGHT).toBe(SYMBOL_KEEP_UPRIGHT)
+    expect(symbols.flags[2]! & SYMBOL_LINE).toBe(0)
+    // The path is a run of points on the road (y = 3000), with the anchor inside it.
+    const start = symbols.lineStarts[0]!
+    const length = symbols.lineLengths[0]!
+    const anchor = symbols.lineAnchors[0]!
+    expect(length).toBeGreaterThanOrEqual(2)
+    expect(anchor).toBeLessThan(length)
+    for (let point = 0; point < length; point++) expect(symbols.linePoints[(start + point) * 2 + 1]).toBe(3000)
+    expect(symbols.linePoints[(start + anchor) * 2]).toBe(symbols.anchors[0])
+    expect(symbols.maximumAngles[0]).toBeCloseTo((45 * Math.PI) / 180)
+    // "Long Road Name": 12 drawn glyphs, offsets from the label middle, symmetric and increasing.
+    const first = symbols.glyphStarts[0]!
+    const count = symbols.glyphCounts[0]!
+    expect(count).toBe(12)
+    const offsets = [...symbols.glyphOffsets.subarray(first, first + count)]
+    for (let glyph = 1; glyph < count; glyph++) expect(offsets[glyph]!).toBeGreaterThan(offsets[glyph - 1]!)
+    expect(offsets[0]! + offsets.at(-1)!).toBeCloseTo(0)
+    expect(symbols.glyphHalfWidths[first]).toBeCloseTo(6)
+    // Point labels keep no path.
+    expect(symbols.lineLengths[2]).toBe(0)
+    expect(symbols.glyphCounts[2]).toBe(0)
   })
 
   it('keys symbol tiles apart from draped tiles of the same coordinates', () => {
@@ -143,6 +176,8 @@ function candidate(key: string, x: number, y: number, options: Partial<Placement
     minimumYPixels: y - 8,
     maximumXPixels: x + 20,
     maximumYPixels: y + 8,
+    boxes: null,
+    hidden: false,
     layerIndex: 0,
     sortKey: 0,
     allowOverlap: false,
@@ -261,5 +296,66 @@ describe('SymbolStateTexture', () => {
     state.release(600, 300)
     state.release(500, 100)
     expect(state.allocate(900)).toBe(0)
+  })
+})
+
+describe('line labels on the screen', () => {
+  it('keeps the stretch of line around each anchor, one window on each side, with the anchor among its points', () => {
+    const line = [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 1000 }, { x: 2000, y: 1000 }]
+    const paths = lineLabelPaths(line, 200, { spacingUnits: 3000, center: false, extent: 4096, windowUnits: 300 })
+    expect(paths).toHaveLength(1)
+    const { points, anchorIndex } = paths[0]!
+    // The anchor sits halfway along (1500 units: x = 1000, y = 500); the window reaches 1200 to 1800.
+    expect(points[anchorIndex]).toEqual({ x: 1000, y: 500 })
+    expect(points).toEqual([{ x: 1000, y: 200 }, { x: 1000, y: 500 }, { x: 1000, y: 800 }])
+    // A window over a corner keeps the corner.
+    const wide = lineLabelPaths(line, 200, { spacingUnits: 3000, center: false, extent: 4096, windowUnits: 700 })[0]!
+    expect(wide.points).toEqual([{ x: 800, y: 0 }, { x: 1000, y: 0 }, { x: 1000, y: 500 }, { x: 1000, y: 1000 }, { x: 1200, y: 1000 }])
+    expect(wide.anchorIndex).toBe(2)
+    // Too short for the label, or an anchor outside the tile: nothing.
+    expect(lineLabelPaths(line, 5000, { spacingUnits: 3000, center: false, extent: 4096, windowUnits: 300 })).toEqual([])
+    expect(lineLabelPaths(line, 200, { spacingUnits: 3000, center: false, extent: 1000, windowUnits: 300 })).toEqual([])
+  })
+})
+
+describe('placing labels with one box per glyph', () => {
+  it('lets a curved label sit where its bounding box overlaps another label but none of its glyphs do', () => {
+    const placement = new SymbolPlacement()
+    const point = candidate('point', 200, 200, { layerIndex: 2 })
+    // An L-shaped road label around the point label's corner: its bounds cover the point label, its glyphs miss it.
+    const road = candidate('road', 200, 200, { layerIndex: 1, minimumXPixels: 150, minimumYPixels: 150, maximumXPixels: 260, maximumYPixels: 260, boxes: [150, 150, 260, 160, 250, 150, 260, 260] })
+    const crossing = candidate('crossing', 200, 200, { layerIndex: 0, minimumXPixels: 100, minimumYPixels: 195, maximumXPixels: 300, maximumYPixels: 205, boxes: [100, 195, 300, 205] })
+    placement.place([point, road, crossing], 800, 600)
+    expect([point.placed, road.placed, crossing.placed]).toEqual([true, true, false])
+  })
+
+  it('fades out a hidden label where it is, leaving its room to others', () => {
+    const placement = new SymbolPlacement({ fadeDurationSeconds: 1 })
+    const road = candidate('road', 200, 200, { layerIndex: 2 })
+    placement.place([road], 800, 600)
+    placement.fade(1)
+    expect(road.fade?.opacity).toBe(1)
+    // Its road no longer fits it on the screen: it keeps its fade state, fading out, and a label below takes the room.
+    const hidden = candidate('road', 202, 200, { layerIndex: 2, hidden: true })
+    const below = candidate('below', 200, 200, { layerIndex: 1 })
+    placement.place([hidden, below], 800, 600)
+    expect(hidden.fade).toBe(road.fade)
+    expect(hidden.placed).toBe(false)
+    expect(below.placed).toBe(true)
+    placement.fade(0.5)
+    expect(hidden.fade?.opacity).toBeCloseTo(0.5)
+  })
+
+  it('hands a hidden label\'s fade to the same label from another tile that fits', () => {
+    const placement = new SymbolPlacement({ fadeDurationSeconds: 1 })
+    const road = candidate('road', 200, 200, { order: 0 })
+    placement.place([road], 800, 600)
+    placement.fade(1)
+    const hidden = candidate('road', 201, 200, { order: 0, hidden: true })
+    const otherTile = candidate('road', 203, 200, { order: 1 })
+    placement.place([hidden, otherTile], 800, 600)
+    expect(otherTile.fade).toBe(road.fade)
+    expect(otherTile.placed).toBe(true)
+    expect(hidden.fade).toBeNull()
   })
 })

@@ -203,7 +203,7 @@ GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 belo
 
 Not supported yet: icons (sprites load and serve patterns, see W5 below), heatmap layers (skipped with one
 warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
-tiles (point labels face the viewer and collide on the whole screen, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
+tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
 terrain tiles are textured at different zooms: draped text has a fixed size on the ground.
@@ -410,7 +410,7 @@ Point-placed labels no longer go into region textures: they stand upright on the
   pass still runs every second to follow terrain that loaded finer. While the camera moves, tiles are chosen again
   at most every 100 ms, as labels are placed. Labels follow the imagery layer's `opacity`.
 
-Deviations from MapLibre, for later parts: line-placed labels stay draped; `text-variable-anchor` takes its first
+Deviations from MapLibre, for later parts: line-placed labels stay draped (done in part 2a below); `text-variable-anchor` takes its first
 anchor; labels are not hidden behind mountains (only behind the globe); labels hide while the view morphs between
 globe and map; on the flat map only the world copy nearest the camera has labels; each `MapStyleSource` places its
 labels on its own, so two styles' labels can overlap. Positions are ECEF against the camera's world matrix: the
@@ -426,6 +426,38 @@ Earth group must not be moved or rotated in the scene for labels to line up.
 
 Frame times on phones are not measured yet: SwiftShader proves correctness only. Per frame the CPU work is one
 projection per label of the drawn tiles and one 4-float write per changed label; the GPU draws one mesh per tile.
+
+### Screen-space symbols (W6), part 2a: road names facing the viewer
+
+Line-placed labels (`line`, `line-center`) now face the viewer too; with `symbols: 'screen'` no label is draped.
+
+- **Worker.** Anchors as before (`symbol-spacing` at the tile's zoom, the label must fit on the line). For each,
+  `lineLabelPaths` keeps the stretch of line within two label lengths each side of the anchor (a tile shows down
+  to half its own scale, and the perspective ratio shrinks labels less than the ground), the anchor inserted as a
+  point. The text is shaped once on one row; per glyph the tile stores its offset from the label's middle along
+  the line and its half advance (`SymbolMesh.lineStarts`, `linePoints`, `glyphOffsets`, ...). Glyph corners are
+  around each glyph's own centre on the baseline, with a `glyphIndex` vertex attribute.
+- **Each frame** (`ScreenSymbols.layoutLineGlyphs`): the stretch is projected at the anchor's terrain height,
+  point by point as the walk reaches it (a far end behind the camera does not hide the label), and the glyphs are
+  found by one incremental walk each way from the anchor, offsets times the label's scale. Upright: turned around
+  when the first glyph lands right of the last by more than a tenth of the label's length, so a name on a road
+  running up the screen does not turn back and forth. A label hides where a glyph runs off the stretch or the line
+  turns more than `text-max-angle` summed over the label; one already shown keeps its last glyphs and fades out
+  at the next placement instead of blinking. Each glyph gets an axis-aligned box of its rotated advance and text
+  height. On the map, path points take the anchor's world copy.
+- **Placement** collides those per-glyph boxes (`PlacementCandidate.boxes`), the label's bounds used only to find
+  grid cells; feature queries hit the same boxes.
+- **Drawing.** A second state texture holds each glyph's screen position and angle (12 of 16 bytes used); the
+  vertex shader rotates the glyph's corner by its angle, point labels (`glyphIndex` −1) unchanged.
+
+| Check (`?fixtures&map=vector`, 12 km, SwiftShader) | Result |
+| --- | --- |
+| Pitched 60° / top-down | 31 / 11 road names, none upside down, 0 overlapping glyph boxes, 0 duplicates |
+| `?map=labels` (dense towns above the roads) | unchanged: towns win, road names collide away |
+
+Deviations: road names are always viewer-facing (MapLibre's default for line placement is pitch-aligned, lying on
+the ground); glyphs stand at the anchor's height, not each at its own; `text-offset` and multi-line text are not
+applied along lines.
 
 ### Feature querying and layer events (W4)
 

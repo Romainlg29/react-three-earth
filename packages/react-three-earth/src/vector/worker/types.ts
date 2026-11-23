@@ -414,9 +414,26 @@ export interface SymbolMesh {
   /** Per label, the feature it labels (`queryRenderedFeatures`). */
   sourceLayers: string[]
   featureIndices: Uint32Array
+  /**
+   * Line labels (`SYMBOL_LINE`): per label, the stretch of line they follow (`lineLengths` points from `lineStarts`
+   * in `linePoints`, tile units, the anchor at `lineAnchors`), the sharpest turn between glyphs in radians, and
+   * their glyphs (`glyphCounts` from `glyphStarts`): distance from the label's middle along the line and half
+   * width, in pixels of a 24 px font. Zero for point labels.
+   */
+  lineStarts: Uint32Array
+  lineLengths: Uint16Array
+  lineAnchors: Uint16Array
+  maximumAngles: Float32Array
+  linePoints: Float32Array
+  glyphStarts: Uint32Array
+  glyphCounts: Uint16Array
+  glyphOffsets: Float32Array
+  glyphHalfWidths: Float32Array
   corners: Float32Array
   uvs: Float32Array
   labelIndices: Float32Array
+  /** Per vertex, the line label glyph it belongs to (index into `glyphOffsets`), or -1 in a point label. */
+  glyphIndices: Float32Array
   colors: Uint8Array
   haloColors: Uint8Array
   haloWidths: Float32Array

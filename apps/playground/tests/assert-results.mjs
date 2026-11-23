@@ -271,8 +271,8 @@ function effectExpectations(r, { glowIsMagenta }) {
 // Screen-space labels on a dense grid of towns (124 labels, a third fit at 40 km).
 const screenLabels = (r, textShare = 0.005) => [
   ...(textShare === null ? [] : [[`text draws (over ${textShare * 100} % text pixels)`, r.textShare > textShare]]),
-  ['between 20 and 80 labels show, most of them towns', r.labelsShown >= 20 && r.labelsShown <= 80 && r.towns >= r.labelsShown - 6],
-  ['no two placed labels overlap', r.overlaps === 0],
+  ['between 20 and 80 labels show, most of them towns', r.labelsShown >= 20 && r.labelsShown <= 80 && r.towns >= r.labelsShown - r.roadNames - 6],
+  ['no two placed labels overlap (road names glyph by glyph)', r.overlaps === 0],
   ['no text repeats at one place', r.duplicates === 0],
   ['every label shown is on the screen', r.onScreen],
   ['labels at the centre are 14 to 26 px tall (text size and padding)', r.centralBoxHeightPixels !== null && r.centralBoxHeightPixels > 14 && r.centralBoxHeightPixels < 26],
@@ -284,6 +284,14 @@ for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectation
 expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
 // Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
 expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
+for (const name of ['road names, pitched', 'road names, top-down']) {
+  expectations[`screen-space labels, ${name}`] = r => [
+    ['road names show along their roads, none upside down', r.roadNames >= 2 && r.roadNamesUpsideDown === 0],
+    ['no two placed labels overlap (road names glyph by glyph)', r.overlaps === 0],
+    ['no text repeats at one place', r.duplicates === 0],
+    ['all terrain heights read', r.inspection?.elevationsPending === 0],
+  ]
+}
 expectations['screen-space labels, draped'] = r => [
   ['no label faces the viewer', r.labelsShown === 0 && r.inspection === null && r.queryAtLabel === null],
   ['labels are drawn on the ground instead', r.textShare > 0.005],

@@ -16,6 +16,13 @@ export interface PlacementCandidate {
   minimumYPixels: number
   maximumXPixels: number
   maximumYPixels: number
+  /**
+   * Several collision boxes instead (four numbers each: left, top, right, bottom), as a label along a line has one
+   * per glyph; the box above then bounds them all. Null for one box.
+   */
+  boxes: number[] | null
+  /** Placed nowhere this time, only kept so it fades out (a road name whose road on the screen no longer fits it). */
+  hidden: boolean
   /** The style layer's index: higher places first. */
   layerIndex: number
   sortKey: number
@@ -149,6 +156,8 @@ export class SymbolPlacement {
       (a, b) =>
         b.layerIndex - a.layerIndex ||
         a.sortKey - b.sortKey ||
+        // A hidden label (fading out) after the rest: the same label from another tile that fits takes its fade.
+        Number(a.hidden) - Number(b.hidden) ||
         visibleRank(b.match) - visibleRank(a.match) ||
         a.order - b.order,
     )
@@ -168,8 +177,8 @@ export class SymbolPlacement {
       fade.yPixels = candidate.yPixels
       candidate.fade = fade
       const onScreen = candidate.maximumXPixels > 0 && candidate.minimumXPixels < widthPixels && candidate.maximumYPixels > 0 && candidate.minimumYPixels < heightPixels
-      const placed = onScreen && (candidate.allowOverlap || !this.grid.hits(candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels))
-      if (placed && !candidate.ignorePlacement) this.grid.insert(candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels)
+      const placed = onScreen && !candidate.hidden && (candidate.allowOverlap || !this.hitsPlaced(candidate))
+      if (placed && !candidate.ignorePlacement) this.insertBoxes(candidate)
       candidate.placed = placed
       fade.target = placed ? 1 : 0
     }
@@ -198,6 +207,19 @@ export class SymbolPlacement {
   /** Forgets every fade state: labels fade in from nothing. */
   clear(): void {
     this.fades.clear()
+  }
+
+  protected hitsPlaced(candidate: PlacementCandidate): boolean {
+    const boxes = candidate.boxes
+    if (boxes === null) return this.grid.hits(candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels)
+    for (let index = 0; index < boxes.length; index += 4) if (this.grid.hits(boxes[index]!, boxes[index + 1]!, boxes[index + 2]!, boxes[index + 3]!)) return true
+    return false
+  }
+
+  protected insertBoxes(candidate: PlacementCandidate): void {
+    const boxes = candidate.boxes
+    if (boxes === null) this.grid.insert(candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels)
+    else for (let index = 0; index < boxes.length; index += 4) this.grid.insert(boxes[index]!, boxes[index + 1]!, boxes[index + 2]!, boxes[index + 3]!)
   }
 
   protected *allFades(): Iterable<SymbolFade> {
