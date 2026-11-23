@@ -84,11 +84,18 @@ export class QuantizedMeshSource extends AttributionTracker implements TerrainSo
 
 export interface RasterTileSourceOptions {
   /**
-   * URL template with `{z}`, `{x}` and `{y}`.
+   * URL template with `{z}`, `{x}` and `{y}` (or `{-y}` for TMS rows, counted from the south). Pass this or
+   * `tileJsonUrl`.
    * @example 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
    */
-  url: string
-  /** Number of zoom levels the server has. Default: 20. */
+  url?: string
+  /**
+   * A TileJSON document describing the tiles, instead of `url`: its `tiles` template, `maxzoom` (as `levels`, unless
+   * given), `scheme` and `attribution` are read when the layer starts.
+   * @example 'https://api.maptiler.com/tiles/satellite-v2/tiles.json?key=…'
+   */
+  tileJsonUrl?: string
+  /** Number of zoom levels the server has. Default: 20, or the TileJSON's `maxzoom` + 1. */
   levels?: number
   /** Tile size in pixels. Default: 256. */
   tileDimensionPixels?: number
@@ -103,38 +110,50 @@ export interface RasterTileSourceOptions {
 }
 
 /**
- * Raster tiles from an XYZ URL template (OpenStreetMap, MapTiler raster, your own server).
+ * Raster tiles from an XYZ URL template (OpenStreetMap, MapTiler raster, your own server), or from a TileJSON
+ * document (`tileJsonUrl`).
  *
  * Tiles decode off the main thread and are composed onto terrain tiles on the GPU.
  */
 export class RasterTileSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
+  /** The URL template; empty when the tiles come from `tileJsonUrl`. */
   readonly url: string
+  readonly tileJsonUrl: string | undefined
   readonly levels: number
   readonly tileDimensionPixels: number
   readonly projection: 'EPSG:3857' | 'EPSG:4326'
+  /** Whether the app gave `levels` (else a TileJSON's `maxzoom` sets them). */
+  protected readonly levelsGiven: boolean
 
-  constructor({ url, levels = 20, tileDimensionPixels = 256, projection = 'EPSG:3857', attribution }: RasterTileSourceOptions) {
+  constructor({ url, tileJsonUrl, levels, tileDimensionPixels = 256, projection = 'EPSG:3857', attribution }: RasterTileSourceOptions) {
     super(attribution)
-    if (!url.includes('{z}') || !url.includes('{x}') || !url.includes('{y}')) {
+    if ((url === undefined) === (tileJsonUrl === undefined)) {
+      throw new Error('RasterTileSource: pass either `url` (a tile URL template) or `tileJsonUrl` (a TileJSON document).')
+    }
+    if (url !== undefined && (!url.includes('{z}') || !url.includes('{x}') || !/{-?y}/.test(url))) {
       throw new Error(
-        `RasterTileSource: the url needs {z}, {x} and {y} placeholders, got "${url}". ` +
-          `For a WMTS capabilities URL, use a WMTS source instead.`,
+        `RasterTileSource: the url needs {z}, {x} and {y} (or {-y}) placeholders, got "${url}". ` +
+          `For a TileJSON document, pass it as \`tileJsonUrl\`; for a WMTS capabilities URL, use a WMTS source instead.`,
       )
     }
-    this.url = url
-    this.levels = levels
+    this.url = url ?? ''
+    this.tileJsonUrl = tileJsonUrl
+    this.levels = levels ?? 20
+    this.levelsGiven = levels !== undefined
     this.tileDimensionPixels = tileDimensionPixels
     this.projection = projection
   }
 
   createOverlay({ opacity }: { opacity: number }): XYZImageryOverlay {
     return new XYZImageryOverlay({
-      url: this.url,
-      levels: this.levels,
+      // Replaced by the TileJSON's template before any tile loads.
+      url: this.tileJsonUrl === undefined ? this.url : '{z}/{x}/{y}',
+      ...(this.levelsGiven || this.tileJsonUrl === undefined ? { levels: this.levels } : {}),
       tileDimension: this.tileDimensionPixels,
       projection: this.projection,
       opacity,
+      ...(this.tileJsonUrl !== undefined ? { tileJsonUrl: this.tileJsonUrl, onTileJson: info => this.setLoadedAttributions(info.attribution) } : {}),
     })
   }
 }
@@ -190,13 +209,15 @@ export interface MapStyleSourceOptions {
 /**
  * A MapLibre style rendered onto the terrain: fills, lines, circles and text labels from vector tiles (XYZ,
  * TileJSON or PMTiles) and GeoJSON (tiled in the worker, points optionally clustered, `line-gradient` with
- * `lineMetrics`). App data goes in with `addGeoJsonSource` (`<GeoJsonSource>` in React) and changes with
- * `setGeoJsonSourceData` / `updateGeoJsonSourceData`, redrawing only where it changed.
+ * `lineMetrics`), and raster, hillshade and colour relief layers from raster and raster-dem tiles. App data goes
+ * in with `addGeoJsonSource` (`<GeoJsonSource>` in React) and changes with `setGeoJsonSourceData` /
+ * `updateGeoJsonSourceData`, redrawing only where it changed.
  *
  * Tiles are decoded and tessellated in a worker, then drawn on the GPU straight into each terrain tile's
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
- * `background-pattern`) come from the style's sprite and from `addImage`. Not supported yet: icons, raster,
- * hillshade and heatmap layers, right-to-left and complex scripts, 3D extrusion (drawn flat).
+ * `background-pattern`) come from the style's sprite and from `addImage`. Not supported yet: icons, heatmap
+ * layers, right-to-left and complex scripts, 3D extrusion (drawn flat). A raster-dem source shades the drape;
+ * it does not raise the terrain.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.

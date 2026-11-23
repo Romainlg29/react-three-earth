@@ -50,8 +50,8 @@ export function encodeGlyphRange(fontStack: string, range: string, glyphs: TestG
   return new Uint8Array(out)
 }
 
-/** An uncompressed PMTiles v3 archive of MVT tiles (one root directory, no leaves). */
-export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; data: Uint8Array }>, minimumZoom: number, maximumZoom: number, metadataJson = '{}'): Uint8Array {
+/** An uncompressed PMTiles v3 archive (one root directory, no leaves) of MVT tiles, or of images with `tileType` 2 (PNG). */
+export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; data: Uint8Array }>, minimumZoom: number, maximumZoom: number, metadataJson = '{}', tileType = 1): Uint8Array {
   const entries = tiles.map(tile => ({ id: zxyToTileId(tile.z, tile.x, tile.y), data: tile.data })).sort((a, b) => a.id - b.id)
   const directory: number[] = []
   varint(directory, entries.length)
@@ -88,7 +88,7 @@ export function encodePMTiles(tiles: Array<{ z: number; x: number; y: number; da
   archive[96] = 1 // clustered
   archive[97] = 1 // internal compression: none
   archive[98] = 1 // tile compression: none
-  archive[99] = 1 // MVT
+  archive[99] = tileType // 1: MVT, 2: PNG
   archive[100] = minimumZoom
   archive[101] = maximumZoom
   view.setInt32(102, -180e7, true)

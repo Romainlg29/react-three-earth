@@ -69,6 +69,22 @@ const expectations = {
     ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
     ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
   ],
+  // Raster, colour relief and hillshade layers of a style (fixture imagery and Terrarium DEM), under the vector roads.
+  ...Object.fromEntries(['2d', '2d webgl2'].map(name => [`relief style with fixtures, ${name}`, r => [
+    ['the raster layer draws the imagery (over 40 % green checker)', r.imageryShare > 0.4],
+    ['vector roads draw above it', r.primaryRoadShare > 0.003],
+    ['hillshade lights and shades the hills', r.lightShare > 0.02 && r.shadedShare > 0.005],
+    ['no warnings', r.warnings.length === 0],
+  ]])),
+  'relief style with fixtures, 3d': r => [
+    ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
+    ['no warnings', r.warnings.length === 0],
+  ],
+  ...Object.fromEntries(['hillshade seams', 'hillshade seams webgl2', 'hillshade globe'].map(name => [`relief style with fixtures, ${name}`, r => [
+    ['no seam at tile or region edges', r.seams.length === 0],
+    ['hills are lit and shaded', r.litShare > 0.01 && r.shadedShare > 0.05],
+    ['no warnings', r.warnings.length === 0],
+  ]])),
   // The runtime style API: setPaintProperty, setLayerVisibility, addLayer, setFeatureState on fixture lakes.
   'vector map style with fixtures, runtime style': r => [
     ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],

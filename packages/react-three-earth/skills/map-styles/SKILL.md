@@ -2,7 +2,8 @@
 name: map-styles
 description: >
   Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
-  map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
+  map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, satellite and relief
+  styles (raster and raster-dem sources, raster, hillshade and color-relief layers), the worker, headers,
   fonts, sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
   updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
   setFilter, addLayer, setStyle diff, StyleLayer), app data with GeoJsonSource (geojson sources, setData,
@@ -27,6 +28,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/sprites.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/tileSources.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/styleImageInput.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/camera.ts'
 requires:
@@ -38,9 +40,9 @@ requires:
 Read `terrain-and-imagery-sources` first: a map style is an imagery source, so it sits in an `<Imagery>`
 layer and drapes on terrain.
 
-`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, and
-tiles GeoJSON (fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
-on the GPU. Labels lie flat on the ground.
+`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, tiles
+GeoJSON (fills, lines, circles, text labels) and decodes raster and elevation tiles; the main thread draws them
+straight into each terrain tile's texture on the GPU. Labels lie flat on the ground.
 
 ## Setup
 
@@ -413,6 +415,11 @@ export function PatternedMap() {
   `onStyleImageMissing` once per id until it is added).
 - Vanilla: `new MapStyleSource({ url, onStyleImageMissing })`, then `source.addImage(…)`.
 
+### Satellite and relief layers
+
+A style's `raster` and `raster-dem` sources draw `raster`, `hillshade` and `color-relief` layers in style order
+with the vector layers. Read `satellite-and-relief-styles` for sources, encodings and paint.
+
 ## Common Mistakes
 
 ### HIGH: Expecting `invalidate` to change the style
@@ -474,7 +481,8 @@ symbols come later). Labels still draw.
 
 ### MEDIUM: Unsupported layers
 
-Raster, hillshade and heatmap layers are skipped with one console warning listing them. `fill-extrusion`
+Heatmap layers are skipped with one console warning listing them, as are layers reading a source of the
+wrong kind (a hillshade on a vector source, a fill on a raster source). `fill-extrusion`
 draws flat; labels do not collide across tiles. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 

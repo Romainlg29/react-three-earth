@@ -183,11 +183,20 @@ export interface BackgroundPattern {
   opacity: number
 }
 
-/** A vector source of the style, as the main thread sees it. */
+/** A source of the style a drawn layer reads, as the main thread sees it. */
 export interface MapStyleSourceSummary {
   id: string
+  /** The source's tiles: vector tiles, raster images, or elevation (`raster-dem`). Default: 'vector'. */
+  type?: 'vector' | 'raster' | 'raster-dem'
+  /** Zoom range of the source's tiles, in its own tile zooms. */
   minimumZoom: number
   maximumZoom: number
+  /** Map pixels a raster tile covers at its own zoom (`tileSize`); vector tiles are 512. Default: 512. */
+  tileSizePixels?: number
+  /** Where the source has tiles, in degrees: west, south, east, north. Tiles outside are never requested. Default: the world. */
+  bounds?: [number, number, number, number] | null
+  /** Raster sources: changes when the source's tiles may have (another URL, encoding…), so cached tiles are fetched again. */
+  contentKey?: string
 }
 
 /** What the worker reports once the style is loaded. */
@@ -212,7 +221,32 @@ export interface MapStyleSummary {
   customLayerTypes: string[]
   /** Layers whose type is neither MapLibre's nor provided by an installed plugin, as [layer id, type]. */
   missingLayerTypes: Array<[string, string]>
+  /** Raster, hillshade and colour relief layers in style order, with their paint per zoom. Default: none. */
+  rasterLayers?: RasterLayerSummary[]
 }
+
+/** The types of style layers drawn from raster tiles: images (`raster`) and elevation (`hillshade`, `color-relief`). */
+export type RasterLayerType = 'raster' | 'hillshade' | 'color-relief'
+
+/** A raster, hillshade or colour relief layer, evaluated in the worker for the main thread to draw. */
+export interface RasterLayerSummary {
+  id: string
+  type: RasterLayerType
+  source: string
+  /** Its draw group: raster layers have one of their own, so they draw at their place among the vector layers. */
+  group: number
+  /** Paint per integer zoom 0 to 24, in the shape the type's renderer reads; null where the layer does not draw. */
+  paintByZoom: Array<Record<string, unknown> | null>
+}
+
+/**
+ * A raster tile, decoded in the worker. `image`: the tile as an `ImageBitmap` (decoded with `imageOrientation:
+ * 'flipY'`, straight alpha, no colour conversion, as 3DTilesRenderer's raster tiles). `dem`: elevations in
+ * meters, `width` × `height`, rows from the north; decoded from the tile's encoding in the worker.
+ */
+export type RasterTileData =
+  | { kind: 'image'; width: number; height: number; image: ImageBitmap }
+  | { kind: 'dem'; width: number; height: number; elevations: Float32Array }
 
 /** One vector tile to process. */
 export interface TileRequest {
@@ -391,6 +425,8 @@ export interface TileBucket {
   text: TextMesh | null
   /** Custom style layers (plugins), in style order. */
   layers: CustomLayerMesh[]
+  /** The tile of a raster or raster-dem source; null for vector tiles and missing raster tiles. Default: null. */
+  raster?: RasterTileData | null
   atlas: AtlasUpdate | null
   /** Features drawn with colour slots: a state change redraws the regions using this bucket. */
   featureStateKeys: string[]
@@ -463,7 +499,8 @@ export type WorkerResponse =
 export function collectTransferables(bucket: TileBucket | null): Transferable[] {
   if (bucket === null) return []
   const buffers: ArrayBufferLike[] = []
-  const { shapes, text, atlas, layers } = bucket
+  const { shapes, text, atlas, layers, raster } = bucket
+  if (raster?.kind === 'dem') buffers.push(raster.elevations.buffer)
   if (shapes !== null) buffers.push(shapes.positions.buffer, shapes.colors.buffer, shapes.indices.buffer)
   if (shapes?.colorSlots) buffers.push(shapes.colorSlots.buffer)
   if (shapes?.patterns != null && shapes.patternCoordinates !== null) buffers.push(shapes.patterns.buffer, shapes.patternCoordinates.buffer)
@@ -473,7 +510,9 @@ export function collectTransferables(bucket: TileBucket | null): Transferable[] 
     buffers.push(layer.indices.buffer)
     for (const attribute of layer.attributes) buffers.push(attribute.array.buffer)
   }
-  return [...new Set(buffers)] as Transferable[]
+  const transferables = [...new Set(buffers)] as Transferable[]
+  if (raster?.kind === 'image' && typeof ImageBitmap !== 'undefined' && raster.image instanceof ImageBitmap) transferables.push(raster.image)
+  return transferables
 }
 
 /** Typed arrays of an image atlas update, to transfer. */

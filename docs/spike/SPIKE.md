@@ -201,8 +201,8 @@ How it works:
 
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
-Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
-warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
+Not supported yet: icons (sprites load and serve patterns, see W5 below), heatmap layers (skipped with one
+warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
 tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
@@ -503,6 +503,62 @@ polygons (dropped, as in MapLibre), and `line-gradient` with `line-dasharray`.
 | Unit tests | 31 new: feature queries on a GeoJSON source, diffs, ids and `promoteId`, bounds across the antimeridian, buffer margins, tiling, URL data, source filter, clusters with `clusterProperties`, expansion zoom, leaves and children, changed areas for `setData` / `updateData` / clustered, failed URLs, gradients across tiles, `GeoJsonSource` options, replacement, `setStyle` and removal, `update` after `updateData`, query order behind `setStyle`, MultiPoint clusters, cluster-radius margins |
 
 ![GeoJSON sources](geojson-sources.png) ![clusters close up](geojson-clusters-close.png)
+
+### Raster, hillshade and colour relief layers (W7)
+
+Styles with `raster` and `raster-dem` sources draw `raster`, `hillshade` and `color-relief` layers, in style order
+with the vector layers (satellite under roads, relief under labels). `RasterTileSource` also gained `tileJsonUrl`
+and `{-y}`.
+
+- **Sources**: `raster` and `raster-dem` are providers in W2's `TILE_PROVIDER_FACTORIES` (`createRasterTileProvider`
+  in `worker/tileProviders.ts`: bytes, no features), on the vector fetchers of `worker/tileSources.ts`: XYZ `tiles` (now with
+  `{-y}`, `{quadkey}` and `{bbox-epsg-3857}`), TileJSON `url`, and `pmtiles://` archives of PNG, JPEG, WebP or AVIF
+  tiles. `tileSize` (default 512, MapLibre's), `bounds` and `encoding` come from the style, else its TileJSON.
+  The overlay requests a source's tiles at `level + log2(512 / tileSize)` and none outside its `bounds`. A layer
+  reading a source of the wrong kind is skipped and does not load the source.
+- **Decoding in the worker** (`raster/rasterTiles.ts`): raster tiles become `ImageBitmap`s (straight alpha, no colour
+  conversion, as the imagery compositor's tiles), transferred. Raster-dem tiles are decoded to Float32 elevations
+  with MapLibre's unpack factors (Terrarium, Mapbox Terrain-RGB, `custom`). Deviation from the brief, which put
+  the decode on the GPU: the CPU decode is exact (no filtering of packed bytes), unit-testable, what MapLibre does
+  in its worker, and reusable by terrain from raster-dem (W8).
+- **Paint in the worker, per zoom** (`raster/rasterLayers.ts`): each layer type is a handler in
+  `RASTER_LAYER_TYPES` (source type + `evaluatePaint`), not a branch. Paint is evaluated at zooms 0 to 24 as the
+  background is, already in shader terms: MapLibre's hue-rotation weights, saturation and contrast factors,
+  hillshade's low-zoom slope boost (`2^((15 − z) × f)`), lights padded as MapLibre pads them. A colour relief
+  ramp is read from the compiled `interpolate` or `step` expression's stops (a step becomes stop pairs 1 cm apart),
+  evaluated with `elevation`, and resampled past 256 stops.
+- **Drawing** (`raster/RasterLayerRenderer.ts`): each raster layer is a draw group of its own in the region pass.
+  `raster` layers draw one quad per tile with MapLibre's colour maths (brightness mixed in sRGB, then decoded).
+  For DEM layers, each region builds an **elevation field** once per source: (E) the covering tiles' pixel
+  centres copied into an R32F grid (every `stride`-th pixel, a power of two so the region fits its resolution,
+  with a one-texel border), then (D) a HalfFloat texture of east slope, south slope (metres per metre, Sobel over
+  the ground step, corrected for latitude), elevation and coverage. Hillshade and colour relief sample D
+  bilinearly through a 64-bit-computed mapping, so a pixel's slope does not depend on which tile or region it
+  falls in: **no seams at tile or region edges**. A ring of neighbour DEM tiles 0.02 tiles deep feeds the border.
+  The data passes write through `fragmentNode`: the `colorNode` path clamps negative slopes.
+- Hillshade: all five `hillshade-method`s (standard, basic, combined, igor, multidirectional with up to 4 lights),
+  exaggeration, accent, shadow and highlight colours, as MapLibre's shaders. Colour relief: binary search in a
+  ramp texture of up to 256 stops.
+- Not done: `hillshade-illumination-anchor: 'viewport'` is read as `map` (on a globe the screen's up turns with
+  the camera); a light tied to the atmosphere's sun was not built; `raster-fade-duration` is ignored (regions
+  redraw in place); a raster-dem source shades the drape and does not raise the terrain (W8).
+- Caches and failures: compressed raster tiles stay in the worker (64 MB LRU, cleared by `invalidate` and source
+  removal), so a paint change decodes them again without fetching; it redraws only the regions drawing that
+  layer's source. A tile that is not an image (an error page answered with 200) is skipped with one warning per
+  source, and the region's other layers still draw. `RasterTileSource` ignores a TileJSON's `minzoom` and `bounds`.
+- Known differences, not measured against MapLibre: elevation is stored as half float in the field, so colour
+  relief band edges are exact to about 2 to 4 m above 2,000 m; the low-zoom hillshade boost uses the map zoom,
+  where MapLibre may use the DEM tile's zoom (one deeper for 256-pixel DEM tiles), so 256-pixel DEM hillshade may
+  look slightly softer or stronger than MapLibre's at low zoom.
+
+| Check (`?fixtures&map=relief`, Terrarium DEM of the fixture heights with round hills; SwiftShader) | Result |
+| --- | --- |
+| 2D at Fuji, WebGPU and WebGL2 | imagery checker on 60 % of the view under colour relief and hillshade, primary roads and labels on top; same numbers on both backends |
+| 3D at Fuji | raster layer, relief and hillshade drape on terrain; no errors or warnings |
+| Hillshade alone (`?map=hillshade`), 2D, WebGPU and WebGL2, and on the globe from 150 km | no seam column or row: the check (a column whose step beats its neighbours' on 30 % of rows) does find the terrain's own faint seam at 90° W, so the views avoid it |
+| Unit tests | 21 new: DEM encodings, raster decoding, worker raster cache and undecodable tiles, paint factors, slope boost, colour relief ramps (interpolate, step, constant, resampling), per-zoom summaries and lights, draw groups, processor raster tiles (TMS `{-y}`, TileJSON metadata, PMTiles raster, 404s, wrong source kind), URL templates, TileJSON for `RasterTileSource`, elevation field grids |
+
+![relief](map-relief-2d.png) ![hillshade](map-relief-hillshade-seams.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
