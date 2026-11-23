@@ -60,6 +60,8 @@ interface ExtrusionTile {
   /** Next grid point to read, and when the grid was last read through. */
   gridCursor: number
   gridReadAt: number
+  /** When the last full pass (not a retry of unknown points) finished: finer terrain is read again from it. */
+  gridRefreshedAt: number
   /** The pass under way reads only the points still unknown (a retry), not the whole grid (a refresh). */
   gridRetry: boolean
   /** Grid points still unknown after the last pass. */
@@ -272,6 +274,7 @@ export class Extrusions implements FlatMorphHost {
       gridCells: 0,
       gridCursor: 0,
       gridReadAt: -Infinity,
+      gridRefreshedAt: -Infinity,
       gridRetry: false,
       gridUnknown: 0,
       ready: false,
@@ -355,9 +358,9 @@ export class Extrusions implements FlatMorphHost {
         due.push(tile)
         continue
       }
-      const age = frame.timeMilliseconds - tile.gridReadAt
-      if (age >= ELEVATION_REFRESH_MILLISECONDS) tile.gridRetry = false
-      else if (age >= ELEVATION_RETRY_MILLISECONDS && tile.gridUnknown > 0) tile.gridRetry = true
+      // Retries of unknown points (every 500 ms) never put off the full refresh (every 5 s).
+      if (frame.timeMilliseconds - tile.gridRefreshedAt >= ELEVATION_REFRESH_MILLISECONDS) tile.gridRetry = false
+      else if (frame.timeMilliseconds - tile.gridReadAt >= ELEVATION_RETRY_MILLISECONDS && tile.gridUnknown > 0) tile.gridRetry = true
       else continue
       due.push(tile)
     }
@@ -388,6 +391,7 @@ export class Extrusions implements FlatMorphHost {
       }
       tile.gridCursor = 0
       tile.gridReadAt = frame.timeMilliseconds
+      if (!tile.gridRetry) tile.gridRefreshedAt = frame.timeMilliseconds
       tile.gridUnknown = 0
       for (const height of tile.grid) if (Number.isNaN(height)) tile.gridUnknown++
       // Points still unknown (no terrain tile drawn there yet, or off the screen) take their nearest known neighbour,

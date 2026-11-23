@@ -28,6 +28,8 @@ const SYMBOL_ELEVATION_READS_PER_FRAME = 512
 const SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME = 1
 /** The centre ray's sine against the ground is taken as at least this, so a view along the ground keeps a sane zoom. */
 const MINIMUM_CENTER_RAY_SINE = 0.2
+/** How many zoom levels the ground under the screen centre may add to the ellipsoid's zoom. */
+const MAXIMUM_GROUND_ZOOM_GAIN = 4
 /** Terrain height reads under 3D buildings per frame, and milliseconds of reading. */
 const EXTRUSION_ELEVATION_READS_PER_FRAME = 1024
 const EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME = 1
@@ -424,9 +426,12 @@ export class Earth extends Group<EarthEventMap> {
     // The view on the ellipsoid (no raycast), brought up to the terrain at the screen centre with one height read: on a
     // plateau the ground is nearer than the ellipsoid, so the zoom is deeper (MapLibre's zoom follows the terrain too).
     const degrees = Math.PI / 180
-    const centerHeightMeters = terrain.sampleElevation(view.longitudeDegrees * degrees, view.latitudeDegrees * degrees) ?? 0
+    const groundHeightMeters = terrain.sampleElevation(view.longitudeDegrees * degrees, view.latitudeDegrees * degrees) ?? 0
     const sine = Math.max(MINIMUM_CENTER_RAY_SINE, Math.sin(-view.pitchDegrees * degrees))
-    const centerDistanceMeters = Math.max(1, view.distanceMeters - centerHeightMeters / sine)
+    // At most MAXIMUM_GROUND_ZOOM_GAIN levels deeper: ground at or above the camera (a ridge behind the ellipsoid point,
+    // seen from a valley) must not send the zoom to the maximum.
+    const centerDistanceMeters = Math.max(view.distanceMeters / 2 ** MAXIMUM_GROUND_ZOOM_GAIN, view.distanceMeters - groundHeightMeters / sine)
+    const centerHeightMeters = (view.distanceMeters - centerDistanceMeters) * sine
     const frame = {
       camera,
       widthPixels: this.viewportSize.x,

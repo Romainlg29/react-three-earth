@@ -101,7 +101,8 @@ export class ExtrusionBuilder {
    * false when nothing of it lies in the tile.
    */
   addBuilding(polygons: readonly (readonly (readonly ExtrusionPoint[])[])[], style: ExtrusionStyle): boolean {
-    // Bounds of the footprint before clipping, in the tile: the terrain under it is read there.
+    // Bounds of the footprint as clipped to the tile: the terrain under it is read there, so the parts of a building
+    // cut by a tile edge each stand on the ground under their own part.
     let minimumX = Infinity
     let minimumY = Infinity
     let maximumX = -Infinity

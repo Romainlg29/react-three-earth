@@ -2,7 +2,7 @@ import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
 import { Frustum, Matrix4, Sphere, Vector3, Vector4, type Camera } from 'three'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
-import { longitudeToMercatorX, wrapMercatorXNear } from '../view/webMercator.js'
+import { longitudeToMercatorX, mercatorScaleFactor, mercatorYToLatitude, wrapMercatorXNear } from '../view/webMercator.js'
 
 /** A Web Mercator tile (XYZ, y down from the north). */
 export interface PyramidTile {
@@ -229,7 +229,7 @@ export function computeViewTilePyramid(camera: Camera, widthPixels: number, heig
     heightPixels,
     toScenePosition: (longitude, latitude, target, centerLongitude) => toScenePosition(view, flat, longitude, latitude, groundHeightMeters, target, centerLongitude),
     visibleCap: flat ? null : horizonCap(position),
-    cameraHeightMeters: Math.max(1, cameraHeightAboveSurface(view, flat, position) - groundHeightMeters),
+    cameraHeightMeters: Math.max(1, cameraHeightAboveSurface(view, flat, position) - groundHeightMeters * (flat ? flatHeightScale(view, position) : 1)),
     maximumZoom,
   })
 }
@@ -248,6 +248,11 @@ export function toScenePosition(view: ViewMorph, flat: boolean, longitudeRadians
 
 const surfacePoint = new Vector3()
 const cartographic = { lat: 0, lon: 0, height: 0 }
+
+/** On the flat map heights grow by the Web Mercator scale factor: its value under the camera. */
+function flatHeightScale(view: ViewMorph, cameraPosition: Vector3): number {
+  return mercatorScaleFactor(mercatorYToLatitude(surfacePoint.copy(cameraPosition).applyMatrix4(view.earthToFlat).y))
+}
 
 /** The camera's height above the ellipsoid (the map's plane on the flat map), in scene metres. */
 export function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition: Vector3): number {
