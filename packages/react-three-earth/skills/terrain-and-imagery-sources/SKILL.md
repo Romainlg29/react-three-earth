@@ -127,7 +127,7 @@ vanilla source.
 
 The video is muted (browsers block unmuted autoplay) and is redrawn once per decoded frame, skipping frames while
 the previous one is still drawing, so a video over a few regions is cheap and one over the whole screen runs at
-the rate the compositor can draw. Pictures and videos on another origin need CORS headers. Not supported yet:
+the rate the compositor can draw. Pictures and videos on another origin need CORS headers. The corners must form a convex quadrilateral (else an error says so) narrower than 180° of longitude. Not supported yet:
 `image` and `video` entries inside a `MapStyleSource` style (use these components next to it), and `canvas`
 sources.
 

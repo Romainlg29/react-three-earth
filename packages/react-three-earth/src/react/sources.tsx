@@ -216,7 +216,7 @@ export interface VideoSourceProps extends VideoSourceOptions {
  * redrawn, per decoded frame. Goes inside `<Imagery>`. Wraps the vanilla `VideoSource`.
  */
 export function VideoSource({ ref, urls, coordinates, autoplay, loop, attribution }: VideoSourceProps) {
-  const urlsKey = urls.join('\0')
+  const urlsKey = Array.isArray(urls) ? urls.join('\0') : ''
   const source = useMemo(
     // eslint-disable-next-line react-hooks/exhaustive-deps
     () => new VideoSourceImpl({ urls, coordinates, ...(autoplay !== undefined ? { autoplay } : {}), ...(loop !== undefined ? { loop } : {}), attribution }),

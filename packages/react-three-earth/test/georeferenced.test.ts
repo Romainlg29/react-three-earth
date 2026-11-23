@@ -63,3 +63,10 @@ describe('corners', () => {
     expect(bounds.westDegrees).toBeGreaterThan(bounds.eastDegrees)
   })
 })
+
+describe('convexity', () => {
+  it('rejects crossing or folded corners with the fix', () => {
+    expect(() => validateCorners([[0, 1], [1, -1], [1, 1], [0, -1]], 'ImageSource')).toThrow(/convex/)
+    expect(() => validateCorners([[0, 1], [2, 1], [1, 0.5], [0, -1]], 'ImageSource')).toThrow(/convex/)
+  })
+})

@@ -337,7 +337,10 @@ export class VideoSource extends AttributionTracker implements ImagerySource {
     overlay.disposers.push(() => {
       this.overlays.delete(overlay)
       texture.dispose()
-      if (this.overlays.size === 0) this.stopFrameLoop()
+      if (this.overlays.size === 0) {
+        this.stopFrameLoop()
+        this.releaseElement()
+      }
     })
     return overlay
   }
@@ -355,10 +358,26 @@ export class VideoSource extends AttributionTracker implements ImagerySource {
       source.src = url
       video.appendChild(source)
     }
-    video.addEventListener('error', () => console.error(`VideoSource: none of ${this.urls.join(', ')} could be played. Check the URLs, the formats the browser supports, and CORS headers on another origin.`), { once: true })
+    // With `<source>` children the browser reports a failure on the last one, not on the video.
+    video.lastElementChild?.addEventListener('error', () => console.error(`VideoSource: none of ${this.urls.join(', ')} could be played. Check the URLs, the formats the browser supports, and CORS headers on another origin.`), { once: true })
     this.element = video
-    if (this.autoplay) video.play().catch(() => console.warn('VideoSource: the browser blocked autoplay; call `source.play()` from a user gesture.'))
+    if (this.autoplay) {
+      video.play().catch((error: unknown) => {
+        if ((error as Error).name === 'NotAllowedError') console.warn('VideoSource: the browser blocked autoplay; call `source.play()` from a user gesture.')
+      })
+    }
     return video
+  }
+
+  /** Stops decoding and downloading once no layer shows the video; a later layer makes a new element. */
+  protected releaseElement(): void {
+    const video = this.element
+    if (video === null) return
+    video.pause()
+    video.replaceChildren()
+    video.removeAttribute('src')
+    video.load()
+    this.element = null
   }
 
   /** One redraw per decoded frame (`requestVideoFrameCallback`; `requestAnimationFrame` where it is missing). */
@@ -374,22 +393,25 @@ export class VideoSource extends AttributionTracker implements ImagerySource {
       // regions on a slow device, so the video's rate follows what the compositor can draw.
       let drawing = false
       for (const overlay of this.overlays) drawing ||= overlay.recompositionsPending > 0
-      if (!drawing && video.currentTime !== lastTime) {
+      const changed = video.currentTime !== lastTime
+      if (!drawing && changed) {
         lastTime = video.currentTime
         for (const overlay of this.overlays) overlay.invalidate(overlay.layer.readBounds() ?? undefined)
       }
-      schedule()
+      // A skipped frame is retried each animation frame: a paused video fires no more video frame callbacks.
+      schedule(drawing && changed)
     }
-    const schedule = (): void => {
-      this.frameCallback = 'requestVideoFrameCallback' in video ? video.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame)
+    const schedule = (retry = false): void => {
+      this.frameCallback = !retry && 'requestVideoFrameCallback' in video ? video.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame)
     }
     schedule()
   }
 
   protected stopFrameLoop(): void {
     if (this.frameCallback === null || this.element === null) return
+    // The handle may be either kind (a retry uses an animation frame): cancelling both is harmless.
     if ('cancelVideoFrameCallback' in this.element) this.element.cancelVideoFrameCallback(this.frameCallback)
-    else cancelAnimationFrame(this.frameCallback)
+    cancelAnimationFrame(this.frameCallback)
     this.frameCallback = null
   }
 }

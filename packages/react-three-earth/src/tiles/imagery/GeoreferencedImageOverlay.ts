@@ -20,7 +20,22 @@ export function validateCorners(corners: unknown, componentName: string): assert
     Array.isArray(corners) &&
     corners.length === 4 &&
     corners.every(corner => Array.isArray(corner) && corner.length >= 2 && Number.isFinite(corner[0]) && Number.isFinite(corner[1]) && Math.abs(corner[1]) <= 90)
-  if (!valid) {
+  if (valid) {
+    // Convex, as a picture's corners are: a concave or bow-tie quad would smear the picture over its whole box.
+    const unwrapped = unwrapCorners(corners as unknown as GeoreferencedCorners).longitudes
+    const points = (corners as unknown as GeoreferencedCorners).map(([, latitude], index) => [unwrapped[index] ?? 0, latitude] as const)
+    const signs = points.map(([x, y], index) => {
+      const [nextX, nextY] = points[(index + 1) % 4]!
+      const [lastX, lastY] = points[(index + 2) % 4]!
+      return Math.sign((nextX - x) * (lastY - nextY) - (nextY - y) * (lastX - nextX))
+    })
+    if (!(signs.every(sign => sign >= 0) || signs.every(sign => sign <= 0)) || signs.every(sign => sign === 0)) {
+      throw new Error(
+        `${componentName}: \`coordinates\` must form a convex quadrilateral listed in order around it (top-left, top-right, bottom-right, bottom-left); ` +
+          'these cross or fold. Check the order and that each corner is [longitudeDegrees, latitudeDegrees]. A picture wider than 180° of longitude is not supported: split it.',
+      )
+    }
+  } else {
     throw new Error(
       `${componentName}: \`coordinates\` must be four [longitudeDegrees, latitudeDegrees] corners, clockwise from the top-left ` +
         '(top-left, top-right, bottom-right, bottom-left), with latitudes within ±90.',
