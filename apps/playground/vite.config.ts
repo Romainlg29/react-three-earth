@@ -11,6 +11,9 @@ export default defineConfig({
   // GitHub Pages serves the playground under /<repository>/ (see .github/workflows/playground-pages.yml).
   base: process.env.PLAYGROUND_BASE ?? '/',
   plugins: [react(), fixtureTiles()],
+  build: {
+    rollupOptions: { input: { main: fileURLToPath(new URL('index.html', import.meta.url)), examples: fileURLToPath(new URL('examples.html', import.meta.url)) } },
+  },
   resolve: {
     // Work on the library source directly, no rebuild needed
     alias: [
