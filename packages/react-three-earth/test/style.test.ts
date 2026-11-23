@@ -517,6 +517,7 @@ class StyleTestOverlay extends MapStyleOverlay {
       updateFeatureStates: async changes => void this.sentStates.push(changes),
       setImage: async () => ({ rebuild: false, backgroundPatternByZoom: [], missingBackgroundImages: [] }),
       setLayerTypes: async () => ({ summary, rebuiltSources: [], errors: [] }),
+      querySource: async () => null,
       dispose: () => {},
     }
     this.backend = backend

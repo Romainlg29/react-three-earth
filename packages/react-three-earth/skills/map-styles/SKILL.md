@@ -5,10 +5,12 @@ description: >
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, the worker, headers,
   fonts, sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
   updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
-  setFilter, addLayer, setStyle diff, StyleLayer), feature-state for hover and selection, global-state,
-  transformRequest and addProtocol, and redrawing after tile data changed on the server with invalidate(bounds).
+  setFilter, addLayer, setStyle diff, StyleLayer), app data with GeoJsonSource (geojson sources, setData,
+  updateData, clustering with point_count and cluster queries, line-gradient with lineMetrics), feature-state for
+  hover and selection, global-state, transformRequest and addProtocol, and redrawing after tile data changed on
+  the server with invalidate(bounds).
 metadata:
-  purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, feature-state, invalidate and what is not supported yet.'
+  purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, GeoJSON sources and clusters, feature-state, invalidate and what is not supported yet.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -18,6 +20,10 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyleOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyle.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/GeoJsonSource.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/GeoJsonSource.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/geoJsonSource.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/geoJsonData.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/styleLayers.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/rectangles.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/sprites.ts'
@@ -32,8 +38,8 @@ requires:
 Read `terrain-and-imagery-sources` first: a map style is an imagery source, so it sits in an `<Imagery>`
 layer and drapes on terrain.
 
-`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles
-(fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
+`MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, and
+tiles GeoJSON (fills, lines, circles, text labels); the main thread draws them straight into each terrain tile's texture
 on the GPU. Labels lie flat on the ground.
 
 ## Setup
@@ -171,6 +177,64 @@ export function Highlights({ selectedClass }: { selectedClass: string }) {
   `source` or `sourceLayer` replaces the layer where it is. Zoom props are `minimumZoom` / `maximumZoom`.
 - `<StyleLayer>` layers survive `setStyle` and a new `style` prop.
 - Vanilla: `new StyleLayer(options).addTo(source)`, then `layer.update(options)` and `layer.remove()`.
+
+### App data: `<GeoJsonSource>` (routes, points, clusters)
+
+GeoJSON from the app is tiled in the worker (geojson-vt, and supercluster for clusters, as MapLibre does). Put
+`<GeoJsonSource>` inside `<MapStyleSource>`; the `<StyleLayer>`s inside it read it (their `source` defaults to it).
+
+```tsx
+import type { FeatureCollection } from 'geojson'
+import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+
+export function Stations({ stations, route }: { stations: FeatureCollection; route: FeatureCollection }) {
+  return (
+    <Imagery>
+      <MapStyleSource url="https://example.com/style.json">
+        <GeoJsonSource id="route" data={route} lineMetrics>
+          <StyleLayer id="route-line" type="line" paint={{ 'line-width': 6, 'line-gradient': ['interpolate', ['linear'], ['line-progress'], 0, '#ff0000', 1, '#00e0ff'] }} />
+        </GeoJsonSource>
+        <GeoJsonSource id="stations" data={stations} cluster clusterRadiusPixels={40} clusterProperties={{ seats: ['+', ['get', 'seats']] }}>
+          <StyleLayer id="clusters" type="circle" filter={['has', 'point_count']} paint={{ 'circle-color': '#20c040', 'circle-radius': 16 }} />
+          <StyleLayer id="cluster-counts" type="symbol" filter={['has', 'point_count']} layout={{ 'text-field': '{point_count_abbreviated}' }} />
+          <StyleLayer id="stations" type="circle" filter={['!', ['has', 'point_count']]} paint={{ 'circle-radius': 5 }} />
+        </GeoJsonSource>
+      </MapStyleSource>
+    </Imagery>
+  )
+}
+```
+
+- `data` is GeoJSON or a URL (the app's; fetched through `transformRequest` and protocols). A **new object** is sent
+  with `setData`; keep it memoised and never mutate it after passing it. Only the regions where the old or the new
+  data lie are redrawn. Other prop changes (`cluster`, `filter`…) cut the tiles again.
+- Options are MapLibre's with units: `maximumZoom` (18), `bufferPixels` (128), `tolerancePixels` (0.375),
+  `cluster`, `clusterRadiusPixels` (50), `clusterMaximumZoom`, `clusterMinimumPoints` (2), `clusterProperties`,
+  `lineMetrics`, `generateId`, `promoteId`, `filter`, `attribution`.
+- Clusters carry `cluster: true`, `cluster_id`, `point_count` and `point_count_abbreviated`. Only points cluster;
+  lines and polygons of a clustered source are dropped, as in MapLibre: use a second source for them.
+- A `geojson` source written in the style itself works the same; a `<GeoJsonSource>` of the same id replaces it
+  (its layers keep reading it) and survives `setStyle`.
+
+Change a few features by id without sending everything (moving vehicles), and ask about clusters, on the ref or
+the vanilla class:
+
+```ts
+import { GeoJsonSource, MapStyleSource } from 'react-three-earth'
+
+const style = new MapStyleSource({ url: 'https://example.com/style.json' })
+const buses = new GeoJsonSource({ id: 'buses', data: { type: 'FeatureCollection', features: [] }, cluster: true })
+style.addGeoJsonSource(buses)
+buses.updateData({ add: [{ type: 'Feature', id: 12, geometry: { type: 'Point', coordinates: [2.35, 48.85] }, properties: {} }] })
+buses.updateData({ update: [{ id: 12, newGeometry: { type: 'Point', coordinates: [2.36, 48.86] } }], remove: [7] })
+const zoom: number = await buses.getClusterExpansionZoom(42) // a cluster_id read from a drawn cluster
+const leaves = await buses.getClusterLeaves(42, Infinity)
+style.setGeoJsonSourceData('buses', { type: 'FeatureCollection', features: [] }) // by source id, style sources too
+```
+
+- `updateData` needs every feature to have an id (`id`, or the `promoteId` property) and the data as an object.
+  It redraws around the changed features only, or around the whole data when points are clustered.
+- Feature-state on GeoJSON: `setFeatureState({ source: 'buses', id: 12 }, { hover: true })`, no `sourceLayer`.
 
 ### Hover and selection: feature-state
 
@@ -390,6 +454,16 @@ server can still answer with the old tile. Purge it, or serve changing tiles wit
 
 `addImage` reads the pixels immediately and throws on an image element that has not loaded. `await
 image.decode()` first, or pass `{ width, height, data }`.
+
+### HIGH: Mutating GeoJSON data after passing it
+
+`data` is kept by reference and only a new object is sent: `features.push(…)` then the same object changes nothing
+on the map (and confuses later snapshots). Pass a new object, or use `updateData` for a few features.
+
+### MEDIUM: `line-gradient` without `lineMetrics`
+
+A gradient needs the line's progress, which only a `geojson` source with `lineMetrics` (or `lineMetrics` on
+`<GeoJsonSource>`) carries. Without it the line draws with `line-color` and one warning names the layer.
 
 ### MEDIUM: Expecting icons
 

@@ -24,6 +24,18 @@ export interface LineStyle {
   miterLimit?: number
   /** Alternating dash and gap lengths in tile units. Empty or undefined: solid. */
   dashes?: readonly number[]
+  /**
+   * Colours the line along its length (`line-gradient`) instead of with the current colour: the line is split into
+   * pieces at most `stepUnits` long, and each vertex takes the colour at its distance from the line's start.
+   */
+  gradient?: LineGradient
+}
+
+/** A colour along a line, by distance from its start in tile units. */
+export interface LineGradient {
+  colorAt(distance: number): Rgba
+  /** The longest piece between two colour samples, in tile units. */
+  stepUnits: number
 }
 
 /**
@@ -183,9 +195,10 @@ export class ShapeBuilder {
 
   /** Adds a stroked polyline. Closed rings repeat their first point at the end. */
   addLine(points: readonly Point[], style: LineStyle): void {
-    const line = removeDuplicatePoints(points)
+    let line = removeDuplicatePoints(points)
     if (line.length < 2 || style.width <= 0) return
-    const pieces = style.dashes !== undefined && style.dashes.length >= 2 ? splitIntoDashes(line, style.dashes) : [line]
+    if (style.gradient !== undefined) line = subdivideLine(line, style.gradient.stepUnits)
+    const pieces = style.dashes !== undefined && style.dashes.length >= 2 && style.gradient === undefined ? splitIntoDashes(line, style.dashes) : [line]
     const offset = style.offset ?? 0
     const gap = style.gapWidth ?? 0
     for (const dash of pieces) {
@@ -276,9 +289,11 @@ export class ShapeBuilder {
     // Unit normals (to the right in y-down tile space) of each segment.
     const normals: Point[] = []
     for (let index = 0; index < count - 1; index++) normals.push(segmentNormal(line[index]!, line[index + 1]!))
-    // Distance along the line at each point, for patterns.
+    // Distance along the line at each point, for patterns and gradients.
     const patterned = this.pattern?.mapping.kind === 'line'
-    const distances = patterned ? cumulativeDistances(line) : null
+    const gradient = style.gradient
+    const along = patterned || gradient !== undefined ? cumulativeDistances(line) : null
+    const distances = patterned ? along : null
     if (patterned) {
       this.lineFrame.left = left
       this.lineFrame.right = right
@@ -291,6 +306,7 @@ export class ShapeBuilder {
       const incoming = index > 0 ? normals[index - 1]! : closed ? normals[count - 2]! : null
       const outgoing = index < count - 1 ? normals[index]! : closed ? normals[0]! : null
       const isEndpoint = incoming === null || outgoing === null
+      if (gradient !== undefined) this.color = gradient.colorAt(along![index]!)
 
       if (isEndpoint) {
         const normal = (incoming ?? outgoing)!
@@ -396,6 +412,20 @@ export class ShapeBuilder {
       previousOuter = outer
     }
   }
+}
+
+/** Inserts points so that no segment is longer than `step` (a gradient is sampled at every point). */
+export function subdivideLine(line: readonly Point[], step: number): Point[] {
+  if (!(step > 0)) return line.slice()
+  const result: Point[] = [line[0]!]
+  for (let index = 1; index < line.length; index++) {
+    const from = line[index - 1]!
+    const to = line[index]!
+    const pieces = Math.min(1024, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / step))
+    for (let piece = 1; piece < pieces; piece++) result.push({ x: from.x + ((to.x - from.x) * piece) / pieces, y: from.y + ((to.y - from.y) * piece) / pieces })
+    result.push(to)
+  }
+  return result
 }
 
 function cumulativeDistances(line: readonly Point[]): number[] {

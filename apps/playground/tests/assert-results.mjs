@@ -174,6 +174,17 @@ const expectations = {
     ['the built-in FXAA is reported, last in the display stage', r.plain.renderPasses.map(pass => pass.name).join() === 'fxaa' && r.installed.renderPasses.map(pass => pass.name).join() === 'highlight-lift,vignette,fxaa' && r.installed.renderPasses.at(-1).timing === 'unavailable'],
   ],
   // StrictMode mounts, unmounts and mounts again: the plugin is removed and installed once more, its shape kept.
+  // GeoJSON sources (`?geojson`): an area, a route with a line gradient, clustered points; setData redraws near the change.
+  ...Object.fromEntries(['webgpu', 'webgl2', 'strict mode'].map(name => [`geojson sources, ${name}`, r => [
+    ['the area draws (magenta)', r.before.magentaShare > 0.002],
+    ['the route draws with its gradient, red at the start and cyan at the end', r.before.redShare > 0.001 && r.before.cyanShare > 0.003],
+    ['the clusters draw (green)', r.before.greenShare > 0.0008 && r.close.greenShare > 0.003],
+    ['a new data prop moves the area east', r.moved.magentaCentreX > r.before.magentaCentreX + 0.05 && Math.abs(r.moved.magentaShare - r.before.magentaShare) < r.before.magentaShare * 0.5],
+    ['the route and clusters stay as they were', Math.abs(r.moved.cyanShare - r.before.cyanShare) < 0.001 && Math.abs(r.moved.greenShare - r.before.greenShare) < 0.0005],
+    ['updateData redraws regions', r.regionsRedrawnAfterUpdateData > 0],
+    ['setData far from the view leaves the detailed regions in view as they are', r.detailedRegionsHeld >= 4 && r.detailedRegionsRedrawn === 0 && r.regionsRedrawnFarFromView < r.regionsHeldClose],
+    ['a cluster query reaches the worker and states the fix', /has no cluster 987654.*use a `cluster_id`/.test(r.clusterQuery)],
+  ]])),
   'sdf shapes plugin, strict mode': r => {
     const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
     return [

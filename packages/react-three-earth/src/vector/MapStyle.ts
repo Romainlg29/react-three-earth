@@ -1,8 +1,10 @@
+import type { GeoJSON } from 'geojson'
 import { EventDispatcher } from 'three'
 
 import { featureKey, parseFeatureKey, type FeatureIdentifier } from './worker/featureState.js'
+import type { GeoJsonSourceDiff } from './worker/geoJsonData.js'
 import { APPLICABLE_COMMANDS, applyStyleCommand, copyStyleDocument, IGNORED_COMMANDS, type StyleDocument, type StyleDocumentLayer } from './worker/styleDocument.js'
-import type { FeatureState, ResourceAnswer, ResourceKind, ResourceRequest, StyleCommand } from './worker/types.js'
+import type { FeatureState, GeoJsonSourceQuery, ResourceAnswer, ResourceKind, ResourceRequest, StyleCommand } from './worker/types.js'
 
 /**
  * Rewrites a request before it is made: another URL, extra headers (on top of `requestHeaders`). Return nothing to
@@ -37,10 +39,13 @@ export interface MapStyleOptions {
   protocols?: Record<string, ProtocolLoader>
 }
 
-/** Events of a style: `styledata` after it loaded or changed, `sourcedata` when a source was added or removed, `error`. */
+/**
+ * Events of a style: `styledata` after it loaded or changed, `sourcedata` when a source was added, removed or replaced,
+ * or its data (GeoJSON) changed, `error`.
+ */
 export interface MapStyleEventMap {
   styledata: object
-  sourcedata: { sourceId: string; change: 'add' | 'remove' }
+  sourcedata: { sourceId: string; change: 'add' | 'remove' | 'data' }
   error: { error: Error }
 }
 
@@ -72,10 +77,24 @@ export interface ManagedStyleLayer {
   readonly beforeId: string | undefined
 }
 
+/** A source kept across `setStyle` (sources added by `GeoJsonSource`): it replaces a source of the same id. */
+export interface ManagedStyleSource {
+  readonly id: string
+}
+
+/** Answers source queries (cluster lookups) through a renderer's worker. */
+export type SourceQueryHandler = (sourceId: string, query: GeoJsonSourceQuery) => Promise<unknown>
+
 const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
 
 function clone<T>(value: T): T {
   return value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T)
+}
+
+/** A copy of a source object, keeping its GeoJSON `data` by reference (it can be large, and is treated as immutable). */
+function cloneSource(source: object): object {
+  const { data, ...rest } = source as { data?: unknown }
+  return data === undefined ? clone(rest) : { ...clone(rest), data }
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
@@ -111,6 +130,10 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   protected readonly featureStates = new Map<string, FeatureState>()
   protected readonly globalStateOverrides = new Map<string, unknown>()
   protected readonly managed = new Map<string, ManagedStyleLayer>()
+  protected readonly managedSources = new Map<string, ManagedStyleSource>()
+  /** Renderers able to answer source queries, oldest first; queries wait in `queryWaiters` until one is there. */
+  protected readonly queryHandlers: SourceQueryHandler[] = []
+  protected queryWaiters: Array<() => void> = []
   protected readonly listeners = new Set<(changes: SequencedStyleChange[]) => void>()
   protected pending: SequencedStyleChange[] = []
   protected pendingEvents: Array<{ type: keyof MapStyleEventMap; event: MapStyleEventMap[keyof MapStyleEventMap] }> = []
@@ -195,6 +218,16 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     return this.document?.layers.map(layer => layer.id) ?? []
   }
 
+  /** Whether the style has a source of this id (without copying it, unlike `getSource`). */
+  hasSource(sourceId: string): boolean {
+    return this.document?.sources[sourceId] !== undefined
+  }
+
+  /** The ids of the layers reading a source, bottom first. */
+  getLayerIdsReadingSource(sourceId: string): string[] {
+    return this.document?.layers.filter(layer => layer.source === sourceId).map(layer => layer.id) ?? []
+  }
+
   getSource(sourceId: string): object | undefined {
     return clone(this.document?.sources[sourceId])
   }
@@ -259,12 +292,59 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
 
   /** Adds a source (a MapLibre source object; `vector` sources are drawn). Layers can read it once added. */
   addSource(sourceId: string, source: object): void {
-    this.command({ command: 'addSource', args: [sourceId, clone(source)] })
+    this.command({ command: 'addSource', args: [sourceId, cloneSource(source)] })
   }
 
   /** Removes a source; remove the layers reading it first. */
   removeSource(sourceId: string): void {
     this.command({ command: 'removeSource', args: [sourceId] })
+  }
+
+  /** Adds a source, or replaces the source of that id while its layers keep reading it (used by `GeoJsonSource`). */
+  setSource(sourceId: string, source: object): void {
+    this.command({ command: 'setSource', args: [sourceId, cloneSource(source)] })
+  }
+
+  /**
+   * Replaces a `geojson` source's data: GeoJSON, or a URL (fetched through `transformRequest` and protocols). The
+   * object is kept, not copied: treat it as immutable from then on (pass a new object for the next change). Only
+   * the regions where the old or the new data lie are redrawn.
+   */
+  setGeoJsonSourceData(sourceId: string, data: GeoJSON | string): void {
+    this.command({ command: 'setGeoJSONSourceData', args: [sourceId, data] })
+  }
+
+  /**
+   * Changes a `geojson` source's features by id (MapLibre's `updateData`): add, remove or update some features
+   * without sending the whole data again. Every feature needs an id (`id`, or the `promoteId` property). Only the
+   * regions around the changed features are redrawn (around the whole data when points are clustered).
+   */
+  updateGeoJsonSourceData(sourceId: string, diff: GeoJsonSourceDiff): void {
+    this.command({ command: 'updateGeoJSONSourceData', args: [sourceId, clone(diff)] })
+  }
+
+  /**
+   * Asks a `geojson` source about its clusters, after every change made so far. Resolves once a renderer (an
+   * `Imagery` layer drawing the style) has loaded the style.
+   */
+  async querySource(sourceId: string, query: GeoJsonSourceQuery): Promise<unknown> {
+    const source = this.document?.sources[sourceId]
+    if (this.document !== null && source === undefined) throw new Error(`GeoJsonSource: there is no source "${sourceId}" in the style; use a source id from getStyle().sources.`)
+    if (source !== undefined && source.type !== 'geojson') throw new Error(`GeoJsonSource: source "${sourceId}" is a ${source.type} source; clusters belong to geojson sources.`)
+    // After the changes made so far reach the renderers (they are handed over in a microtask queued before this one)
+    await new Promise<void>(resolve => queueMicrotask(resolve))
+    while (this.queryHandlers.length === 0) await new Promise<void>(resolve => this.queryWaiters.push(resolve))
+    return this.queryHandlers[0]!(sourceId, query)
+  }
+
+  /** Lets a renderer answer source queries; returns a function that stops it. */
+  attachSourceQueryHandler(handler: SourceQueryHandler): () => void {
+    this.queryHandlers.push(handler)
+    for (const resolve of this.queryWaiters.splice(0)) resolve()
+    return () => {
+      const position = this.queryHandlers.indexOf(handler)
+      if (position !== -1) this.queryHandlers.splice(position, 1)
+    }
   }
 
   /** Sets a `global-state` value read by `['global-state', name]`; `undefined` returns it to the style's default. */
@@ -435,6 +515,20 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     if (this.managed.get(layer.id) === layer) this.managed.delete(layer.id)
   }
 
+  /** Keeps a source across `setStyle`, over a source of the same id in the new style (used by `GeoJsonSource`). */
+  manageSource(source: ManagedStyleSource): void {
+    this.managedSources.set(source.id, source)
+  }
+
+  unmanageSource(source: ManagedStyleSource): void {
+    if (this.managedSources.get(source.id) === source) this.managedSources.delete(source.id)
+  }
+
+  /** Whether a `GeoJsonSource` (or another managed source) holds this source id. */
+  isSourceManaged(sourceId: string): boolean {
+    return this.managedSources.has(sourceId)
+  }
+
   /** Reports an error: an `error` event, and a console warning when nothing listens. */
   reportError(error: Error): void {
     this.queueEvent('error', { error })
@@ -466,9 +560,10 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     applyStyleCommand(this.document!, command)
     this.emit({ type: 'command', command })
     this.queueEvent('styledata', {})
-    if (command.command === 'addSource' || command.command === 'removeSource') {
-      this.queueEvent('sourcedata', { sourceId: command.args[0], change: command.command === 'addSource' ? 'add' : 'remove' })
+    if (command.command === 'addSource' || command.command === 'removeSource' || command.command === 'setSource') {
+      this.queueEvent('sourcedata', { sourceId: command.args[0], change: command.command === 'removeSource' ? 'remove' : 'add' })
     }
+    if (command.command === 'setGeoJSONSourceData' || command.command === 'updateGeoJSONSourceData') this.queueEvent('sourcedata', { sourceId: command.args[0], change: 'data' })
   }
 
   protected adopt(document: StyleDocument, baseUrl: string): void {
@@ -497,6 +592,7 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
 
   /** Puts the managed layers missing from `next` back, where they were relative to `beforeId`, as they are now. */
   protected withManagedLayers(next: StyleDocument, current: StyleDocument): StyleDocument {
+    for (const { id } of this.managedSources.values()) if (current.sources[id] !== undefined) next.sources[id] = current.sources[id]!
     for (const { id, beforeId } of this.managed.values()) {
       const layer = current.layers.find(existing => existing.id === id)
       if (layer === undefined || next.layers.some(existing => existing.id === id)) continue

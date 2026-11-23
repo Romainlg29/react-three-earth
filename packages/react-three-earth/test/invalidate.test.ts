@@ -89,6 +89,7 @@ class TestOverlay extends MapStyleOverlay {
       updateFeatureStates: async () => {},
       setImage: async () => this.nextImageChange,
       setLayerTypes: async () => ({ summary: this.summary!, rebuiltSources: [], errors: [] }),
+      querySource: async () => null,
       dispose: () => {},
     }
     this.backend = backend

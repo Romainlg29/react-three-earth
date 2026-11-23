@@ -15,6 +15,7 @@ export {
   type QuantizedMeshSourceProps,
   type RasterTileSourceProps,
 } from './sources.js'
+export { GeoJsonSource, type GeoJsonSourceProps } from './GeoJsonSource.js'
 export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
 export { MarkerContext, useEarth } from './context.js'
 export { useEarthCamera, useEarthEvent, useEarthFrame, useEarthState, usePlugin } from './hooks.js'

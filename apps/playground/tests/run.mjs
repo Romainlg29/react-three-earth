@@ -960,6 +960,85 @@ async function renderPassesAndDrapedLayers(name, query) {
   results.push(result)
 }
 
+const GEOJSON_PIXELS = `
+  // The ?geojson example, by hue (the terrain is lit dimly): a magenta area, a red-to-cyan route, green clusters.
+  let magenta = 0, magentaX = 0, green = 0, red = 0, cyan = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (r > 50 && b > 50 && g < r * 0.45 && g < b * 0.45) { magenta++; magentaX += (i / 4) % width }
+    else if (g > 50 && g > r * 2 && g > b * 2) green++
+    else if (r > 50 && g < r * 0.3 && b < r * 0.3) red++
+    else if (g > 50 && b > 60 && r < g * 0.3) cyan++
+  }
+  const n = px.length / 4
+  return { magentaShare: +(magenta / n).toFixed(4), magentaCentreX: magenta === 0 ? null : +(magentaX / magenta / width).toFixed(3), greenShare: +(green / n).toFixed(4), redShare: +(red / n).toFixed(4), cyanShare: +(cyan / n).toFixed(4) }
+`
+
+/**
+ * GeoJSON sources (`?geojson`): an area, a route with a line gradient and clustered points draw over the fixture
+ * style; a new `data` prop moves the area; seen from close to the clusters, moving the area again redraws only the
+ * regions near its old and new place; `updateData` moves one station; a cluster query reaches the worker.
+ */
+async function geoJsonSources(name, query) {
+  let { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&geojson&camera=138.75,35.4,0,60000,0,-80${query}`)
+  const settled = () => page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 200 })
+  const shot = async label => {
+    await settled()
+    await page.waitForTimeout(2000) // tile fades
+    const png = await page.screenshot()
+    writeFileSync(new URL(`geojson-${name}-${label}.png`, OUT), png)
+    return analyse(page, png, GEOJSON_PIXELS)
+  }
+  const change = async script => {
+    const composedBefore = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+    await page.evaluate(script)
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 30_000, polling: 'raf' }).catch(() => {})
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending === 0, null, { timeout: 120_000, polling: 'raf' })
+    const composedAfter = await page.evaluate(() => window.earth.inspect().terrain.imageryTilesCompositedTotal)
+    return composedAfter - composedBefore
+  }
+  const regionsHeld = () => page.evaluate(() => [...window.mapStyleSource.overlays].reduce((sum, overlay) => sum + overlay.regions.size, 0))
+  await settled()
+  const before = await shot('before')
+  await change(() => window.moveGeoJsonArea(0.12))
+  const moved = await shot('moved')
+  const regionsRedrawnAfterUpdateData = await change(() => window.geoJsonSources.stations.updateData({ update: [{ id: 13, newGeometry: { type: 'Point', coordinates: [138.55, 35.52] } }] }))
+  // A cluster id that does not exist: the worker answers with the error that states the fix
+  const clusterQuery = await page.evaluate(() => window.geoJsonSources.stations.getClusterChildren(987654).then(() => 'resolved', error => error.message))
+  await page.close()
+  // A fresh page close to the clusters, over 20 km from the area: moving it further west redraws the coarse regions
+  // that span both, but not the detailed ones in view
+  const closePage = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&geojson&camera=138.93,35.245,0,6000,0,-89${query}`)
+  page = closePage.page
+  await settled()
+  const close = await shot('close')
+  // Records the regions redrawn from here (recomposeRegion is protected, wrapped for the check only)
+  await page.evaluate(() => {
+    window.regionsRedrawn = []
+    for (const overlay of window.mapStyleSource.overlays) {
+      const recomposeRegion = overlay.recomposeRegion.bind(overlay)
+      overlay.recomposeRegion = (key, ...rest) => {
+        window.regionsRedrawn.push(key)
+        return recomposeRegion(key, ...rest)
+      }
+    }
+  })
+  const regionsHeldClose = await regionsHeld()
+  const regionsRedrawnFarFromView = await change(() => window.moveGeoJsonArea(-0.1))
+  // Region keys end with their level: the deepest level holds the detailed regions in view
+  const detail = await page.evaluate(() => {
+    const level = key => Number(key.split('_').pop())
+    const held = [...window.mapStyleSource.overlays].flatMap(overlay => [...overlay.regions.keys()])
+    const deepest = Math.max(...held.map(level))
+    return { detailedRegionsHeld: held.filter(key => level(key) === deepest).length, detailedRegionsRedrawn: window.regionsRedrawn.filter(key => level(key) === deepest).length }
+  })
+  await page.close()
+  results.push({ check: `geojson sources, ${name}`, before, moved, close, regionsHeldClose, regionsRedrawnFarFromView, ...detail, regionsRedrawnAfterUpdateData, clusterQuery, errors: [...errors, ...closePage.errors] })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -986,6 +1065,11 @@ try {
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
+  if (!only || only === 'vector' || only === 'geojson') {
+    await geoJsonSources('webgpu', '')
+    await geoJsonSources('webgl2', '&webgl')
+    await geoJsonSources('strict mode', '&strict')
+  }
   if (!only || only === 'afterburner') await afterburnerChecks()
   if (!only || only === 'camera') await cameraAndEvents()
   if (!only || only === 'markers') await markers()
