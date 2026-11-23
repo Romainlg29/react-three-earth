@@ -137,6 +137,8 @@ interface SymbolTile {
   lineFlipped: Uint8Array
   /** Per label, from the last placement: 1 where terrain stands between the camera and the label. */
   occluded: Uint8Array
+  /** Per label: 1 once occlusion read it (labels never read go first). */
+  occlusionRead: Uint8Array
   /** Per label, this frame: 1 where a road name's road on the screen no longer fits it. */
   layoutFailed: Uint8Array
   /** Per label: `projected` of the previous pass, so a road name whose layout fails keeps its glyphs only if it showed then. */
@@ -185,6 +187,14 @@ function readsBackwards(glyphCount: number): boolean {
 }
 const cartographic = { lat: 0, lon: 0, height: 0 }
 const cameraPoint = new Vector3()
+
+/** Whether two labels' variable anchor shifts are the same (both without, or equal values). */
+function sameShifts(a: Float32Array | null, b: Float32Array | null): boolean {
+  if (a === null || b === null) return a === b
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index++) if (a[index] !== b[index]) return false
+  return true
+}
 const rayPoint = new Vector3()
 const rayCartographic = { lat: 0, lon: 0, height: 0 }
 /** Terrain reads per label for occlusion, at most: from the label towards the camera, each further than the last. */
@@ -414,8 +424,9 @@ export class ScreenSymbols {
     // A tile that arrives asks for its own frame.
     if (idle) return false
     this.wasMorphing = morphing
-    // The periodic pass with the camera still: terrain that loaded finer may hide or show labels now.
-    if (!cameraMoved && frame.sampleTerrainElevation !== null) this.placementDue = true
+    // The once-a-second pass with the camera still: terrain that loaded finer may hide or show labels now.
+    const periodic = timeMilliseconds - this.lastPassMilliseconds >= IDLE_PASS_INTERVAL_MILLISECONDS
+    if (periodic && !cameraMoved && frame.sampleTerrainElevation !== null && frame.view.morph === 0) this.placementDue = true
     this.lastPassMilliseconds = timeMilliseconds
 
     let needsFrame = false
@@ -551,6 +562,7 @@ export class ScreenSymbols {
       lineFlipped: new Uint8Array(0),
       projectedBefore: new Uint8Array(0),
       occluded: new Uint8Array(0),
+      occlusionRead: new Uint8Array(0),
       layoutFailed: new Uint8Array(0),
       drawn: false,
     }
@@ -587,7 +599,7 @@ export class ScreenSymbols {
     // place on the screen, so they neither blink nor stop answering feature queries until the next placement.
     const previous = tile.symbols
     const same = previous !== null && symbols !== null && sameLabels(previous, symbols)
-    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, occluded: tile.occluded, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, projectedBefore: tile.projectedBefore, candidates: tile.candidates } : null
+    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, occluded: tile.occluded, occlusionRead: tile.occlusionRead, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, projectedBefore: tile.projectedBefore, candidates: tile.candidates } : null
     tile.symbols = symbols
     tile.loaded = true
     this.tilesChanged = true
@@ -613,6 +625,7 @@ export class ScreenSymbols {
     tile.lineFlipped = new Uint8Array(count)
     tile.projectedBefore = new Uint8Array(count)
     tile.occluded = new Uint8Array(count)
+    tile.occlusionRead = new Uint8Array(count)
     tile.layoutFailed = new Uint8Array(count)
     if (symbols === null || count === 0) return
     for (let pathPoint = 0; pathPoint < pathPointCount; pathPoint++) {
@@ -671,6 +684,7 @@ export class ScreenSymbols {
       tile.projected = kept.projected
       tile.screen = kept.screen
       tile.occluded = kept.occluded
+      tile.occlusionRead = kept.occlusionRead
       if (kept.glyphScreen.length === tile.glyphScreen.length) {
         tile.glyphScreen = kept.glyphScreen
         tile.lineFlipped = kept.lineFlipped
@@ -692,7 +706,7 @@ export class ScreenSymbols {
         to.fade = from.fade
         to.placed = from.placed
         // The same anchors (a style change may have changed them): keep the one it showed with.
-        if (from.anchorShifts !== null && to.anchorShifts !== null && from.anchorShifts.length === to.anchorShifts.length) {
+        if (sameShifts(from.anchorShifts, to.anchorShifts)) {
           to.anchorIndex = from.anchorIndex
           to.anchorScale = from.anchorScale
         } else {
@@ -995,21 +1009,31 @@ export class ScreenSymbols {
     cameraPoint.setFromMatrixPosition(frame.camera.matrixWorld)
     const count = candidates.length
     const start = performance.now()
-    let next = count === 0 ? 0 : this.occlusionCursor % count
-    let read = 0
-    for (; read < count; read++) {
-      if (enabled && read % 8 === 0 && performance.now() - start > OCCLUSION_BUDGET_MILLISECONDS) break
-      const { tile, index } = candidates[next]!
+    let reads = 0
+    const read = (candidate: LabelCandidate): boolean => {
+      if (enabled && reads++ % 8 === 7 && performance.now() - start > OCCLUSION_BUDGET_MILLISECONDS) return false
+      const { tile, index } = candidate
+      tile.occlusionRead[index] = 1
       const height = tile.heights[index]!
       if (!enabled || Number.isNaN(height)) {
         tile.occluded[index] = 0
-      } else {
-        // The ray ends on the terrain the reads see now, not under it: the label's height may come from a coarser
-        // tile, which sags below finer ones nearby.
-        const ground = sample!(tile.longitudes[index]!, tile.latitudes[index]!)
-        const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground ?? height))
-        tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!) ? 1 : 0
+        return true
       }
+      // The ray ends on the terrain the reads see now, not under it: the label's height may come from a coarser
+      // tile, which sags below finer ones nearby.
+      const ground = sample!(tile.longitudes[index]!, tile.latitudes[index]!)
+      const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground ?? height))
+      tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!) ? 1 : 0
+      return true
+    }
+    // Labels never read first (a tile that just arrived), then the rest in turn from where the last pass stopped.
+    let withinBudget = true
+    for (const candidate of candidates) {
+      if (candidate.tile.occlusionRead[candidate.index] === 0 && !(withinBudget = read(candidate))) break
+    }
+    let next = count === 0 ? 0 : this.occlusionCursor % count
+    for (let visited = 0; withinBudget && visited < count; visited++) {
+      if (!(withinBudget = read(candidates[next]!))) break
       next = (next + 1) % count
     }
     this.occlusionCursor = next

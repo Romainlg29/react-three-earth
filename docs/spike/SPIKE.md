@@ -473,8 +473,8 @@ applied along lines.
   about 50 km (fixed distances, so reads do not slide over a ridge as the camera pans; densest near the label),
   skipping points above 9 km with a closed-form height estimate along the chord. Ground more than 30 m above the
   ray hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another
-  tile can take over. Each style's pass stops after 1 ms and the next placement continues from the label after the
-  last one read, so all labels are read in turn; with the camera still, the once-a-second pass places again, so
+  tile can take over. Each style's pass stops after 1 ms: labels never read go first (a tile that just arrived), then
+  the rest in turn from where the last pass stopped; with the camera still, the once-a-second pass places again, so
   terrain that loaded finer hides or shows labels. Globe only. `inspect().terrain.symbols.labelsOccluded`.
   The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; unit
   tests cover a ridge, a low hill, missing tiles, a slope and a wall in front of a label.
