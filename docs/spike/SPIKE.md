@@ -511,6 +511,36 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
 
+## Map controls (W10)
+
+DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`.
+
+- **Structure.** `Controls({ earth, container, position })` owns a corner element (`.react-three-earth-controls`,
+  shared and reference-counted per container and corner, so two `Controls` in one corner stack). Items implement
+  `ControlsItem { element, onAdd, onRemove }`; `MapControl` is the base class with `addTo` and `attach`/`detach`. That
+  is the plugin seam: a third-party control is a `MapControl` subclass. The React `<Controls>` creates the vanilla object in a layout
+  effect and renders its children once it exists; each control component wraps the vanilla class of the same name and
+  rebuilds it when a primitive option changes.
+- **Controls.** `NavigationControl` (zoom by `camera.zoomTo`, summing presses made during the ease; compass from the
+  `rotate`/`pitch` events, `visualizePitch` tilts the needle and resets pitch too), `ScaleControl` (`computeScaleBar`,
+  MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`), `GeolocateControl`,
+  `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on the `update` event, `viewchange` event
+  for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
+- **Geolocate.** States `off | waiting | tracking | background | error`. The dot and the accuracy circle are two
+  `Marker`s (the circle `pitchAlignment: 'map'`, sized as accuracy over metres per pixel). "The user took the map" is a
+  `movestart` while the camera is not animating, or our follow animation ending with `false` while still the latest
+  one. A denied Permissions API state or a code-1 error disables the button.
+- **Phone.** `pointer: coarse` makes buttons 44 px; corners add `env(safe-area-inset-*)`; `touch-action: manipulation`.
+  iPhone Safari has no element Fullscreen API, so `FullscreenControl` falls back to a `position: fixed; 100dvh` class on
+  the container (Escape leaves), or hides with `unsupported: 'hide'`. Not tested on a real iPhone yet.
+- **Gestures.** The corner stops `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart` so a press
+  on a control never starts a map gesture or a map `click`.
+- **Not done.** `TerrainControl` (needs W8 exaggeration), disabled zoom buttons at the limits, compass dragging.
+- **Checks.** `test/controls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
+  `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
+  fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
+  loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
+
 ## Attribution
 
 Every source can carry a credit, and a control shows them all (`src/core/attribution.ts`, `src/controls/AttributionControl.ts`,
