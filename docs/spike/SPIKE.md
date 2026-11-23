@@ -800,7 +800,7 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 | Quantized-mesh terrain: same grid | 5.6 m at 2 (4.6 m at 1) |
 | Flat map, raster-dem | 3.5 m at 2, 1.8 m at 1 |
 | Changing the prop | the relief redraws (11 to 13 % of pixels change), same `Terrain` object (no reload), no errors |
-| Unit tests | 4 new: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, flat boxes scaled, volumes refit and restored with value checks |
+| Unit tests | 3 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, flat boxes scaled, volumes refit and restored with value checks |
 
 ![exaggeration 2](terrain-exaggeration.png)
 
