@@ -37,6 +37,11 @@ export interface ScreenLabel {
   /** The feature it labels: its source layer and index there (feature queries resolve hits with it). */
   sourceLayer: string
   featureIndex: number
+  /**
+   * `text-variable-anchor`: the label box's shift for each anchor in order, (x, y) in pixels of a 24 px font from
+   * the box centred on the anchor point (the glyphs are laid out centred). Placement tries them in turn.
+   */
+  anchorShifts?: number[]
   /** Line placement: the stretch of line the glyphs follow, and the sharpest turn between glyphs (`text-max-angle`). */
   line?: LineLabelPath & { maximumAngleRadians: number; keepUpright: boolean }
 }
@@ -67,6 +72,9 @@ export class SymbolBuilder {
   protected readonly glyphOffsets: number[] = []
   protected readonly glyphHalfWidths: number[] = []
   protected readonly glyphIndices: number[] = []
+  protected readonly anchorShiftStarts: number[] = []
+  protected readonly anchorShiftCounts: number[] = []
+  protected readonly anchorShifts: number[] = []
   protected readonly corners: number[] = []
   protected readonly uvs: number[] = []
   protected readonly labelIndices: number[] = []
@@ -143,6 +151,10 @@ export class SymbolBuilder {
     this.keys.push(label.key)
     this.sourceLayers.push(label.sourceLayer)
     this.featureIndices.push(label.featureIndex)
+    const shifts = label.anchorShifts ?? []
+    this.anchorShiftStarts.push(this.anchorShifts.length / 2)
+    this.anchorShiftCounts.push(shifts.length / 2)
+    for (const shift of shifts) this.anchorShifts.push(shift)
   }
 
   protected addGlyphQuad(label: ScreenLabel, labelIndex: number, glyphIndex: number, glyph: AtlasGlyph, corners: readonly Point[]): void {
@@ -185,6 +197,9 @@ export class SymbolBuilder {
       glyphCounts: new Uint16Array(this.glyphCounts),
       glyphOffsets: new Float32Array(this.glyphOffsets),
       glyphHalfWidths: new Float32Array(this.glyphHalfWidths),
+      anchorShiftStarts: new Uint32Array(this.anchorShiftStarts),
+      anchorShiftCounts: new Uint8Array(this.anchorShiftCounts),
+      anchorShifts: new Float32Array(this.anchorShifts),
       glyphIndices: new Float32Array(this.glyphIndices),
       corners: new Float32Array(this.corners),
       uvs: new Float32Array(this.uvs),
@@ -200,12 +215,12 @@ export class SymbolBuilder {
 /** Bytes a symbol mesh holds, for cache budgets. */
 export function symbolMeshByteLength(mesh: SymbolMesh | null): number {
   if (mesh === null) return 0
-  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
+  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
   return arrays.reduce((sum, array) => sum + array.byteLength, 0) + [...mesh.keys, ...mesh.sourceLayers].reduce((sum, key) => sum + key.length * 2, 0)
 }
 
 /** Typed arrays of a symbol mesh, to transfer. */
 export function symbolMeshBuffers(mesh: SymbolMesh | null): ArrayBufferLike[] {
   if (mesh === null) return []
-  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
+  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
 }

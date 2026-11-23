@@ -277,6 +277,8 @@ const screenLabels = (r, textShare = 0.005) => [
   ['every label shown is on the screen', r.onScreen],
   ['labels at the centre are 14 to 26 px tall (text size and padding)', r.centralBoxHeightPixels !== null && r.centralBoxHeightPixels > 14 && r.centralBoxHeightPixels < 26],
   ['all terrain heights read', r.inspection?.elevationsPending === 0],
+  ['no label hidden behind the flat fixture ground', r.inspection?.labelsOccluded === 0],
+  ['some towns moved beside their point (variable anchors)', r.townsBesideTheirPoint > 0],
   ['a feature query at a label answers its town', r.queryAtLabel !== null && r.queryAtLabel.names[0] === r.queryAtLabel.text],
 ]
 for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectations[`screen-space labels, ${name}`] = r => screenLabels(r)

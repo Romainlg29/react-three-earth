@@ -53,6 +53,8 @@ export interface ScreenSymbolsInspection {
   labels: number
   labelsShown: number
   labelsCollided: number
+  /** Labels hidden behind terrain at the last placement. */
+  labelsOccluded: number
   /** Main-thread time of the last placement (projection, collision), in milliseconds. */
   placementMilliseconds: number
   /** Terrain height reads waiting for a frame's budget. */
@@ -133,6 +135,10 @@ interface SymbolTile {
   glyphSlotBase: number
   /** Line labels, per label: 1 while turned around to read left to right (kept near vertical, so it does not flip back and forth). */
   lineFlipped: Uint8Array
+  /** Per label, from the last placement: 1 where terrain stands between the camera and the label. */
+  occluded: Uint8Array
+  /** Per label, this frame: 1 where a road name's road on the screen no longer fits it. */
+  layoutFailed: Uint8Array
   /** Per label: `projected` of the previous pass, so a road name whose layout fails keeps its glyphs only if it showed then. */
   projectedBefore: Uint8Array
   drawn: boolean
@@ -178,6 +184,46 @@ function readsBackwards(glyphCount: number): boolean {
   return dx < -UPRIGHT_SLACK * Math.hypot(dx, dy)
 }
 const cartographic = { lat: 0, lon: 0, height: 0 }
+const cameraPoint = new Vector3()
+const rayPoint = new Vector3()
+const rayCartographic = { lat: 0, lon: 0, height: 0 }
+/** Terrain reads per label for occlusion, and per placement of one style's labels (about 400 labels). */
+const OCCLUSION_SAMPLES_PER_LABEL = 12
+const OCCLUSION_SAMPLES_PER_PLACEMENT = 12 * 400
+/** The ground must rise this far above the ray to hide a label: coarse terrain and the label's own slope do not. */
+const OCCLUSION_MARGIN_METERS = 30
+/** The last stretch of the ray, next to the label, is not sampled: the ground the label stands on is there. */
+const OCCLUSION_RAY_END = 0.92
+
+/**
+ * Whether the terrain rises above the straight line from `from` to `to` (ECEF), read at evenly spaced points along
+ * it, short of its end. Points without a terrain tile do not occlude.
+ */
+export function rayHitsTerrain(from: Vector3, to: Vector3, sampleTerrainElevation: (longitudeRadians: number, latitudeRadians: number) => number | null): boolean {
+  // The ray's height above the ellipsoid, cheaply: between its ends' heights, less the chord's dip under the curved
+  // Earth. Stretches above any summit are skipped without converting the point.
+  WGS84_ELLIPSOID.getPositionToCartographic(from, rayCartographic)
+  const fromHeight = rayCartographic.height
+  WGS84_ELLIPSOID.getPositionToCartographic(to, rayCartographic)
+  const toHeight = rayCartographic.height
+  const lengthSquared = from.distanceToSquared(to)
+  for (let step = 1; step <= OCCLUSION_SAMPLES_PER_LABEL; step++) {
+    const t = (OCCLUSION_RAY_END * step) / OCCLUSION_SAMPLES_PER_LABEL
+    const estimate = fromHeight + (toHeight - fromHeight) * t - (t * (1 - t) * lengthSquared) / (2 * EARTH_RADIUS_METERS)
+    if (estimate > MAXIMUM_TERRAIN_HEIGHT_METERS + OCCLUSION_ESTIMATE_SLACK_METERS) continue
+    rayPoint.lerpVectors(from, to, t)
+    WGS84_ELLIPSOID.getPositionToCartographic(rayPoint, rayCartographic)
+    if (rayCartographic.height > MAXIMUM_TERRAIN_HEIGHT_METERS) continue
+    const ground = sampleTerrainElevation(rayCartographic.lon, rayCartographic.lat)
+    if (ground !== null && ground > rayCartographic.height + OCCLUSION_MARGIN_METERS) return true
+  }
+  return false
+}
+/** For the height estimate along a ray: the ellipsoid's radius varies by 0.3 %, the slack covers it. */
+const EARTH_RADIUS_METERS = 6371000
+const OCCLUSION_ESTIMATE_SLACK_METERS = 1000
+/** Higher than any summit on Earth. */
+const MAXIMUM_TERRAIN_HEIGHT_METERS = 9000
 const viewProjection = new Matrix4()
 
 /**
@@ -213,7 +259,7 @@ export class ScreenSymbols {
   protected pyramidDue = true
   protected lastPassMilliseconds = -Infinity
   protected tilesChanged = true
-  protected statistics: ScreenSymbolsInspection = { tilesRequested: 0, tilesDrawn: 0, labels: 0, labelsShown: 0, labelsCollided: 0, placementMilliseconds: 0, elevationsPending: 0 }
+  protected statistics: ScreenSymbolsInspection = { tilesRequested: 0, tilesDrawn: 0, labels: 0, labelsShown: 0, labelsCollided: 0, labelsOccluded: 0, placementMilliseconds: 0, elevationsPending: 0 }
   protected disposed = false
   protected readonly lastCameraMatrix = new Matrix4()
   protected readonly lastProjectionMatrix = new Matrix4()
@@ -365,6 +411,7 @@ export class ScreenSymbols {
     const placementWaits = this.placementDue && timeMilliseconds - this.lastPlacementMilliseconds < PLACEMENT_INTERVAL_MILLISECONDS
     if (this.placementDue && !placementWaits) {
       const start = performance.now()
+      if (!morphing) this.occludeByTerrain(frame, candidates)
       this.placement.place(morphing ? [] : candidates, frame.widthPixels, frame.heightPixels)
       // Labels left out of this placement (culled, waiting for their height) have no fade state until the next.
       for (const tile of this.tiles.values()) tile.fades.fill(null)
@@ -490,6 +537,8 @@ export class ScreenSymbols {
       glyphSlotBase: -1,
       lineFlipped: new Uint8Array(0),
       projectedBefore: new Uint8Array(0),
+      occluded: new Uint8Array(0),
+      layoutFailed: new Uint8Array(0),
       drawn: false,
     }
     this.tiles.set(key, tile)
@@ -525,7 +574,7 @@ export class ScreenSymbols {
     // place on the screen, so they neither blink nor stop answering feature queries until the next placement.
     const previous = tile.symbols
     const same = previous !== null && symbols !== null && sameLabels(previous, symbols)
-    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, projectedBefore: tile.projectedBefore, candidates: tile.candidates } : null
+    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, occluded: tile.occluded, screen: tile.screen, glyphScreen: tile.glyphScreen, lineFlipped: tile.lineFlipped, projectedBefore: tile.projectedBefore, candidates: tile.candidates } : null
     tile.symbols = symbols
     tile.loaded = true
     this.tilesChanged = true
@@ -550,6 +599,8 @@ export class ScreenSymbols {
     tile.glyphScreen = new Float32Array((symbols?.glyphOffsets.length ?? 0) * 3)
     tile.lineFlipped = new Uint8Array(count)
     tile.projectedBefore = new Uint8Array(count)
+    tile.occluded = new Uint8Array(count)
+    tile.layoutFailed = new Uint8Array(count)
     if (symbols === null || count === 0) return
     for (let pathPoint = 0; pathPoint < pathPointCount; pathPoint++) {
       const longitude = ((tile.request.x + symbols.linePoints[pathPoint * 2]! / TILE_EXTENT) / 2 ** tile.request.z) * 2 * Math.PI - Math.PI
@@ -584,6 +635,9 @@ export class ScreenSymbols {
         maximumYPixels: 0,
         boxes: (flags & SYMBOL_LINE) !== 0 ? [] : null,
         hidden: false,
+        anchorShifts: symbols.anchorShiftCounts[index]! > 1 ? symbols.anchorShifts.subarray(symbols.anchorShiftStarts[index]! * 2, (symbols.anchorShiftStarts[index]! + symbols.anchorShiftCounts[index]!) * 2) : null,
+        anchorScale: 1,
+        anchorIndex: 0,
         layerIndex: symbols.layerIndices[index]!,
         sortKey: symbols.sortKeys[index]!,
         allowOverlap: (flags & SYMBOL_ALLOW_OVERLAP) !== 0,
@@ -603,6 +657,7 @@ export class ScreenSymbols {
       tile.fades = kept.fades
       tile.projected = kept.projected
       tile.screen = kept.screen
+      tile.occluded = kept.occluded
       if (kept.glyphScreen.length === tile.glyphScreen.length) {
         tile.glyphScreen = kept.glyphScreen
         tile.lineFlipped = kept.lineFlipped
@@ -623,6 +678,8 @@ export class ScreenSymbols {
         if (from.boxes !== null && to.boxes !== null) to.boxes.push(...from.boxes)
         to.fade = from.fade
         to.placed = from.placed
+        to.anchorIndex = from.anchorIndex
+        to.anchorScale = from.anchorScale
       }
     }
     tile.slotBase = this.state.allocate(count)
@@ -760,7 +817,7 @@ export class ScreenSymbols {
         const candidate = tile.candidates[index]!
         if (alongLine) {
           const laidOut = this.layoutLineGlyphs(tile, index, scale, Number.isNaN(height) ? 0 : height, flat, view, matrix, widthPixels, heightPixels)
-          candidate.hidden = !laidOut
+          tile.layoutFailed[index] = laidOut ? 0 : 1
           if (!laidOut) {
             const fade = tile.fades[index]
             if (tile.projectedBefore[index] === 0 || fade == null || fade.opacity <= 0) continue
@@ -769,6 +826,7 @@ export class ScreenSymbols {
             if (fade.target !== 0) this.placementDue = true
           }
         }
+        candidate.hidden = tile.layoutFailed[index] === 1 || tile.occluded[index] === 1
         tile.projected[index] = 1
         tile.screen[index * 3] = xPixels
         tile.screen[index * 3 + 1] = yPixels
@@ -785,10 +843,15 @@ export class ScreenSymbols {
           candidates.push(candidate)
           continue
         }
-        candidate.minimumXPixels = xPixels + symbols.boxes[index * 4]! * scale - padding
-        candidate.minimumYPixels = yPixels + symbols.boxes[index * 4 + 1]! * scale - padding
-        candidate.maximumXPixels = xPixels + symbols.boxes[index * 4 + 2]! * scale + padding
-        candidate.maximumYPixels = yPixels + symbols.boxes[index * 4 + 3]! * scale + padding
+        // Variable anchors: the box at the anchor placement last chose (it may move it).
+        const shifts = candidate.anchorShifts
+        const shiftX = shifts === null ? 0 : shifts[candidate.anchorIndex * 2]!
+        const shiftY = shifts === null ? 0 : shifts[candidate.anchorIndex * 2 + 1]!
+        candidate.anchorScale = scale
+        candidate.minimumXPixels = xPixels + (symbols.boxes[index * 4]! + shiftX) * scale - padding
+        candidate.minimumYPixels = yPixels + (symbols.boxes[index * 4 + 1]! + shiftY) * scale - padding
+        candidate.maximumXPixels = xPixels + (symbols.boxes[index * 4 + 2]! + shiftX) * scale + padding
+        candidate.maximumYPixels = yPixels + (symbols.boxes[index * 4 + 3]! + shiftY) * scale + padding
         candidates.push(candidate)
       }
     }
@@ -899,6 +962,35 @@ export class ScreenSymbols {
       if (turned > maximumAngle) return false
     }
     return true
+  }
+
+  /**
+   * Hides labels behind terrain: samples the terrain as drawn at points along the ray from the camera to each label
+   * (its anchor at its height), and marks the label occluded where the ground rises above the ray. Placement then
+   * fades it out like a collision. Globe only; at most `OCCLUSION_SAMPLES_PER_PLACEMENT` reads, labels past them
+   * keep their last answer.
+   */
+  protected occludeByTerrain(frame: SymbolFrame, candidates: LabelCandidate[]): void {
+    const sample = frame.sampleTerrainElevation
+    const flat = frame.view.morph === 1
+    cameraPoint.setFromMatrixPosition(frame.camera.matrixWorld)
+    let samples = OCCLUSION_SAMPLES_PER_PLACEMENT
+    let occluded = 0
+    for (const candidate of candidates) {
+      const { tile, index } = candidate
+      const height = tile.heights[index]!
+      if (sample === null || flat || frame.view.morph !== 0 || Number.isNaN(height)) {
+        tile.occluded[index] = 0
+      } else {
+        if (samples < OCCLUSION_SAMPLES_PER_LABEL) continue
+        samples -= OCCLUSION_SAMPLES_PER_LABEL
+        const label = this.labelPosition(tile, index, false, frame.view, height)
+        tile.occluded[index] = rayHitsTerrain(cameraPoint, label, sample) ? 1 : 0
+      }
+      candidate.hidden = tile.layoutFailed[index] === 1 || tile.occluded[index] === 1
+      occluded += tile.occluded[index]!
+    }
+    this.statistics.labelsOccluded = occluded
   }
 
   /** Moves a road name's glyphs and boxes by (dx, dy) pixels as they are: it follows its anchor while it fades out. */
@@ -1020,7 +1112,13 @@ export class ScreenSymbols {
           continue
         }
         shown++
-        this.state.write(slot, tile.screen[index * 3]!, tile.screen[index * 3 + 1]!, tile.screen[index * 3 + 2]!, fade.opacity)
+        const scale = tile.screen[index * 3 + 2]!
+        // Variable anchors: drawn shifted to the anchor placement chose.
+        const shifts = tile.candidates[index]!.anchorShifts
+        const anchor = tile.candidates[index]!.anchorIndex
+        const shiftX = shifts === null ? 0 : shifts[anchor * 2]! * scale
+        const shiftY = shifts === null ? 0 : shifts[anchor * 2 + 1]! * scale
+        this.state.write(slot, tile.screen[index * 3]! + shiftX, tile.screen[index * 3 + 1]! + shiftY, scale, fade.opacity)
         const symbols = tile.symbols!
         const glyphCount = symbols.glyphCounts[index]!
         for (let glyph = symbols.glyphStarts[index]!, end = glyph + glyphCount; glyph < end; glyph++) {

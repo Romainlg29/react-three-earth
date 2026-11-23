@@ -21,6 +21,15 @@ export interface PlacementCandidate {
    * per glyph; the box above then bounds them all. Null for one box.
    */
   boxes: number[] | null
+  /**
+   * `text-variable-anchor`: the label's shift for each anchor, (x, y) pairs in units of `anchorScale` pixels from
+   * its box centred on the anchor point; null without. Placement tries the anchor it showed with first, then the
+   * others in order, and moves the box (and `anchorIndex`) to the first that fits.
+   */
+  anchorShifts: Float32Array | null
+  anchorScale: number
+  /** The anchor the box above is shifted to (an index into `anchorShifts`). */
+  anchorIndex: number
   /** Placed nowhere this time, only kept so it fades out (a road name whose road on the screen no longer fits it). */
   hidden: boolean
   /** The style layer's index: higher places first. */
@@ -50,6 +59,8 @@ export interface SymbolFade {
   target: 0 | 1
   /** Placement that last matched it to a label; another label matching it in the same placement is a duplicate. */
   claimedBy: number
+  /** `text-variable-anchor`: the anchor it was placed with, tried first next time so the label does not jump. */
+  anchorIndex: number
 }
 
 export interface SymbolPlacementOptions {
@@ -176,8 +187,7 @@ export class SymbolPlacement {
       fade.xPixels = candidate.xPixels
       fade.yPixels = candidate.yPixels
       candidate.fade = fade
-      const onScreen = candidate.maximumXPixels > 0 && candidate.minimumXPixels < widthPixels && candidate.maximumYPixels > 0 && candidate.minimumYPixels < heightPixels
-      const placed = onScreen && !candidate.hidden && (candidate.allowOverlap || !this.hitsPlaced(candidate))
+      const placed = candidate.anchorShifts === null ? this.fits(candidate, widthPixels, heightPixels) : this.placeAnchors(candidate, fade, widthPixels, heightPixels)
       if (placed && !candidate.ignorePlacement) this.insertBoxes(candidate)
       candidate.placed = placed
       fade.target = placed ? 1 : 0
@@ -207,6 +217,28 @@ export class SymbolPlacement {
   /** Forgets every fade state: labels fade in from nothing. */
   clear(): void {
     this.fades.clear()
+  }
+
+  protected fits(candidate: PlacementCandidate, widthPixels: number, heightPixels: number): boolean {
+    const onScreen = candidate.maximumXPixels > 0 && candidate.minimumXPixels < widthPixels && candidate.maximumYPixels > 0 && candidate.minimumYPixels < heightPixels
+    return onScreen && !candidate.hidden && (candidate.allowOverlap || !this.hitsPlaced(candidate))
+  }
+
+  /** Tries the anchor the label showed with, then the others in order; stays at the first tried when none fits. */
+  protected placeAnchors(candidate: PlacementCandidate, fade: SymbolFade, widthPixels: number, heightPixels: number): boolean {
+    const count = candidate.anchorShifts!.length / 2
+    const preferred = fade.opacity > 0 && fade.anchorIndex < count ? fade.anchorIndex : 0
+    for (let attempt = -1; attempt < count; attempt++) {
+      if (attempt === preferred) continue
+      const anchor = attempt === -1 ? preferred : attempt
+      moveToAnchor(candidate, anchor)
+      if (this.fits(candidate, widthPixels, heightPixels)) {
+        fade.anchorIndex = anchor
+        return true
+      }
+    }
+    moveToAnchor(candidate, preferred)
+    return false
   }
 
   protected hitsPlaced(candidate: PlacementCandidate): boolean {
@@ -250,12 +282,26 @@ export class SymbolPlacement {
   }
 
   protected createFade(candidate: PlacementCandidate): SymbolFade {
-    const fade: SymbolFade = { key: candidate.key, xPixels: candidate.xPixels, yPixels: candidate.yPixels, opacity: 0, target: 0, claimedBy: -1 }
+    const fade: SymbolFade = { key: candidate.key, xPixels: candidate.xPixels, yPixels: candidate.yPixels, opacity: 0, target: 0, claimedBy: -1, anchorIndex: candidate.anchorIndex }
     let list = this.fades.get(candidate.key)
     if (list === undefined) this.fades.set(candidate.key, (list = []))
     list.push(fade)
     return fade
   }
+}
+
+/** Shifts a candidate's box from its current anchor to `anchor`. */
+export function moveToAnchor(candidate: PlacementCandidate, anchor: number): void {
+  const shifts = candidate.anchorShifts!
+  const from = candidate.anchorIndex
+  if (anchor === from) return
+  const dx = (shifts[anchor * 2]! - shifts[from * 2]!) * candidate.anchorScale
+  const dy = (shifts[anchor * 2 + 1]! - shifts[from * 2 + 1]!) * candidate.anchorScale
+  candidate.minimumXPixels += dx
+  candidate.minimumYPixels += dy
+  candidate.maximumXPixels += dx
+  candidate.maximumYPixels += dy
+  candidate.anchorIndex = anchor
 }
 
 function visibleRank(fade: SymbolFade | null): number {
