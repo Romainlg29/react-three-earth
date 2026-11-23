@@ -44,7 +44,7 @@ layer and drapes on terrain.
 `MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, tiles
 GeoJSON (fills, lines, circles, text labels) and decodes raster and elevation tiles; the main thread draws them
 straight into each terrain tile's texture on the GPU. Labels, place and road names alike, face the viewer
-(`map-labels`), and `fill-extrusion` layers stand as 3D buildings.
+(`map-labels`), and `fill-extrusion` layers stand as 3D buildings (`3d-buildings`).
 
 ## Setup
 
@@ -417,10 +417,6 @@ export function PatternedMap() {
   outline; dashes do not combine with `line-pattern`; a missing image draws nothing (and calls
   `onStyleImageMissing` once per id until it is added).
 - Vanilla: `new MapStyleSource({ url, onStyleImageMissing })`, then `source.addImage(…)`.
-
-### 3D buildings
-
-`fill-extrusion` layers stand as 3D buildings on the terrain by default: see `3d-buildings`.
 
 ### Satellite and relief layers
 
