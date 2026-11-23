@@ -1,10 +1,13 @@
 import { XYZTilesOverlay } from '3d-tiles-renderer/three/plugins'
-import { LinearFilter, Mesh, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, SRGBColorSpace, Vector4, type Texture } from 'three'
-import type { MeshBasicNodeMaterial, WebGPURenderer } from 'three/webgpu'
+import { Color, HalfFloatType, LinearFilter, LinearSRGBColorSpace, Mesh, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, SRGBColorSpace, Vector4, type Texture } from 'three'
+import { texture } from 'three/tsl'
+import type { MeshBasicNodeMaterial, NodeMaterial, WebGPURenderer } from 'three/webgpu'
 
 import type { GeographicBounds } from '../core/camera.js'
 import type { ImageryCompositor } from '../tiles/imagery/ImageryCompositor.js'
+import type { StyleLayerTypeDefinition, StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
+import { createCompositeMaterial, createCustomLayerMaterial, setCustomLayerDrawValues } from './customLayerMaterials.js'
 import { MapStyle, type SequencedStyleChange } from './MapStyle.js'
 import { createVectorTileWorker, InlineMapStyleBackend, WorkerMapStyleBackend, type MapStyleBackend, type MapStyleBackendHost } from './MapStyleBackend.js'
 import { RefCountedCache, type Lease } from './RefCountedCache.js'
@@ -74,7 +77,7 @@ interface RegionTile {
   request: TileRequest
   /** Unwrapped column (may be outside 0 to 2^z - 1 next to the antimeridian), for placement. */
   column: number
-  /** Ring tiles around the covered ones only contribute labels that reach into the region. */
+  /** Ring tiles around the covered ones only contribute labels and custom layers with reach into the region. */
   textOnly: boolean
 }
 
@@ -95,6 +98,22 @@ interface Recomposition extends RegionWork {
 }
 
 const MEGABYTE_BYTES = 2 ** 20
+
+/** A custom layer type's GPU side in this overlay, built on first use. */
+interface CustomLayerType {
+  definition: StyleLayerTypeDefinition
+  /** Null when `createMaterial` failed: its layers are skipped. */
+  material: NodeMaterial | null
+  composite: Mesh | null
+}
+
+/** Meshes placed in a region scene, with what the offscreen passes need to sort them. */
+interface PlacedMesh {
+  mesh: Mesh
+  renderOrder: number
+  /** The offscreen layer type it draws into, if any. */
+  offscreen: CustomLayerType | null
+}
 
 /**
  * Renders a MapLibre style (vector tiles from XYZ, TileJSON or PMTiles) onto terrain tiles, on the GPU.
@@ -182,6 +201,19 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly staleRegions = new Set<string>()
   protected readonly startRecompositions = (): void => this.recomposeStaleRegions()
   protected disposed = false
+  /** Custom style layer types from plugins (`earth.styleLayerTypes`), handed over by `ImageOverlayPlugin`. */
+  protected styleLayerTypes: StyleLayerTypeRegistry | null = null
+  protected unsubscribeLayerTypes: (() => void) | null = null
+  protected layerTypesScheduled = false
+  protected readonly customLayerTypes = new Map<string, CustomLayerType>()
+  protected readonly warnedLayerTypes = new Set<string>()
+  /** Where offscreen custom layers draw before they are composited (one per overlay, region-sized). */
+  protected layerTarget: RenderTarget | null = null
+  protected readonly placeholderLayerTarget = new RenderTarget(1, 1)
+  protected readonly layerTexture = texture(this.placeholderLayerTarget.texture)
+  protected readonly layerScene = new Scene()
+  protected readonly compositeScene = new Scene()
+  protected readonly clearColor = new Color()
 
   constructor({
     style,
@@ -283,6 +315,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     await this.imageSource.init()
     if (this.disposed) return
     this.reportMissingImages(this.summary.missingBackgroundImages)
+    this.reportMissingLayerTypes(this.summary)
     this.onLoad?.(this.summary)
     this.onSummaryChange?.(this.summary)
   }
@@ -338,7 +371,99 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       transformsRequests: snapshot.transformsRequests,
       spritePixelRatio: this.options.spritePixelRatio,
       images: [...this.images],
+      layerTypes: this.styleLayerTypes?.describe() ?? [],
     }
+  }
+
+  /**
+   * The custom style layer types (plugins) to draw, or null for none. `ImageOverlayPlugin` calls it with
+   * `earth.styleLayerTypes`. Changes reach the worker as they are made: layers of a new type appear, and
+   * those of a removed one disappear, without fetching tiles again.
+   */
+  setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void {
+    if (registry === this.styleLayerTypes) return
+    this.unsubscribeLayerTypes?.()
+    this.unsubscribeLayerTypes = null
+    this.styleLayerTypes = registry
+    if (registry !== null) this.unsubscribeLayerTypes = registry.subscribe(() => this.scheduleLayerTypes())
+    this.scheduleLayerTypes()
+  }
+
+  /** Sends the layer types once per task: plugins installed together cost one recompile. */
+  protected scheduleLayerTypes(): void {
+    if (this.layerTypesScheduled) return
+    this.layerTypesScheduled = true
+    queueMicrotask(() => {
+      this.layerTypesScheduled = false
+      this.sendLayerTypes()
+    })
+  }
+
+  /** Sends the current layer types to the backend; before it started, its snapshot carries them. */
+  protected sendLayerTypes(): void {
+    this.pruneCustomLayerTypes()
+    if (this.disposed || this.backend === null || this.snapshotSequence < 0) return
+    const layerTypes = this.styleLayerTypes?.describe() ?? []
+    this.enqueueStyleWork(backend => backend.setLayerTypes(layerTypes), result => {
+      const drawnBefore = this.summary?.customLayerTypes.join('\u0000')
+      this.applyStyleResult(result)
+      // Reach and offscreen passes change only with the types the style draws.
+      if (result.rebuiltSources.length > 0 || result.summary.customLayerTypes.join('\u0000') !== drawnBefore) this.markRegionsStale(() => true)
+    })
+  }
+
+  /** Frees the GPU side of types that were removed or registered again. */
+  protected pruneCustomLayerTypes(): void {
+    for (const [type, entry] of this.customLayerTypes) {
+      if (this.styleLayerTypes?.get(type) === entry.definition) continue
+      entry.material?.dispose()
+      ;(entry.composite?.material as MeshBasicNodeMaterial | undefined)?.dispose()
+      this.customLayerTypes.delete(type)
+    }
+  }
+
+  /** A registered layer type's material (and composite), built on first use; null when it cannot draw. */
+  protected getCustomLayerType(type: string): CustomLayerType | null {
+    const definition = this.styleLayerTypes?.get(type)
+    if (definition === undefined) return null
+    let entry = this.customLayerTypes.get(type)
+    if (entry?.definition === definition) return entry.material === null ? null : entry
+    if (entry !== undefined) {
+      entry.material?.dispose()
+      ;(entry.composite?.material as MeshBasicNodeMaterial | undefined)?.dispose()
+    }
+    entry = { definition, material: null, composite: null }
+    try {
+      entry.material = createCustomLayerMaterial(definition)
+      if (definition.offscreen !== undefined) {
+        entry.composite = new Mesh(this.background.geometry, createCompositeMaterial(definition, this.layerTexture))
+        entry.composite.position.set(0.5, 0.5, 0)
+        entry.composite.frustumCulled = false
+      }
+    } catch (error) {
+      entry.material = null
+      console.error(`MapStyleSource: layer type "${type}" could not build its material, its layers are skipped. Fix its createMaterial.`, error)
+    }
+    this.customLayerTypes.set(type, entry)
+    return entry.material === null ? null : entry
+  }
+
+  /** Warns once per type about style layers whose type no installed plugin provides. */
+  protected reportMissingLayerTypes(summary: MapStyleSummary): void {
+    const byType = new Map<string, string[]>()
+    for (const [layerId, type] of summary.missingLayerTypes) byType.set(type, [...(byType.get(type) ?? []), layerId])
+    for (const [type, layerIds] of byType) {
+      if (this.warnedLayerTypes.has(type)) continue
+      this.warnedLayerTypes.add(type)
+      console.warn(`MapStyleSource: style layer "${layerIds[0]}"${layerIds.length > 1 ? ` (and ${layerIds.length - 1} more)` : ''} has type "${type}", which no installed plugin provides: install the plugin that registers it.`)
+    }
+  }
+
+  /** The largest reach of the custom layers the style draws, in pixels. */
+  protected get maximumReachPixels(): number {
+    let reach = 0
+    for (const type of this.summary?.customLayerTypes ?? []) reach = Math.max(reach, this.styleLayerTypes?.get(type)?.maximumReachPixels ?? 0)
+    return reach
   }
 
   protected readonly receiveStyleChanges = (changes: SequencedStyleChange[]): void => {
@@ -391,6 +516,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const changed = (pick: (summary: MapStyleSummary) => unknown) => previous === null || JSON.stringify(pick(previous)) !== JSON.stringify(pick(result.summary))
     if (changed(summary => summary.backgroundByZoom) || changed(summary => summary.backgroundPatternByZoom) || changed(summary => summary.sources)) this.markRegionsStale(() => true)
     this.reportMissingImages(result.summary.missingBackgroundImages)
+    this.reportMissingLayerTypes(result.summary)
     this.onSummaryChange?.(result.summary)
   }
 
@@ -662,6 +788,12 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.disposed = true
     this.unsubscribe?.()
     this.unsubscribe = null
+    this.unsubscribeLayerTypes?.()
+    this.unsubscribeLayerTypes = null
+    this.styleLayerTypes = null
+    this.pruneCustomLayerTypes()
+    this.layerTarget?.dispose()
+    this.placeholderLayerTarget.dispose()
     this.regions.dispose()
     this.buckets.dispose()
     this.backend?.dispose()
@@ -698,9 +830,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       const fromRow = Math.max(0, Math.floor((1 - maximumY) * count + epsilon))
       const toRow = Math.min(count - 1, Math.floor((1 - minimumY) * count - epsilon))
       if (fromRow > toRow) continue
-      // Labels reach up to about 256 px beyond their tile: half a tile, less when overzoomed. Ring tiles
-      // further from the region are skipped.
-      const reach = 0.5 / 2 ** (level - z)
+      // Labels reach up to about 256 px beyond their tile, half a tile, and custom layers up to their reach
+      // (at most a tile); less when overzoomed. Ring tiles further from the region are skipped.
+      const reach = Math.max(0.5, this.maximumReachPixels / TILE_SIZE_PIXELS) / 2 ** (level - z)
       const regionLeft = minimumX * count
       const regionRight = maximumX * count
       const regionTop = (1 - maximumY) * count
@@ -858,6 +990,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       scene.add(this.backgroundPatternMesh)
     }
     const placements = new Map<LoadedBucket, number>()
+    const placed: PlacedMesh[] = []
     tiles.forEach((tile, order) => {
       const loaded = buckets[order]
       if (loaded === null || loaded === undefined) return
@@ -868,21 +1001,32 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       // Near the antimeridian at low zooms, one bucket is placed at several columns: each needs its own Mesh.
       const placement = placements.get(loaded) ?? 0
       placements.set(loaded, placement + 1)
-      const place = (source: Mesh, renderOrder: number) => {
+      const place = (source: Mesh, renderOrder: number, offscreen: CustomLayerType | null = null) => {
         const mesh = loaded.meshes!.placement(source, placement)
         mesh.position.set((tile.column * tileSize - minimumX) / width, (1 - y * tileSize - minimumY) / height, 0)
         mesh.scale.set(tileSize / width / TILE_EXTENT, -tileSize / height / TILE_EXTENT, 1)
         mesh.renderOrder = renderOrder
-        scene.add(mesh)
+        placed.push({ mesh, renderOrder, offscreen })
+        return mesh
       }
       if (!tile.textOnly) for (const { group, mesh } of loaded.meshes.shapes) place(mesh, group * 10_000 + order)
+      for (const { layerType, group, mesh } of loaded.meshes.custom) {
+        const type = this.getCustomLayerType(layerType)
+        // Ring tiles only draw the layers that reach past their tile.
+        if (type === null || (tile.textOnly && (type.definition.maximumReachPixels ?? 0) === 0)) continue
+        const drawn = place(mesh, group * 10_000 + order, type.definition.offscreen === undefined ? null : type)
+        drawn.material = type.material!
+        setCustomLayerDrawValues(drawn, z, level)
+      }
       if (loaded.meshes.text !== null) place(loaded.meshes.text, 100_000_000 + order)
     })
+    for (const { mesh, offscreen } of placed) if (offscreen === null) scene.add(mesh)
     try {
-      if (scene.children.length > 0) {
+      if (scene.children.length > 0 || placed.length > 0) {
         const scratch = this.getScratch(output.width)
         renderer.setRenderTarget(scratch)
-        renderer.render(scene, this.camera)
+        if (placed.some(entry => entry.offscreen !== null)) this.renderWithOffscreenLayers(renderer, scratch, placed)
+        else renderer.render(scene, this.camera)
         compositor.copyTexture(renderer, scratch.texture, output)
       } else {
         renderer.setRenderTarget(output)
@@ -890,7 +1034,73 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       }
     } finally {
       scene.clear()
+      this.layerScene.clear()
+      this.compositeScene.clear()
     }
+  }
+
+  /**
+   * Draws the region in passes split at each offscreen layer: what is below it into the scratch, the layer into
+   * the layer target (maximum or additive blending), then the target composited over the scratch; and so on.
+   */
+  protected renderWithOffscreenLayers(renderer: WebGPURenderer, scratch: RenderTarget, placed: readonly PlacedMesh[]): void {
+    const scene = this.scene
+    // One pass per offscreen layer group (its render orders share `group * 10_000`).
+    const passes = new Map<number, { type: CustomLayerType; meshes: Mesh[] }>()
+    for (const { mesh, renderOrder, offscreen } of placed) {
+      if (offscreen === null) continue
+      const group = Math.floor(renderOrder / 10_000)
+      let pass = passes.get(group)
+      if (pass === undefined) passes.set(group, (pass = { type: offscreen, meshes: [] }))
+      pass.meshes.push(mesh)
+    }
+    const layerTarget = this.getLayerTarget(scratch.width)
+    const autoClear = renderer.autoClear
+    renderer.getClearColor(this.clearColor)
+    const clearAlpha = renderer.getClearAlpha()
+    const below = (limit: number) => {
+      for (const child of scene.children) child.visible = child.renderOrder < limit && child.userData.drawn !== true
+      renderer.setRenderTarget(scratch)
+      renderer.render(scene, this.camera)
+      for (const child of scene.children) if (child.visible) child.userData.drawn = true
+      renderer.autoClear = false // later passes draw over the first
+    }
+    try {
+      renderer.autoClear = true
+      for (const [group, { type, meshes }] of [...passes].sort(([a], [b]) => a - b)) {
+        below(group * 10_000)
+        this.layerScene.clear()
+        for (const mesh of meshes) this.layerScene.add(mesh)
+        renderer.setRenderTarget(layerTarget)
+        renderer.setClearColor(0x000000, 0)
+        renderer.clear()
+        renderer.render(this.layerScene, this.camera)
+        renderer.setClearColor(this.clearColor, clearAlpha)
+        this.compositeScene.clear()
+        this.compositeScene.add(type.composite!)
+        renderer.setRenderTarget(scratch)
+        renderer.render(this.compositeScene, this.camera)
+      }
+      below(Infinity)
+    } finally {
+      renderer.autoClear = autoClear
+      renderer.setClearColor(this.clearColor, clearAlpha)
+      for (const child of scene.children) {
+        child.visible = true
+        delete child.userData.drawn
+      }
+    }
+  }
+
+  /** The offscreen layers' target: linear, half float (sums and maxima above 1 stay exact), no multisampling. */
+  protected getLayerTarget(resolution: number): RenderTarget {
+    if (this.layerTarget !== null && this.layerTarget.width === resolution) return this.layerTarget
+    this.layerTarget?.dispose()
+    this.placeholderLayerTarget.dispose()
+    this.layerTarget = new RenderTarget(resolution, resolution, { type: HalfFloatType, colorSpace: LinearSRGBColorSpace, depthBuffer: false, generateMipmaps: false, minFilter: LinearFilter, magFilter: LinearFilter })
+    this.layerTarget.texture.name = 'MapStyleLayerTarget'
+    this.layerTexture.value = this.layerTarget.texture
+    return this.layerTarget
   }
 
   /**

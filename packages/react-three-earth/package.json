@@ -43,6 +43,10 @@
       "types": "./dist/vector-worker.d.ts",
       "default": "./dist/vector-worker.js"
     },
+    "./plugin-worker": {
+      "types": "./dist/plugin-worker.d.ts",
+      "default": "./dist/plugin-worker.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

@@ -13,6 +13,7 @@ import type { Terrain } from './Terrain.js'
 import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnchor.js'
 import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
+import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 
 /** Pointer travel, in CSS pixels, under which a press and release is a click rather than a drag (MapLibre's `clickTolerance`). */
 const CLICK_TOLERANCE_PIXELS = 3
@@ -108,6 +109,8 @@ export class Earth extends Group<EarthEventMap> {
   lastUpdateMilliseconds = 0
   /** The installed plugins, in install order. Add and remove them with `addPlugin` and `removePlugin`. */
   readonly plugins: PluginManager = new PluginManager(this)
+  /** Custom style layer types plugins registered (`context.registerStyleLayerType`), drawn by map style sources. */
+  readonly styleLayerTypes = new StyleLayerTypeRegistry()
   /** Anchors made by `createGeographicAnchor`, placed for the morph every frame. */
   protected readonly anchors = new Set<GeographicAnchor>()
   protected readonly events = new EarthEventTracker()
@@ -253,6 +256,7 @@ export class Earth extends Group<EarthEventMap> {
     if (this.terrain !== null) {
       this.unsubscribeAttributions(this.terrain)
       this.terrain.setView(null)
+      this.terrain.setStyleLayerTypes(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
     }
@@ -260,6 +264,7 @@ export class Earth extends Group<EarthEventMap> {
     if (terrain !== null) {
       this.subscribeAttributions(terrain)
       terrain.setView(this.view)
+      terrain.setStyleLayerTypes(this.styleLayerTypes)
       this.add(terrain.object)
       for (const imagery of this.imagery) terrain.addImagery(imagery)
     }

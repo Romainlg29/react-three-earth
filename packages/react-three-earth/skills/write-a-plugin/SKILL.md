@@ -2,12 +2,14 @@
 name: write-a-plugin
 description: >
   Use when extending react-three-earth from a package or an app without forking it: writing an EarthPlugin,
-  installing plugins with earth.addPlugin or <Earth plugins>, placing 3D objects at a longitude and latitude
+  installing plugins with earth.addPlugin or <Earth plugins>, custom MapLibre style layer types drawn by a plugin
+  (registerStyleLayerType: a shader over built-in fills, lines or circles, or a worker module with its own
+  tessellation, glows, offscreen layers), placing 3D objects at a longitude and latitude
   that follow the globe-to-map morph (createGeographicAnchor), raymarched signed-distance (SDF) shapes that
   sort against terrain and take the atmosphere's haze, per-frame plugin code, or reading plugin state from
   earth.inspect().
 metadata:
-  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes example plugin.'
+  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow and striped-fill example plugins.'
   type: framework
   framework: 'react'
   library: 'react-three-earth'
@@ -22,6 +24,13 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/hooks.ts'
   - 'Romainlg29/react-three-earth:apps/playground/src/sdf/sdfShapes.ts'
   - 'Romainlg29/react-three-earth:apps/playground/src/sdf/distance.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/styleLayerTypes.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/pluginWorker.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/customLayerMaterials.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/customLayers.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/styleLayers/sdfGlow.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/styleLayers/sdfGlowWorker.js'
+  - 'Romainlg29/react-three-earth:apps/playground/src/styleLayers/stripedFill.ts'
 requires:
   - getting-started
   - coordinates-and-units
@@ -39,6 +48,8 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 | Install for the whole map | `<Earth plugins={plugins}>` / `earth.addPlugin(plugin)` |
 | Install from one component | `usePlugin(plugin)` |
 | Code every frame | `context.onUpdate(frame => …)` |
+| A new MapLibre layer `type` (look over built-in geometry) | `context.registerStyleLayerType({ type, geometry: 'line', paint, createMaterial })` |
+| A new layer `type` with its own tessellation | `registerStyleLayerType({ type, worker: { moduleUrl, exportName }, … })` |
 | A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` (disposed with the plugin) |
 | A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
 | Keep colour on the flat map | `createFlatMapEmissionNode(colorNode, earth.view)` |
@@ -201,6 +212,96 @@ colour and step count, a tetrahedron gradient for `normalNode` (lit by the scene
 emission, and `src/sdf/distance.ts` with `sphere`, `roundedBox`, `capsule`, `torus`, `union`, `smoothUnion`,
 `subtract`, `translate`. Run it with `?fixtures&sdf`.
 
+### Custom style layer types
+
+A style layer whose `type` a plugin registers is drawn by it in every `MapStyleSource` of the earth, at its place
+in the style, with its `filter`, zoom range and properties evaluated by the library (MapLibre expressions, `zoom`,
+`feature-state`, `global-state`). The worker evaluates, the main thread only draws. A style layer whose type no
+plugin provides is skipped with one warning; registering the type later draws it without refetching tiles, and
+removing the plugin takes it away the same way.
+
+**Material tier**: reuse the built-in `fill`, `line` or `circle` tessellation and bring only a shader. Each paint
+property becomes a vertex attribute (at most 6); `geometryInput` feeds the tessellator (`line-width`,
+`line-offset`, `line-cap`, `line-join`, `circle-radius`, in pixels).
+
+```ts
+import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { fract, mix, step, vec4 } from 'three/tsl'
+import { MeshBasicNodeMaterial } from 'three/webgpu'
+
+export const dashedRoads: EarthPlugin = {
+  name: 'dashed-roads',
+  apiVersion: PLUGIN_API_VERSION,
+  install(context) {
+    context.registerStyleLayerType({
+      type: 'dashed-road',
+      geometry: 'line',
+      paint: {
+        'dashed-road-color': { type: 'color', default: '#ffcc00' },
+        'dashed-road-width-pixels': { type: 'number', default: 3, geometryInput: 'line-width' },
+      },
+      createMaterial: ({ paint, tile }) => {
+        const material = new MeshBasicNodeMaterial()
+        // Diagonal bands 8 map pixels long: tile.position is in tile units, pixelsPerTileUnit turns it into pixels.
+        const pixels = tile.position.x.add(tile.position.y).mul(tile.pixelsPerTileUnit)
+        const color = paint.color('dashed-road-color') // linear RGB, straight alpha
+        material.colorNode = mix(color, vec4(color.rgb.mul(0.4), color.a), step(0.5, fract(pixels.div(16))))
+        return material
+      },
+    })
+  },
+}
+// In the style: { "id": "roads-dashed", "type": "dashed-road", "source": "osm", "source-layer": "transportation", "paint": { "dashed-road-width-pixels": 4 } }
+// Or in React: <StyleLayer id="roads-dashed" type="dashed-road" source="osm" sourceLayer="transportation" />
+```
+
+`createMaterial` runs once per type per source: one pipeline, whatever the number of layers and tiles. The library
+sets blending, depth and sides, and clips the material to its tile; set `colorNode` (straight alpha).
+
+**Geometry tier**: when the geometry itself is new (per-segment quads, splats), ship a worker module. It is
+loaded into the vector tile worker with `import()`, so it must be self-contained (no bare imports; type-only
+imports from `react-three-earth/plugin-worker` are fine). It gets the library's helpers through `host`, and
+returns typed arrays that are transferred, not copied. `position` (2 floats, tile units 0 to 4096, y down) is
+required; an attribute named after a paint property is what `paint.color(name)` / `paint.number(name)` reads;
+other names must be shader identifiers, read with `attribute(name)`.
+
+```ts no-check
+// glowWorker.js, served as a file (Vite: new URL('./glowWorker.js', import.meta.url), and list the plugin in
+// optimizeDeps.exclude when it ships in node_modules). A strict CSP needs its origin in worker-src/script-src.
+/** @type {import('react-three-earth/plugin-worker').WorkerLayerTypeFactory} */
+export const glow = host => ({
+  createTileBuilder({ layer, zoom, unitsPerPixel }) {
+    const positions = [], indices = []
+    return {
+      addFeature(feature, geometry) {
+        const radius = host.clampReach(layer.evaluate('paint', 'glow-radius-pixels', zoom, feature)) * unitsPerPixel
+        for (const ring of geometry) for (const point of ring) {
+          const first = positions.length / 2
+          positions.push(point.x - radius, point.y - radius, point.x + radius, point.y - radius, point.x + radius, point.y + radius, point.x - radius, point.y + radius)
+          indices.push(first, first + 1, first + 2, first, first + 2, first + 3)
+        }
+      },
+      finish: () => (indices.length === 0 ? null : { attributes: { position: { array: Float32Array.from(positions), itemSize: 2 } }, indices: Uint32Array.from(indices) }),
+    }
+  },
+})
+```
+
+Register it with `worker: { moduleUrl: new URL('./glowWorker.js', import.meta.url), exportName: 'glow' }`.
+
+- **Reach.** A layer drawing past its features (a glow) sets `maximumReachPixels` (at most 512): neighbouring
+  tiles that close are drawn too, the tile clip is dropped, and `host.clampReach` caps data-driven radii.
+  Two tiles share a buffer of features, and both now draw it: use `offscreen: { blending: 'maximum' }`, or
+  emit only the features `host.isInsideTile` owns. The material tier with reach requires `'maximum'`.
+- **Offscreen layers.** `offscreen: { blending: 'maximum' }` draws the layer into its own half-float target first,
+  so overlaps keep the strongest value instead of stacking, then composites it once at the layer's place;
+  `'additive'` sums (densities; skip buffered features with `host.isInsideTile`, or neighbours count them
+  twice). Write straight alpha in `colorNode` as always: the library premultiplies it into the target, and
+  `composite({ layer })` turns the target texel into the drawn colour (default `vec4(layer.rgb / layer.a, layer.a)`).
+
+The playground's `src/styleLayers/` has both tiers: `sdf-glow` (worker module, exact distance to each segment,
+maximum blending) and `striped-fill`. Run them with `?fixtures&map=vector&glow`.
+
 ### Plugins that offer objects to React
 
 React runs children's effects before their parent's, so a child component mounts before `<Earth plugins>`
@@ -228,6 +329,11 @@ whatever it built is lost. Create plugins at module scope or with `useState(() =
 It stays on the globe while the terrain unrolls into the map. Use `earth.createGeographicAnchor` (or call
 `anchor.update(earth.view)` yourself every frame for a `new GeographicAnchor`).
 
+### HIGH: Bare imports in a worker module
+
+`import { … } from 'three'` in a worker module fails in the vector tile worker (no import maps): the type is
+skipped with a warning naming the URL. Use `host`, and bundle anything else into the module.
+
 ### MEDIUM: Forgetting `uninstall` work
 
 The context undoes what went through it. Geometries, materials, textures and workers the plugin created
@@ -243,5 +349,7 @@ worker or the GPU, and watch `updateMilliseconds` in `earth.inspect().plugins`.
 - `earth.inspect().plugins[name]` is listed with `ready: true`, and `earth.removePlugin(name)` leaves no object,
   listener or per-frame callback behind.
 - Objects stay on their spot through `setView('2d')` and back, and keep their size against the terrain.
+- A custom layer type draws at its place in the style on WebGPU and `forceWebGL`, appears when its plugin is
+  installed after the style loaded, and leaves no warning but the one for types nobody provides.
 - A depth-writing shape is hidden where it is underground and hazed when far away; the WebGL2 fallback
   (`forceWebGL`) draws the same image.

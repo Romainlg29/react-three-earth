@@ -3,6 +3,7 @@ import type { Camera, Object3D } from 'three'
 import { GeographicAnchor } from '../core/GeographicAnchor.js'
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 import { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugin.js'
 
 /** Per-plugin statistics in `earth.inspect().plugins`. */
@@ -90,6 +91,13 @@ export class PluginInstallation implements PluginContext {
   onDispose(callback: () => void): void {
     this.requireActive('onDispose')
     this.undoSteps.push(callback)
+  }
+
+  registerStyleLayerType(definition: StyleLayerTypeDefinition): () => void {
+    this.requireActive('registerStyleLayerType')
+    const remove = this.earth.styleLayerTypes.register(definition)
+    this.undoSteps.push(remove)
+    return remove
   }
 
   /** Runs the plugin's `onUpdate` callbacks. Returns true if one asked for another frame. */

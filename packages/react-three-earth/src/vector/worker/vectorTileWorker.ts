@@ -51,7 +51,14 @@ function post(created: MapStyleProcessor | null, response: WorkerResponse, trans
       transfer.push(featureColors.slots.buffer as ArrayBuffer, featureColors.colors.buffer as ArrayBuffer)
     }
   }
-  scope.postMessage(response, transfer)
+  try {
+    scope.postMessage(response, transfer)
+  } catch (error) {
+    // A buffer that cannot be transferred: post copies instead, so the atlas and colour updates taken above
+    // are not lost.
+    console.warn('vector tile worker: a result could not be transferred, so it was copied.', error)
+    scope.postMessage(response)
+  }
 }
 
 function fail(id: number, error: unknown): void {
@@ -91,6 +98,11 @@ scope.onmessage = ({ data }: MessageEvent<WorkerRequest>) => {
     case 'style':
       requireProcessor()
         .then(async created => post(created, { type: 'result', id: data.id, value: await created.applyCommands(data.commands) }))
+        .catch(error => fail(data.id, error))
+      return
+    case 'layerTypes':
+      requireProcessor()
+        .then(async created => post(created, { type: 'result', id: data.id, value: await created.setLayerTypes(data.layerTypes) }))
         .catch(error => fail(data.id, error))
       return
     case 'featureState':

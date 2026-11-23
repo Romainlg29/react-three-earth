@@ -1,3 +1,4 @@
+import type { WorkerLayerTypeDescriptor } from '../plugins/styleLayerTypes.js'
 import type { MapStyleProcessor } from './worker/MapStyleProcessor.js'
 import type { MercatorRectangle } from './worker/rectangles.js'
 import type {
@@ -34,6 +35,8 @@ export interface MapStyleBackend {
   updateFeatureStates(changes: FeatureStateChange[]): Promise<void>
   /** Adds, replaces (`image`) or removes (`null`) a runtime image; requests sent after it see the change. */
   setImage(id: string, image: StyleImage | null): Promise<ImageChange>
+  /** Replaces the custom layer types (plugins), keeping the raw tiles; requests sent after it see them. */
+  setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult>
   dispose(): void
 }
 
@@ -123,6 +126,10 @@ export class WorkerMapStyleBackend implements MapStyleBackend {
 
   updateStyle(commands: StyleCommand[]): Promise<StyleUpdateResult> {
     return this.call<StyleUpdateResult>({ type: 'style', id: this.nextId++, commands })
+  }
+
+  setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult> {
+    return this.call<StyleUpdateResult>({ type: 'layerTypes', id: this.nextId++, layerTypes })
   }
 
   async updateFeatureStates(changes: FeatureStateChange[]): Promise<void> {
@@ -261,6 +268,13 @@ export class InlineMapStyleBackend implements MapStyleBackend {
     const change = processor.setImage(id, image === null ? null : { ...image, data: image.data.slice() })
     this.flushUpdates(processor)
     return change
+  }
+
+  async setLayerTypes(layerTypes: WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult> {
+    const processor = await this.requireProcessor()
+    const result = await processor.setLayerTypes(layerTypes)
+    this.flushUpdates(processor)
+    return result
   }
 
   dispose(): void {

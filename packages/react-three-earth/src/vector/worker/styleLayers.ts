@@ -40,6 +40,12 @@ interface PropertySpecification {
 
 const specification = latest as unknown as Record<string, Record<string, PropertySpecification> | undefined>
 
+/** The property specifications of a custom layer type (a plugin's), in the style specification's format. */
+export interface CustomLayerSpecifications {
+  paint: Record<string, PropertySpecification>
+  layout: Record<string, PropertySpecification>
+}
+
 /** RGBA, straight alpha, 0 to 255, sRGB. */
 export type Rgba = [number, number, number, number]
 
@@ -67,7 +73,10 @@ export type FeatureStateDependence = 'none' | 'colors' | 'geometry'
 /** A style layer with its filter and properties compiled once, evaluated per feature. */
 export class CompiledStyleLayer {
   readonly id: string
-  readonly type: SupportedLayerType
+  /** A MapLibre type, or a plugin's custom type (`custom` is set then). */
+  readonly type: SupportedLayerType | (string & {})
+  /** The specifications of a custom layer type (plugins); null for MapLibre types. */
+  readonly custom: CustomLayerSpecifications | null
   readonly source: string | undefined
   readonly sourceLayer: string | undefined
   readonly minimumZoom: number
@@ -88,11 +97,12 @@ export class CompiledStyleLayer {
   protected readonly globalState: Record<string, unknown>
 
   /** `globalState` is read live: change its values, then process the tiles of layers that reference them. */
-  constructor(layer: StyleLayerSpecification, index: number, globalState: Record<string, unknown> = {}) {
+  constructor(layer: StyleLayerSpecification, index: number, globalState: Record<string, unknown> = {}, custom: CustomLayerSpecifications | null = null) {
+    this.custom = custom
     this.specification = layer
     this.globalState = globalState
     this.id = layer.id
-    this.type = layer.type as SupportedLayerType
+    this.type = layer.type
     this.index = index
     this.source = layer.source
     this.sourceLayer = layer['source-layer']
@@ -105,7 +115,7 @@ export class CompiledStyleLayer {
     let unknownReferences = Array.isArray(layer.layout?.visibility)
     let dependence: FeatureStateDependence = 'none'
     for (const kind of ['paint', 'layout'] as const) {
-      for (const name of Object.keys(specification[`${kind}_${this.type}`] ?? {})) {
+      for (const name of Object.keys(this.propertySpecifications(kind))) {
         const property = this.compile(kind, name) as StylePropertyExpression & { isStateDependent?: boolean; globalStateRefs?: Set<string> }
         if (property.globalStateRefs === undefined) unknownReferences ||= this.has(kind, name)
         else for (const reference of property.globalStateRefs) references.add(reference)
@@ -160,11 +170,15 @@ export class CompiledStyleLayer {
     return this.specification[kind]?.[name] !== undefined
   }
 
+  protected propertySpecifications(kind: PropertyKind): Record<string, PropertySpecification> {
+    return (this.custom === null ? specification[`${kind}_${this.type}`] : this.custom[kind]) ?? {}
+  }
+
   protected compile(kind: PropertyKind, name: string): StylePropertyExpression {
     const key = `${kind}/${name}`
     let property = this.properties.get(key)
     if (property === undefined) {
-      const propertySpecification = specification[`${kind}_${this.type}`]?.[name]
+      const propertySpecification = this.propertySpecifications(kind)[name]
       if (propertySpecification === undefined) throw new Error(`Style layer "${this.id}": unknown ${kind} property "${name}".`)
       const value = this.specification[kind]?.[name] ?? propertySpecification.default
       property = normalizePropertyExpression(value as never, name, propertySpecification as never, this.globalState)
@@ -202,10 +216,17 @@ export function compileStyleLayers(
 }
 
 /** Compiles one layer; null (with a warning) when its type is not drawn yet or an expression does not compile. */
-export function compileStyleLayer(layer: StyleLayerSpecification, index: number, globalState: Record<string, unknown>, onError?: (message: string) => void): CompiledStyleLayer | null {
-  if (!(SUPPORTED_LAYER_TYPES as readonly string[]).includes(layer.type)) return null
+export function compileStyleLayer(
+  layer: StyleLayerSpecification,
+  index: number,
+  globalState: Record<string, unknown>,
+  onError?: (message: string) => void,
+  customTypes?: ReadonlyMap<string, CustomLayerSpecifications>,
+): CompiledStyleLayer | null {
+  const custom = customTypes?.get(layer.type) ?? null
+  if (custom === null && !(SUPPORTED_LAYER_TYPES as readonly string[]).includes(layer.type)) return null
   try {
-    return new CompiledStyleLayer(layer, index, globalState)
+    return new CompiledStyleLayer(layer, index, globalState, custom)
   } catch (error) {
     const message = `MapStyleSource: skipping layer "${layer.id}": ${(error as Error).message}`
     console.warn(message)
@@ -222,12 +243,16 @@ export function assignLayerOrder(compiled: readonly CompiledStyleLayer[], layers
   const positions = new Map(layers.map((layer, index) => [layer.id, index]))
   let group = -1
   let groupSource: string | undefined | null = null
+  let previousCustom = false
   for (const layer of [...compiled].sort((a, b) => positions.get(a.id)! - positions.get(b.id)!)) {
     layer.index = positions.get(layer.id)!
-    if (layer.type !== 'background' && layer.source !== groupSource) {
+    // A custom layer (plugin) draws with its own material: it gets a group of its own, and ends the one before.
+    const custom = layer.custom !== null
+    if (layer.type !== 'background' && (layer.source !== groupSource || custom || previousCustom)) {
       group++
       groupSource = layer.source
     }
+    if (layer.type !== 'background') previousCustom = custom
     layer.group = Math.max(group, 0)
   }
 }

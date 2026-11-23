@@ -6,7 +6,8 @@
     "noEmit": true,
     "paths": {
       "react-three-earth": ["../../packages/react-three-earth/src/index.ts"],
-      "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"]
+      "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"],
+      "react-three-earth/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"]
     }
   },
   "include": ["src", "fixtures", "vite.config.ts"]

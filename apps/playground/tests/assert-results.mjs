@@ -145,6 +145,21 @@ const expectations = {
     const webgpu = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
     return [['WebGL2 draws the same shape as WebGPU', webgpu !== undefined && Math.abs(r.orangeShare - webgpu.orangeShare) <= webgpu.orangeShare * 0.25 && r.orangeBelowGround < 20]]
   },
+  // Custom style layer types (src/styleLayers/): a glow around primary roads and striped lakes.
+  'style layer types, webgpu': r => styleLayerExpectations(r),
+  'style layer types, webgl2': r => {
+    const webgpu = results.find(other => other.check === 'style layer types, webgpu')
+    return [
+      ...styleLayerExpectations(r),
+      ['WebGL2 draws the same glow as WebGPU', webgpu !== undefined && Math.abs(r.magentaShare - webgpu.magentaShare) <= webgpu.magentaShare * 0.1],
+    ]
+  },
+  'style layer types, registered late': r => [
+    ['nothing custom before the plugins are installed', r.before.magentaShare < 0.001 && r.before.stripeDarkShare < 0.001],
+    ...styleLayerExpectations(r.added).map(([label, ok]) => [`installed after the style loaded: ${label}`, ok]),
+    ['gone again once the plugins are removed', r.removed.magentaShare < 0.001 && r.removed.stripeDarkShare < 0.001],
+    ['no tile fetched again for either change', r.tileRequestsAfterLoad === 0],
+  ],
   // StrictMode mounts, unmounts and mounts again: the plugin is removed and installed once more, its shape kept.
   'sdf shapes plugin, strict mode': r => {
     const plain = results.find(other => other.check === 'sdf shapes plugin, near, atmosphere off')
@@ -153,6 +168,17 @@ const expectations = {
       ['draws the same shape as without StrictMode', plain !== undefined && Math.abs(r.orangeShare - plain.orangeShare) <= plain.orangeShare * 0.1],
     ]
   },
+}
+
+/** The `?glow` layers as drawn: glow along primary roads only, stripes of both blues in the lakes. */
+function styleLayerExpectations(r) {
+  const magenta = ([red, green, blue]) => red > 110 && blue > 80 && red > green + 60 && blue > green + 40
+  return [
+    ['the glow covers part of the map (over 3 % magenta pixels)', r.magentaShare > 0.03],
+    ['beside a primary road: glow', magenta(r.samples[0])],
+    ['beside a minor road: no glow (the layer filter applies)', !magenta(r.samples[1])],
+    ['lakes are striped in both blues', r.stripeDarkShare > 0.003 && r.stripeLightShare > 0.003 && r.stripeChanges > 40],
+  ]
 }
 
 let failures = 0
