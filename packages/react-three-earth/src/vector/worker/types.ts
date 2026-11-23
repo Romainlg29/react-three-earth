@@ -3,6 +3,7 @@
  * the typed arrays are transferred, not copied.
  */
 
+import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
 import type { MercatorRectangle } from './rectangles.js'
 
 /** Vector tile coordinates are rescaled to this extent, whatever the source layer's own extent. */
@@ -42,6 +43,8 @@ export interface MapStyleProcessorOptions {
    * scheme other than http(s), data and blob always are, for protocols added with `addProtocol`.
    */
   transformsRequests?: boolean
+  /** Custom style layer types from plugins (`earth.styleLayerTypes`). Default: none. */
+  layerTypes?: WorkerLayerTypeDescriptor[]
 }
 
 /** Feature-state of one feature: any JSON values, read by `['feature-state', name]` in paint properties. */
@@ -174,6 +177,10 @@ export interface MapStyleSummary {
   missingBackgroundImages: string[]
   /** Image ids the style's sprites provide (`sprite-id:name` for sprites other than `default`). */
   spriteImageIds: string[]
+  /** Custom layer types (plugins) that drawn layers use. */
+  customLayerTypes: string[]
+  /** Layers whose type is neither MapLibre's nor provided by an installed plugin, as [layer id, type]. */
+  missingLayerTypes: Array<[string, string]>
 }
 
 /** One vector tile to process. */
@@ -260,10 +267,30 @@ export interface ImageAtlasUpdate {
   images: ImageAtlasEntryUpdate[]
 }
 
+/** A vertex attribute of a custom layer mesh, named for the shader (`position`, `paint0`, plugin names). */
+export interface CustomLayerAttribute {
+  name: string
+  array: Float32Array | Uint8Array | Uint16Array | Int16Array | Uint32Array | Int32Array
+  itemSize: 1 | 2 | 3 | 4
+  normalized: boolean
+}
+
+/** One custom style layer's mesh in a tile (plugins). Positions are 2 floats per vertex in tile units. */
+export interface CustomLayerMesh {
+  layerId: string
+  layerType: string
+  /** Its draw group: custom layers have one of their own, so they draw at their place in the style. */
+  group: number
+  attributes: CustomLayerAttribute[]
+  indices: Uint32Array | Uint16Array
+}
+
 /** The processed tile. Null meshes when the tile has nothing of that kind. */
 export interface TileBucket {
   shapes: ShapeMesh | null
   text: TextMesh | null
+  /** Custom style layers (plugins), in style order. */
+  layers: CustomLayerMesh[]
   atlas: AtlasUpdate | null
   /** Features drawn with colour slots: a state change redraws the regions using this bucket. */
   featureStateKeys: string[]
@@ -295,6 +322,11 @@ export type WorkerRequest =
   | { type: 'resource'; id: number; answer: ResourceAnswer | null; error?: string }
   /** Adds or replaces (`image`) or removes (`null`) a runtime image. Answers with an `ImageChange`. */
   | { type: 'image'; id: number; imageId: string; image: StyleImage | null }
+  /**
+   * Replaces the custom layer types and recompiles the layers, keeping the raw tiles; answers a
+   * `StyleUpdateResult` whose `rebuiltSources` hold the layers of types that came or went.
+   */
+  | { type: 'layerTypes'; id: number; layerTypes: WorkerLayerTypeDescriptor[] }
 
 /** What an image change did, so the main thread knows what to redraw. */
 export interface ImageChange {
@@ -325,12 +357,16 @@ export type WorkerResponse =
 export function collectTransferables(bucket: TileBucket | null): Transferable[] {
   if (bucket === null) return []
   const buffers: ArrayBufferLike[] = []
-  const { shapes, text, atlas } = bucket
+  const { shapes, text, atlas, layers } = bucket
   if (shapes !== null) buffers.push(shapes.positions.buffer, shapes.colors.buffer, shapes.indices.buffer)
   if (shapes?.colorSlots) buffers.push(shapes.colorSlots.buffer)
   if (shapes?.patterns != null && shapes.patternCoordinates !== null) buffers.push(shapes.patterns.buffer, shapes.patternCoordinates.buffer)
   if (text !== null) buffers.push(text.positions.buffer, text.uvs.buffer, text.colors.buffer, text.haloColors.buffer, text.haloEdges.buffer, text.indices.buffer)
   if (atlas !== null) for (const glyph of atlas.glyphs) buffers.push(glyph.data.buffer)
+  for (const layer of layers) {
+    buffers.push(layer.indices.buffer)
+    for (const attribute of layer.attributes) buffers.push(attribute.array.buffer)
+  }
   return [...new Set(buffers)] as Transferable[]
 }
 

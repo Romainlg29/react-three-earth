@@ -1,6 +1,7 @@
 import type { Camera, Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
@@ -107,6 +108,11 @@ export class Terrain implements AttributionProvider {
   setView(view: ViewMorph | null): void {
     this.tiles.view = view
     this.flatMap.view = view
+  }
+
+  /** The custom style layer types (plugins) its map style sources draw. `Earth.setTerrain` calls it. */
+  setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void {
+    this.overlays.setStyleLayerTypes(registry)
   }
 
   addImagery(imagery: Imagery): void {

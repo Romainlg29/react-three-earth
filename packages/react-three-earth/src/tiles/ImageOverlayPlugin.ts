@@ -4,10 +4,20 @@ import { ImageOverlayPlugin as ImageOverlayPluginBase } from '3d-tiles-renderer/
 import { Mesh, type Color, type Object3D, type Texture } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
+import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
 import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
 import { wrapOverlaysNodeMaterial } from './wrapOverlaysNodeMaterial.js'
+
+/** An overlay that draws custom style layer types (`MapStyleOverlay`). */
+interface StyleLayerTypeConsumer {
+  setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void
+}
+
+function isStyleLayerTypeConsumer(overlay: unknown): overlay is StyleLayerTypeConsumer {
+  return typeof (overlay as Partial<StyleLayerTypeConsumer> | null)?.setStyleLayerTypes === 'function'
+}
 
 interface ImageOverlay {
   color: Color
@@ -92,13 +102,27 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
     this.tiles?.dispatchEvent({ type: 'needs-update' })
   }
 
+  protected styleLayerTypes: StyleLayerTypeRegistry | null = null
+  protected readonly styleLayerOverlays = new Set<StyleLayerTypeConsumer>()
+
+  /** Hands the custom style layer types (plugins) to the overlays that draw style layers, now and later. */
+  setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void {
+    this.styleLayerTypes = registry
+    for (const overlay of this.styleLayerOverlays) overlay.setStyleLayerTypes(registry)
+  }
+
   override addOverlay(overlay: Parameters<ImageOverlayPluginBase['addOverlay']>[0], order?: number): void {
     if (isGpuComposedOverlay(overlay)) overlay.compositor = this.compositor
+    if (isStyleLayerTypeConsumer(overlay)) {
+      this.styleLayerOverlays.add(overlay)
+      overlay.setStyleLayerTypes(this.styleLayerTypes)
+    }
     upstream.addOverlay.call(this, overlay, order ?? null)
   }
 
   override deleteOverlay(overlay: Parameters<ImageOverlayPluginBase['deleteOverlay']>[0]): void {
     upstream.deleteOverlay.call(this, overlay)
+    if (isStyleLayerTypeConsumer(overlay) && this.styleLayerOverlays.delete(overlay)) overlay.setStyleLayerTypes(null)
     if (isGpuComposedOverlay(overlay) && overlay.compositor === this.compositor) overlay.compositor = null
   }
 

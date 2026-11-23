@@ -815,6 +815,85 @@ async function sdfShapes(name, query, { distanceMeters = 6000, pitchDegrees = -1
   results.push({ check: `sdf shapes plugin, ${name}`, ...stats, centreVisible: probe.centre.visible, plugin: probe.plugins['sdf-shapes'], errors })
 }
 
+/** Magenta glow pixels, and the two stripe blues of the `?glow` example layers, with samples at given points. */
+const STYLE_LAYER_PIXELS = `
+  let magenta = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    if (r > 110 && b > 80 && r > g + 60 && b > g + 40) magenta++
+  }
+  const sample = ([x, y]) => { const i = (Math.round(y) * width + Math.round(x)) * 4; return [px[i], px[i + 1], px[i + 2]] }
+  // Striped lakes: both stripe blues are present (a plain lake is neither), and they alternate along rows.
+  const { points } = window.__styleLayerProbe
+  let dark = 0, light = 0, changes = 0
+  for (let y = 0; y < height; y += 4) {
+    let previous = null
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      // The map is dimmed by its terrain lighting: light stripes about (65, 97, 127), dark ones (0, 40, 98).
+      const kind = b > 110 && g > 80 && r > 40 && b > r + 40 ? 'light' : b > 80 && r < 30 && g < 60 ? 'dark' : null
+      if (kind === 'light') light++
+      if (kind === 'dark') dark++
+      if (kind !== null && previous !== null && kind !== previous) changes++
+      previous = kind
+    }
+  }
+  const n = px.length / 4
+  return { magentaShare: +(magenta / n).toFixed(4), samples: points.map(sample), stripeDarkShare: +((dark * 4) / n).toFixed(4), stripeLightShare: +((light * 4) / n).toFixed(4), stripeChanges: changes }
+`
+
+/**
+ * The style layer type examples (`src/styleLayers/`, `?glow`): a glow around primary roads only (worker module,
+ * offscreen maximum blending) and striped lakes (built-in fill, own shader). `late` installs the plugins after
+ * the style loaded, then removes them: the layers appear and disappear without fetching tiles again.
+ */
+async function styleLayerTypes(name, query, { late = false } = {}) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&glow${late ? '=late' : ''}&camera=138.75,35.45,0,15000,0,-90${query}`)
+  const tileRequests = []
+  page.context().on('request', request => { if (request.url().includes('/fixtures/vector/')) tileRequests.push(request.url()) })
+  const settle = async () => {
+    await page.waitForFunction(() => window.earth?.inspect().loaded === true && window.earth.inspect().terrain.imageryRecompositionsPending === 0, null, { timeout: 240_000, polling: 500 })
+    await page.waitForTimeout(2500)
+  }
+  // After a plugin change: the worker answers, then every region redraws in place.
+  const settleRedraw = async () => {
+    await page.waitForFunction(() => window.earth.inspect().terrain.imageryRecompositionsPending > 0, null, { timeout: 60_000, polling: 50 })
+    await settle()
+  }
+  await settle()
+  const probe = await page.evaluate(() => {
+    const project = (longitudeDegrees, latitudeDegrees) => window.earth.project({ longitudeDegrees, latitudeDegrees })
+    // North Road 7 (primary) and North Road 8 (minor) at 35.45°: 12 px east of each.
+    const primary = project(138.77 - 0.02 * (0.1 / 0.35), 35.45)
+    const minor = project(138.82 - 0.02 * (0.1 / 0.35), 35.45)
+    window.__styleLayerProbe = { points: [[primary.xPixels + 12, primary.yPixels], [minor.xPixels + 12, minor.yPixels]] }
+    return { primary, minor }
+  })
+  const measure = async label => {
+    const png = await page.screenshot()
+    writeFileSync(new URL(`style-layer-types-${name}${label}.png`, OUT), png)
+    return analyse(page, png, STYLE_LAYER_PIXELS)
+  }
+  const result = { check: `style layer types, ${name}`, probe, errors }
+  if (late) {
+    result.before = await measure('-before')
+    const requestsBefore = tileRequests.length
+    await page.evaluate(() => { for (const plugin of window.styleLayerTypePlugins) window.earth.addPlugin(plugin) })
+    await settleRedraw()
+    result.added = await measure('-added')
+    await page.evaluate(() => { for (const plugin of window.styleLayerTypePlugins) window.earth.removePlugin(plugin) })
+    await settleRedraw()
+    result.removed = await measure('-removed')
+    result.tileRequestsAfterLoad = tileRequests.length - requestsBefore
+  } else {
+    Object.assign(result, await measure(''))
+    result.layerTypes = await page.evaluate(() => [...window.earth.styleLayerTypes.values()].map(definition => definition.type))
+  }
+  await page.close()
+  results.push(result)
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -852,6 +931,11 @@ try {
     await sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })
     await sdfShapes('webgl2', '&atmosphere=0&webgl')
     await sdfShapes('strict mode', '&atmosphere=0&strict')
+  }
+  if (!only || only === 'vector' || only === 'layers') {
+    await styleLayerTypes('webgpu', '')
+    await styleLayerTypes('webgl2', '&webgl')
+    await styleLayerTypes('registered late', '', { late: true })
   }
 } finally {
   await browser.close()

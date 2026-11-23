@@ -2,6 +2,7 @@ import type { Camera, Object3D } from 'three'
 
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 
 /**
  * The version of the plugin API this react-three-earth implements. Additive changes keep it; a change that
@@ -78,4 +79,10 @@ export interface PluginContext {
   addEventListener<T extends EarthEventType>(type: T, listener: (event: EarthEventMap[T] & { type: T; target: Earth }) => void): void
   /** Runs `callback` when the plugin is removed, after the context's own clean-up steps registered later. */
   onDispose(callback: () => void): void
+  /**
+   * Adds a custom style layer type: style layers with `"type": definition.type` are drawn by it in every map
+   * style source of this earth, at their place in the style. Registered later than the style loaded, those
+   * layers appear without refetching tiles. Returns a function that removes it early.
+   */
+  registerStyleLayerType(definition: StyleLayerTypeDefinition): () => void
 }

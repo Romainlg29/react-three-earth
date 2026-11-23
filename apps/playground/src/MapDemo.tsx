@@ -21,6 +21,7 @@ import {
   Popup,
   QuantizedMeshSource,
   RasterTileSource,
+  StyleLayer,
   Terrain,
   useEarth,
   useEarthFrame,
@@ -31,6 +32,8 @@ import { useThree } from '@react-three/fiber'
 import { capsule, smoothUnion, sphere, torus, translate, union } from './sdf/distance'
 import { SdfShape } from './sdf/SdfShape'
 import { sdfShapes } from './sdf/sdfShapes'
+import { sdfGlow } from './styleLayers/sdfGlow'
+import { stripedFill } from './styleLayers/stripedFill'
 
 const OPENSTREETMAP_ATTRIBUTION = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 
@@ -61,7 +64,13 @@ const showMarkers = params.has('markers')
 // `?sdf` installs the example plugin (src/sdf/) and puts a raymarched shape on the peak, half buried in it.
 const showSdfShapes = params.has('sdf')
 const sdfShapesPlugin = sdfShapes()
-const plugins = showSdfShapes ? [sdfShapesPlugin] : undefined
+// `?glow` (with `?fixtures&map=vector`) installs the style layer type examples (src/styleLayers/): a glow around
+// the primary roads (worker module, offscreen maximum blending) and striped lakes (built-in fill, own shader).
+// `?glow=late` leaves them out: the browser check installs them after the style loaded (window.styleLayerTypePlugins).
+const showStyleLayerTypes = params.has('glow')
+const styleLayerTypePlugins = [sdfGlow(), stripedFill()]
+const plugins = [...(showSdfShapes ? [sdfShapesPlugin] : []), ...(showStyleLayerTypes && params.get('glow') !== 'late' ? styleLayerTypePlugins : [])]
+if (showStyleLayerTypes) Object.assign(window, { styleLayerTypePlugins })
 // Module scope: each distinct distance function is its own pipeline.
 const beacon = union(smoothUnion(sphere(260), translate(capsule(90, 450), [0, 0, -450]), 120), translate(torus(420, 50), [0, 0, 100]))
 // WebGL 2 where WebGPU is slow (Safari); `?webgl` forces it anywhere, `?webgpu` forces WebGPU
@@ -160,6 +169,24 @@ function Markers() {
   )
 }
 
+/** The `?glow` layers: custom style layer types from the example plugins, at their place in the fixture style. */
+function StyleLayerTypeExamples() {
+  return (
+    <>
+      <StyleLayer id="lake-stripes" type="striped-fill" source="fixture" sourceLayer="water" paint={{ 'striped-fill-color': '#2f7fd8', 'striped-fill-stripe-color': '#9fd0ff', 'striped-fill-stripe-width-pixels': 5 }} beforeId="road-casing" />
+      <StyleLayer
+        id="road-glow"
+        type="sdf-glow"
+        source="fixture"
+        sourceLayer="roads"
+        filter={['==', ['get', 'class'], 'primary']}
+        paint={{ 'sdf-glow-color': '#ff2bd6', 'sdf-glow-radius-pixels': 28 }}
+        beforeId="road-casing"
+      />
+    </>
+  )
+}
+
 /**
  * The `?sdf` scene: a beacon on the peak (3900 m at -90°, 0° with fixtures, Fuji otherwise), its lower half in
  * the mountain, and a ring above it.
@@ -216,7 +243,11 @@ export function MapDemo() {
             <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
           </Terrain>
           <Imagery>
-            {mapStyleUrl !== undefined ? <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)} /> : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
+            {mapStyleUrl !== undefined ? (
+              <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
+                {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
+              </MapStyleSource>
+            ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
           </Imagery>
           {withAtmosphere ? (
             <Atmosphere cache={atmosphereCache} generationBudgetMillisecondsPerFrame={atmosphereBudget} />

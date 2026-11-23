@@ -10,7 +10,7 @@ const workerUrl = {
 }
 
 export default defineConfig({
-  entry: { index: 'src/index.ts', react: 'src/react/index.tsx', 'vector-worker': 'src/vector/worker/vectorTileWorker.ts' },
+  entry: { index: 'src/index.ts', react: 'src/react/index.tsx', 'vector-worker': 'src/vector/worker/vectorTileWorker.ts', 'plugin-worker': 'src/plugins/pluginWorker.ts' },
   format: 'esm',
   platform: 'browser',
   dts: true,

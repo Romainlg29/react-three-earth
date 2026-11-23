@@ -2,6 +2,8 @@ import { classifyRings, Formatted, type Color } from '@maplibre/maplibre-gl-styl
 import { VectorTile, type VectorTileFeature } from '@mapbox/vector-tile'
 import Pbf from 'pbf'
 
+import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
+import { createCustomLayerBuilder, loadLayerTypes, type CustomLayerBuilder, type LoadedLayerType } from './customLayers.js'
 import { FeatureColorTable, featureKey } from './featureState.js'
 import { GlyphProvider, type Glyph } from './glyphs.js'
 import {
@@ -39,6 +41,7 @@ import {
   type StyleCommand,
   type StyleImage,
   type StyleUpdateResult,
+  type CustomLayerMesh,
   type TileBucket,
   type TileRequest,
 } from './types.js'
@@ -72,6 +75,8 @@ export interface TilePlacement {
 const RAW_TILE_CACHE_SIZE = 128
 const MAXIMUM_ZOOM = 24
 const NO_STATE: FeatureState = Object.freeze({}) as FeatureState
+/** Layer types MapLibre defines; a style layer of another type needs a plugin. */
+const MAPLIBRE_LAYER_TYPES = new Set(['background', 'fill', 'line', 'symbol', 'circle', 'fill-extrusion', 'raster', 'hillshade', 'heatmap', 'color-relief'])
 
 interface SymbolCandidate {
   layer: CompiledStyleLayer
@@ -137,6 +142,9 @@ export class MapStyleProcessor {
   protected readonly hooks: MapStyleProcessorHooks
   protected readonly networkFetch: typeof fetch
   protected readonly rawTiles = new Map<string, RawTileEntry>()
+  /** Custom layer types from plugins, with their worker modules loaded. */
+  protected layerTypes: Map<string, LoadedLayerType> = new Map()
+  protected layerTypeWork: Promise<unknown> = Promise.resolve()
   /** Tiles fetched this session, oldest first (at most 4096), so `invalidate` knows which the browser may cache. */
   protected readonly fetchedTiles = new Map<string, { x: number; y: number; z: number }>()
   /**
@@ -172,7 +180,9 @@ export class MapStyleProcessor {
     this.glyphs = previous?.glyphs.matches(glyphOptions) === true ? previous.glyphs : new GlyphProvider({ ...glyphOptions, ...(previous ? { atlas: previous.glyphs.atlas } : {}) })
     this.colorTable = previous?.colorTable ?? new FeatureColorTable()
     this.previous = previous
-    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [] }
+    // Worker modules already imported stay loaded across a reload.
+    if (previous !== undefined) this.layerTypes = previous.layerTypes
+    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [] }
   }
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
@@ -184,7 +194,8 @@ export class MapStyleProcessor {
 
   protected async load(): Promise<void> {
     const errors: string[] = []
-    this.layers = this.document.layers.flatMap((layer, index) => compileStyleLayer(layer as StyleLayerSpecification, index, this.globalState) ?? [])
+    this.layerTypes = await loadLayerTypes(this.options.layerTypes ?? [], this.layerTypes)
+    this.layers = this.document.layers.flatMap((layer, index) => compileStyleLayer(layer as StyleLayerSpecification, index, this.globalState, undefined, this.layerTypes) ?? [])
     assignLayerOrder(this.layers, this.document.layers as StyleLayerSpecification[])
     const used = this.usedSources()
     const imagesLoad = this.loadImages()
@@ -245,7 +256,12 @@ export class MapStyleProcessor {
   protected computeSummary(): MapStyleSummary {
     const compiled = new Set(this.layers.map(layer => layer.id))
     const sources = this.document.sources as Record<string, VectorSourceSpecification>
+    const missingLayerTypes: Array<[string, string]> = []
     const skipped = this.document.layers.flatMap(layer => {
+      if (!compiled.has(layer.id) && !MAPLIBRE_LAYER_TYPES.has(layer.type) && !this.layerTypes.has(layer.type)) {
+        missingLayerTypes.push([layer.id, layer.type])
+        return []
+      }
       if (!compiled.has(layer.id)) return [layer.id]
       return layer.type !== 'background' && layer.source !== undefined && sources[layer.source] !== undefined && sources[layer.source]!.type !== 'vector' ? [layer.id] : []
     })
@@ -264,7 +280,36 @@ export class MapStyleProcessor {
       attributions,
       ...this.backgroundPatterns(),
       spriteImageIds: this.images.spriteImageIds(),
+      customLayerTypes: [...new Set(this.layers.flatMap(layer => (layer.custom !== null ? [layer.type] : [])))],
+      missingLayerTypes,
     }
+  }
+
+  /**
+   * Replaces the custom layer types (plugins) and recompiles every layer, keeping the raw tiles. Answers the
+   * sources whose tiles must be processed again: those of layers whose type came, went or changed.
+   */
+  setLayerTypes(descriptors: readonly WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult> {
+    // One at a time, in the order sent: a later change must not be overwritten by an earlier one still importing.
+    const result = this.layerTypeWork.then(() => this.replaceLayerTypes(descriptors))
+    this.layerTypeWork = result.catch(() => {})
+    return result
+  }
+
+  protected async replaceLayerTypes(descriptors: readonly WorkerLayerTypeDescriptor[]): Promise<StyleUpdateResult> {
+    const before = this.layerTypes
+    const after = await loadLayerTypes(descriptors, before)
+    const changed = new Set([...before.keys(), ...after.keys()].filter(type => before.get(type) !== after.get(type)))
+    this.layerTypes = after
+    const errors: string[] = []
+    const layers = this.document.layers.flatMap((layer, index) => compileStyleLayer(layer as StyleLayerSpecification, index, this.globalState, message => errors.push(message), after) ?? [])
+    assignLayerOrder(layers, this.document.layers as StyleLayerSpecification[])
+    this.layers = layers
+    const rebuilt = new Set<string>()
+    for (const layer of this.document.layers) if (changed.has(layer.type) && layer.source !== undefined) rebuilt.add(layer.source)
+    await Promise.all([...this.usedSources()].filter(id => !this.fetchers.has(id)).map(id => this.loadSource(id, errors)))
+    this.summary = this.computeSummary()
+    return { summary: this.summary, rebuiltSources: [...rebuilt], errors }
   }
 
   /**
@@ -315,7 +360,7 @@ export class MapStyleProcessor {
         const existing = layers.findIndex(layer => layer.id === id)
         if (existing !== -1) layers.splice(existing, 1)
         // A failing expression skips the layer, as at load
-        const compiled = compileStyleLayer(next, position, this.globalState, message => errors.push(message))
+        const compiled = compileStyleLayer(next, position, this.globalState, message => errors.push(message), this.layerTypes)
         if (compiled !== null) layers.push(compiled)
         if (previous?.source !== undefined) rebuilt.add(previous.source)
         if (next.source !== undefined) rebuilt.add(next.source)
@@ -428,7 +473,7 @@ export class MapStyleProcessor {
     signal?.throwIfAborted()
     // From here to the end of the feature loop nothing awaits: states read there are those of this version.
     const featureStateVersion = this.featureStateVersion
-    const empty: TileBucket = { shapes: null, text: null, atlas: null, images: [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion, byteLength: 0 }
+    const empty: TileBucket = { shapes: null, text: null, layers: [], atlas: null, images: [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion, byteLength: 0 }
     if (tile === null) return empty
 
     // The version and layers of this moment: a style change meanwhile replaces `this.layers`, not this list.
@@ -440,11 +485,15 @@ export class MapStyleProcessor {
     const shapes = new ShapeBuilder()
     const symbols: SymbolCandidate[] = []
     const uses: FeatureStateUse = { colorKeys: new Set(), rebuildKeys: new Set() }
+    const customBuilders: CustomLayerBuilder[] = []
     for (const layer of layers) {
       if (layer.source !== sourceId || layer.type === 'background' || !layer.isVisibleAtZoom(zoom)) continue
       const sourceLayer = layer.sourceLayer === undefined ? undefined : tile.layers[layer.sourceLayer]
       if (sourceLayer === undefined) continue
       const factor = TILE_EXTENT / sourceLayer.extent
+      const customType = layer.custom === null ? undefined : this.layerTypes.get(layer.type)
+      const custom = customType === undefined ? null : createCustomLayerBuilder(layer, customType, { zoom, unitsPerPixel, tile: { x, y, z } })
+      if (custom !== null) customBuilders.push(custom)
       const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layer.sourceLayer!]
       for (let index = 0; index < sourceLayer.length; index++) {
         const vectorFeature = sourceLayer.feature(index)
@@ -455,7 +504,8 @@ export class MapStyleProcessor {
         const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
         if (key !== undefined && layer.featureStateDependence === 'geometry') uses.rebuildKeys.add(key)
         const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
-        if (layer.type === 'symbol') {
+        if (custom !== null) custom.addFeature(feature, state, geometry)
+        else if (layer.type === 'symbol') {
           const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length)
           if (candidate !== null) symbols.push(candidate)
         } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images, key, state, uses)
@@ -463,14 +513,17 @@ export class MapStyleProcessor {
     }
     const text = await this.layoutLabels(symbols, zoom, unitsPerPixel, signal)
     const shapeMesh = shapes.build()
+    const customMeshes = customBuilders.flatMap(builder => builder.finish() ?? []) as CustomLayerMesh[]
     const byteLength =
       (shapeMesh === null ? 0 : shapeMesh.positions.byteLength + shapeMesh.colors.byteLength + shapeMesh.indices.byteLength + (shapeMesh.colorSlots?.byteLength ?? 0)) +
       (shapeMesh?.patterns == null ? 0 : shapeMesh.patterns.byteLength + (shapeMesh.patternCoordinates?.byteLength ?? 0)) +
-      (text === null ? 0 : text.positions.byteLength * 2 + text.colors.byteLength * 2 + text.haloEdges.byteLength + text.indices.byteLength)
+      (text === null ? 0 : text.positions.byteLength * 2 + text.colors.byteLength * 2 + text.haloEdges.byteLength + text.indices.byteLength) +
+      customMeshes.reduce((sum, mesh) => sum + mesh.indices.byteLength + mesh.attributes.reduce((bytes, attribute) => bytes + attribute.array.byteLength, 0), 0)
     return {
       ...empty,
       shapes: shapeMesh,
       text,
+      layers: customMeshes,
       images: [...images.used],
       missingImages: [...images.missing],
       featureStateKeys: [...uses.colorKeys],

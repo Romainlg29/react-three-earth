@@ -405,9 +405,53 @@ shapes on world copies other than the one next to the camera.
 | Near (3 km) and far (40 km), atmosphere on | lit orange near (red − blue 98); hazed far (red − blue 37) |
 | Flat map | on its spot (orange at its projected centre), emits its colour, not black |
 | WebGL2 fallback | same pixel count as WebGPU |
-| Unit tests | 17 new: lifecycle and undo order, duplicate and version errors, failed sync and async installs, `onUpdate` frames and errors, loading and `idle`, `inspect` JSON, anchors on the globe, with heading and on the flat map (same place as `toScenePosition`, flat axes, map scale), 64-bit local camera |
+| StrictMode (`?strict`) | the plugin is removed and installed again at mount: same shape, one pipeline, no error |
+| Unit tests | 22 new: lifecycle and undo order, duplicate and version errors, failed sync and async installs, `onUpdate` frames and errors, loading and `idle`, `inspect` JSON, anchors on the globe, with heading and on the flat map (same place as `toScenePosition`, flat axes, map scale), 64-bit local camera, an async install settling after a StrictMode remove, removal from inside `onUpdate`, anchors disposed with their plugin, flat-map distances away from the reference point |
 
 ![SDF shape with the atmosphere](sdf-shapes-atmosphere.png) ![SDF shape on the flat map](sdf-shapes-2d.png)
+
+## Plugins (W17), part 2: custom style layer types
+
+A style layer whose `type` a plugin registers (`context.registerStyleLayerType`, kept in `earth.styleLayerTypes`)
+is drawn by it in every map style source, at its place in the style. The worker evaluates, the main thread draws.
+
+- **Registry to worker.** `Earth.setTerrain` hands the registry to the terrain's `ImageOverlayPlugin`, which hands
+  it to each `MapStyleOverlay` (as it hands the compositor). Types reach the worker as plain descriptors (property
+  specifications, module `href`, reach). Layers compile against them with the style specification's own
+  `normalizePropertyExpression`, so expressions, `feature-state` and `global-state` work. A layer of an unknown
+  type is listed in `summary.missingLayerTypes` and warned about once, naming the type.
+- **Late registration.** A new `layerTypes` worker message recompiles the layers and drops the processed buckets
+  of the affected sources, keeping the raw tiles; regions redraw in place. Changes are serialised in the worker
+  (a module still importing cannot overwrite a later change) and coalesced per task on the main thread.
+- **Draw order.** A custom layer gets a draw group of its own (`assignLayerOrder`), so its render order
+  `group × 10 000 + tile` places it exactly between the built-in layers around it.
+- **Material tier** (`geometry: 'fill' | 'line' | 'circle'`): the built-in `ShapeBuilder` tessellates, and each paint
+  property becomes a vertex attribute (`paint0`… : colours as 4 normalised bytes, numbers as floats);
+  `geometryInput` feeds widths, offsets and radii. One material per type per overlay.
+- **Geometry tier** (`worker: { moduleUrl, exportName }`): the worker `import()`s the module once per descriptor
+  revision (the inline backend does the same on the main thread) and calls its `WorkerLayerTypeFactory` with a
+  `host` (`classifyRings`, `earcut`, `clampReach`, `isInsideTile`, `TILE_EXTENT`). Its output is validated
+  (attribute lengths, identifiers, indices) and transferred. A module that fails to load skips its type with a
+  warning naming the URL.
+- **Reach and clipping.** Region ring tiles reach `max(labels, maximumReachPixels)`; ring tiles draw labels and
+  the layers with reach. Layers without reach keep the tile-square clip.
+- **Offscreen layers.** The region pass is split at each offscreen layer: what lies below into the multisampled
+  scratch, the layer into a region-sized half-float target with `max` or `add` blending (one/one factors, which
+  WebGPU requires for min/max), then the target composited over the scratch (sampled at `screenUV`), and on.
+
+| Check (`?fixtures&map=vector&glow`, 15 km above the fixture roads; SwiftShader) | Result |
+| --- | --- |
+| `sdf-glow` (worker module, offscreen maximum) | 11 % magenta pixels; glow beside primary roads, none beside minor ones (the filter applies); crossings do not double up |
+| `striped-fill` (built-in fill, own shader) | both stripe blues in the lakes, 563 alternations; stripes keep 5 px at every zoom |
+| WebGL2 fallback | the same pixel counts as WebGPU |
+| Installed after the style loaded, then removed | nothing before; glow and stripes after; nothing after removal; no tile fetched again either time |
+| Unit tests | 9 new: registry validation and undo, material tier (per-vertex paint, own draw group), worker module tier (attributes, reach clamp), filters, missing types then late registration without refetching, ordered changes, a module that does not load |
+
+![Custom style layer types: glow and stripes](style-layer-types.png)
+
+Not done from the design: per-bucket constants for zoom-only paint (every paint property is per vertex), line
+progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the type's maximum is used), and typed
+`<StyleLayer>` paint props for custom types.
 
 ## Attribution
 

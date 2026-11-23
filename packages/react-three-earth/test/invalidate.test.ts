@@ -72,7 +72,7 @@ class TestOverlay extends MapStyleOverlay {
 
   constructor() {
     super({ style: { version: 8, sources: {}, layers: [] }, baseUrl: 'https://maps.test/', createWorker: null })
-    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [] }
+    this.summary = { sources: [{ id: 'base', minimumZoom: 0, maximumZoom: 14 }], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [] }
     this.compositor = new ImageryCompositor({ budgetMilliseconds: Infinity })
     const backend: MapStyleBackend = {
       init: async () => this.summary!,
@@ -81,13 +81,14 @@ class TestOverlay extends MapStyleOverlay {
         this.processed.push(key)
         const version = this.serverVersions.get(key) ?? 1 // read when the request is made, as a fetch would
         if (this.holdTiles) await new Promise<void>(resolve => this.heldTiles.push(resolve))
-        return { shapes: null, text: null, atlas: null, images: this.tileImages.get(key) ?? [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion: 0, byteLength: version } satisfies TileBucket
+        return { shapes: null, text: null, layers: [], atlas: null, images: this.tileImages.get(key) ?? [], missingImages: [], featureStateKeys: [], rebuildFeatureKeys: [], featureStateVersion: 0, byteLength: version } satisfies TileBucket
       },
       invalidate: rectangles => void this.invalidations.push(rectangles),
       reload: async () => this.summary!,
       updateStyle: async () => ({ summary: this.summary!, rebuiltSources: [], errors: [] }),
       updateFeatureStates: async () => {},
       setImage: async () => this.nextImageChange,
+      setLayerTypes: async () => ({ summary: this.summary!, rebuiltSources: [], errors: [] }),
       dispose: () => {},
     }
     this.backend = backend

@@ -399,7 +399,8 @@ symbols come later). Labels still draw.
 ### MEDIUM: Unsupported layers
 
 Raster, hillshade and heatmap layers are skipped with one console warning listing them. `fill-extrusion`
-draws flat; labels do not collide across tiles.
+draws flat; labels do not collide across tiles. A layer of a type MapLibre does not define is drawn by the
+plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
 ## Completion
 

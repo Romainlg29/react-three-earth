@@ -43,7 +43,7 @@ import {
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
 import { GLYPH_EDGE } from './worker/glyphs.js'
-import { TILE_EXTENT, type AtlasUpdate, type FeatureColorUpdate, type ImageAtlasUpdate, type TileBucket } from './worker/types.js'
+import { TILE_EXTENT, type AtlasUpdate, type CustomLayerMesh, type FeatureColorUpdate, type ImageAtlasUpdate, type TileBucket } from './worker/types.js'
 
 /**
  * Colours arrive as sRGB bytes; three's materials work in linear space and the composite target encodes
@@ -87,7 +87,7 @@ function shapeColor(colorTable: FeatureColorTexture | undefined): Node<'vec4'> {
 }
 
 /** Drops fragments outside the tile square. Call inside `Fn`. */
-function discardOutsideTile(): void {
+export function discardOutsideTile(): void {
   const local = positionGeometry
   If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
     Discard()
@@ -351,9 +351,17 @@ function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slot
   return materials.plain
 }
 
-/** A bucket's GPU objects: one shape mesh per layer group (sharing buffers) and one text mesh. */
+/** A custom layer's mesh in a bucket. Its material is the layer type's, set when it is drawn. */
+export interface CustomLayerDraw {
+  layerType: string
+  group: number
+  mesh: Mesh
+}
+
+/** A bucket's GPU objects: one shape mesh per layer group (sharing buffers), custom layer meshes and one text mesh. */
 export class BucketMeshes {
   readonly shapes: Array<{ group: number; mesh: Mesh }> = []
+  readonly custom: CustomLayerDraw[] = []
   readonly text: Mesh | null = null
   protected readonly geometries: BufferGeometry[] = []
 
@@ -381,6 +389,11 @@ export class BucketMeshes {
         this.geometries.push(geometry)
         this.shapes.push({ group, mesh: createMesh(geometry, chooseShapeMaterial(shapeMaterials, patterned, slots !== null)) })
       }
+    }
+    for (const layer of bucket.layers) {
+      const geometry = createCustomLayerGeometry(layer)
+      this.geometries.push(geometry)
+      this.custom.push({ layerType: layer.layerType, group: layer.group, mesh: createMesh(geometry, shapeMaterials.plain) })
     }
     if (text !== null) {
       const geometry = new BufferGeometry()
@@ -426,4 +439,23 @@ function toVector3(pairs: Float32Array): Float32Array {
     result[target + 1] = pairs[source + 1]!
   }
   return result
+}
+
+/** The GPU geometry of one custom layer mesh from the worker. Positions are padded to vec3. */
+export function createCustomLayerGeometry(mesh: CustomLayerMesh): BufferGeometry {
+  const geometry = new BufferGeometry()
+  for (const { name, array, itemSize, normalized } of mesh.attributes) {
+    if (name === 'position') {
+      const positions = new Float32Array((array.length / 2) * 3)
+      for (let source = 0, target = 0; source < array.length; source += 2, target += 3) {
+        positions[target] = array[source]!
+        positions[target + 1] = array[source + 1]!
+      }
+      geometry.setAttribute('position', new BufferAttribute(positions, 3))
+    } else {
+      geometry.setAttribute(name, new BufferAttribute(array, itemSize, normalized))
+    }
+  }
+  geometry.setIndex(new BufferAttribute(mesh.indices, 1))
+  return geometry
 }
