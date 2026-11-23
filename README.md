@@ -9,6 +9,8 @@ JSON.
 > The 2D map view, vector map styles and on-device numbers are in progress. See
 > [SPIKE.md](docs/spike/SPIKE.md) for what was measured.
 
+**[Try the live playground](https://romainlg29.github.io/react-three-earth/)** (needs a WebGPU browser; it also runs on phones).
+
 ![Mount Fuji with atmosphere](docs/spike/map-atmosphere-on.png)
 
 ## Features
