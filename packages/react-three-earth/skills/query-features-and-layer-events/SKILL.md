@@ -96,6 +96,7 @@ export async function lakesInBox(earth: Earth) {
   above every shape), then shapes from the top style layer down.
 - Hits follow what is drawn: line widths and gaps, `line-offset`, circle radius plus stroke, fills with their
   holes, and the boxes of placed labels, evaluated at the zoom the terrain is textured at under the point.
+  Labels facing the viewer (the default `symbols="screen"`) are hit by their box on the screen, as shown.
   Hidden layers and layers outside their zoom range are left out. A transparent fill still answers, as in MapLibre.
 - `tolerancePixels` widens every hit (useful on touch); default 0, as MapLibre.
 - No geometry queries the whole screen. A box is followed on the ground along its outline (perspective and the

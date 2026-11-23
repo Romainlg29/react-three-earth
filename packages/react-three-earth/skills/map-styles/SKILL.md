@@ -4,7 +4,7 @@ description: >
   Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, satellite and relief
   styles (raster and raster-dem sources, raster, hillshade and color-relief layers), the worker, headers,
-  fonts, sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
+  fonts, labels facing the viewer or draped (symbols, symbolFadeDurationSeconds), sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
   updateImage / removeImage and onStyleImageMissing, changing the style at runtime (setPaintProperty,
   setFilter, addLayer, setStyle diff, StyleLayer), app data with GeoJsonSource (geojson sources, setData,
   updateData, clustering with point_count and cluster queries, line-gradient with lineMetrics), feature-state for
@@ -20,6 +20,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyleOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/MapStyle.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/StyleLayer.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/GeoJsonSource.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/GeoJsonSource.tsx'
@@ -42,7 +43,8 @@ layer and drapes on terrain.
 
 `MapStyleSource` takes a MapLibre style (version 8). A worker fetches and tessellates the vector tiles, tiles
 GeoJSON (fills, lines, circles, text labels) and decodes raster and elevation tiles; the main thread draws them
-straight into each terrain tile's texture on the GPU. Labels lie flat on the ground.
+straight into each terrain tile's texture on the GPU. Point labels face the viewer
+(`map-labels`); line labels (road names) lie on the ground.
 
 ## Setup
 
@@ -474,16 +476,11 @@ on the map (and confuses later snapshots). Pass a new object, or use `updateData
 A gradient needs the line's progress, which only a `geojson` source with `lineMetrics` (or `lineMetrics` on
 `<GeoJsonSource>`) carries. Without it the line draws with `line-color` and one warning names the layer.
 
-### MEDIUM: Expecting icons
-
-The sprite is loaded and its images can be patterns, but `icon-image` is not drawn yet (screen-space
-symbols come later). Labels still draw.
-
 ### MEDIUM: Unsupported layers
 
 Heatmap layers are skipped with one console warning listing them, as are layers reading a source of the
 wrong kind (a hillshade on a vector source, a fill on a raster source). `fill-extrusion`
-draws flat; labels do not collide across tiles. A layer of a type MapLibre does not define is drawn by the
+draws flat. Labels (`symbols`, icons not drawn yet, other limits) are in `map-labels`. A layer of a type MapLibre does not define is drawn by the
 plugin that registers it (`write-a-plugin`); without one, it is skipped with a warning naming the type.
 
 ## Completion

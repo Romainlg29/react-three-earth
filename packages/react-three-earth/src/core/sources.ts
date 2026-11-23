@@ -204,6 +204,14 @@ export interface MapStyleSourceOptions {
    * gap; the tiles that asked are redrawn with it.
    */
   onStyleImageMissing?: (imageId: string) => void
+  /**
+   * Where point-placed labels go. `'screen'` (default): they face the viewer at a constant size, collide across the
+   * whole screen and fade in and out, as in MapLibre; line-placed labels (road names) stay draped for now.
+   * `'draped'`: every label lies on the ground, drawn into the terrain's textures.
+   */
+  symbols?: 'screen' | 'draped'
+  /** Seconds labels facing the viewer take to fade in or out (MapLibre's `fadeDuration`). 0 switches at once. Default: 0.3. */
+  symbolFadeDurationSeconds?: number
 }
 
 /**
@@ -211,7 +219,8 @@ export interface MapStyleSourceOptions {
  * TileJSON or PMTiles) and GeoJSON (tiled in the worker, points optionally clustered, `line-gradient` with
  * `lineMetrics`), and raster, hillshade and colour relief layers from raster and raster-dem tiles. App data goes
  * in with `addGeoJsonSource` (`<GeoJsonSource>` in React) and changes with `setGeoJsonSourceData` /
- * `updateGeoJsonSourceData`, redrawing only where it changed.
+ * `updateGeoJsonSourceData`, redrawing only where it changed. Point labels face the viewer by
+ * default (`symbols`).
  *
  * Tiles are decoded and tessellated in a worker, then drawn on the GPU straight into each terrain tile's
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,

@@ -826,8 +826,15 @@ async function cameraAnimations() {
     const completed = await earth.camera.flyTo(target, { durationSeconds: 4, essential: true })
     const seconds = (performance.now() - startMilliseconds) / 1000
     const endView = earth.camera.getView()
-    // The frame after the last one, so moveend has fired.
-    await new Promise(resolve => setTimeout(resolve, 500))
+    // The frame after the last one, so moveend has fired. Frames can be 400 ms apart on SwiftShader: wait for it
+    // (up to 3 s) rather than a fixed delay.
+    if (!events.includes('moveend')) {
+      await new Promise(resolve => {
+        const done = () => { clearTimeout(timer); earth.removeEventListener('moveend', done); resolve() }
+        const timer = setTimeout(done, 3000)
+        earth.addEventListener('moveend', done)
+      })
+    }
     earth.removeEventListener('move', sample)
     for (const [type, listener] of listeners) earth.removeEventListener(type, listener)
     return { completed, seconds, lowestZoom, view: endView, settledView: earth.camera.getView(), events }
@@ -1150,6 +1157,87 @@ async function renderPassesAndDrapedLayers(name, query) {
   results.push(result)
 }
 
+/**
+ * Screen-space labels (`?map=labels`: a dense grid of towns): no two placed labels overlap, no text repeats at one
+ * place, labels near the centre keep their size whatever the pitch, and the draped mode draws none on the screen.
+ */
+async function screenSymbols(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=labels${query}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    const atmosphereReady = inspection?.atmosphere === null || inspection?.atmosphere?.ready === true
+    const settledView = inspection?.view.morph === (inspection?.view.mode === '2d' ? 1 : 0)
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && atmosphereReady && settledView
+  }, null, { timeout: 240_000, polling: 500 })
+  // Labels settle: tiles loaded, heights read, no fade running.
+  let previous = ''
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await page.waitForTimeout(1000)
+    const state = await page.evaluate(() => {
+      const s = window.earth.inspect().terrain.symbols ?? { labelsShown: 0, elevationsPending: 0, tilesRequested: 0, tilesDrawn: 0 }
+      return JSON.stringify([s.labelsShown, s.elevationsPending, s.tilesRequested, s.tilesDrawn, window.earth.terrain.getScreenLabels().filter(l => l.opacity < 1).length])
+    })
+    if (state === previous && JSON.parse(state)[1] === 0 && JSON.parse(state)[4] === 0) break
+    previous = state
+  }
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-labels-${name.replaceAll(/[^a-z0-9]+/gi, '-')}.png`, OUT), png)
+  const result = await page.evaluate(() => {
+    const symbols = window.earth.inspect().terrain.symbols
+    const labels = window.earth.terrain.getScreenLabels()
+    const width = window.innerWidth
+    const height = window.innerHeight
+    const colliding = labels.filter(l => !l.ignorePlacement && !l.allowOverlap)
+    let overlaps = 0
+    for (let i = 0; i < colliding.length; i++) {
+      for (let j = i + 1; j < colliding.length; j++) {
+        const [a, b] = [colliding[i].box, colliding[j].box]
+        // A pixel of slack: boxes that touch are not an overlap.
+        if (a[0] < b[2] - 1 && b[0] < a[2] - 1 && a[1] < b[3] - 1 && b[1] < a[3] - 1) overlaps++
+      }
+    }
+    let duplicates = 0
+    for (let i = 0; i < labels.length; i++) {
+      for (let j = i + 1; j < labels.length; j++) {
+        if (labels[i].text === labels[j].text && Math.hypot(labels[i].xPixels - labels[j].xPixels, labels[i].yPixels - labels[j].yPixels) < 24) duplicates++
+      }
+    }
+    // Box height (text size plus padding) of the towns nearest the centre of the screen.
+    const central = labels
+      .filter(l => l.text.startsWith('Town') && Math.hypot(l.xPixels - width / 2, l.yPixels - height / 2) < 150)
+      .map(l => l.box[3] - l.box[1])
+      .sort((a, b) => a - b)
+    return {
+      labelsShown: labels.length,
+      towns: labels.filter(l => l.text.startsWith('Town')).length,
+      overlaps,
+      duplicates,
+      centralBoxHeightPixels: central.length > 0 ? +central[Math.floor(central.length / 2)].toFixed(1) : null,
+      onScreen: labels.every(l => l.box[2] > 0 && l.box[0] < width && l.box[3] > 0 && l.box[1] < height),
+      inspection: symbols,
+    }
+  })
+  // A feature query at a label shown on the screen answers its town (labels facing the viewer hit by their box).
+  result.queryAtLabel = await page.evaluate(async () => {
+    const label = window.earth.terrain.getScreenLabels().find(l => l.text.startsWith('Town'))
+    if (label === undefined) return null
+    const features = await window.earth.queryRenderedFeatures({ xPixels: label.xPixels, yPixels: label.yPixels }, { layers: ['town-label'] })
+    return { text: label.text, names: features.map(feature => feature.properties.name) }
+  })
+  // Dark text with a white halo: pixels of the text colour (#4a3b22) on the lit ground.
+  const stats = await analyse(page, png, `
+    let text = 0
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      if (r < 110 && r > g && g > b && r - b > 15 && r - b < 60) text++
+    }
+    return { textShare: +(text / (px.length / 4)).toFixed(4) }
+  `)
+  await page.close()
+  results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })
+}
+
 const GEOJSON_PIXELS = `
   // The ?geojson example, by hue (the terrain is lit dimly): a magenta area, a red-to-cyan route, green clusters.
   let magenta = 0, magentaX = 0, green = 0, red = 0, cyan = 0
@@ -1354,6 +1442,15 @@ try {
     await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
     await renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')
     await renderPassesAndDrapedLayers('atmosphere on', '')
+  }
+  if (!only || only === 'labels') {
+    await screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')
+    await screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')
+    await screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')
+    await screenSymbols('2d', '&atmosphere=0&view=2d&camera=138.74,35.36,0,40000,0,-90')
+    await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
+    await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
+    await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
   }
 } finally {
   await browser.close()

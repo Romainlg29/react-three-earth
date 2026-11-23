@@ -15,6 +15,13 @@ const PLACES = [
   { name: 'Fujiyoshida', position: [138.8077, 35.4875], rank: 2 },
 ] as const
 
+/** A grid of towns around the mountain, 0.025° apart (about 2.5 km): dense enough that labels collide below zoom 12. */
+const TOWNS = Array.from({ length: 12 * 10 }, (_, index) => {
+  const column = index % 12
+  const row = Math.floor(index / 12)
+  return { name: `Town ${String.fromCharCode(65 + row)}${column + 1}`, position: [138.6 + column * 0.025, 35.25 + row * 0.025] as const, rank: (column % 3) + (row % 2) * 3 }
+})
+
 /** A road grid every 0.05 degrees; every other road is a primary. */
 function roads(): Array<{ name: string; kind: string; line: Array<[number, number]> }> {
   const result: Array<{ name: string; kind: string; line: Array<[number, number]> }> = []
@@ -66,10 +73,18 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
     const point = project(place.position[0], place.position[1], z, x, y)
     if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) places.push({ type: 'Point', geometry: [[point]], properties: { name: place.name, rank: place.rank } })
   }
+  const towns: EncodedFeature[] = []
+  if (z >= 8) {
+    for (const town of TOWNS) {
+      const point = project(town.position[0], town.position[1], z, x, y)
+      if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) towns.push({ type: 'Point', geometry: [[point]], properties: { name: town.name, rank: town.rank } })
+    }
+  }
   return encodeVectorTile([
     { name: 'water', features: water },
     { name: 'roads', features: roadFeatures },
     { name: 'places', features: places },
+    { name: 'towns', features: towns },
   ])
 }
 
@@ -189,6 +204,30 @@ export function fixtureStyle({ live = false }: { live?: boolean } = {}): object 
       },
     ],
   }
+}
+
+/**
+ * The fixture style with a dense grid of town labels under the place labels: they collide with each other and with
+ * the places, sort by rank, and grow with zoom (12 px at zoom 9 to 16 px at zoom 13).
+ */
+export function fixtureLabelStyle(): object {
+  const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
+  const placeIndex = base.layers.findIndex(layer => layer.id === 'place-label')
+  const towns = {
+    id: 'town-label',
+    type: 'symbol',
+    source: 'fixture',
+    'source-layer': 'towns',
+    layout: {
+      'text-field': ['get', 'name'],
+      'text-size': ['interpolate', ['linear'], ['zoom'], 9, 12, 13, 16],
+      'text-font': ['Noto Sans Regular'],
+      'symbol-sort-key': ['get', 'rank'],
+      'text-padding': 2,
+    },
+    paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+  }
+  return { ...base, layers: [...base.layers.slice(0, placeIndex), towns, ...base.layers.slice(placeIndex)] }
 }
 
 /**

@@ -4,12 +4,14 @@ import type { Plugin } from 'vite'
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
 import { terrariumTile } from './dem.ts'
-import { fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
+import { fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
  * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
  * no network.
+ *
+ * `/fixtures/style-labels.json` adds a dense grid of town labels (layer `towns`), for collision and fades.
  *
  * `/fixtures/style-patterns.json` is the same style with patterns, from the sprite at /fixtures/sprite.json
  * (and `@2x`).
@@ -50,6 +52,11 @@ export function fixtureTiles(): Plugin {
           const live = new URLSearchParams(req.url?.split('?')[1] ?? '').has('live')
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(fixtureStyle({ live })))
+          return
+        }
+        if (url === '/fixtures/style-labels.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixtureLabelStyle()))
           return
         }
         if (url === '/fixtures/style-relief.json') {
