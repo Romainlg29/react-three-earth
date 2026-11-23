@@ -447,7 +447,9 @@ describe('labels behind terrain', () => {
     // The line of sight is about 500 m up halfway: a 450 m hill stays under it.
     expect(rayHitsTerrain(camera, label, longitude => (Math.abs((longitude * 180) / Math.PI - 0.1) < 0.005 ? 450 : 0))).toBe(false)
     expect(rayHitsTerrain(camera, label, () => null)).toBe(false)
-    // Ground rising towards the label in its last few hundred metres (the slope under it): not sampled.
-    expect(rayHitsTerrain(camera, label, longitude => ((longitude * 180) / Math.PI > 0.195 ? 300 : 0))).toBe(false)
+    // A label 300 m up a slope that rises all the way from the camera's valley.
+    expect(rayHitsTerrain(camera, at(0.2, 300), longitude => ((longitude * 180) / Math.PI / 0.2) * 300)).toBe(false)
+    // The same label behind a 300 m wall just in front of it, on flat ground: hidden.
+    expect(rayHitsTerrain(camera, label, longitude => ((longitude * 180) / Math.PI > 0.195 ? 300 : 0))).toBe(true)
   })
 })

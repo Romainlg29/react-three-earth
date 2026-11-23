@@ -883,8 +883,9 @@ export class MapStyleProcessor {
         builder.add({ ...label, anchor, shaped, offset: { x: offsetX * 24, y: offsetY * 24 }, rotationRadians })
         continue
       }
-      // The radial offset when set, else text-offset pointed away from the point (MapLibre's rule).
-      const radial = layer.has('layout', 'text-radial-offset') ? layer.evaluate<number>('layout', 'text-radial-offset', zoom, feature) : null
+      // The radial offset when set above 0, else text-offset pointed away from the point (MapLibre's rule).
+      const radialEms = layer.has('layout', 'text-radial-offset') ? layer.evaluate<number>('layout', 'text-radial-offset', zoom, feature) : 0
+      const radial = radialEms > 0 ? radialEms : null
       const box = layoutPointLabel(shaped, { x: 0, y: 0 }, 1, { x: 0, y: 0 }, rotationRadians, 0).boxes[0]
       if (box === undefined) continue
       const anchorShifts = variableAnchorShifts(box, variableAnchors, variableAnchor => {

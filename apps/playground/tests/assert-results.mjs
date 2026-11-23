@@ -289,6 +289,7 @@ expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
 for (const name of ['road names, pitched', 'road names, top-down']) {
   expectations[`screen-space labels, ${name}`] = r => [
     ['road names show along their roads, none upside down', r.roadNames >= 2 && r.roadNamesUpsideDown === 0],
+    ['no label hidden behind the flat fixture ground', r.inspection?.labelsOccluded === 0],
     ['no two placed labels overlap (road names glyph by glyph)', r.overlaps === 0],
     ['no text repeats at one place', r.duplicates === 0],
     ['all terrain heights read', r.inspection?.elevationsPending === 0],

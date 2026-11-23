@@ -469,14 +469,19 @@ applied along lines.
   the state texture gets the shifted position, so glyph vertices never change. In `?map=labels` the towns try
   five anchors: 56 of 124 labels show top-down instead of 43, 17 of them beside their point.
 - **Terrain occlusion.** At each placement, a ray from the camera to each label's anchor (at its height) is read
-  against the terrain as drawn at 12 points short of its last 8 % (the ground the label stands on), skipping
-  stretches above 9 km with a closed-form height estimate along the chord. Ground more than 30 m above the ray
-  hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another tile
-  can take over. At most 4,800 reads per placement per style; globe only. `inspect().terrain.symbols.labelsOccluded`.
-  The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; a
-  unit test covers a ridge, a low hill, missing tiles and the slope under a label.
+  against the terrain as drawn at up to 12 points at fixed distances from the label, 150 m growing by 1.7× to
+  about 50 km (fixed distances, so reads do not slide over a ridge as the camera pans; densest near the label),
+  skipping points above 9 km with a closed-form height estimate along the chord. Ground more than 30 m above the
+  ray hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another
+  tile can take over. Each style's pass stops after 1 ms and the next placement continues from the label after the
+  last one read, so all labels are read in turn; with the camera still, the once-a-second pass places again, so
+  terrain that loaded finer hides or shows labels. Globe only. `inspect().terrain.symbols.labelsOccluded`.
+  The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; unit
+  tests cover a ridge, a low hill, missing tiles, a slope and a wall in front of a label.
 
-Deviations: `text-variable-anchor-offset` is not read; occlusion tests the anchor point only (MapLibre tests
+Deviations: `text-variable-anchor-offset` is not read; the 7 px baseline correction of vertical offsets is left
+out; `text-justify: auto` does not follow the anchor (multi-line text stays centred); with `text-rotate` the
+offset turns with the text; occlusion tests the anchor point only (MapLibre tests
 depth per symbol in the shader), and is decided at placement, every 100 ms while moving.
 
 ### Feature querying and layer events (W4)
