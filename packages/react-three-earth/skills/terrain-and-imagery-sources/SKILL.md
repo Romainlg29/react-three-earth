@@ -112,7 +112,7 @@ export function Layers() {
 Several `<Imagery>` layers stack in mount order, the last on top. The terrain has 10 layer slots, shared by
 every imagery source (counted across all `<Imagery>` layers) and every plugin's draped layer (write-a-plugin
 skill): adding past them throws an error naming the fix (remove a source or a draped layer, or merge sources
-into one `MapStyleSource`). Changing `opacity` costs nothing (no
+into one `MapStyleSource`); layers added before the terrain is set are logged and skipped instead. Changing `opacity` costs nothing (no
 reload, no shader rebuild). Changing a source prop (`url`, `levels`…) rebuilds that layer and moves it to the top of the
 stack, above layers that mounted after it.
 

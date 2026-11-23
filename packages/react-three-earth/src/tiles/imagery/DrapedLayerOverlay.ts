@@ -271,7 +271,8 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
     region.controller?.abort(new DOMException('Draped layer: redrawn', 'AbortError'))
     const controller = new AbortController()
     region.controller = controller
-    const recomposition = priority === 'recomposition'
+    // Every draw but a tile's first one is a recomposition the map waits on, including one replacing a first draw.
+    const recomposition = priority !== 'preload'
     if (recomposition) this.recompositionsInFlight++
     try {
       await compositor.enqueueRender(region.target, (renderer, target) => this.drawRegion(renderer, target, region), controller.signal, priority)

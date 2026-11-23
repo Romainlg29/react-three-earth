@@ -426,7 +426,7 @@ export function selectionGlow(radiusDegrees = 0.03) {
   outside hold a 1 × 1 transparent texture and are never drawn. Invalidate where the content was and where it is
   now; each region keeps its texture until the redraw replaces it.
 - Slots: imagery sources and draped layers share the terrain's 10 layer slots. Registering past them throws
-  (remove an imagery source or a draped layer, or merge sources into one `MapStyleSource`).
+  while a terrain is attached (layers added before it are logged and skipped when it attaches; remove an imagery source or a draped layer, or merge sources into one `MapStyleSource`).
 - Cost: every terrain tile carries the layer whatever `bounds` says: a CPU pass for its UVs, one more varying
   and texture sample in its shader; tiles outside get a 1 × 1 texture and no draw. Registering or removing a
   layer recompiles every terrain material and rebuilds every loaded tile's UVs: register once at install,
