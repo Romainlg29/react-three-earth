@@ -201,8 +201,8 @@ How it works:
 
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
-Not supported yet: icons along lines and on draped labels (point icons face the viewer, see W6 part 3 below), heatmap layers (skipped with one
-warning; raster, hillshade and colour relief: see W7 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
+Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -849,6 +849,49 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
+
+## Heatmap layers (W11)
+
+MapLibre `heatmap` layers, with every paint property and `heatmap-density`. The plugin design (W17, section 11)
+proposed heatmap as the first real plugin; it is built on the same seams, as a **built-in layer type** rather than a
+plugin, because `heatmap` is a MapLibre type (plugins cannot take those) and its properties are the style
+specification's own.
+
+- **Worker.** `getBuiltInLayerTypes()` adds `heatmap` to every processor's loaded layer types, with the style
+  specification's `paint_heatmap` / `layout_heatmap` instead of converted plugin definitions, so expressions,
+  validation and `['heatmap-density']` work as in MapLibre. Its tessellation is a `WorkerLayerType`, the plugin worker
+  API (`src/vector/heatmap/heatmapWorker.ts`), run in-process instead of imported by URL. Per point (every vertex,
+  as MapLibre's circle buckets), one quad as wide as the kernel reaches (`radius × √(−2 ln(ZERO / (w · i · G))) / 3`,
+  MapLibre's formula), carrying the centre, the weight and the radius. Points in the tile's buffer are skipped
+  (`host.isInsideTile`): densities add, so a point two tiles draw would count twice.
+- **Summary.** Per heatmap layer: its `heatmap-color` ramp at 256 densities (premultiplied sRGB bytes), and
+  `heatmap-opacity`, `heatmap-intensity` and the reach in pixels per integer zoom. The reach is the radius times the
+  kernel's extent for that zoom's weight × intensity, at most 512 px; a radius or weight read from the features
+  reaches the full ring (512 px).
+- **Main thread** (`HeatmapLayers`, one per overlay). The type's definition goes through the custom layer path of
+  W17 part 2 unchanged: `offscreen: { blending: 'additive' }` into the overlay's half-float layer target, then a
+  composite at the layer's place in the order. Two per-layer hooks (`prepareDraw`, `prepareComposite`, internal)
+  set the intensity of each draw at the region's zoom and point the composite at the layer's ramp row (one atlas
+  texture, 256 × layers) and opacity. The fragment shader evaluates `w · i · G · exp(−4.5 d²)` with `d` the distance
+  in radii at the region's zoom; buckets are processed at the region's level (overzoomed ones too), so quad size
+  and shader agree.
+- **Reach.** Region rings widen by the largest heatmap reach at the region's level (labels already reach half a
+  tile, so radii under 128 px cost nothing more); ring tiles draw their own points into the region.
+
+| Check (`?fixtures&map=vector&heatmap`, two layers over GeoJSON points; SwiftShader) | Result |
+| --- | --- |
+| Seamless across a tile edge (2D, 40 km): the colour step across a z8 tile edge against the step 6 px beside it | 22.1 against 24.7. With ring tiles left out on purpose: 56.9 against 37.5, and the cut is visible |
+| WebGL2 fallback (half-float blending) | the same red, heat and magenta pixel shares as WebGPU (0.0157, 0.0737, 0.0014) |
+| 3D, pitched, terrain | the heat drapes on terrain; 3.8 % heat pixels |
+| Per-layer ramps | the second layer draws in its own magenta ramp at 0.8 opacity |
+| Unit tests | 8 new: kernel values and extent against MapLibre's formula; quads per owned point, buffer points skipped, data-driven weight and radius, reach clamp, overzoomed tiles; ramp, opacity, intensity and reach per zoom; `setPaintProperty`; per-layer draw and composite values, the ramp atlas kept across equal summaries |
+
+![Heatmap layers: default ramp across a tile edge, magenta ramp](heatmap.png)
+
+Limits: the radius is in map pixels at the region's zoom (draped, like line widths), not screen pixels, so on a
+pitched globe far kernels are smaller, and the heat steps when regions change level (radius, intensity and opacity
+are taken at integer zooms). Heatmap layers are not queryable, as in MapLibre. Kernels are cut at one tile (512 px),
+which starts near a 400 px radius at a weight × intensity of 1.
 
 ## Map controls (W10)
 

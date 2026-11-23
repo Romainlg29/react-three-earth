@@ -353,6 +353,7 @@ function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slot
 
 /** A custom layer's mesh in a bucket. Its material is the layer type's, set when it is drawn. */
 export interface CustomLayerDraw {
+  layerId: string
   layerType: string
   group: number
   mesh: Mesh
@@ -393,7 +394,7 @@ export class BucketMeshes {
     for (const layer of bucket.layers) {
       const geometry = createCustomLayerGeometry(layer)
       this.geometries.push(geometry)
-      this.custom.push({ layerType: layer.layerType, group: layer.group, mesh: createMesh(geometry, shapeMaterials.plain) })
+      this.custom.push({ layerId: layer.layerId, layerType: layer.layerType, group: layer.group, mesh: createMesh(geometry, shapeMaterials.plain) })
     }
     if (text !== null) {
       const geometry = new BufferGeometry()

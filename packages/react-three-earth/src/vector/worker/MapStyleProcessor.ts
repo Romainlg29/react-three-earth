@@ -1,6 +1,7 @@
 import { classifyRings, featureFilter, Formatted, type Color, type FeatureFilter } from '@maplibre/maplibre-gl-style-spec'
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
+import { HEATMAP_LAYER_TYPE, summarizeHeatmapLayer } from '../heatmap/heatmapWorker.js'
 import { createCustomLayerBuilder, loadLayerTypes, type CustomLayerBuilder, type LoadedLayerType } from './customLayers.js'
 import { clipQueryToTile, featureHitTesters, getTileFeatureIndex, MAXIMUM_QUERY_RADIUS_PIXELS, polygonIntersectsBoxes, queryBounds, type QueryGeometry } from './featureIndex.js'
 import { FeatureColorTable, featureKey } from './featureState.js'
@@ -272,7 +273,7 @@ export class MapStyleProcessor {
     this.previous = previous
     // Worker modules already imported stay loaded across a reload.
     if (previous !== undefined) this.layerTypes = previous.layerTypes
-    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [], rasterLayers: [] }
+    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [], rasterLayers: [], heatmapLayers: [] }
   }
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
@@ -395,6 +396,7 @@ export class MapStyleProcessor {
         this.layers.filter(layer => layer.source !== undefined && this.fetchers.has(layer.source)),
         sources,
       ),
+      heatmapLayers: this.layers.flatMap(layer => (layer.type === HEATMAP_LAYER_TYPE && layer.custom !== null ? [summarizeHeatmapLayer(layer, MAXIMUM_ZOOM)] : [])),
     }
   }
 
