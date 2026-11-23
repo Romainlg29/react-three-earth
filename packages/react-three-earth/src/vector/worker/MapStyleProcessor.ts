@@ -9,6 +9,7 @@ import { GlyphProvider, type Glyph } from './glyphs.js'
 import {
   CollisionGrid,
   layoutLineLabels,
+  lineLabelPaths,
   layoutPointLabel,
   shapeText,
   TextBuilder,
@@ -787,7 +788,6 @@ export class MapStyleProcessor {
         const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
         const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
         if (!layer.accepts(zoom, feature)) continue
-        if (layer.evaluate<string>('layout', 'symbol-placement', zoom, feature) !== 'point') continue
         const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, layer.sourceLayer, id)
         const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
         // Text paint is baked in the tile: a state change processes it again.
@@ -801,34 +801,21 @@ export class MapStyleProcessor {
     signal?.throwIfAborted()
     const builder = new SymbolBuilder()
     const getGlyph = (fontStack: string, codePoint: number) => this.glyphs.get(fontStack, codePoint)
+    const tileUnitsPerPixel = TILE_EXTENT / (TILE_SIZE_PIXELS * 2 ** (zoom - request.z))
     for (const symbol of symbols) {
       const { layer, feature, state } = symbol
-      const anchor = representativePoint(symbol.type, symbol.geometry)
-      if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
+      const placement = layer.evaluate<'point' | 'line' | 'line-center'>('layout', 'symbol-placement', zoom, feature)
       const opacity = layer.evaluate<number>('paint', 'text-opacity', zoom, feature, state)
       const color = layer.evaluateColor('text-color', zoom, feature, opacity, state)
       const haloColor = toRgba(layer.evaluate<Color>('paint', 'text-halo-color', zoom, feature, state), opacity)
       if (color[3] === 0 && haloColor[3] === 0) continue
-      const shaped = shapeText(
-        symbol.sections,
-        {
-          maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
-          lineHeightEms: layer.evaluate<number>('layout', 'text-line-height', zoom, feature),
-          letterSpacingEms: layer.evaluate<number>('layout', 'text-letter-spacing', zoom, feature),
-          anchor: firstAnchor(layer, zoom, feature),
-          justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
-        },
-        getGlyph,
-      )
-      if (shaped === null) continue
-      const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'text-offset', zoom, feature)
-      builder.add({
-        anchor,
-        shaped,
-        offset: { x: offsetX * 24, y: offsetY * 24 },
-        rotationRadians: (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180,
-        sizePixels: layer.evaluate<number>('layout', 'text-size', zoom, feature),
-        nextZoomSizePixels: layer.evaluate<number>('layout', 'text-size', zoom + 1, feature),
+      const sizePixels = layer.evaluate<number>('layout', 'text-size', zoom, feature)
+      const nextZoomSizePixels = layer.evaluate<number>('layout', 'text-size', zoom + 1, feature)
+      const label = {
+        offset: { x: 0, y: 0 },
+        rotationRadians: 0,
+        sizePixels,
+        nextZoomSizePixels,
         paddingPixels: layer.evaluate<number>('layout', 'text-padding', zoom, feature),
         allowOverlap: layer.evaluate<boolean>('layout', 'text-allow-overlap', zoom, feature),
         ignorePlacement: layer.evaluate<boolean>('layout', 'text-ignore-placement', zoom, feature),
@@ -840,6 +827,58 @@ export class MapStyleProcessor {
         key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}`,
         sourceLayer: symbol.sourceLayer,
         featureIndex: symbol.featureIndex,
+      }
+      const lineHeightEms = layer.evaluate<number>('layout', 'text-line-height', zoom, feature)
+      const letterSpacingEms = layer.evaluate<number>('layout', 'text-letter-spacing', zoom, feature)
+
+      if (placement !== 'point') {
+        // Along the line on the screen: one row of glyphs, laid along the projected line every frame.
+        if (symbol.type === 1) continue
+        const shaped = shapeText(symbol.sections, { maximumWidthEms: 0, lineHeightEms, letterSpacingEms, anchor: 'center', justify: 'center' }, getGlyph)
+        if (shaped === null) continue
+        const pixelsToUnits = (sizePixels / 24) * tileUnitsPerPixel
+        const labelLengthUnits = (shaped.right - shaped.left) * pixelsToUnits
+        // Half the label is needed on each side of the anchor at the tile's own scale. The tile can show down to
+        // half that scale (camera zoom just above the coarser level), and labels far from the screen centre shrink
+        // less than the ground under them (the perspective ratio): two label lengths at the larger size each side.
+        const windowUnits = 2 * (shaped.right - shaped.left) * (Math.max(sizePixels, nextZoomSizePixels) / 24) * tileUnitsPerPixel
+        const options = {
+          spacingUnits: layer.evaluate<number>('layout', 'symbol-spacing', zoom, feature) * tileUnitsPerPixel,
+          center: placement === 'line-center',
+          extent: TILE_EXTENT,
+          windowUnits,
+        }
+        const maximumAngleRadians = (layer.evaluate<number>('layout', 'text-max-angle', zoom, feature) * Math.PI) / 180
+        const keepUpright = layer.evaluate<boolean>('layout', 'text-keep-upright', zoom, feature)
+        for (const line of symbol.geometry) {
+          for (const path of lineLabelPaths(line, labelLengthUnits, options)) {
+            builder.add({ ...label, anchor: path.points[path.anchorIndex]!, shaped, line: { ...path, maximumAngleRadians, keepUpright } })
+          }
+        }
+        continue
+      }
+
+      const anchor = representativePoint(symbol.type, symbol.geometry)
+      if (anchor === null || anchor.x < 0 || anchor.y < 0 || anchor.x >= TILE_EXTENT || anchor.y >= TILE_EXTENT) continue
+      const shaped = shapeText(
+        symbol.sections,
+        {
+          maximumWidthEms: layer.evaluate<number>('layout', 'text-max-width', zoom, feature),
+          lineHeightEms,
+          letterSpacingEms,
+          anchor: firstAnchor(layer, zoom, feature),
+          justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
+        },
+        getGlyph,
+      )
+      if (shaped === null) continue
+      const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'text-offset', zoom, feature)
+      builder.add({
+        ...label,
+        anchor,
+        shaped,
+        offset: { x: offsetX * 24, y: offsetY * 24 },
+        rotationRadians: (layer.evaluate<number>('layout', 'text-rotate', zoom, feature) * Math.PI) / 180,
       })
     }
     const mesh = builder.build()
@@ -1172,6 +1211,8 @@ export class MapStyleProcessor {
         continue
       }
 
+      // Faces the viewer instead: laid out by `processSymbolTile`.
+      if (this.options.screenSymbols === true) continue
       if (symbol.type === 1) continue
       const shaped = shapeText(symbol.sections, { maximumWidthEms: 0, lineHeightEms, letterSpacingEms, anchor: 'center', justify: 'center' }, getGlyph)
       if (shaped === null) continue

@@ -274,6 +274,56 @@ export interface LineLabelOptions {
   extent: number
 }
 
+/** The stretch of a line a label facing the viewer is laid along: tile units, with the label's anchor among the points. */
+export interface LineLabelPath {
+  points: Point[]
+  anchorIndex: number
+}
+
+export interface LineLabelPathOptions {
+  spacingUnits: number
+  /** One label at the middle of the line instead of one every `spacingUnits`. */
+  center: boolean
+  /** Only anchors inside this square (tile units) are kept, so neighbouring tiles do not repeat labels. */
+  extent: number
+  /** Line kept on each side of the anchor, in tile units: enough for the label at its largest. */
+  windowUnits: number
+}
+
+/**
+ * Where a line label goes along a line (the same anchors as `layoutLineLabels`), each with the stretch of line
+ * around it: the main thread projects that stretch and lays the glyphs along it on the screen every frame.
+ */
+export function lineLabelPaths(line: readonly Point[], labelLengthUnits: number, options: LineLabelPathOptions): LineLabelPath[] {
+  const path = new Polyline(line)
+  const total = path.length
+  if (labelLengthUnits <= 0 || total < labelLengthUnits) return []
+  const count = options.center ? 1 : Math.max(1, Math.floor(total / Math.max(options.spacingUnits, labelLengthUnits)))
+  const paths: LineLabelPath[] = []
+  for (let index = 0; index < count; index++) {
+    const anchorDistance = ((index + 0.5) * total) / count
+    if (anchorDistance - labelLengthUnits / 2 < 0 || anchorDistance + labelLengthUnits / 2 > total) continue
+    const anchor = path.at(anchorDistance).point
+    if (anchor.x < 0 || anchor.y < 0 || anchor.x >= options.extent || anchor.y >= options.extent) continue
+    const from = Math.max(0, anchorDistance - options.windowUnits)
+    const to = Math.min(total, anchorDistance + options.windowUnits)
+    const points: Point[] = [path.at(from).point]
+    for (let vertex = 1; vertex < line.length - 1; vertex++) {
+      const distance = path.distances[vertex]!
+      if (distance > from && distance < anchorDistance) points.push(line[vertex]!)
+    }
+    const anchorIndex = points.length
+    points.push(anchor)
+    for (let vertex = 1; vertex < line.length - 1; vertex++) {
+      const distance = path.distances[vertex]!
+      if (distance > anchorDistance && distance < to) points.push(line[vertex]!)
+    }
+    points.push(path.at(to).point)
+    paths.push({ points, anchorIndex })
+  }
+  return paths
+}
+
 /** Candidate placements of a single-line label along a line, each a set of glyph quads and boxes. */
 export function layoutLineLabels(shaped: ShapedText, line: readonly Point[], options: LineLabelOptions): Array<{ quads: GlyphQuad[]; boxes: Box[] }> {
   const forward = new Polyline(line)

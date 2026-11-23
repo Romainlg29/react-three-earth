@@ -8,7 +8,7 @@ import { longitudeToMercatorX, wrapMercatorXNear } from '../../view/webMercator.
 import { computeCameraTilePyramid, horizonCap, tileRowToLatitude } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
 import type { GlyphAtlasTexture } from '../VectorTileMeshes.js'
-import { SYMBOL_ALLOW_OVERLAP, SYMBOL_IGNORE_PLACEMENT } from '../worker/symbols.js'
+import { SYMBOL_ALLOW_OVERLAP, SYMBOL_IGNORE_PLACEMENT, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../worker/symbols.js'
 import { TILE_EXTENT, type MapStyleSummary, type ScreenLabelHit, type SymbolMesh, type TileBucket, type TileRequest } from '../worker/types.js'
 import { SymbolPlacement, type PlacementCandidate, type SymbolFade } from './SymbolPlacement.js'
 import { createSymbolMaterial, createSymbolTileMesh, SymbolStateTexture, type SymbolMeshUserData } from './symbolMaterial.js'
@@ -67,6 +67,10 @@ export interface ScreenLabelInspection {
   yPixels: number
   /** Collision box, padding included: left, top, right, bottom. */
   box: [number, number, number, number]
+  /** A label along a line: one box per glyph (padding included), which collide; null for a point label. */
+  glyphBoxes: Array<[number, number, number, number]> | null
+  /** A label along a line: each glyph's angle on the screen in radians (0 reads left to right); null for a point label. */
+  glyphAnglesRadians: number[] | null
   opacity: number
   ignorePlacement: boolean
   allowOverlap: boolean
@@ -118,6 +122,15 @@ interface SymbolTile {
   projected: Uint8Array
   screen: Float32Array
   slotBase: number
+  /** Line labels: ECEF surface point and up per path point (`SymbolMesh.linePoints`), geographic too for the map. */
+  pathSurface: Float64Array
+  pathUp: Float64Array
+  pathLongitudes: Float64Array
+  pathLatitudes: Float64Array
+  /** Line label glyphs this frame: screen position (CSS pixels) and angle (radians, y down), three per glyph. */
+  glyphScreen: Float32Array
+  /** First slot of the tile's glyphs in the glyph state texture; -1 when it has none. */
+  glyphSlotBase: number
   drawn: boolean
 }
 
@@ -128,6 +141,42 @@ interface LabelCandidate extends PlacementCandidate {
 }
 
 const point = new Vector3()
+/** A line label's path on the screen this frame, two numbers per point. */
+let pathScreen = new Float64Array(64)
+/** Where `walkScreenPath` arrived: screen position and the direction of the segment there (towards later points). */
+const walked = { x: 0, y: 0, angle: 0 }
+
+/**
+ * Walks `distance` pixels along the projected path in `screen` (x, y per point) from point `anchor` (towards later points when
+ * positive, earlier ones when negative). False past either end.
+ */
+export function walkScreenPath(screen: ArrayLike<number>, count: number, anchor: number, distance: number, walked: { x: number; y: number; angle: number }): boolean {
+  const step = distance >= 0 ? 1 : -1
+  let remaining = Math.abs(distance)
+  let from = anchor
+  while (from + step >= 0 && from + step < count) {
+    const to = from + step
+    const dx = screen[to * 2]! - screen[from * 2]!
+    const dy = screen[to * 2 + 1]! - screen[from * 2 + 1]!
+    const length = Math.hypot(dx, dy)
+    if (remaining <= length || to + step < 0 || to + step >= count) {
+      if (remaining > length) return false
+      const t = length > 0 ? remaining / length : 0
+      walked.x = screen[from * 2]! + dx * t
+      walked.y = screen[from * 2 + 1]! + dy * t
+      walked.angle = step > 0 ? Math.atan2(dy, dx) : Math.atan2(-dy, -dx)
+      return true
+    }
+    remaining -= length
+    from = to
+  }
+  // A path of one point (the anchor alone): only a distance of zero is on it.
+  if (remaining > 0) return false
+  walked.x = screen[anchor * 2]!
+  walked.y = screen[anchor * 2 + 1]!
+  walked.angle = 0
+  return true
+}
 const cartographic = { lat: 0, lon: 0, height: 0 }
 const viewProjection = new Matrix4()
 
@@ -147,6 +196,8 @@ export class ScreenSymbols {
   protected readonly tiles = new Map<string, SymbolTile>()
   protected readonly placement: SymbolPlacement
   protected readonly state = new SymbolStateTexture()
+  /** Per line label glyph: screen position and angle. */
+  protected readonly glyphState = new SymbolStateTexture()
   protected readonly viewportPixels = { value: new Vector2(1, 1) }
   protected readonly luminance = { value: 1 }
   protected readonly material: MeshBasicNodeMaterial
@@ -172,7 +223,7 @@ export class ScreenSymbols {
   constructor(host: ScreenSymbolsHost, { fadeDurationSeconds = 0.3 }: { fadeDurationSeconds?: number } = {}) {
     this.host = host
     this.placement = new SymbolPlacement({ fadeDurationSeconds })
-    this.material = createSymbolMaterial(host.glyphAtlas, this.state, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
+    this.material = createSymbolMaterial(host.glyphAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
     this.object.name = 'MapStyleSymbols'
     this.object.matrixAutoUpdate = false
     this.object.raycast = () => {}
@@ -187,7 +238,6 @@ export class ScreenSymbols {
    * by `tolerancePixels`), top style layer first, as feature query hits.
    */
   hitScreenLabels(box: readonly [number, number, number, number], tolerancePixels = 0): ScreenLabelHit[] {
-    const [left, top, right, bottom] = box
     const hits: Array<ScreenLabelHit & { layerIndex: number }> = []
     for (const tile of this.tiles.values()) {
       const symbols = tile.symbols
@@ -197,8 +247,13 @@ export class ScreenSymbols {
         const candidate = tile.candidates[index]!
         // Placed labels only, as MapLibre: one fading out after a collision no longer answers.
         if (fade == null || fade.opacity <= 0 || fade.target === 0 || tile.projected[index] === 0) continue
-        if (candidate.maximumXPixels < left - tolerancePixels || candidate.minimumXPixels > right + tolerancePixels) continue
-        if (candidate.maximumYPixels < top - tolerancePixels || candidate.minimumYPixels > bottom + tolerancePixels) continue
+        if (!meetsBox(candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels, box, tolerancePixels)) continue
+        const boxes = candidate.boxes
+        if (boxes !== null) {
+          let hit = false
+          for (let offset = 0; offset < boxes.length && !hit; offset += 4) hit = meetsBox(boxes[offset]!, boxes[offset + 1]!, boxes[offset + 2]!, boxes[offset + 3]!, box, tolerancePixels)
+          if (!hit) continue
+        }
         const { sourceId, x, y, z, zoom } = tile.request
         const key = symbols.keys[index]!
         hits.push({ sourceId, x, y, z, zoom, layerId: key.slice(0, key.indexOf('\u0000')), sourceLayer: symbols.sourceLayers[index]!, featureIndex: symbols.featureIndices[index]!, layerIndex: candidate.layerIndex })
@@ -228,6 +283,8 @@ export class ScreenSymbols {
           xPixels: candidate.xPixels,
           yPixels: candidate.yPixels,
           box: [candidate.minimumXPixels, candidate.minimumYPixels, candidate.maximumXPixels, candidate.maximumYPixels],
+          glyphBoxes: candidate.boxes === null ? null : Array.from({ length: candidate.boxes.length / 4 }, (_, box) => candidate.boxes!.slice(box * 4, box * 4 + 4) as [number, number, number, number]),
+          glyphAnglesRadians: candidate.boxes === null ? null : Array.from({ length: symbols.glyphCounts[index]! }, (_, glyph) => tile.glyphScreen[(symbols.glyphStarts[index]! + glyph) * 3 + 2]!),
           opacity: fade.opacity,
           ignorePlacement: candidate.ignorePlacement,
           allowOverlap: candidate.allowOverlap,
@@ -361,6 +418,7 @@ export class ScreenSymbols {
     this.tiles.clear()
     this.material.dispose()
     this.state.dispose()
+    this.glyphState.dispose()
     this.object.removeFromParent()
   }
 
@@ -424,6 +482,12 @@ export class ScreenSymbols {
       projected: new Uint8Array(0),
       screen: new Float32Array(0),
       slotBase: -1,
+      pathSurface: new Float64Array(0),
+      pathUp: new Float64Array(0),
+      pathLongitudes: new Float64Array(0),
+      pathLatitudes: new Float64Array(0),
+      glyphScreen: new Float32Array(0),
+      glyphSlotBase: -1,
       drawn: false,
     }
     this.tiles.set(key, tile)
@@ -453,11 +517,13 @@ export class ScreenSymbols {
     }
     if (tile.slotBase !== -1) this.state.release(tile.slotBase, tile.symbols?.keys.length ?? 0)
     tile.slotBase = -1
+    if (tile.glyphSlotBase !== -1) this.glyphState.release(tile.glyphSlotBase, tile.symbols?.glyphOffsets.length ?? 0)
+    tile.glyphSlotBase = -1
     // The same labels again (a refresh after a feature-state or paint change): they keep their height, fade and
     // place on the screen, so they neither blink nor stop answering feature queries until the next placement.
     const previous = tile.symbols
     const same = previous !== null && symbols !== null && sameLabels(previous, symbols)
-    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, candidates: tile.candidates } : null
+    const kept = same ? { heights: tile.heights, heightReadAt: tile.heightReadAt, fades: tile.fades, projected: tile.projected, screen: tile.screen, glyphScreen: tile.glyphScreen, candidates: tile.candidates } : null
     tile.symbols = symbols
     tile.loaded = true
     this.tilesChanged = true
@@ -474,7 +540,23 @@ export class ScreenSymbols {
     tile.projected = new Uint8Array(count)
     tile.screen = new Float32Array(count * 3)
     tile.candidates = []
+    const pathPointCount = (symbols?.linePoints.length ?? 0) / 2
+    tile.pathSurface = new Float64Array(pathPointCount * 3)
+    tile.pathUp = new Float64Array(pathPointCount * 3)
+    tile.pathLongitudes = new Float64Array(pathPointCount)
+    tile.pathLatitudes = new Float64Array(pathPointCount)
+    tile.glyphScreen = new Float32Array((symbols?.glyphOffsets.length ?? 0) * 3)
     if (symbols === null || count === 0) return
+    for (let pathPoint = 0; pathPoint < pathPointCount; pathPoint++) {
+      const longitude = ((tile.request.x + symbols.linePoints[pathPoint * 2]! / TILE_EXTENT) / 2 ** tile.request.z) * 2 * Math.PI - Math.PI
+      const latitude = tileRowToLatitude(tile.request.y + symbols.linePoints[pathPoint * 2 + 1]! / TILE_EXTENT, tile.request.z)
+      tile.pathLongitudes[pathPoint] = longitude
+      tile.pathLatitudes[pathPoint] = latitude
+      WGS84_ELLIPSOID.getCartographicToPosition(latitude, longitude, 0, point)
+      tile.pathSurface.set([point.x, point.y, point.z], pathPoint * 3)
+      const cosine = Math.cos(latitude)
+      tile.pathUp.set([cosine * Math.cos(longitude), cosine * Math.sin(longitude), Math.sin(latitude)], pathPoint * 3)
+    }
     const { x, y, z } = tile.request
     const tilesAcross = 2 ** z
     const order = (tile.request.zoom * 2 ** 22 + ((y * tilesAcross + x) % 2 ** 20)) * 2 ** 10
@@ -496,6 +578,7 @@ export class ScreenSymbols {
         minimumYPixels: 0,
         maximumXPixels: 0,
         maximumYPixels: 0,
+        boxes: (flags & SYMBOL_LINE) !== 0 ? [] : null,
         layerIndex: symbols.layerIndices[index]!,
         sortKey: symbols.sortKeys[index]!,
         allowOverlap: (flags & SYMBOL_ALLOW_OVERLAP) !== 0,
@@ -515,6 +598,7 @@ export class ScreenSymbols {
       tile.fades = kept.fades
       tile.projected = kept.projected
       tile.screen = kept.screen
+      if (kept.glyphScreen.length === tile.glyphScreen.length) tile.glyphScreen = kept.glyphScreen
       for (let index = 0; index < count; index++) {
         const from = kept.candidates[index]!
         const to = tile.candidates[index]!
@@ -524,13 +608,16 @@ export class ScreenSymbols {
         to.minimumYPixels = from.minimumYPixels
         to.maximumXPixels = from.maximumXPixels
         to.maximumYPixels = from.maximumYPixels
+        if (from.boxes !== null && to.boxes !== null) to.boxes.push(...from.boxes)
         to.fade = from.fade
         to.placed = from.placed
       }
     }
     tile.slotBase = this.state.allocate(count)
+    if (symbols.glyphOffsets.length > 0) tile.glyphSlotBase = this.glyphState.allocate(symbols.glyphOffsets.length)
     const mesh = createSymbolTileMesh(symbols, this.material)
     ;(mesh.userData as SymbolMeshUserData).symbolSlotBase = tile.slotBase
+    ;(mesh.userData as SymbolMeshUserData).symbolGlyphSlotBase = Math.max(0, tile.glyphSlotBase)
     mesh.visible = tile.drawn
     tile.mesh = mesh
     this.object.add(mesh)
@@ -578,6 +665,8 @@ export class ScreenSymbols {
     }
     if (tile.slotBase !== -1) this.state.release(tile.slotBase, tile.symbols?.keys.length ?? 0)
     tile.slotBase = -1
+    if (tile.glyphSlotBase !== -1) this.glyphState.release(tile.glyphSlotBase, tile.symbols?.glyphOffsets.length ?? 0)
+    tile.glyphSlotBase = -1
   }
 
   /**
@@ -651,6 +740,10 @@ export class ScreenSymbols {
         const perspectiveRatio = Math.min(4, Math.max(0, 0.5 + (0.5 * frame.centerDistanceMeters) / clipW))
         const sizePixels = symbols.sizes[index * 2]! + (symbols.sizes[index * 2 + 1]! - symbols.sizes[index * 2]!) * sizeFraction
         const scale = (sizePixels / 24) * perspectiveRatio
+        const alongLine = (symbols.flags[index]! & SYMBOL_LINE) !== 0
+        // Along a line: glyphs follow the projected line, or the label waits where the line turns too sharply on the
+        // screen or leaves the stretch the worker kept.
+        if (alongLine && !this.layoutLineGlyphs(tile, index, scale, Number.isNaN(height) ? 0 : height, flat, view, matrix, widthPixels, heightPixels)) continue
         tile.projected[index] = 1
         tile.screen[index * 3] = xPixels
         tile.screen[index * 3 + 1] = yPixels
@@ -664,6 +757,10 @@ export class ScreenSymbols {
         const padding = symbols.paddings[index]!
         candidate.xPixels = xPixels
         candidate.yPixels = yPixels
+        if (alongLine) {
+          candidates.push(candidate)
+          continue
+        }
         candidate.minimumXPixels = xPixels + symbols.boxes[index * 4]! * scale - padding
         candidate.minimumYPixels = yPixels + symbols.boxes[index * 4 + 1]! * scale - padding
         candidate.maximumXPixels = xPixels + symbols.boxes[index * 4 + 2]! * scale + padding
@@ -674,6 +771,91 @@ export class ScreenSymbols {
     this.statistics.labels = labels
     this.statistics.elevationsPending = elevationsPending
     return elevationsPending > 0
+  }
+
+  /**
+   * Lays a line label's glyphs along its projected line, from its anchor: each glyph at its distance from the
+   * label's middle (times `scale`), turned to the line's direction there, the label read left to right when it
+   * keeps upright. Writes `glyphScreen` and the candidate's per-glyph boxes. False when a glyph falls off the kept
+   * stretch, behind the camera, or the line turns more than `text-max-angle` between two glyphs.
+   */
+  protected layoutLineGlyphs(tile: SymbolTile, index: number, scale: number, heightMeters: number, flat: boolean, view: ViewMorph, matrix: number[], widthPixels: number, heightPixels: number): boolean {
+    const symbols = tile.symbols!
+    const start = symbols.lineStarts[index]!
+    const count = symbols.lineLengths[index]!
+    const anchor = symbols.lineAnchors[index]!
+    if (pathScreen.length < count * 2) pathScreen = new Float64Array(count * 4)
+    for (let pathPoint = 0; pathPoint < count; pathPoint++) {
+      const position = this.pathPosition(tile, start + pathPoint, flat, view, heightMeters)
+      const clipX = matrix[0]! * position.x + matrix[4]! * position.y + matrix[8]! * position.z + matrix[12]!
+      const clipY = matrix[1]! * position.x + matrix[5]! * position.y + matrix[9]! * position.z + matrix[13]!
+      const clipW = matrix[3]! * position.x + matrix[7]! * position.y + matrix[11]! * position.z + matrix[15]!
+      if (clipW <= 0) return false
+      pathScreen[pathPoint * 2] = ((clipX / clipW + 1) / 2) * widthPixels
+      pathScreen[pathPoint * 2 + 1] = ((1 - clipY / clipW) / 2) * heightPixels
+    }
+    // Read left to right: turned around where the line runs right to left on the screen at the anchor.
+    const next = anchor + 1 < count ? anchor + 1 : anchor
+    const previous = next === anchor ? anchor - 1 : anchor
+    const flip = (symbols.flags[index]! & SYMBOL_KEEP_UPRIGHT) !== 0 && pathScreen[next * 2]! - pathScreen[previous * 2]! < 0
+    const glyphStart = symbols.glyphStarts[index]!
+    const glyphCount = symbols.glyphCounts[index]!
+    const maximumAngle = symbols.maximumAngles[index]!
+    const padding = symbols.paddings[index]!
+    const halfHeight = ((symbols.boxes[index * 4 + 3]! - symbols.boxes[index * 4 + 1]!) / 2) * scale
+    const middleOffset = ((symbols.boxes[index * 4 + 3]! + symbols.boxes[index * 4 + 1]!) / 2) * scale
+    const candidate = tile.candidates[index]!
+    const boxes = candidate.boxes!
+    boxes.length = 0
+    let minimumX = Infinity
+    let minimumY = Infinity
+    let maximumX = -Infinity
+    let maximumY = -Infinity
+    let previousAngle = Number.NaN
+    for (let glyph = 0; glyph < glyphCount; glyph++) {
+      const glyphIndex = glyphStart + glyph
+      let distance = symbols.glyphOffsets[glyphIndex]! * scale
+      if (flip) distance = -distance
+      if (!walkScreenPath(pathScreen, count, anchor, distance, walked)) return false
+      const angle = walked.angle + (flip ? Math.PI : 0)
+      if (!Number.isNaN(previousAngle)) {
+        let turn = Math.abs(angle - previousAngle) % (2 * Math.PI)
+        if (turn > Math.PI) turn = 2 * Math.PI - turn
+        if (turn > maximumAngle) return false
+      }
+      previousAngle = angle
+      tile.glyphScreen[glyphIndex * 3] = walked.x
+      tile.glyphScreen[glyphIndex * 3 + 1] = walked.y
+      tile.glyphScreen[glyphIndex * 3 + 2] = angle
+      // The glyph's box, turned with it: centred on the text row (above or below the line by its offset).
+      const cosine = Math.cos(angle)
+      const sine = Math.sin(angle)
+      const centerX = walked.x - middleOffset * sine
+      const centerY = walked.y + middleOffset * cosine
+      const halfWidth = symbols.glyphHalfWidths[glyphIndex]! * scale
+      const extentX = Math.abs(halfWidth * cosine) + Math.abs(halfHeight * sine) + padding
+      const extentY = Math.abs(halfWidth * sine) + Math.abs(halfHeight * cosine) + padding
+      boxes.push(centerX - extentX, centerY - extentY, centerX + extentX, centerY + extentY)
+      minimumX = Math.min(minimumX, centerX - extentX)
+      minimumY = Math.min(minimumY, centerY - extentY)
+      maximumX = Math.max(maximumX, centerX + extentX)
+      maximumY = Math.max(maximumY, centerY + extentY)
+    }
+    candidate.minimumXPixels = minimumX
+    candidate.minimumYPixels = minimumY
+    candidate.maximumXPixels = maximumX
+    candidate.maximumYPixels = maximumY
+    return true
+  }
+
+  protected pathPosition(tile: SymbolTile, pathPoint: number, flat: boolean, view: ViewMorph, heightMeters: number): Vector3 {
+    if (flat) return toScenePosition(view, true, tile.pathLongitudes[pathPoint]!, tile.pathLatitudes[pathPoint]!, heightMeters, point)
+    const offset = pathPoint * 3
+    return point.set(
+      tile.pathSurface[offset]! + tile.pathUp[offset]! * heightMeters,
+      tile.pathSurface[offset + 1]! + tile.pathUp[offset + 1]! * heightMeters,
+      tile.pathSurface[offset + 2]! + tile.pathUp[offset + 2]! * heightMeters,
+    )
   }
 
   protected labelPosition(tile: SymbolTile, index: number, flat: boolean, view: ViewMorph, heightMeters: number): Vector3 {
@@ -701,10 +883,16 @@ export class ScreenSymbols {
         }
         shown++
         this.state.write(slot, tile.screen[index * 3]!, tile.screen[index * 3 + 1]!, tile.screen[index * 3 + 2]!, fade.opacity)
+        const symbols = tile.symbols!
+        const glyphCount = symbols.glyphCounts[index]!
+        for (let glyph = symbols.glyphStarts[index]!, end = glyph + glyphCount; glyph < end; glyph++) {
+          this.glyphState.write(tile.glyphSlotBase + glyph, tile.glyphScreen[glyph * 3]!, tile.glyphScreen[glyph * 3 + 1]!, tile.glyphScreen[glyph * 3 + 2]!, 1)
+        }
       }
     }
     this.statistics.labelsShown = shown
     this.state.upload()
+    this.glyphState.upload()
   }
 }
 
@@ -725,6 +913,10 @@ function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition
   if (flat) return point.copy(cameraPosition).applyMatrix4(view.earthToFlat).z * view.scale
   WGS84_ELLIPSOID.getPositionToCartographic(cameraPosition, cartographic)
   return cartographic.height
+}
+
+function meetsBox(left: number, top: number, right: number, bottom: number, box: readonly [number, number, number, number], tolerancePixels: number): boolean {
+  return right >= box[0] - tolerancePixels && left <= box[2] + tolerancePixels && bottom >= box[1] - tolerancePixels && top <= box[3] + tolerancePixels
 }
 
 /** Same labels at the same anchors, in the same order. */

@@ -1160,9 +1160,10 @@ async function renderPassesAndDrapedLayers(name, query) {
 /**
  * Screen-space labels (`?map=labels`: a dense grid of towns): no two placed labels overlap, no text repeats at one
  * place, labels near the centre keep their size whatever the pitch, and the draped mode draws none on the screen.
+ * `map` 'vector' is the plain fixture style, where road names show.
  */
-async function screenSymbols(name, query) {
-  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=labels${query}`)
+async function screenSymbols(name, query, map = 'labels') {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=${map}${query}`)
   await page.waitForFunction(() => {
     const inspection = window.earth?.inspect()
     const t = inspection?.terrain
@@ -1189,14 +1190,18 @@ async function screenSymbols(name, query) {
     const width = window.innerWidth
     const height = window.innerHeight
     const colliding = labels.filter(l => !l.ignorePlacement && !l.allowOverlap)
+    // Road names collide glyph by glyph; a pixel of slack: boxes that touch are not an overlap.
+    const meets = (a, b) => a[0] < b[2] - 1 && b[0] < a[2] - 1 && a[1] < b[3] - 1 && b[1] < a[3] - 1
     let overlaps = 0
     for (let i = 0; i < colliding.length; i++) {
       for (let j = i + 1; j < colliding.length; j++) {
-        const [a, b] = [colliding[i].box, colliding[j].box]
-        // A pixel of slack: boxes that touch are not an overlap.
-        if (a[0] < b[2] - 1 && b[0] < a[2] - 1 && a[1] < b[3] - 1 && b[1] < a[3] - 1) overlaps++
+        const [a, b] = [colliding[i].glyphBoxes ?? [colliding[i].box], colliding[j].glyphBoxes ?? [colliding[j].box]]
+        if (a.some(boxA => b.some(boxB => meets(boxA, boxB)))) overlaps++
       }
     }
+    // Road names read left to right: every glyph turned less than a quarter turn from the horizontal.
+    const roads = labels.filter(l => l.glyphAnglesRadians !== null)
+    const upsideDown = roads.filter(l => l.glyphAnglesRadians.some(angle => Math.cos(angle) < -1e-6)).length
     let duplicates = 0
     for (let i = 0; i < labels.length; i++) {
       for (let j = i + 1; j < labels.length; j++) {
@@ -1211,6 +1216,8 @@ async function screenSymbols(name, query) {
     return {
       labelsShown: labels.length,
       towns: labels.filter(l => l.text.startsWith('Town')).length,
+      roadNames: roads.length,
+      roadNamesUpsideDown: upsideDown,
       overlaps,
       duplicates,
       centralBoxHeightPixels: central.length > 0 ? +central[Math.floor(central.length / 2)].toFixed(1) : null,
@@ -1451,6 +1458,11 @@ try {
     await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
+  }
+  if (!only || only === 'labels' || only === 'roads') {
+    // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
+    await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
+    await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
   }
 } finally {
   await browser.close()

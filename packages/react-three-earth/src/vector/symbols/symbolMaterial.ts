@@ -1,5 +1,5 @@
 import { BufferAttribute, BufferGeometry, DataTexture, DoubleSide, FloatType, Mesh, NearestFilter, NoColorSpace, NormalBlending, RGBAFormat, Vector2 } from 'three'
-import { attribute, float, Fn, fwidth, int, ivec2, max, select, smoothstep, texture, textureLoad, uniform, varying, vec2, vec4 } from 'three/tsl'
+import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smoothstep, texture, textureLoad, uniform, varying, vec2, vec4 } from 'three/tsl'
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
@@ -132,6 +132,8 @@ export class SymbolStateTexture {
 /** Per-object value of `symbolSlotBase`: the first state slot of the tile the mesh draws. */
 export interface SymbolMeshUserData {
   symbolSlotBase?: number
+  /** The first slot of the tile's line label glyphs in the glyph state texture. */
+  symbolGlyphSlotBase?: number
 }
 
 function linearColor(name: string) {
@@ -141,24 +143,33 @@ function linearColor(name: string) {
 
 /**
  * The material of every label mesh of one style source: each glyph corner is moved to its label's anchor on the
- * screen (from the state texture) at the label's scale, so the CPU never touches vertices after a tile loads. SDF text
+ * screen (from the state texture) at the label's scale, or for a label along a line to its glyph's own place and
+ * angle (from the glyph state texture), so the CPU never touches vertices after a tile loads. SDF text
  * with a halo, as the draped text. Drawn in the scene pass without depth test, over the terrain, so the atmosphere
  * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
  * so labels keep their style colours under the exposure; `opacity` is the imagery layer's.
  */
-export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
   material.name = 'MapStyleSymbols'
   const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
   const slotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolSlotBase ?? 0) as unknown as Node<'float'>
+  const glyphSlotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolGlyphSlotBase ?? 0) as unknown as Node<'float'>
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
   const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
 
   const slot = int(attribute<'float'>('labelIndex', 'float').add(slotBase))
   const width = int(SYMBOL_STATE_WIDTH)
   const labelState = textureLoad(state.node as never, ivec2(slot.mod(width), slot.div(width)), 0) as unknown as Node<'vec4'>
-  const corner = attribute<'vec3'>('position', 'vec3').xy
-  const pixels = labelState.xy.add(corner.mul(labelState.z))
+  const corner = attribute<'vec3'>('position', 'vec3').xy.mul(labelState.z)
+  // A glyph of a label along a line: at its own place on the screen, turned with the line there.
+  const glyphIndex = attribute<'float'>('glyphIndex', 'float')
+  const glyphSlot = int(max(glyphIndex, float(0)).add(glyphSlotBase))
+  const glyph = textureLoad(glyphState.node as never, ivec2(glyphSlot.mod(width), glyphSlot.div(width)), 0) as unknown as Node<'vec4'>
+  const cosine = cos(glyph.z)
+  const sine = sin(glyph.z)
+  const turned = vec2(corner.x.mul(cosine).sub(corner.y.mul(sine)), corner.x.mul(sine).add(corner.y.mul(cosine)))
+  const pixels = select(glyphIndex.lessThan(0), labelState.xy.add(corner), glyph.xy.add(turned))
   const ndc = vec2(pixels.x.div(viewport.x).mul(2).sub(1), float(1).sub(pixels.y.div(viewport.y).mul(2)))
   // Hidden labels collapse outside the clip volume.
   material.vertexNode = vec4(select(labelState.w.greaterThan(0), ndc, vec2(4, 4)), 0, 1)
@@ -192,6 +203,7 @@ export function createSymbolTileMesh(symbols: SymbolMesh, material: MeshBasicNod
   geometry.setAttribute('position', new BufferAttribute(positions, 3))
   geometry.setAttribute('atlasUv', new BufferAttribute(symbols.uvs, 2))
   geometry.setAttribute('labelIndex', new BufferAttribute(symbols.labelIndices, 1))
+  geometry.setAttribute('glyphIndex', new BufferAttribute(symbols.glyphIndices, 1))
   geometry.setAttribute('fillColor', new BufferAttribute(symbols.colors, 4, true))
   geometry.setAttribute('haloColor', new BufferAttribute(symbols.haloColors, 4, true))
   geometry.setAttribute('haloWidth', new BufferAttribute(symbols.haloWidths, 1))
