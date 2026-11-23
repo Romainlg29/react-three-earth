@@ -25,8 +25,8 @@ export interface SymbolFrame {
   view: ViewMorph
   /** Height of the terrain as drawn (radians in), or null where no tile is loaded. Null without terrain. */
   sampleTerrainElevation: ((longitudeRadians: number, latitudeRadians: number) => number | null) | null
-  /** Terrain height reads left this frame, shared by every source. */
-  elevationBudget: { remaining: number; deadlineMilliseconds: number }
+  /** Terrain height reads left this frame, and milliseconds of reading, shared by every source. */
+  elevationBudget: { remaining: number; milliseconds: number }
   timeMilliseconds: number
   deltaSeconds: number
   /** Asks for another frame (a tile arrived between frames). */
@@ -39,6 +39,8 @@ export interface ScreenSymbolsHost {
   readonly glyphAtlas: GlyphAtlasTexture
   /** Deepest zoom labels are laid out at (the overlay's `maximumZoom`). */
   readonly maximumZoom: number
+  /** The imagery layer's opacity: labels fade with it. */
+  readonly opacity: number
   /** Locks a processed symbol tile in the overlay's tile cache. */
   acquireSymbolTile(request: TileRequest): Lease<{ bucket: TileBucket }>
 }
@@ -156,6 +158,8 @@ export class ScreenSymbols {
   /** Whether an opacity was still changing after the last frame. */
   protected fading = false
   protected wasMorphing = false
+  /** The camera moved since the tiles were last chosen. */
+  protected pyramidDue = true
   protected lastPassMilliseconds = -Infinity
   protected tilesChanged = true
   protected statistics: ScreenSymbolsInspection = { tilesRequested: 0, tilesDrawn: 0, labels: 0, labelsShown: 0, labelsCollided: 0, placementMilliseconds: 0, elevationsPending: 0 }
@@ -168,7 +172,7 @@ export class ScreenSymbols {
   constructor(host: ScreenSymbolsHost, { fadeDurationSeconds = 0.3 }: { fadeDurationSeconds?: number } = {}) {
     this.host = host
     this.placement = new SymbolPlacement({ fadeDurationSeconds })
-    this.material = createSymbolMaterial(host.glyphAtlas, this.state, this.viewportPixels, this.luminance)
+    this.material = createSymbolMaterial(host.glyphAtlas, this.state, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
     this.object.name = 'MapStyleSymbols'
     this.object.matrixAutoUpdate = false
     this.object.raycast = () => {}
@@ -232,6 +236,7 @@ export class ScreenSymbols {
       this.lastCameraMatrix.copy(camera.matrixWorld)
       this.lastProjectionMatrix.copy(camera.projectionMatrix)
       this.placementDue = true
+      this.pyramidDue = true
     }
     this.viewportPixels.value.set(frame.widthPixels, frame.heightPixels)
     this.luminance.value = view.flatMapLuminance
@@ -239,9 +244,17 @@ export class ScreenSymbols {
 
     // The morph moves the ground on the GPU between two projections: labels wait for it to settle.
     const morphing = view.transitioning || (view.morph > 0 && view.morph < 1)
-    if (!morphing && (cameraMoved || this.tilesChanged || timeMilliseconds - this.lastPyramidMilliseconds > 1000)) {
+    // Entering or leaving the morph: hide the labels at once, or place them again at once.
+    if (morphing !== this.wasMorphing) {
+      this.placementDue = true
+      this.lastPlacementMilliseconds = -Infinity
+    }
+    // While the camera moves, tiles are chosen again as often as labels are placed.
+    const sincePyramid = timeMilliseconds - this.lastPyramidMilliseconds
+    if (!morphing && ((this.pyramidDue && sincePyramid >= PLACEMENT_INTERVAL_MILLISECONDS) || this.tilesChanged || sincePyramid > 1000)) {
       this.requestTiles(frame, summary)
       this.lastPyramidMilliseconds = timeMilliseconds
+      this.pyramidDue = false
     }
     const tilesChanged = this.tilesChanged
     this.tilesChanged = false
@@ -253,11 +266,13 @@ export class ScreenSymbols {
       !cameraMoved &&
       !tilesChanged &&
       !this.placementDue &&
+      !this.pyramidDue &&
       !this.fading &&
       this.statistics.elevationsPending === 0 &&
       morphing === this.wasMorphing &&
       timeMilliseconds - this.lastPassMilliseconds < IDLE_PASS_INTERVAL_MILLISECONDS
-    if (idle) return this.loading
+    // A tile that arrives asks for its own frame.
+    if (idle) return false
     this.wasMorphing = morphing
     this.lastPassMilliseconds = timeMilliseconds
 
@@ -278,8 +293,8 @@ export class ScreenSymbols {
     }
     this.fading = this.placement.fade(frame.deltaSeconds)
     needsFrame = this.fading || needsFrame
-    this.writeState()
-    return needsFrame || this.placementDue || this.loading
+    this.writeState(morphing)
+    return needsFrame || this.pyramidDue || this.placementDue || this.loading
   }
 
   /** The style loaded or its sources changed: asks for a frame, which picks tiles again. */
@@ -386,13 +401,16 @@ export class ScreenSymbols {
     this.tiles.set(key, tile)
     lease.promise.then(
       ({ bucket }) => {
-        if (this.tiles.get(key) !== tile) return
+        // Replaced meanwhile: by another tile, or by a refresh that finished first.
+        if (this.tiles.get(key) !== tile || tile.lease !== lease) return
         this.setTileSymbols(tile, bucket.symbols ?? null)
       },
       error => {
-        if (this.tiles.get(key) !== tile) return
+        if (this.tiles.get(key) !== tile || tile.lease !== lease || (error as Error | undefined)?.name === 'AbortError') return
         // A failed tile shows nothing; it is asked for again once the camera leaves and comes back.
-        if ((error as Error | undefined)?.name !== 'AbortError') console.warn(`MapStyleSource: labels of tile ${request.z}/${request.x}/${request.y} could not be processed. ${(error as Error).message}`)
+        console.warn(
+          `MapStyleSource: labels of tile ${request.z}/${request.x}/${request.y} could not be processed (${(error as Error).message}). Check that the tile decodes and the style's glyphs URL answers; the tile is retried when it comes back into view.`,
+        )
         this.setTileSymbols(tile, null)
       },
     )
@@ -551,9 +569,11 @@ export class ScreenSymbols {
         if (queryElevation !== null) {
           const stale = known && timeMilliseconds - tile.heightReadAt[index]! > ELEVATION_REFRESH_MILLISECONDS
           if (!known || stale) {
-            if (budget.remaining > 0 && performance.now() < budget.deadlineMilliseconds) {
+            if (budget.remaining > 0 && budget.milliseconds > 0) {
               budget.remaining--
+              const readStart = performance.now()
               const read = queryElevation(tile.longitudes[index]!, tile.latitudes[index]!)
+              budget.milliseconds -= performance.now() - readStart
               // No terrain tile there yet: stand on the ellipsoid for now and try again soon.
               const next = read === null ? (known ? height : 0) : Math.max(MINIMUM_LABEL_HEIGHT_METERS, read)
               tile.heightReadAt[index] = read === null ? timeMilliseconds - ELEVATION_REFRESH_MILLISECONDS + ELEVATION_RETRY_MILLISECONDS : timeMilliseconds
@@ -615,7 +635,7 @@ export class ScreenSymbols {
   }
 
   /** Writes every slot's screen position, scale and opacity, and uploads the state. */
-  protected writeState(): void {
+  protected writeState(morphing: boolean): void {
     let shown = 0
     for (const tile of this.tiles.values()) {
       if (tile.slotBase === -1) continue
@@ -623,7 +643,7 @@ export class ScreenSymbols {
       for (let index = 0; index < count; index++) {
         const slot = tile.slotBase + index
         const fade = tile.fades[index]
-        if (!tile.drawn || tile.projected[index] === 0 || fade == null || fade.opacity <= 0) {
+        if (morphing || !tile.drawn || tile.projected[index] === 0 || fade == null || fade.opacity <= 0) {
           this.state.hide(slot)
           continue
         }

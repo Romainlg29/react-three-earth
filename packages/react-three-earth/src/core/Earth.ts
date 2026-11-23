@@ -389,7 +389,7 @@ export class Earth extends Group<EarthEventMap> {
       centerDistanceMeters: view.distanceMeters,
       view: this.view,
       sampleTerrainElevation: (longitudeRadians, latitudeRadians) => terrain.sampleElevation(longitudeRadians, latitudeRadians),
-      elevationBudget: { remaining: SYMBOL_ELEVATION_READS_PER_FRAME, deadlineMilliseconds: performance.now() + SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME },
+      elevationBudget: { remaining: SYMBOL_ELEVATION_READS_PER_FRAME, milliseconds: SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME },
       timeMilliseconds,
       deltaSeconds,
       requestFrame: () => this.requestFrame(),

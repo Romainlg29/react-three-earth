@@ -113,8 +113,10 @@ export function GroundLabels() {
   any pitch, a little smaller towards the horizon (as MapLibre's perspective ratio). They are placed together on
   the whole screen: higher style layers first, then `symbol-sort-key`, then labels already showing, so the same
   label never shows twice where tiles of two zooms meet. `text-allow-overlap` and `text-ignore-placement` apply.
-  They stand on the terrain as drawn, go behind the globe's horizon, and hide while the view morphs between the
-  globe and the flat map.
+  They stand on the terrain as drawn and go behind the globe's horizon, but draw over mountains in front of
+  them. They hide while the view morphs between the globe and the flat map; on the flat map only the world copy
+  nearest the camera has labels. They fade with the `<Imagery>` layer's `opacity`. Each `<MapStyleSource>` places
+  its own labels, so the labels of two styles can overlap.
 - `symbols="draped"`: every label is drawn into the terrain's texture, flat on the ground, colliding only within
   its tile.
 - `symbolFadeDurationSeconds` (default 0.3): how long a label takes to fade in or out; 0 switches at once.

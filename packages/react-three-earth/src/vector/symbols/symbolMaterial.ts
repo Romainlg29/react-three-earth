@@ -143,14 +143,15 @@ function linearColor(name: string) {
  * screen (from the state texture) at the label's scale, so the CPU never touches vertices after a tile loads. SDF text
  * with a halo, as the draped text. Drawn in the scene pass without depth test, over the terrain, so the atmosphere
  * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
- * so labels keep their style colours under the exposure.
+ * so labels keep their style colours under the exposure; `opacity` is the imagery layer's.
  */
-export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }): MeshBasicNodeMaterial {
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
   material.name = 'MapStyleSymbols'
   const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
   const slotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolSlotBase ?? 0) as unknown as Node<'float'>
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
+  const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
 
   const slot = int(attribute<'float'>('labelIndex', 'float').add(slotBase))
   const width = int(SYMBOL_STATE_WIDTH)
@@ -161,7 +162,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStat
   // Hidden labels collapse outside the clip volume.
   material.vertexNode = vec4(select(labelState.w.greaterThan(0), ndc, vec2(4, 4)), 0, 1)
 
-  const opacity = varying(labelState.w)
+  const labelOpacity = varying(labelState.w)
   const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(labelState.z, float(1e-3)).mul(8))), float(0.05)))
   material.colorNode = Fn(() => {
     const distance = (atlas.node.sample(attribute<'vec2'>('atlasUv', 'vec2').div(atlas.size)) as unknown as Node<'vec4'>).r
@@ -173,7 +174,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, state: SymbolStat
     const haloAlpha = halo.a.mul(smoothstep(haloEdge.sub(smoothing), haloEdge.add(smoothing), distance)).mul(fillAlpha.oneMinus())
     const alpha = fillAlpha.add(haloAlpha)
     const rgb = fill.rgb.mul(fillAlpha).add(halo.rgb.mul(haloAlpha)).div(max(alpha, float(1e-4)))
-    return vec4(rgb.mul(brightness), alpha.mul(opacity))
+    return vec4(rgb.mul(brightness), alpha.mul(labelOpacity).mul(layerOpacity))
   })()
   return material
 }
