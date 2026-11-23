@@ -47,8 +47,8 @@ export interface StyleLayerWorkerModule {
 export interface StyleLayerOffscreen {
   blending: 'maximum' | 'additive'
   /**
-   * The colour drawn into the map from the layer target's texel (`layer`, linear), straight alpha.
-   * Default: the target as premultiplied colour, `vec4(layer.rgb / layer.a, layer.a)`.
+   * The colour drawn into the map from the layer target's texel (`layer`: linear, premultiplied, blended),
+   * straight alpha. Default: `vec4(layer.rgb / layer.a, layer.a)`.
    */
   composite?: (inputs: { layer: Node<'vec4'> }) => Node<'vec4'>
 }
@@ -95,13 +95,16 @@ export interface StyleLayerTypeDefinition {
   worker?: StyleLayerWorkerModule
   /**
    * How far the layer draws past its features, in pixels (a glow's radius). Neighbouring tiles within
-   * this distance are drawn too, and the layer is not clipped to its tile. At most 512. Default: 0.
+   * this distance are drawn too, and the layer is not clipped to its tile, so a feature in the buffer two
+   * tiles share is drawn by both: use `offscreen: { blending: 'maximum' }`, or (geometry tier) emit only the
+   * features `host.isInsideTile` owns. The material tier needs `'maximum'`. At most 512. Default: 0.
    */
   maximumReachPixels?: number
   offscreen?: StyleLayerOffscreen
   /**
    * The layer's material, built once per type per map source. The library sets blending, depth and
-   * sides, and clips it to its tile when it has no reach. Set `colorNode` (straight alpha).
+   * sides, and clips it to its tile when it has no reach. Set `colorNode` (straight alpha, also for offscreen
+   * layers: the library premultiplies what goes into the layer target).
    */
   createMaterial(inputs: StyleLayerMaterialInputs): NodeMaterial
 }
@@ -123,6 +126,9 @@ export function validateStyleLayerType(definition: StyleLayerTypeDefinition): vo
   if (typeof definition.createMaterial !== 'function') throw new Error(`registerStyleLayerType("${type}"): \`createMaterial\` must be a function returning a node material.`)
   const reach = definition.maximumReachPixels ?? 0
   if (!(reach >= 0 && reach <= 512)) throw new Error(`registerStyleLayerType("${type}"): \`maximumReachPixels\` must be between 0 and 512 (one tile), not ${reach}.`)
+  if (reach > 0 && definition.geometry !== undefined && definition.offscreen?.blending !== 'maximum') {
+    throw new Error(`registerStyleLayerType("${type}"): a material-tier type with \`maximumReachPixels\` needs \`offscreen: { blending: 'maximum' }\`, or the features two tiles share are drawn twice.`)
+  }
   for (const kind of ['paint', 'layout'] as const) {
     for (const [name, property] of Object.entries(definition[kind] ?? {})) {
       if (!['color', 'number', 'enum', 'boolean'].includes(property.type)) throw new Error(`registerStyleLayerType("${type}"): ${kind} property "${name}" needs a type: 'color', 'number', 'enum' or 'boolean'.`)
@@ -153,7 +159,7 @@ export interface WorkerLayerTypeDescriptor {
   /** An absolute URL (a `URL` cannot be posted, and a relative one would resolve against the worker's). */
   module: { href: string; exportName: string } | null
   maximumReachPixels: number
-  /** Changes when the definition is registered again, so the worker reloads the module. */
+  /** Changes when the definition is registered again, so the worker calls the module's factory again (`import()` caches the module by URL). */
   revision: number
 }
 

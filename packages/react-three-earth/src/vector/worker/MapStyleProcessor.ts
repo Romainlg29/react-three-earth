@@ -145,6 +145,8 @@ export class MapStyleProcessor {
   /** Custom layer types from plugins, with their worker modules loaded. */
   protected layerTypes: Map<string, LoadedLayerType> = new Map()
   protected layerTypeWork: Promise<unknown> = Promise.resolve()
+  /** The types the plugins registered, loaded or not. */
+  protected registeredLayerTypes = new Set<string>()
   /** Tiles fetched this session, oldest first (at most 4096), so `invalidate` knows which the browser may cache. */
   protected readonly fetchedTiles = new Map<string, { x: number; y: number; z: number }>()
   /**
@@ -194,6 +196,7 @@ export class MapStyleProcessor {
 
   protected async load(): Promise<void> {
     const errors: string[] = []
+    this.registeredLayerTypes = new Set((this.options.layerTypes ?? []).map(descriptor => descriptor.type))
     this.layerTypes = await loadLayerTypes(this.options.layerTypes ?? [], this.layerTypes)
     this.layers = this.document.layers.flatMap((layer, index) => compileStyleLayer(layer as StyleLayerSpecification, index, this.globalState, undefined, this.layerTypes) ?? [])
     assignLayerOrder(this.layers, this.document.layers as StyleLayerSpecification[])
@@ -259,7 +262,8 @@ export class MapStyleProcessor {
     const missingLayerTypes: Array<[string, string]> = []
     const skipped = this.document.layers.flatMap(layer => {
       if (!compiled.has(layer.id) && !MAPLIBRE_LAYER_TYPES.has(layer.type) && !this.layerTypes.has(layer.type)) {
-        missingLayerTypes.push([layer.id, layer.type])
+        // A registered type whose worker module failed was already reported, naming its URL.
+        if (!this.registeredLayerTypes.has(layer.type)) missingLayerTypes.push([layer.id, layer.type])
         return []
       }
       if (!compiled.has(layer.id)) return [layer.id]
@@ -300,13 +304,18 @@ export class MapStyleProcessor {
     const before = this.layerTypes
     const after = await loadLayerTypes(descriptors, before)
     const changed = new Set([...before.keys(), ...after.keys()].filter(type => before.get(type) !== after.get(type)))
+    const orderBefore = this.layerOrderBySource()
     this.layerTypes = after
+    this.registeredLayerTypes = new Set(descriptors.map(descriptor => descriptor.type))
     const errors: string[] = []
     const layers = this.document.layers.flatMap((layer, index) => compileStyleLayer(layer as StyleLayerSpecification, index, this.globalState, message => errors.push(message), after) ?? [])
     assignLayerOrder(layers, this.document.layers as StyleLayerSpecification[])
     this.layers = layers
     const rebuilt = new Set<string>()
     for (const layer of this.document.layers) if (changed.has(layer.type) && layer.source !== undefined) rebuilt.add(layer.source)
+    // A custom layer coming or going renumbers the draw groups of every source after it.
+    const orderAfter = this.layerOrderBySource()
+    for (const source of new Set([...orderBefore.keys(), ...orderAfter.keys()])) if (orderBefore.get(source) !== orderAfter.get(source)) rebuilt.add(source)
     await Promise.all([...this.usedSources()].filter(id => !this.fetchers.has(id)).map(id => this.loadSource(id, errors)))
     this.summary = this.computeSummary()
     return { summary: this.summary, rebuiltSources: [...rebuilt], errors }

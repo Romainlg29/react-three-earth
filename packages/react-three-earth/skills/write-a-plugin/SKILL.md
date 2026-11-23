@@ -226,7 +226,7 @@ property becomes a vertex attribute (at most 6); `geometryInput` feeds the tesse
 
 ```ts
 import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
-import { fract, mix, step } from 'three/tsl'
+import { fract, mix, step, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 
 export const dashedRoads: EarthPlugin = {
@@ -245,7 +245,7 @@ export const dashedRoads: EarthPlugin = {
         // Diagonal bands 8 map pixels long: tile.position is in tile units, pixelsPerTileUnit turns it into pixels.
         const pixels = tile.position.x.add(tile.position.y).mul(tile.pixelsPerTileUnit)
         const color = paint.color('dashed-road-color') // linear RGB, straight alpha
-        material.colorNode = mix(color, color.mul(0.4), step(0.5, fract(pixels.div(16))))
+        material.colorNode = mix(color, vec4(color.rgb.mul(0.4), color.a), step(0.5, fract(pixels.div(16))))
         return material
       },
     })
@@ -291,11 +291,13 @@ Register it with `worker: { moduleUrl: new URL('./glowWorker.js', import.meta.ur
 
 - **Reach.** A layer drawing past its features (a glow) sets `maximumReachPixels` (at most 512): neighbouring
   tiles that close are drawn too, the tile clip is dropped, and `host.clampReach` caps data-driven radii.
+  Two tiles share a buffer of features, and both now draw it: use `offscreen: { blending: 'maximum' }`, or
+  emit only the features `host.isInsideTile` owns. The material tier with reach requires `'maximum'`.
 - **Offscreen layers.** `offscreen: { blending: 'maximum' }` draws the layer into its own half-float target first,
   so overlaps keep the strongest value instead of stacking, then composites it once at the layer's place;
   `'additive'` sums (densities; skip buffered features with `host.isInsideTile`, or neighbours count them
-  twice). Write premultiplied colour in `colorNode`; `composite({ layer })` turns the target into the drawn
-  colour (default `vec4(layer.rgb / layer.a, layer.a)`).
+  twice). Write straight alpha in `colorNode` as always: the library premultiplies it into the target, and
+  `composite({ layer })` turns the target texel into the drawn colour (default `vec4(layer.rgb / layer.a, layer.a)`).
 
 The playground's `src/styleLayers/` has both tiers: `sdf-glow` (worker module, exact distance to each segment,
 maximum blending) and `striped-fill`. Run them with `?fixtures&map=vector&glow`.

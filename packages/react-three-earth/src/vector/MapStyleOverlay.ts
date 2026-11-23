@@ -209,7 +209,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly warnedLayerTypes = new Set<string>()
   /** Where offscreen custom layers draw before they are composited (one per overlay, region-sized). */
   protected layerTarget: RenderTarget | null = null
-  protected readonly layerTexture = texture(new RenderTarget(1, 1).texture)
+  protected readonly placeholderLayerTarget = new RenderTarget(1, 1)
+  protected readonly layerTexture = texture(this.placeholderLayerTarget.texture)
   protected readonly layerScene = new Scene()
   protected readonly compositeScene = new Scene()
   protected readonly clearColor = new Color()
@@ -404,8 +405,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (this.disposed || this.backend === null || this.snapshotSequence < 0) return
     const layerTypes = this.styleLayerTypes?.describe() ?? []
     this.enqueueStyleWork(backend => backend.setLayerTypes(layerTypes), result => {
+      const drawnBefore = this.summary?.customLayerTypes.join('\u0000')
       this.applyStyleResult(result)
-      this.markRegionsStale(() => true) // reach and offscreen passes may have changed with the types
+      // Reach and offscreen passes change only with the types the style draws.
+      if (result.rebuiltSources.length > 0 || result.summary.customLayerTypes.join('\u0000') !== drawnBefore) this.markRegionsStale(() => true)
     })
   }
 
@@ -425,6 +428,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (definition === undefined) return null
     let entry = this.customLayerTypes.get(type)
     if (entry?.definition === definition) return entry.material === null ? null : entry
+    if (entry !== undefined) {
+      entry.material?.dispose()
+      ;(entry.composite?.material as MeshBasicNodeMaterial | undefined)?.dispose()
+    }
     entry = { definition, material: null, composite: null }
     try {
       entry.material = createCustomLayerMaterial(definition)
@@ -786,6 +793,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.styleLayerTypes = null
     this.pruneCustomLayerTypes()
     this.layerTarget?.dispose()
+    this.placeholderLayerTarget.dispose()
     this.regions.dispose()
     this.buckets.dispose()
     this.backend?.dispose()
@@ -1088,6 +1096,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected getLayerTarget(resolution: number): RenderTarget {
     if (this.layerTarget !== null && this.layerTarget.width === resolution) return this.layerTarget
     this.layerTarget?.dispose()
+    this.placeholderLayerTarget.dispose()
     this.layerTarget = new RenderTarget(resolution, resolution, { type: HalfFloatType, colorSpace: LinearSRGBColorSpace, depthBuffer: false, generateMipmaps: false, minFilter: LinearFilter, magFilter: LinearFilter })
     this.layerTarget.texture.name = 'MapStyleLayerTarget'
     this.layerTexture.value = this.layerTarget.texture

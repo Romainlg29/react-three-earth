@@ -25,7 +25,7 @@ export function sdfGlow({ workerModuleUrl = new URL('./sdfGlowWorker.js', import
         },
         worker: { moduleUrl: workerModuleUrl, exportName: 'sdfGlow' },
         maximumReachPixels: 64,
-        // Overlaps keep the strongest glow: the target holds premultiplied colour, alpha = strength.
+        // Overlaps keep the strongest glow (alpha = strength).
         offscreen: { blending: 'maximum' },
         createMaterial: ({ paint, tile }) => {
           const start = attribute<'vec2'>('segmentStart', 'vec2')
@@ -37,7 +37,7 @@ export function sdfGlow({ workerModuleUrl = new URL('./sdfGlowWorker.js', import
           const strength = float(1).sub(smoothstep(0, radiusPixels, distancePixels)).mul(paint.number('sdf-glow-intensity'))
           const color = paint.color('sdf-glow-color')
           const material = new MeshBasicNodeMaterial()
-          material.colorNode = vec4(color.rgb.mul(strength), strength.mul(color.a))
+          material.colorNode = vec4(color.rgb, strength.mul(color.a))
           return material
         },
       })

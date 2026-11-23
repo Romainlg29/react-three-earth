@@ -5,7 +5,7 @@ import { Earth } from '../src/core/Earth.js'
 import { PLUGIN_API_VERSION } from '../src/plugins/plugin.js'
 import { StyleLayerTypeRegistry, type StyleLayerTypeDefinition, type WorkerLayerTypeDescriptor } from '../src/plugins/styleLayerTypes.js'
 import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
-import type { CustomLayerMesh } from '../src/vector/worker/types.js'
+import { collectTransferables, type CustomLayerMesh } from '../src/vector/worker/types.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
 
@@ -93,6 +93,7 @@ describe('StyleLayerTypeRegistry', () => {
     expect(() => registry.register({ ...glow, maximumReachPixels: 600 })).toThrow(/between 0 and 512/)
     expect(() => registry.register({ ...stripes, paint: { mode: { type: 'enum', default: 'a' } } })).toThrow(/needs its `values`/)
     expect(() => registry.register({ ...glow, paint: { width: { type: 'number', default: 1, geometryInput: 'line-width' } } })).toThrow(/only material-tier types/)
+    expect(() => registry.register({ ...stripes, maximumReachPixels: 8 })).toThrow(/needs `offscreen: \{ blending: 'maximum' \}`/)
     registry.register(stripes)
     expect(() => registry.register({ ...stripes })).toThrow(/already registered by another plugin; remove that plugin first/)
   })
@@ -183,6 +184,48 @@ describe('custom style layer types in the worker', () => {
     const { process, processor } = await createProcessor([{ id: 'glow', type: 'sdf-glow', source: 'base', 'source-layer': 'roads' }], describeTypes(broken))
     expect(warn.mock.calls[0]?.[0]).toMatch(/worker module of layer type "sdf-glow" \(.*sdfGlowWorker\.js\) did not load.*no export "missing"/)
     expect((await process()).layers).toEqual([])
-    expect(processor.summary.missingLayerTypes).toEqual([['glow', 'sdf-glow']])
+    // Registered, so not reported as a missing plugin: the warning above names the module instead.
+    expect(processor.summary.missingLayerTypes).toEqual([])
+  })
+
+  it('rebuilds the other sources whose draw groups a custom layer renumbers', async () => {
+    const tile = encodeVectorTile([{ name: 'buildings', features: [{ type: 'Polygon', id: 1, geometry: [square(0, 1024)], properties: {} }] }])
+    const { fetch } = createFakeFetch({ 'https://a.test/0/0/0.pbf': tile, 'https://b.test/0/0/0.pbf': tile })
+    const twoSources = {
+      version: 8,
+      sources: { a: { type: 'vector', tiles: ['https://a.test/{z}/{x}/{y}.pbf'] }, b: { type: 'vector', tiles: ['https://b.test/{z}/{x}/{y}.pbf'] } },
+      layers: [
+        { id: 'a-fill', type: 'fill', source: 'a', 'source-layer': 'buildings' },
+        { id: 'a-striped', type: 'stripes', source: 'a', 'source-layer': 'buildings' },
+        { id: 'a-fill-2', type: 'fill', source: 'a', 'source-layer': 'buildings' },
+        { id: 'b-fill', type: 'fill', source: 'b', 'source-layer': 'buildings' },
+      ],
+    }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const processor = await MapStyleProcessor.create({ style: twoSources, baseUrl: 'https://a.test/', requestHeaders: {}, localFontFamily: 'sans-serif' }, { fetch: fetch as typeof globalThis.fetch })
+    const result = await processor.setLayerTypes(describeTypes(stripes))
+    expect(result.rebuiltSources.sort()).toEqual(['a', 'b'])
+  })
+
+  it("copies a worker module's arrays and refuses ones that cannot reach the GPU", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // One quad index array reused for every tile, as a module might cache it.
+    const source = `
+      const quad = new Uint16Array([0, 1, 2, 0, 2, 3])
+      export const reused = () => ({ createTileBuilder: () => ({ addFeature() {}, finish: () => ({ attributes: { position: { array: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]), itemSize: 2 } }, indices: quad }) }) })
+      export const plain = () => ({ createTileBuilder: () => ({ addFeature() {}, finish: () => ({ attributes: { position: { array: new Float32Array([0, 0, 1, 0, 1, 1]), itemSize: 2 } }, indices: [0, 1, 2] }) }) })
+      export const packed = () => ({ createTileBuilder: () => ({ addFeature() {}, finish: () => ({ attributes: { position: { array: new Float32Array([0, 0, 1, 0, 1, 1]), itemSize: 2 }, tint: { array: new Uint8Array(9), itemSize: 3 } }, indices: new Uint16Array([0, 1, 2]) }) }) })`
+    const moduleUrl = `data:text/javascript,${encodeURIComponent(source)}`
+    const type = (exportName: string): StyleLayerTypeDefinition => ({ type: `quad-${exportName}`, worker: { moduleUrl, exportName }, createMaterial: () => new MeshBasicNodeMaterial() })
+    const layer = (exportName: string) => ({ id: exportName, type: `quad-${exportName}`, source: 'base', 'source-layer': 'roads' })
+    const { process } = await createProcessor([layer('reused'), layer('plain'), layer('packed')], describeTypes(type('reused'), type('plain'), type('packed')))
+    for (let round = 0; round < 2; round++) {
+      const bucket = await process()
+      expect(bucket.layers.map(mesh => mesh.layerId)).toEqual(['reused'])
+      structuredClone(bucket, { transfer: collectTransferables(bucket) }) // what the worker does: detaches the copies only
+    }
+    const messages = warn.mock.calls.map(call => String(call[0])).join('\n')
+    expect(messages).toMatch(/quad-plain.*`indices` as a Uint16Array or Uint32Array/)
+    expect(messages).toMatch(/quad-packed.*"tint" of 8 or 16 bits needs an itemSize of 1, 2 or 4/)
   })
 })

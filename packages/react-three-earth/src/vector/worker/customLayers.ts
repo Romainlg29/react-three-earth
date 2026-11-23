@@ -66,7 +66,7 @@ export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescri
       if (descriptor.module !== null) {
         const { href, exportName } = descriptor.module
         try {
-          const exports = (await import(/* @vite-ignore */ href)) as Record<string, unknown>
+          const exports = await importWithTimeout(href)
           const factory = exports[exportName]
           if (typeof factory !== 'function') throw new Error(`it has no export "${exportName}" that is a function; export the WorkerLayerTypeFactory under that name.`)
           module = (factory as WorkerLayerTypeFactory)(createHost(descriptor))
@@ -81,6 +81,21 @@ export async function loadLayerTypes(descriptors: readonly WorkerLayerTypeDescri
     }),
   )
   return new Map(loaded.flatMap(type => (type === null ? [] : [[type.descriptor.type, type]])))
+}
+
+/** A worker module that takes longer than this is skipped, so it cannot hold up the whole style. */
+export const WORKER_MODULE_TIMEOUT_MILLISECONDS = 10_000
+
+async function importWithTimeout(href: string): Promise<Record<string, unknown>> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`it took over ${WORKER_MODULE_TIMEOUT_MILLISECONDS / 1000} s; check the URL and that the server answers. Registering the type again retries.`)), WORKER_MODULE_TIMEOUT_MILLISECONDS)
+  })
+  try {
+    return (await Promise.race([import(/* @vite-ignore */ href), timeout])) as Record<string, unknown>
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function createHost(descriptor: WorkerLayerTypeDescriptor): WorkerLayerTypeHost {
@@ -217,6 +232,22 @@ class MaterialTierBuilder implements CustomLayerBuilder {
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/
 
+/** WebGPU guarantees 8 vertex buffers; each attribute takes one. */
+const MAXIMUM_VERTEX_ATTRIBUTES = 8
+
+const ATTRIBUTE_ARRAYS = [Float32Array, Uint8Array, Uint16Array, Int16Array, Uint32Array, Int32Array] as const
+
+/** Why an attribute has no WebGPU vertex format, or null when it has one. */
+function attributeProblem(attribute: { array: unknown; itemSize: number; normalized?: boolean }): string | null {
+  const { array, itemSize, normalized = false } = attribute
+  if (!ATTRIBUTE_ARRAYS.some(constructor => array instanceof constructor)) return 'needs a typed array (Float32Array, Uint8Array, Uint16Array, Int16Array, Uint32Array or Int32Array)'
+  if (![1, 2, 3, 4].includes(itemSize)) return `needs an itemSize of 1 to 4, not ${itemSize}`
+  const bytes = (array as Float32Array).BYTES_PER_ELEMENT
+  if (bytes < 4 && itemSize === 3) return 'of 8 or 16 bits needs an itemSize of 1, 2 or 4 (WebGPU has no 3-component format for them); pad it to 4'
+  if (normalized && bytes === 4) return 'cannot be normalized with 32-bit values; use 8 or 16 bits, or floats'
+  return null
+}
+
 /** Runs the plugin's own tessellation from its worker module. */
 class GeometryTierBuilder implements CustomLayerBuilder {
   protected readonly builder: WorkerTileBuilder | null = null
@@ -276,20 +307,36 @@ class GeometryTierBuilder implements CustomLayerBuilder {
     const vertexCount = position.array.length / 2
     const paintNames = Object.keys(this.type.descriptor.paint)
     const attributes: CustomLayerAttribute[] = []
-    for (const [name, attribute] of Object.entries(geometry.attributes)) {
+    const entries = Object.entries(geometry.attributes)
+    if (entries.length > MAXIMUM_VERTEX_ATTRIBUTES) {
+      this.fail(`finish() returned ${entries.length} attributes; at most ${MAXIMUM_VERTEX_ATTRIBUTES} including \`position\` (WebGPU vertex buffers)`)
+      return null
+    }
+    for (const [name, attribute] of entries) {
       const paintIndex = paintNames.indexOf(name)
       const shaderName = paintIndex === -1 ? name : `paint${paintIndex}`
       if (!IDENTIFIER.test(shaderName) || (paintIndex === -1 && /^paint\d+$/.test(name))) {
         this.fail(`attribute "${name}" is neither a paint property nor a shader identifier (letters, digits, _; not paintN)`)
         return null
       }
+      const problem = attributeProblem(attribute)
+      if (problem !== null) {
+        this.fail(`attribute "${name}" ${problem}`)
+        return null
+      }
       if (attribute.array.length !== vertexCount * attribute.itemSize) {
         this.fail(`attribute "${name}" has ${attribute.array.length} values for ${vertexCount} vertices of ${attribute.itemSize}`)
         return null
       }
-      attributes.push({ name: shaderName, array: attribute.array, itemSize: attribute.itemSize, normalized: attribute.normalized ?? false })
+      // Copied: the module may reuse its arrays across tiles, or hand views into WebAssembly or shared memory,
+      // none of which can be transferred.
+      attributes.push({ name: shaderName, array: attribute.array.slice(), itemSize: attribute.itemSize, normalized: attribute.normalized ?? false })
     }
-    const { indices } = geometry
+    if (!(geometry.indices instanceof Uint16Array || geometry.indices instanceof Uint32Array)) {
+      this.fail('finish() needs `indices` as a Uint16Array or Uint32Array')
+      return null
+    }
+    const indices = geometry.indices.slice()
     for (let index = 0; index < indices.length; index++) {
       if (indices[index]! >= vertexCount) {
         this.fail(`index ${indices[index]} is past the ${vertexCount} vertices`)

@@ -78,13 +78,20 @@ export function createCustomLayerMaterial(definition: StyleLayerTypeDefinition):
     material.blendDstAlpha = OneFactor
     material.premultipliedAlpha = false
   }
+  const color = material.colorNode
+  if (color === null) throw new Error(`Layer type "${definition.type}": createMaterial must set the material's colorNode.`)
+  // Straight alpha in, premultiplied into the layer target: blended values stay meaningful under max and add.
+  const drawn = offscreen === undefined ? color : (Fn(() => {
+    const straight = vec4(color as unknown as Node<'vec4'>)
+    return vec4(straight.rgb.mul(straight.a), straight.a)
+  })() as unknown as typeof color)
   if ((definition.maximumReachPixels ?? 0) === 0) {
-    const color = material.colorNode
-    if (color === null) throw new Error(`Layer type "${definition.type}": createMaterial must set the material's colorNode.`)
     material.colorNode = Fn(() => {
       discardOutsideTile()
-      return color
+      return drawn
     })()
+  } else {
+    material.colorNode = drawn
   }
   return material
 }
