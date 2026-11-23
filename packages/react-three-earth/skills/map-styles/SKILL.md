@@ -214,6 +214,8 @@ export function HoveredBuilding({ hoveredId }: { hoveredId: number | null }) {
   processes the feature's tiles again: correct, but slower. Prefer colour for hover.
 - A transparent colour that turns visible with state is still drawn (as with MapLibre).
 - Feature-state works in paint properties only, as in MapLibre.
+- To find the feature under the pointer, or to set hover state from pointer moves, see
+  `query-features-and-layer-events` (`earth.queryRenderedFeatures`, `useHoverFeatureState`).
 
 ### App state in filters and layout: `global-state`
 

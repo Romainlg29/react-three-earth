@@ -4,11 +4,11 @@ import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import type { GeographicBounds } from './camera.js'
 import { MapStyle, type MapStyleEventMap, type ProtocolLoader, type TransformRequest } from '../vector/MapStyle.js'
-import { MapStyleOverlay } from '../vector/MapStyleOverlay.js'
+import { MapStyleOverlay, type SourceFeatureQueryOptions } from '../vector/MapStyleOverlay.js'
 import type { StyleLayer } from '../vector/StyleLayer.js'
 import type { FeatureIdentifier } from '../vector/worker/featureState.js'
 import type { StyleDocument, StyleDocumentLayer } from '../vector/worker/styleDocument.js'
-import type { FeatureState } from '../vector/worker/types.js'
+import type { FeatureState, SourceFeature } from '../vector/worker/types.js'
 import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../vector/styleImageInput.js'
 import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
@@ -203,6 +203,9 @@ export interface MapStyleSourceOptions {
  * `setStyle` (diffed), `setGlobalStateProperty`, and `setFeatureState` for paint driven by app state (hover,
  * selection). Only the tiles a change touches are processed again; feature-state colour changes only redraw.
  * Changes made before the style has loaded apply once it has. Events: `styledata`, `sourcedata`, `error`.
+ *
+ * `querySourceFeatures` reads the features of the tiles drawn now; `earth.queryRenderedFeatures` and
+ * `earth.layerEvents` find what is under the pointer.
  */
 export class MapStyleSource extends AttributionTracker implements ImagerySource {
   readonly kind = 'imagery'
@@ -311,6 +314,18 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
     if (this.reportedMissingImages.has(imageId) || this.images.has(imageId)) return
     this.reportedMissingImages.add(imageId)
     this.options.onStyleImageMissing?.(imageId)
+  }
+
+  /**
+   * Every feature of one of the style's sources in the tiles drawn now, whether a layer draws it or not:
+   * MapLibre's `querySourceFeatures`. A feature crossing tiles is listed once per tile, clipped to each. Resolves to
+   * no features before the style has loaded. For what is drawn under the pointer, use `earth.queryRenderedFeatures`.
+   * @example const lakes = await source.querySourceFeatures('base', { sourceLayer: 'water', filter: ['>', ['get', 'area'], 1e6] })
+   */
+  async querySourceFeatures(sourceId: string, options?: SourceFeatureQueryOptions): Promise<SourceFeature[]> {
+    this.pruneDisposedOverlays()
+    const overlay = [...this.overlays].find(candidate => candidate.summary !== null) ?? [...this.overlays][0]
+    return overlay === undefined ? [] : overlay.querySourceFeatures(sourceId, options)
   }
 
   /** Regions waiting to be redrawn after `invalidate`, over every layer using this source. */

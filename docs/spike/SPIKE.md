@@ -368,6 +368,78 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 
 ![patterns](map-vector-patterns-webgpu.png) ![addImage](map-vector-patterns-webgpu-added.png)
 
+### Feature querying and layer events (W4)
+
+`earth.queryRenderedFeatures(point | box | nothing, { layers, filter, tolerancePixels })` and
+`MapStyleSource.querySourceFeatures(sourceId, { sourceLayer, filter })` answer MapLibre-shaped features (`id`,
+`properties`, GeoJSON `geometry` in degrees, `source`, `sourceLayer`, `state`, `layer`; rendered ones also
+`mapStyleSource`). `earth.layerEvents` adds layer-scoped `click`, `doubleclick`, `contextmenu`, `pointermove`,
+`pointerenter` and `pointerleave` (MapLibre's `mouseenter` / `mouseleave`), `addCursor` and `addHoverState`;
+React has `useEarthEvent(type, handler, { layers })`, `useLayerCursor` and `useHoverFeatureState`. `Earth`
+fires a new `pointerout` when the pointer leaves its element.
+
+How it works:
+
+- **Main thread: what is drawn there.** The screen point is unprojected (`earth.camera.unproject`, terrain
+  raycast) into normalised Web Mercator. Each `MapStyleOverlay` reads the region textures of *visible* terrain
+  tiles under it: it now follows 3DTilesRenderer's `setRegionVisible` (an upstream method without typings),
+  because a region stays locked and loaded while its terrain tile is only cached, so after zooming out the old
+  fine regions would otherwise answer. A point reads the finest visible region under it; a box every visible
+  region it overlaps, each at its own level. The query sends those regions' tiles, with the label ring each region
+  reads (same reach test as drawing), at the zoom each was drawn at: exactly what the terrain shows, and tiles
+  already processed. A box is unprojected along its outline (16 samples) so pitch and the globe bend it; when part
+  of the outline is on the sky (the whole globe in view), a 13 × 13 grid inside it is sampled and its hull used.
+- **Worker: hit tests from the raw tiles.** No decoded features are kept per tile. The raw tile comes from the
+  worker's raw-tile cache, and a grid index of feature boxes (`featureIndex.ts`, 16 × 16 cells, built from
+  `feature.bbox()` without allocating points) is kept in a `WeakMap` keyed by the decoded tile, so it lives exactly
+  as long as the raw tile. Candidates are decoded and tested as drawn: fills even-odd (holes are holes), lines by
+  half width (gap lines are their two sides and the gap, hairlines one pixel, `line-offset` applied with mitred
+  corners), circles by radius plus stroke, all at the drawn zoom's pixels. The query is clipped to the tile square,
+  since a tile draws nothing outside it. Hit testers are a registry by layer type (`featureHitTesters`), not a
+  `switch`, so custom types can add theirs.
+- **Labels hit their placed boxes.** `processTile` now records the boxes of the labels it placed (with the source
+  layer and feature index) in an LRU of 256 tiles, keyed to the decoded tile by a serial number (so the cache keeps
+  no tile alive). A query reuses them while the raw tile and the compiled layers are the ones they were placed
+  from; otherwise it lays the tile out again. A style change while a query loads tiles makes it start again (up to
+  three tries), so an answer never mixes two styles. Labels sort above every shape, because
+  they draw above every shape (top style layer first among themselves).
+- **Order and duplicates.** Top imagery layer first; in a style, labels, then shapes from the top style layer down,
+  later features in a tile first. A feature with an id is listed once per layer across tiles (MapLibre does the same
+  through its feature index); features without ids can repeat in box queries. `querySourceFeatures` reads every
+  feature of the source's tiles under held regions, once per tile, clipped, as MapLibre does.
+- **Layer events** run one `queryRenderedFeatures` per pointer event for all listeners of its type (the union of their
+  layers), one per distinct `tolerancePixels` so a listener's tolerance never widens another's. A source disposed
+  during a query answers nothing instead of failing the others. Pointer moves keep one query in flight and query the latest move next; a `pointerout` meanwhile
+  discards the answer. `pointerenter` / `pointerleave` track, per listener, whether the pointer was over its layers.
+
+Deviations from the brief:
+
+- **No flatbush dependency.** A tile holds at most a few thousand features per source layer; a fixed grid over the
+  tile (with its buffer) answers a point query with a handful of candidates and costs nothing to depend on.
+- **No worker-side id → tiles index for feature-state.** W3 already keeps, on the main thread, the exact map from
+  feature key to loaded buckets (built from each bucket's `featureStateKeys`), which is what a state change needs to
+  pick regions to redraw. A second index in the worker would duplicate it, so W3's stays.
+- Queries are asynchronous (MapLibre's are synchronous): the features live in the worker. Layer listeners therefore
+  run after the DOM event; `preventDefault` there is too late, and the docs say so.
+- Line and circle candidates are looked up within 128 map pixels of the query: a data-driven half width beyond
+  that (not known until the feature is read) can be missed near its edge.
+
+Not supported yet: custom layer types (plugins), icons, raster sources and draped layers answer nothing;
+`fill-translate` and friends are not drawn either, so not queried; hover does not follow a camera move under a still
+pointer (as in MapLibre).
+
+| Check (`?fixtures&map=vector&hover`, SwiftShader; correctness only) | Result |
+| --- | --- |
+| `queryRenderedFeatures` at Lake Kawaguchi's screen position | `water-hover` (transparent) and `water`, id 1, "Lake Kawaguchi", a Polygon |
+| at East Road 6, `tolerancePixels: 3` | `road` above `road-casing`, both "East Road 6" |
+| real mouse click on the lake | the `click` listener for `water`, `road`, labels gets `[water 1]` only |
+| hover, then leave | feature-state `hover` true, cursor `pointer`, `pointerenter` with lake 1, lake 0.15 % pink; then false, cursor restored, `pointerleave`, blue again |
+| whole screen, `layers: ['water']`; `querySourceFeatures('fixture', { sourceLayer: 'water' })` | lakes 1, 2, 3 |
+| point query round trip | 1.7 ms average (worker hit test and message, CPU-only machine) |
+| Unit tests | 33 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, visible regions only, layer events (scoping, enter / leave, one query in flight, tolerance per listener, cleanup), hover state (cleared on dispose), cursor, a whole globe inside a box |
+
+![hover](map-vector-query-hover.png)
+
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
 Design: `handoff/plugin-system-design.md` in the project files (reviewed by Romain; he chose 3D raymarched

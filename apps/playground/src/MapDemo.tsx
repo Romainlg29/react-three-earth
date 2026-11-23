@@ -6,6 +6,7 @@ import {
   type Earth as EarthImpl,
   type GeographicPosition,
   type MapStyleSource as MapStyleSourceImpl,
+  type RenderedFeature,
   type Marker as MarkerImpl,
   type ViewMode,
 } from 'react-three-earth'
@@ -29,7 +30,10 @@ import {
   StyleLayer,
   Terrain,
   useEarth,
+  useEarthEvent,
   useEarthFrame,
+  useHoverFeatureState,
+  useLayerCursor,
   ViewControl,
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
@@ -76,6 +80,9 @@ const sdfShapesPlugin = sdfShapes()
 // the primary roads (worker module, offscreen maximum blending) and striped lakes (built-in fill, own shader).
 // `?glow=late` leaves them out: the browser check installs them after the style loaded (window.styleLayerTypePlugins).
 const showStyleLayerTypes = params.has('glow')
+// `?hover` (with `?fixtures&map=vector`) highlights the lake under the pointer through feature-state, shows a pointer cursor
+// over lakes and roads, and logs clicked features (`window.layerClicks`) and the hovered lake (`window.hoveredFeatures`).
+const showHover = params.has('hover') && useFixtures
 const styleLayerTypePlugins = [sdfGlow(), stripedFill()]
 // `?effects` installs the render pass and draped layer examples (src/effects/): a vignette with a highlight lift,
 // and a glow around a selected place (`window.effectPlugins.selectionGlow.select(position)`). `?effects=late`
@@ -124,6 +131,8 @@ declare global {
     dragEnds?: GeographicPosition[]
     selectedPlace?: string | null
     styleImagesMissing?: string[]
+    layerClicks?: RenderedFeature[][]
+    hoveredFeatures?: RenderedFeature[]
   }
 }
 
@@ -205,6 +214,30 @@ function StyleLayerTypeExamples() {
   )
 }
 
+/** The `?hover` layer: lakes turn pink under the pointer (feature-state set by `useHoverFeatureState`). */
+function HoverLayer() {
+  return (
+    <StyleLayer
+      id="water-hover"
+      type="fill"
+      source="fixture"
+      sourceLayer="water"
+      paint={{ 'fill-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#e0457b', 'rgba(0, 0, 0, 0)'] }}
+      beforeId="road-casing"
+    />
+  )
+}
+
+/** The `?hover` interactions: hover state on lakes, a pointer over lakes and roads, clicks logged. */
+function FeatureInteractions() {
+  useHoverFeatureState(['water'])
+  useLayerCursor(['water', 'road'])
+  useEarthEvent('click', event => (window.layerClicks ??= []).push(event.features), { layers: ['water', 'road', 'road-label', 'place-label'] })
+  useEarthEvent('pointerenter', event => void (window.hoveredFeatures = event.features), { layers: ['water'] })
+  useEarthEvent('pointerleave', () => void (window.hoveredFeatures = []), { layers: ['water'] })
+  return null
+}
+
 /**
  * The `?sdf` scene: a beacon on the peak (3900 m at -90°, 0° with fixtures, Fuji otherwise), its lower half in
  * the mountain, and a ring above it.
@@ -264,6 +297,7 @@ export function MapDemo() {
             {mapStyleUrl !== undefined ? (
               <MapStyleSource url={mapStyleUrl} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
                 {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
+                {showHover ? <HoverLayer /> : null}
               </MapStyleSource>
             ) : <RasterTileSource url={imageryUrl} levels={useFixtures ? 18 : 19} attribution={OPENSTREETMAP_ATTRIBUTION} />}
           </Imagery>
@@ -285,6 +319,7 @@ export function MapDemo() {
           </Controls>
           {showMarkers ? <Markers /> : null}
           {showSdfShapes ? <SdfShapes /> : null}
+          {showHover && mapStyleUrl !== undefined ? <FeatureInteractions /> : null}
         </Earth>
       </Canvas>
       <a href={`${import.meta.env.BASE_URL}examples.html`} style={{ position: 'absolute', top: 8, left: 8, color: '#fff', opacity: 0.85 }}>Examples</a>

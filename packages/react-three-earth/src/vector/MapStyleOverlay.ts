@@ -32,6 +32,10 @@ import {
   type ImageChange,
   type MapStyleProcessorOptions,
   type MapStyleSummary,
+  type MercatorPoint,
+  type QueryTile,
+  type RenderedSourceFeature,
+  type SourceFeature,
   type StyleCommand,
   type StyleImage,
   type StyleUpdateResult,
@@ -69,6 +73,27 @@ export interface MapStyleOverlayOptions {
   onStyleImageMissing?: (imageId: string) => void
   /** Called after the style loaded and each time a style change gave a new summary (sources, attributions…). */
   onSummaryChange?: (summary: MapStyleSummary) => void
+}
+
+/** Options of `queryRenderedFeatures`. */
+export interface RenderedFeatureQueryOptions {
+  /** Only features of these style layers. Default: every layer. */
+  layers?: readonly string[]
+  /** A MapLibre filter expression the features must also pass, as in a layer's `filter`. Default: none. */
+  filter?: unknown
+  /**
+   * Extra distance within which a feature counts as under the pointer, in map pixels at the zoom the terrain is
+   * textured at there (about screen pixels). Helps on touch screens. Default: 0, as MapLibre.
+   */
+  tolerancePixels?: number
+}
+
+/** Options of `querySourceFeatures`. */
+export interface SourceFeatureQueryOptions {
+  /** The source layer to read (MapLibre requires it for vector sources). Default: every source layer. */
+  sourceLayer?: string
+  /** A MapLibre filter expression the features must pass. Default: none. */
+  filter?: unknown
 }
 
 /** One vector tile a region draws. */
@@ -214,6 +239,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly layerScene = new Scene()
   protected readonly compositeScene = new Scene()
   protected readonly clearColor = new Color()
+  /** Ranges of regions on visible terrain tiles, with how many visible tiles show each (`setRegionVisible`). */
+  protected readonly visibleRegions = new Map<string, { range: number[]; count: number }>()
 
   constructor({
     style,
@@ -644,6 +671,119 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     const rectangles = bounds === undefined ? null : boundsToMercatorRectangles(bounds)
     this.backend?.invalidate(rectangles)
     this.rebuildTiles(({ x, y, z }) => tileOverlaps(x, y, z, rectangles))
+  }
+
+  /**
+   * The features drawn under a point or polygon (normalised Web Mercator), top-most first: labels, which draw above
+   * every shape, then shapes from the top style layer down. Hits are tested against the tiles drawn there, at the
+   * zoom the terrain is textured at, with line widths, circle radii and placed label boxes as drawn. Resolves to no
+   * features before the style has loaded or where no texture is drawn yet.
+   */
+  async queryRenderedFeatures(geometry: readonly MercatorPoint[], options: RenderedFeatureQueryOptions = {}): Promise<RenderedSourceFeature[]> {
+    const backend = this.backend
+    if (this.disposed || backend === null || this.summary === null || geometry.length === 0) return []
+    const tiles = this.getQueryTiles(geometry)
+    if (tiles.length === 0) return []
+    return backend.queryRenderedFeatures({
+      geometry: geometry.map(({ x, y }) => ({ x, y })),
+      tiles,
+      layers: options.layers === undefined ? null : [...options.layers],
+      filter: options.filter ?? null,
+      tolerancePixels: Math.max(0, options.tolerancePixels ?? 0),
+    })
+  }
+
+  /**
+   * Every feature of a style source in the tiles drawn now (MapLibre's `querySourceFeatures`), drawn by a layer or
+   * not. A feature crossing tiles is listed once per tile, its geometry clipped to each.
+   */
+  async querySourceFeatures(sourceId: string, options: SourceFeatureQueryOptions = {}): Promise<SourceFeature[]> {
+    const backend = this.backend
+    if (this.disposed || backend === null || this.summary === null) return []
+    if (this.mapStyle.getSource(sourceId) === undefined) throw new Error(`MapStyleSource.querySourceFeatures: the style has no source "${sourceId}"; pass one of ${JSON.stringify(Object.keys(this.mapStyle.getStyle()?.sources ?? {}))}.`)
+    const tiles = new Map<string, { x: number; y: number; z: number }>()
+    for (const key of this.regions.keys()) {
+      if (this.regions.get(key) === null) continue
+      const { range, level } = parseRegionKey(key)
+      for (const tile of this.getRegionTiles(range, level)) {
+        if (tile.textOnly || tile.request.sourceId !== sourceId) continue
+        const { x, y, z } = tile.request
+        tiles.set(`${z}/${x}/${y}`, { x, y, z })
+      }
+    }
+    if (tiles.size === 0) return []
+    return backend.querySourceFeatures({ sourceId, sourceLayer: options.sourceLayer ?? null, filter: options.filter ?? null, tiles: [...tiles.values()] })
+  }
+
+  // 3DTilesRenderer tells which regions the visible terrain tiles show; a region stays locked (and loaded) while its
+  // tile is only cached, so being loaded does not mean being drawn.
+  setRegionVisible(range: number[], visible: boolean): void {
+    ;(XYZTilesOverlay.prototype as unknown as { setRegionVisible?: (range: number[], visible: boolean) => void }).setRegionVisible?.call(this, range, visible)
+    const key = range.join('_')
+    const count = (this.visibleRegions.get(key)?.count ?? 0) + (visible ? 1 : -1)
+    if (count <= 0) this.visibleRegions.delete(key)
+    else this.visibleRegions.set(key, { range: [...range], count })
+  }
+
+  /**
+   * Loaded region textures on visible terrain tiles, with their keys. Without visibility reports (an overlay not
+   * driven by `ImageOverlayPlugin`, as in tests), every loaded region.
+   */
+  protected getDrawnRegions(): Array<{ key: string; range: number[]; level: number }> {
+    const drawn: Array<{ key: string; range: number[]; level: number }> = []
+    if (this.visibleRegions.size === 0) {
+      for (const key of this.regions.keys()) if (this.regions.get(key) !== null) drawn.push({ key, ...parseRegionKey(key) })
+      return drawn
+    }
+    for (const { range } of this.visibleRegions.values()) {
+      const level = this.calculateLevel(range)
+      const key = regionKey(range, level)
+      if (this.regions.get(key) !== null) drawn.push({ key, range, level })
+    }
+    return drawn
+  }
+
+  /**
+   * The tiles a query reads: those the drawn regions under it draw, with the label ring each region reads, at the
+   * zoom each region was drawn at. A point reads only the finest region under it (a parent still fading out does
+   * not answer). Columns are unwrapped to sit next to the geometry across the antimeridian.
+   */
+  protected getQueryTiles(geometry: readonly MercatorPoint[]): QueryTile[] {
+    let minimumX = Infinity
+    let minimumY = Infinity
+    let maximumX = -Infinity
+    let maximumY = -Infinity
+    for (const { x, y } of geometry) {
+      minimumX = Math.min(minimumX, x)
+      minimumY = Math.min(minimumY, y)
+      maximumX = Math.max(maximumX, x)
+      maximumY = Math.max(maximumY, y)
+    }
+    // Regions lie within 0 to 1: also try them one world east and west, for geometry unwrapped past the antimeridian.
+    let matches: Array<{ range: number[]; level: number; shift: number }> = []
+    for (const region of this.getDrawnRegions()) {
+      const [regionMinimumX = 0, regionMinimumY = 0, regionMaximumX = 0, regionMaximumY = 0] = region.range
+      if (regionMaximumY < minimumY || regionMinimumY > maximumY) continue
+      for (const shift of [0, 1, -1]) {
+        if (regionMaximumX + shift < minimumX || regionMinimumX + shift > maximumX) continue
+        matches.push({ range: region.range, level: region.level, shift })
+      }
+    }
+    if (geometry.length === 1 && matches.length > 0) {
+      const finest = Math.max(...matches.map(match => match.level))
+      matches = matches.filter(match => match.level === finest)
+    }
+    const tiles = new Map<string, QueryTile>()
+    for (const { range, level, shift } of matches) {
+      for (const tile of this.getRegionTiles(range, level)) {
+        const column = tile.column + shift * 2 ** tile.request.z
+        const key = `${tile.key}/${column}`
+        const known = tiles.get(key)
+        if (known === undefined) tiles.set(key, { ...tile.request, column, labelsOnly: tile.textOnly })
+        else if (!tile.textOnly) known.labelsOnly = false // covered by one region, in another's ring
+      }
+    }
+    return [...tiles.values()]
   }
 
   /**
