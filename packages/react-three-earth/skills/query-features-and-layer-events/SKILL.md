@@ -99,7 +99,9 @@ export async function lakesInBox(earth: Earth) {
   Hidden layers and layers outside their zoom range are left out. A transparent fill still answers, as in MapLibre.
 - `tolerancePixels` widens every hit (useful on touch); default 0, as MapLibre.
 - No geometry queries the whole screen. A box is followed on the ground along its outline (perspective and the
-  globe bend it); the parts on the sky are left out.
+  globe bend it); when part of it is on the sky (the whole globe in view), the ground inside it is sampled.
+- Only what visible terrain tiles draw answers, each part at its own zoom: a box over a pitched view reads fine
+  tiles near the camera and coarse ones near the horizon, the tiles already loaded.
 - A feature with an id is listed once per layer even across tiles. Without an id it may repeat.
 - Before the style has loaded, or where no texture is drawn yet, the answer is empty.
 
@@ -224,6 +226,15 @@ An id no loaded style has warns once (`no style has a layer "…"`) and matches 
 
 Only `fill`, `fill-extrusion` (as flat fills), `line`, `circle` and text labels are hit-tested. Plugin layer
 types, raster sources and draped layers answer nothing.
+
+### MEDIUM: Expecting hover to follow a camera move
+
+Hover, cursor and `pointerenter` / `pointerleave` update on pointer moves, as in MapLibre: zooming with the wheel
+or an animation under a still pointer does not query again until the pointer moves.
+
+### MEDIUM: Translate properties
+
+`fill-translate`, `line-translate` and `circle-translate` are not drawn yet, so queries ignore them too.
 
 ### MEDIUM: Very wide lines near their edge
 

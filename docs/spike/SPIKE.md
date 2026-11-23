@@ -381,11 +381,14 @@ fires a new `pointerout` when the pointer leaves its element.
 How it works:
 
 - **Main thread: what is drawn there.** The screen point is unprojected (`earth.camera.unproject`, terrain
-  raycast) into normalised Web Mercator. Each `MapStyleOverlay` picks the finest *loaded* region texture covering
-  it: its level is the zoom the tiles were drawn at, so the query reads exactly the tiles (and evaluation zoom)
-  the terrain shows there, not a camera-derived guess. It sends those tiles, plus a ring of neighbours for labels
-  crossing in, to the worker. A box is unprojected along its outline (16 samples) so pitch and the globe bend it,
-  sky samples dropped; it reads the tiles under it at the centre's level, coarser past 64 tiles per source.
+  raycast) into normalised Web Mercator. Each `MapStyleOverlay` reads the region textures of *visible* terrain
+  tiles under it: it now follows 3DTilesRenderer's `setRegionVisible` (an upstream method without typings),
+  because a region stays locked and loaded while its terrain tile is only cached, so after zooming out the old
+  fine regions would otherwise answer. A point reads the finest visible region under it; a box every visible
+  region it overlaps, each at its own level. The query sends those regions' tiles, with the label ring each region
+  reads (same reach test as drawing), at the zoom each was drawn at: exactly what the terrain shows, and tiles
+  already processed. A box is unprojected along its outline (16 samples) so pitch and the globe bend it; when part
+  of the outline is on the sky (the whole globe in view), a 13 × 13 grid inside it is sampled and its hull used.
 - **Worker: hit tests from the raw tiles.** No decoded features are kept per tile. The raw tile comes from the
   worker's raw-tile cache, and a grid index of feature boxes (`featureIndex.ts`, 16 × 16 cells, built from
   `feature.bbox()` without allocating points) is kept in a `WeakMap` keyed by the decoded tile, so it lives exactly
@@ -395,15 +398,18 @@ How it works:
   since a tile draws nothing outside it. Hit testers are a registry by layer type (`featureHitTesters`), not a
   `switch`, so custom types can add theirs.
 - **Labels hit their placed boxes.** `processTile` now records the boxes of the labels it placed (with the source
-  layer and feature index) in an LRU of 256 tiles. A query reuses them while the raw tile and the compiled layers
-  are the ones they were placed from; otherwise it lays the tile out again. Labels sort above every shape, because
+  layer and feature index) in an LRU of 256 tiles, keyed to the decoded tile by a serial number (so the cache keeps
+  no tile alive). A query reuses them while the raw tile and the compiled layers are the ones they were placed
+  from; otherwise it lays the tile out again. A style change while a query loads tiles makes it start again (up to
+  three tries), so an answer never mixes two styles. Labels sort above every shape, because
   they draw above every shape (top style layer first among themselves).
 - **Order and duplicates.** Top imagery layer first; in a style, labels, then shapes from the top style layer down,
   later features in a tile first. A feature with an id is listed once per layer across tiles (MapLibre does the same
   through its feature index); features without ids can repeat in box queries. `querySourceFeatures` reads every
   feature of the source's tiles under held regions, once per tile, clipped, as MapLibre does.
 - **Layer events** run one `queryRenderedFeatures` per pointer event for all listeners of its type (the union of their
-  layers). Pointer moves keep one query in flight and query the latest move next; a `pointerout` meanwhile
+  layers), one per distinct `tolerancePixels` so a listener's tolerance never widens another's. A source disposed
+  during a query answers nothing instead of failing the others. Pointer moves keep one query in flight and query the latest move next; a `pointerout` meanwhile
   discards the answer. `pointerenter` / `pointerleave` track, per listener, whether the pointer was over its layers.
 
 Deviations from the brief:
@@ -419,8 +425,8 @@ Deviations from the brief:
   that (not known until the feature is read) can be missed near its edge.
 
 Not supported yet: custom layer types (plugins), icons, raster sources and draped layers answer nothing;
-`fill-translate` and friends are not drawn either, so not queried; a box spanning very different terrain levels is
-read at its centre's level.
+`fill-translate` and friends are not drawn either, so not queried; hover does not follow a camera move under a still
+pointer (as in MapLibre).
 
 | Check (`?fixtures&map=vector&hover`, SwiftShader; correctness only) | Result |
 | --- | --- |
@@ -430,7 +436,7 @@ read at its centre's level.
 | hover, then leave | feature-state `hover` true, cursor `pointer`, `pointerenter` with lake 1, lake 0.15 % pink; then false, cursor restored, `pointerleave`, blue again |
 | whole screen, `layers: ['water']`; `querySourceFeatures('fixture', { sourceLayer: 'water' })` | lakes 1, 2, 3 |
 | point query round trip | 1.7 ms average (worker hit test and message, CPU-only machine) |
-| Unit tests | 29 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, layer events (scoping, enter / leave, one query in flight, cleanup), hover state, cursor |
+| Unit tests | 33 new: point in polygon with holes, line half width and tolerance, circles, line offset, label boxes, clipping, grid order, screen box outline across the antimeridian, worker order (labels first, top layer first), hidden layers, ring tiles, `layers` / `filter` / bad filter, de-duplication with state, label re-layout after a style change, `querySourceFeatures`, overlay tile choice and antimeridian columns, visible regions only, layer events (scoping, enter / leave, one query in flight, tolerance per listener, cleanup), hover state (cleared on dispose), cursor, a whole globe inside a box |
 
 ![hover](map-vector-query-hover.png)
 

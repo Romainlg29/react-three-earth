@@ -109,6 +109,17 @@ describe('screen queries', () => {
     expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(20 / 360)
     expect(screenToMercatorQuery({ xPixels: 50, yPixels: 5 }, unproject)).toBeNull()
   })
+
+  it('samples inside a box whose outline is all sky, as when the whole globe fits the screen', () => {
+    // A globe in the middle of a 100 × 100 screen: ground within 30 pixels of the centre only
+    const unproject = ({ xPixels, yPixels }: { xPixels: number; yPixels: number }) =>
+      Math.hypot(xPixels - 50, yPixels - 50) > 30 ? null : { longitudeDegrees: (xPixels - 50) * 2, latitudeDegrees: (50 - yPixels) * 2 }
+    const polygon = screenToMercatorQuery([{ xPixels: 0, yPixels: 0 }, { xPixels: 100, yPixels: 100 }], unproject)!
+    expect(polygon.length).toBeGreaterThanOrEqual(3)
+    const xs = polygon.map(point => point.x)
+    expect(Math.min(...xs)).toBeLessThan(0.4)
+    expect(Math.max(...xs)).toBeGreaterThan(0.6)
+  })
 })
 
 const TILES = 'https://maps.test/{z}/{x}/{y}.pbf'
@@ -319,6 +330,31 @@ describe('layer events', () => {
     await flush()
     expect(query).toHaveBeenCalledTimes(2)
     expect(query.mock.calls[1]![0]).toEqual({ xPixels: 4, yPixels: 10 })
+  })
+
+  it('queries each tolerance apart, so one listener’s tolerance does not reach another', async () => {
+    const earth = new Earth()
+    const query = vi.spyOn(earth, 'queryRenderedFeatures').mockImplementation(async (_screen, options) => (options?.tolerancePixels === 12 ? [renderedFeature('roads', 1), renderedFeature('pois', 2)] : []))
+    const pois: LayerPointerEvent[] = []
+    const roads: LayerPointerEvent[] = []
+    earth.layerEvents.addEventListener('click', event => roads.push(event), { layers: ['roads'], tolerancePixels: 12 })
+    earth.layerEvents.addEventListener('click', event => pois.push(event), { layers: ['pois'] })
+    earth.dispatchEvent(pointerEvent('click') as never)
+    await flush()
+    expect(query).toHaveBeenCalledTimes(2)
+    expect(roads).toHaveLength(1)
+    expect(pois).toEqual([]) // the poi was only within 12 pixels
+  })
+
+  it('clears hover state when the earth is disposed', async () => {
+    const earth = new Earth()
+    const setFeatureState = vi.fn()
+    vi.spyOn(earth, 'queryRenderedFeatures').mockResolvedValue([renderedFeature('water', 1, setFeatureState)])
+    earth.layerEvents.addHoverState(['water'])
+    earth.dispatchEvent(pointerEvent('pointermove') as never)
+    await flush()
+    earth.dispose()
+    expect(setFeatureState.mock.calls.map(([, state]) => state.hover)).toEqual([true, false])
   })
 
   it('stops listening to the earth once the last listener is removed', async () => {

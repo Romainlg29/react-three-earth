@@ -59,6 +59,8 @@ export class LayerEvents {
   /** The element's own cursor, restored when no request remains. */
   protected savedCursor: { element: HTMLElement; cursor: string } | null = null
   protected readonly warnings = new Set<string>()
+  /** Clears the state `addHoverState` set, per active helper, so `dispose` leaves no feature hovered. */
+  protected readonly hoverClears = new Set<() => void>()
 
   constructor(protected readonly earth: Earth) {}
 
@@ -128,15 +130,19 @@ export class LayerEvents {
       { ...options, layers },
     )
     const removeLeave = this.addEventListener('pointerleave', clear, { ...options, layers })
+    this.hoverClears.add(clear)
     return () => {
       removeMove()
       removeLeave()
+      this.hoverClears.delete(clear)
       clear()
     }
   }
 
   /** Removes every listener, cursor and hover state, and restores the cursor. */
   dispose(): void {
+    for (const clear of this.hoverClears) clear()
+    this.hoverClears.clear()
     for (const registration of [...this.registrations]) this.remove(registration)
     this.cursorRequests.clear()
     this.applyCursor()
@@ -177,10 +183,10 @@ export class LayerEvents {
     const registrations = [...this.registrations].filter(registration => registration.type === type)
     if (registrations.length === 0) return
     try {
-      const features = await this.query(event, registrations)
+      const answers = await this.query(event, registrations)
       for (const registration of registrations) {
         if (!this.registrations.has(registration)) continue
-        const matching = features.filter(feature => registration.layers.has(feature.layer.id))
+        const matching = answers.get(registration) ?? []
         if (matching.length > 0) this.call(registration, event, matching)
       }
     } catch (error) {
@@ -203,9 +209,9 @@ export class LayerEvents {
         const registrations = [...this.registrations].filter(registration => HOVER_TYPES.includes(registration.type))
         if (registrations.length === 0) break
         const exitCount = this.exitCount
-        let features: RenderedFeature[]
+        let answers: Map<Registration, RenderedFeature[]>
         try {
-          features = await this.query(event, registrations)
+          answers = await this.query(event, registrations)
         } catch (error) {
           console.error(error)
           continue
@@ -213,7 +219,7 @@ export class LayerEvents {
         if (exitCount !== this.exitCount) continue // the pointer left the map meanwhile
         for (const registration of registrations) {
           if (!this.registrations.has(registration)) continue
-          const matching = features.filter(feature => registration.layers.has(feature.layer.id))
+          const matching = answers.get(registration) ?? []
           const inside = matching.length > 0
           if (registration.type === 'pointermove') {
             if (inside) this.call(registration, event, matching)
@@ -240,14 +246,26 @@ export class LayerEvents {
     }
   }
 
-  protected query(event: EarthPointerEvent, registrations: readonly Registration[]): Promise<RenderedFeature[]> {
-    const layers = new Set<string>()
-    let tolerancePixels = 0
+  /**
+   * Queries once per distinct tolerance (usually one), for the union of the registrations' layers. Answers, per
+   * registration, the features in its layers found with its own tolerance.
+   */
+  protected async query(event: EarthPointerEvent, registrations: readonly Registration[]): Promise<Map<Registration, RenderedFeature[]>> {
+    const groups = new Map<number, Registration[]>()
     for (const registration of registrations) {
-      for (const layer of registration.layers) layers.add(layer)
-      tolerancePixels = Math.max(tolerancePixels, registration.tolerancePixels)
+      const group = groups.get(registration.tolerancePixels)
+      if (group === undefined) groups.set(registration.tolerancePixels, [registration])
+      else group.push(registration)
     }
-    return this.earth.queryRenderedFeatures(event.screen, { layers: [...layers], tolerancePixels })
+    const answers = new Map<Registration, RenderedFeature[]>()
+    await Promise.all(
+      [...groups].map(async ([tolerancePixels, group]) => {
+        const layers = [...new Set(group.flatMap(registration => [...registration.layers]))]
+        const features = await this.earth.queryRenderedFeatures(event.screen, { layers, tolerancePixels })
+        for (const registration of group) answers.set(registration, features.filter(feature => registration.layers.has(feature.layer.id)))
+      }),
+    )
+    return answers
   }
 
   protected call(registration: Registration, source: EarthPointerEvent, features: RenderedFeature[]): void {

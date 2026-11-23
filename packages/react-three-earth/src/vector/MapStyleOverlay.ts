@@ -96,9 +96,6 @@ export interface SourceFeatureQueryOptions {
   filter?: unknown
 }
 
-/** Tiles a box query reads per source at most: past it, coarser tiles are read. */
-const MAXIMUM_QUERY_TILES = 64
-
 /** One vector tile a region draws. */
 interface RegionTile {
   key: string
@@ -242,6 +239,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected readonly layerScene = new Scene()
   protected readonly compositeScene = new Scene()
   protected readonly clearColor = new Color()
+  /** Ranges of regions on visible terrain tiles, with how many visible tiles show each (`setRegionVisible`). */
+  protected readonly visibleRegions = new Map<string, { range: number[]; count: number }>()
 
   constructor({
     style,
@@ -683,15 +682,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   async queryRenderedFeatures(geometry: readonly MercatorPoint[], options: RenderedFeatureQueryOptions = {}): Promise<RenderedSourceFeature[]> {
     const backend = this.backend
     if (this.disposed || backend === null || this.summary === null || geometry.length === 0) return []
-    let centerX = 0
-    let centerY = 0
-    for (const point of geometry) {
-      centerX += point.x / geometry.length
-      centerY += point.y / geometry.length
-    }
-    const level = this.drawnLevelAt({ x: centerX, y: centerY })
-    if (level === null) return []
-    const tiles = this.getQueryTiles(geometry, level)
+    const tiles = this.getQueryTiles(geometry)
     if (tiles.length === 0) return []
     return backend.queryRenderedFeatures({
       geometry: geometry.map(({ x, y }) => ({ x, y })),
@@ -724,25 +715,40 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     return backend.querySourceFeatures({ sourceId, sourceLayer: options.sourceLayer ?? null, filter: options.filter ?? null, tiles: [...tiles.values()] })
   }
 
-  /** The zoom of the finest loaded region texture covering a point, or null where none is drawn. */
-  protected drawnLevelAt(point: MercatorPoint): number | null {
-    const x = point.x - Math.floor(point.x)
-    let found: number | null = null
-    for (const key of this.regions.keys()) {
-      if (this.regions.get(key) === null) continue
-      const { range, level } = parseRegionKey(key)
-      const [minimumX = 0, minimumY = 0, maximumX = 0, maximumY = 0] = range
-      if (x < minimumX || x > maximumX || point.y < minimumY || point.y > maximumY) continue
-      if (found === null || level > found) found = level
-    }
-    return found
+  // 3DTilesRenderer tells which regions the visible terrain tiles show; a region stays locked (and loaded) while its
+  // tile is only cached, so being loaded does not mean being drawn.
+  setRegionVisible(range: number[], visible: boolean): void {
+    ;(XYZTilesOverlay.prototype as unknown as { setRegionVisible?: (range: number[], visible: boolean) => void }).setRegionVisible?.call(this, range, visible)
+    const key = range.join('_')
+    const count = (this.visibleRegions.get(key)?.count ?? 0) + (visible ? 1 : -1)
+    if (count <= 0) this.visibleRegions.delete(key)
+    else this.visibleRegions.set(key, { range: [...range], count })
   }
 
   /**
-   * The tiles a query reads, per source: those under the geometry at the drawn zoom (coarser for a box too large
-   * for `MAXIMUM_QUERY_TILES`), and a ring of neighbours whose labels may reach in.
+   * Loaded region textures on visible terrain tiles, with their keys. Without visibility reports (an overlay not
+   * driven by `ImageOverlayPlugin`, as in tests), every loaded region.
    */
-  protected getQueryTiles(geometry: readonly MercatorPoint[], level: number): QueryTile[] {
+  protected getDrawnRegions(): Array<{ key: string; range: number[]; level: number }> {
+    const drawn: Array<{ key: string; range: number[]; level: number }> = []
+    if (this.visibleRegions.size === 0) {
+      for (const key of this.regions.keys()) if (this.regions.get(key) !== null) drawn.push({ key, ...parseRegionKey(key) })
+      return drawn
+    }
+    for (const { range } of this.visibleRegions.values()) {
+      const level = this.calculateLevel(range)
+      const key = regionKey(range, level)
+      if (this.regions.get(key) !== null) drawn.push({ key, range, level })
+    }
+    return drawn
+  }
+
+  /**
+   * The tiles a query reads: those the drawn regions under it draw, with the label ring each region reads, at the
+   * zoom each region was drawn at. A point reads only the finest region under it (a parent still fading out does
+   * not answer). Columns are unwrapped to sit next to the geometry across the antimeridian.
+   */
+  protected getQueryTiles(geometry: readonly MercatorPoint[]): QueryTile[] {
     let minimumX = Infinity
     let minimumY = Infinity
     let maximumX = -Infinity
@@ -753,35 +759,31 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       maximumX = Math.max(maximumX, x)
       maximumY = Math.max(maximumY, y)
     }
-    const shift = Math.floor((minimumX + maximumX) / 2) // keep the columns near the antimeridian unwrapped from there
-    const tiles: QueryTile[] = []
-    for (const source of this.summary?.sources ?? []) {
-      if (level < source.minimumZoom) continue
-      let z = Math.min(level, source.maximumZoom)
-      let zoom = level
-      const span = (scale: number) => {
-        const fromColumn = Math.floor((minimumX - shift) * scale)
-        const toColumn = Math.floor((maximumX - shift) * scale)
-        const fromRow = Math.max(0, Math.floor((1 - maximumY) * scale))
-        const toRow = Math.min(scale - 1, Math.floor((1 - minimumY) * scale))
-        return { fromColumn, toColumn, fromRow, toRow, count: (toColumn - fromColumn + 1) * Math.max(0, toRow - fromRow + 1) }
-      }
-      let range = span(2 ** z)
-      while (range.count > MAXIMUM_QUERY_TILES && z > source.minimumZoom) {
-        z--
-        zoom--
-        range = span(2 ** z)
-      }
-      const count = 2 ** z
-      for (let column = range.fromColumn - 1; column <= range.toColumn + 1; column++) {
-        for (let row = Math.max(0, range.fromRow - 1); row <= Math.min(count - 1, range.toRow + 1); row++) {
-          const labelsOnly = column < range.fromColumn || column > range.toColumn || row < range.fromRow || row > range.toRow
-          const unwrapped = column + shift * count
-          tiles.push({ sourceId: source.id, x: ((column % count) + count) % count, y: row, z, zoom, column: unwrapped, labelsOnly })
-        }
+    // Regions lie within 0 to 1: also try them one world east and west, for geometry unwrapped past the antimeridian.
+    let matches: Array<{ range: number[]; level: number; shift: number }> = []
+    for (const region of this.getDrawnRegions()) {
+      const [regionMinimumX = 0, regionMinimumY = 0, regionMaximumX = 0, regionMaximumY = 0] = region.range
+      if (regionMaximumY < minimumY || regionMinimumY > maximumY) continue
+      for (const shift of [0, 1, -1]) {
+        if (regionMaximumX + shift < minimumX || regionMinimumX + shift > maximumX) continue
+        matches.push({ range: region.range, level: region.level, shift })
       }
     }
-    return tiles
+    if (geometry.length === 1 && matches.length > 0) {
+      const finest = Math.max(...matches.map(match => match.level))
+      matches = matches.filter(match => match.level === finest)
+    }
+    const tiles = new Map<string, QueryTile>()
+    for (const { range, level, shift } of matches) {
+      for (const tile of this.getRegionTiles(range, level)) {
+        const column = tile.column + shift * 2 ** tile.request.z
+        const key = `${tile.key}/${column}`
+        const known = tiles.get(key)
+        if (known === undefined) tiles.set(key, { ...tile.request, column, labelsOnly: tile.textOnly })
+        else if (!tile.textOnly) known.labelsOnly = false // covered by one region, in another's ring
+      }
+    }
+    return [...tiles.values()]
   }
 
   /**

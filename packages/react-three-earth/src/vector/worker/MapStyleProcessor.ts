@@ -122,7 +122,8 @@ interface PlacedLabel {
 
 /** The labels a tile placed, with what they were placed from: they are stale once the tile or the layers change. */
 interface TileLabels {
-  tile: VectorTile
+  /** The decoded tile's serial (`tileSerial`): a refetched tile gets another. Not the tile, so the cache keeps no tile alive. */
+  tileSerial: number
   layers: readonly CompiledStyleLayer[]
   labels: PlacedLabel[]
 }
@@ -562,7 +563,7 @@ export class MapStyleProcessor {
     }
     const placed: PlacedLabel[] = []
     const text = await this.layoutLabels(symbols, zoom, unitsPerPixel, signal, placed)
-    this.rememberLabels(bucketKeyOf(request), { tile, layers, labels: placed })
+    this.rememberLabels(bucketKeyOf(request), { tileSerial: tileSerial(tile), layers, labels: placed })
     const shapeMesh = shapes.build()
     const customMeshes = customBuilders.flatMap(builder => builder.finish() ?? []) as CustomLayerMesh[]
     const byteLength =
@@ -887,12 +888,15 @@ export class MapStyleProcessor {
    * The labels a tile placed, as drawn. Laid out again when the tile was processed too long ago, or before its raw
    * tile or the style changed (the boxes would no longer match what a fresh bucket draws).
    */
-  protected async getPlacedLabels(request: TileRequest, tile: VectorTile): Promise<PlacedLabel[]> {
+  protected async getPlacedLabels(request: TileRequest, tile: VectorTile, layers: readonly CompiledStyleLayer[]): Promise<PlacedLabel[]> {
     const key = bucketKeyOf(request)
+    const serial = tileSerial(tile)
     const known = this.placedLabels.get(key)
-    if (known !== undefined && known.tile === tile && known.layers === this.layers) return known.labels
+    if (known !== undefined && known.tileSerial === serial && known.layers === layers) return known.labels
     await this.processTile(request)
-    return this.placedLabels.get(key)?.labels ?? []
+    const laidOut = this.placedLabels.get(key)
+    // Laid out from another tile or style (it changed meanwhile): the caller starts the query again.
+    return laidOut !== undefined && laidOut.tileSerial === serial && laidOut.layers === layers ? laidOut.labels : []
   }
 
   /**
@@ -900,7 +904,7 @@ export class MapStyleProcessor {
    * shapes from the top style layer down, as MapLibre orders them. Features with an id are listed once per layer
    * even when several tiles hold them.
    */
-  async queryRenderedFeatures(query: RenderedFeatureQuery): Promise<RenderedSourceFeature[]> {
+  async queryRenderedFeatures(query: RenderedFeatureQuery, attempt = 1): Promise<RenderedSourceFeature[]> {
     const layers = this.layers
     const wanted = query.layers === null ? null : new Set(query.layers)
     const filter = compileQueryFilter(query.filter)
@@ -933,7 +937,7 @@ export class MapStyleProcessor {
 
       // Labels: the boxes the tile placed (ring tiles too: their labels reach into the region)
       if (labelLayers.size > 0) {
-        for (const placed of await this.getPlacedLabels(tileRequest, tile)) {
+        for (const placed of await this.getPlacedLabels(tileRequest, tile, layers)) {
           const layer = labelLayers.get(placed.layerId)
           if (layer === undefined || !polygonIntersectsBoxes(inTile, placed.boxes, toleranceUnits)) continue
           if (filter !== null) {
@@ -971,6 +975,8 @@ export class MapStyleProcessor {
         }
       }
     }
+    // The style changed while tiles loaded: the answer would mix two styles. Ask again, once or twice.
+    if (this.layers !== layers && attempt < 3) return this.queryRenderedFeatures(query, attempt + 1)
     hits.sort((a, b) => Number(b.label) - Number(a.label) || b.layerIndex - a.layerIndex || a.order - b.order)
     return hits.map(hit => hit.feature)
   }
@@ -1100,6 +1106,16 @@ export class MapStyleProcessor {
       }
     })
   }
+}
+
+const tileSerials = new WeakMap<VectorTile, number>()
+let nextTileSerial = 1
+
+/** A number naming a decoded tile, without keeping it alive. */
+function tileSerial(tile: VectorTile): number {
+  let serial = tileSerials.get(tile)
+  if (serial === undefined) tileSerials.set(tile, (serial = nextTileSerial++))
+  return serial
 }
 
 /** The same key as `bucketKey` on the main thread. */

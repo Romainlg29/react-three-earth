@@ -470,13 +470,18 @@ export class Earth extends Group<EarthEventMap> {
     const styles: MapStyleSource[] = []
     // Top-most first: imagery layers stack in the order they were added, and sources within a layer bottom to top.
     for (const imagery of [...this.imagery].reverse()) {
-      if (imagery.opacity <= 0) continue
       for (let index = imagery.sources.length - 1; index >= 0; index--) {
         const overlay = imagery.overlays[index] as Partial<QueryableOverlay> | undefined
         if (typeof overlay?.queryRenderedFeatures !== 'function') continue
         const source = imagery.sources[index] as MapStyleSource
         styles.push(source)
-        queries.push(overlay.queryRenderedFeatures(mercator, options).then(features => features.map(feature => Object.assign(feature, { mapStyleSource: source }))))
+        if (imagery.opacity <= 0) continue // not drawn
+        const answer = overlay.queryRenderedFeatures(mercator, options).then(features => features.map(feature => Object.assign(feature, { mapStyleSource: source })))
+        // A source disposed meanwhile (its layer unmounted, a style swap) answers nothing rather than failing the rest.
+        queries.push(answer.catch((error: unknown) => {
+          if ((error as Error)?.name === 'AbortError') return []
+          throw error
+        }))
       }
     }
     this.warnUnknownQueryLayers(options.layers, styles)

@@ -301,12 +301,14 @@ export function offsetLine(line: readonly Point[], offset: number): Point[] {
 
 /**
  * Clips a query polygon to the tile square (Sutherland–Hodgman): a tile draws nothing outside it, so its buffer
- * features must not answer for what a neighbour draws. A point is kept or dropped.
+ * features must not answer for what a neighbour draws. A point is kept or dropped (edges belong to the tile right
+ * and below).
  */
 export function clipQueryToTile(query: QueryGeometry): Point[] {
   if (query.length === 1) {
     const [point] = query
-    return point!.x >= 0 && point!.x <= TILE_EXTENT && point!.y >= 0 && point!.y <= TILE_EXTENT ? [point!] : []
+    // Half-open, so a point on an edge belongs to one tile only
+    return point!.x >= 0 && point!.x < TILE_EXTENT && point!.y >= 0 && point!.y < TILE_EXTENT ? [point!] : []
   }
   let output: Point[] = [...query]
   const edges: Array<[(point: Point) => boolean, (a: Point, b: Point) => Point]> = [

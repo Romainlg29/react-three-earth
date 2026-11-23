@@ -630,16 +630,29 @@ describe('MapStyleOverlay feature queries', () => {
   })
 
   it('wraps columns of a box crossing the antimeridian, keeping them unwrapped for the geometry', async () => {
-    const { overlay } = await setUp()
-    const tiles = (overlay as unknown as { getQueryTiles(geometry: Array<{ x: number; y: number }>, level: number): Array<{ sourceId: string; x: number; column: number; labelsOnly: boolean }> }).getQueryTiles(
-      [{ x: 0.95, y: 0.52 }, { x: 1.05, y: 0.52 }, { x: 1.05, y: 0.55 }, { x: 0.95, y: 0.55 }],
-      2,
-    )
-    const covered = tiles.filter(tile => tile.sourceId === 'base' && !tile.labelsOnly)
+    const { overlay, rendered } = await setUp()
+    void overlay.lockTexture([0.875, 0.5, 1, 0.625]) // tile (3, 1)
+    void overlay.lockTexture([0, 0.5, 0.125, 0.625]) // tile (0, 1)
+    await overlay.settle()
+    await overlay.queryRenderedFeatures([{ x: 0.95, y: 0.52 }, { x: 1.05, y: 0.52 }, { x: 1.05, y: 0.55 }, { x: 0.95, y: 0.55 }])
+    const covered = rendered.mock.calls[0]![0].tiles.filter(tile => tile.sourceId === 'base' && !tile.labelsOnly)
     expect(covered.map(tile => [tile.x, tile.column])).toEqual([
       [3, 3],
       [0, 4],
     ])
+  })
+
+  it('reads only regions on visible terrain tiles once visibility is reported', async () => {
+    const { overlay, rendered } = await setUp()
+    overlay.setRegionVisible(C, true)
+    // Region A is still loaded (its terrain tile is cached) but not shown: it does not answer
+    expect(await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])).toEqual([])
+    expect(rendered).not.toHaveBeenCalled()
+    overlay.setRegionVisible(A, true)
+    await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])
+    expect(rendered).toHaveBeenCalledTimes(1)
+    overlay.setRegionVisible(A, false)
+    expect(await overlay.queryRenderedFeatures([{ x: 0.56, y: 0.56 }])).toEqual([])
   })
 
   it('reads the source features of the tiles drawn now, and names the sources when the id is wrong', async () => {
