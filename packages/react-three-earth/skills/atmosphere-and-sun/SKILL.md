@@ -159,7 +159,8 @@ gives the staged output with plugin passes included.
 `<Atmosphere>` owns R3F's render pipeline output through `useRenderPipeline`. Another component that
 also calls `useRenderPipeline` replaces the sky (R3F warns that more than one component configures it).
 Register effects as render passes instead, or pass `renderPipeline={false}` and build the one pipeline
-yourself.
+yourself. Without `<Atmosphere>`, `<Earth>` sets the pipeline while plugin render passes are registered: give
+it `renderPipeline={false}` too (or call `useClaimRenderPipeline()` in your pipeline component).
 
 ### HIGH: Passing the post-processing camera to `createAerialPerspective`
 

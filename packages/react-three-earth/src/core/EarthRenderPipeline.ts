@@ -156,13 +156,14 @@ export class EarthRenderPipeline {
     if (this.rebuildScheduled || this.renderPipeline === null) return
     this.rebuildScheduled = true
     queueMicrotask(() => {
-      this.rebuildScheduled = false
-      this.rebuild()
+      // A direct `rebuild` (or `attach`) since then already built the latest state.
+      if (this.rebuildScheduled) this.rebuild()
     })
   }
 
   /** Rebuilds the attached pipeline's output now. */
   rebuild(): void {
+    this.rebuildScheduled = false
     const renderPipeline = this.renderPipeline
     const inputs = this.inputs
     if (renderPipeline === null || inputs === null) return
@@ -221,9 +222,11 @@ export class EarthRenderPipeline {
       current = runStage('display', renderOutput(current as never) as unknown as Node)
       outputColorTransform = false
     }
-    const previous = this.resources
+    // A pass may hand back a resource it kept from the previous build: free only what this build dropped.
+    const kept = new Set(resources)
+    const dropped = this.resources.filter(resource => !kept.has(resource))
     this.resources = resources
-    disposeAll(previous)
+    disposeAll(dropped)
     this.setReport(report)
     return { outputNode: current, outputColorTransform }
   }
@@ -243,11 +246,11 @@ export class EarthRenderPipeline {
     this.resources = []
   }
 
-  /** Registered passes plus the built-in ones, in the order they run within each stage. */
+  /** Registered passes plus the built-in ones, in the order they run within each stage. FXAA always runs last. */
   protected collectPasses(): RegisteredRenderPass[] {
-    const passes = this.earth.renderPasses.entries()
+    const passes = sortRenderPasses(this.earth.renderPasses.entries())
     if (this._antialiasing === 'fxaa' && this._atmosphere !== null) passes.push(FXAA_ENTRY)
-    return sortRenderPasses(passes)
+    return passes
   }
 
   protected setReport(report: RenderPassInspection[]): void {

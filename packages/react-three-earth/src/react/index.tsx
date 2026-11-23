@@ -2,7 +2,7 @@ export { Earth, type EarthProps } from './Earth.js'
 export { Terrain, type TerrainProps } from './Terrain.js'
 export { Imagery, type ImageryProps } from './Imagery.js'
 export { Atmosphere, useAtmosphere, type AtmosphereProps } from './Atmosphere.js'
-export { EarthRenderPipelineHost, type EarthRenderPipelineHostProps } from './RenderPipeline.js'
+export { EarthRenderPipelineHost, useClaimRenderPipeline, type EarthRenderPipelineHostProps } from './RenderPipeline.js'
 export { EarthControls, type EarthControlsProps } from './EarthControls.js'
 export { PerformanceStats, formatStatistics, type PerformanceStatsProps } from './PerformanceStats.js'
 export {

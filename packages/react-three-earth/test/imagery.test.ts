@@ -129,6 +129,24 @@ describe('ImageryCompositor', () => {
     expect(compositor.pendingCount).toBe(0)
   })
 
+  it('resets the renderer after each custom render, so one that changes autoClear or MRT does not leak into the next', async () => {
+    const compositor = new ImageryCompositor()
+    const { renderer, fake } = fakeRenderer()
+    const seen: Array<{ autoClear: boolean; mrt: object | null }> = []
+    const leaky = (next: WebGPURenderer) => {
+      seen.push({ autoClear: next.autoClear, mrt: fake.getMRT() })
+      next.autoClear = false
+      next.setMRT({} as never)
+    }
+    const first = compositor.enqueueRender(compositor.createTarget(4), leaky)
+    const second = compositor.enqueueRender(compositor.createTarget(4), leaky)
+    expect(compositor.render(renderer)).toBe(2)
+    await Promise.all([first, second])
+    expect(seen).toEqual([{ autoClear: true, mrt: null }, { autoClear: true, mrt: null }])
+    expect(fake.autoClear).toBe(false) // the app's own state, restored after the batch
+    expect(fake.getMRT()).toBeNull()
+  })
+
   it('spreads a burst over frames by time budget, drawing at least one per frame', async () => {
     const compositor = new ImageryCompositor({ budgetMilliseconds: 0 })
     const { renderer } = fakeRenderer(1)

@@ -48,6 +48,8 @@ describe('RenderPassRegistry', () => {
     expect(() => registry.register({ name: '', stage: 'scene', build: () => float(0) as never })).toThrow(/non-empty `name`/)
     expect(() => registry.register({ name: 'x', stage: 'tone' as never, build: () => float(0) as never })).toThrow(/'scene', 'radiance' or 'display'/)
     expect(() => registry.register({ name: 'x', stage: 'scene' } as never)).toThrow(/`build` must be a function/)
+    expect(() => registry.register({ name: 'x', stage: 'scene', order: Infinity, build: ({ color }) => color })).toThrow(/`order` must be a finite number/)
+    expect(() => registry.register({ name: 'x', stage: 'scene', order: '2' as never, build: ({ color }) => color })).toThrow(/`order` must be a finite number/)
     registry.register({ name: 'bloom', stage: 'radiance', build: ({ color }) => color })
     expect(() => registry.register({ name: 'bloom', stage: 'display', build: ({ color }) => color })).toThrow(/already registered/)
   })
@@ -107,7 +109,7 @@ describe('EarthRenderPipeline', () => {
 
   it('runs the built-in FXAA last in display, only while an atmosphere is composited', () => {
     const earth = new Earth()
-    earth.renderPasses.register({ name: 'grade', stage: 'display', order: 1000, build: ({ color }) => color })
+    earth.renderPasses.register({ name: 'grade', stage: 'display', order: Number.MAX_SAFE_INTEGER, build: ({ color }) => color })
     const withoutAtmosphere = new EarthRenderPipeline(earth)
     withoutAtmosphere.buildOutput({ color: vec4(0.5) as never, depth: float(0) as never, camera })
     expect(withoutAtmosphere.inspect().map(entry => entry.name)).toEqual(['grade'])
@@ -141,11 +143,13 @@ describe('EarthRenderPipeline', () => {
 
   it('frees what a build created on the next build, and reports such passes as unavailable', () => {
     const earth = new Earth()
-    const resource = { dispose: vi.fn() }
+    const resources: Array<{ dispose: () => void }> = []
     earth.renderPasses.register({
       name: 'bloom',
       stage: 'radiance',
       build: ({ color, disposeOnRebuild }) => {
+        const resource = { dispose: vi.fn() }
+        resources.push(resource)
         disposeOnRebuild(resource)
         return color
       },
@@ -154,11 +158,32 @@ describe('EarthRenderPipeline', () => {
     const inputs = { color: vec4(0.5) as never, depth: float(0) as never, camera }
     pipeline.buildOutput(inputs)
     expect(pipeline.inspect()[0]!.timing).toBe('unavailable')
-    expect(resource.dispose).not.toHaveBeenCalled()
+    expect(resources[0]!.dispose).not.toHaveBeenCalled()
     pipeline.buildOutput(inputs)
-    expect(resource.dispose).toHaveBeenCalledTimes(1)
+    expect(resources[0]!.dispose).toHaveBeenCalledTimes(1)
+    expect(resources[1]!.dispose).not.toHaveBeenCalled()
     pipeline.dispose()
-    expect(resource.dispose).toHaveBeenCalledTimes(2)
+    expect(resources[1]!.dispose).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a resource a pass hands back again on the next build', () => {
+    const earth = new Earth()
+    const kept = { dispose: vi.fn() }
+    earth.renderPasses.register({
+      name: 'cached',
+      stage: 'radiance',
+      build: ({ color, disposeOnRebuild }) => {
+        disposeOnRebuild(kept)
+        return color
+      },
+    })
+    const pipeline = new EarthRenderPipeline(earth)
+    const inputs = { color: vec4(0.5) as never, depth: float(0) as never, camera }
+    pipeline.buildOutput(inputs)
+    pipeline.buildOutput(inputs)
+    expect(kept.dispose).not.toHaveBeenCalled()
+    pipeline.dispose()
+    expect(kept.dispose).toHaveBeenCalledTimes(1)
   })
 
   it('rebuilds an attached pipeline once when passes change, never per frame, and stops when detached', async () => {
@@ -188,10 +213,19 @@ describe('EarthRenderPipeline', () => {
     await Promise.resolve()
     expect(builds).toHaveBeenCalledTimes(4)
 
+    // A direct rebuild while one is queued builds once.
+    pipeline.antialiasing = 'fxaa'
+    pipeline.rebuild()
+    await Promise.resolve()
+    expect(builds).toHaveBeenCalledTimes(6)
+    pipeline.antialiasing = 'none'
+    await Promise.resolve()
+    expect(builds).toHaveBeenCalledTimes(8)
+
     pipeline.detach()
     first()
     await Promise.resolve()
-    expect(builds).toHaveBeenCalledTimes(4)
+    expect(builds).toHaveBeenCalledTimes(8)
     expect(earth.inspect().renderPasses.every(entry => !entry.active)).toBe(true)
   })
 

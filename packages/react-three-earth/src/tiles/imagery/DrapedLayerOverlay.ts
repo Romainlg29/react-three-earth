@@ -79,8 +79,15 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
   protected readonly camera = new OrthographicCamera(0, 1, 1, 0, -1, 1)
   protected readonly startRedraws = (): void => this.redrawStaleRegions()
   protected readonly removeDrawer: () => void
+  /** Redraws after `invalidate` in flight (first draws are not counted: 3DTilesRenderer waits for those). */
+  protected recompositionsInFlight = 0
   protected warnedDraw = false
   protected disposed = false
+  /**
+   * Called after `invalidate` resized held regions' targets (entering or leaving the bounds), so the owner can
+   * recount the tile set's memory. `ImageOverlayPlugin` sets it.
+   */
+  onTargetsResized: (() => void) | null = null
 
   constructor(layer: RegisteredDrapedLayer) {
     super({ url: 'draped-layer://{z}/{x}/{y}', levels: TILING_LEVELS, tileDimension: 256, projection: 'EPSG:3857' })
@@ -105,9 +112,7 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
 
   /** Regions waiting for a redraw after `invalidate`, or being drawn. `Terrain.imageryRecompositionsPending` counts them. */
   get recompositionsPending(): number {
-    let count = this.staleRegions.size
-    for (const region of this.regions.values()) if (region.controller !== null && region.firstDraw === null) count++
-    return count
+    return this.staleRegions.size + this.recompositionsInFlight
   }
 
   /** Smallest level whose 256-pixel tiles have at least `resolution` pixels across the range. */
@@ -222,34 +227,52 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
     this.staleRegions.clear()
     if (this.disposed) return
     const rectangles = this.readBoundsRectangles()
+    let resized = false
     for (const key of keys) {
       const region = this.regions.get(key)
       if (region === undefined) continue
-      if (this.isInside(region, rectangles)) void this.draw(region, region.firstDraw === null ? 'recomposition' : 'waited')
-      else this.shrink(region)
+      if (this.isInside(region, rectangles)) {
+        resized = this.grow(region) || resized
+        void this.draw(region, region.firstDraw === null ? 'recomposition' : 'waited')
+      } else {
+        resized = this.shrink(region) || resized
+      }
     }
+    if (resized) this.onTargetsResized?.()
   }
 
-  /** Back to a 1 × 1 transparent target: a resized render target is a new, zeroed GPU texture. */
-  protected shrink(region: DrapedRegion): void {
+  /** To the full resolution. Returns whether the target was resized. */
+  protected grow(region: DrapedRegion): boolean {
+    if (region.sized) return false
+    resizeTarget(region.target, this.resolution)
+    region.sized = true
+    return true
+  }
+
+  /**
+   * Back to a 1 × 1 transparent target: a resized render target is a new, zeroed GPU texture. Returns whether
+   * the target was resized.
+   */
+  protected shrink(region: DrapedRegion): boolean {
     region.controller?.abort(new DOMException('Draped layer: region left the bounds', 'AbortError'))
     region.controller = null
-    if (!region.sized) return
+    if (!region.sized) return false
     region.sized = false
     resizeTarget(region.target, 1)
+    return true
   }
 
   /** Queues a draw of the region (replacing one in flight). Settles when it ends, drawn or not. */
   protected async draw(region: DrapedRegion, priority: CompositionPriority): Promise<void> {
     const compositor = this.compositor
     if (compositor === null) return
-    if (!region.sized) {
-      resizeTarget(region.target, this.resolution)
-      region.sized = true
-    }
+    // A first draw sizes the target before 3DTilesRenderer counts the tile's bytes.
+    this.grow(region)
     region.controller?.abort(new DOMException('Draped layer: redrawn', 'AbortError'))
     const controller = new AbortController()
     region.controller = controller
+    const recomposition = priority === 'recomposition'
+    if (recomposition) this.recompositionsInFlight++
     try {
       await compositor.enqueueRender(region.target, (renderer, target) => this.drawRegion(renderer, target, region), controller.signal, priority)
     } catch (error) {
@@ -259,6 +282,7 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
       }
     } finally {
       if (region.controller === controller) region.controller = null
+      if (recomposition) this.recompositionsInFlight--
       // The last redraw settled after its frame: one more, so `loading` turns false (and `idle` fires) on demand-driven hosts.
       if (this.recompositionsPending === 0) compositor.onQueued?.()
     }

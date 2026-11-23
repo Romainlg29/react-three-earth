@@ -463,20 +463,33 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
   never per frame. What a build allocated (`disposeOnRebuild`) is freed by the next one.
 - **React.** `EarthRenderPipelineHost` plugs it into `useRenderPipeline`, which keeps owning the pipeline and the
   scene pass. `<Atmosphere>` mounts it as `AtmosphereRenderPipeline` did (`renderPipeline={false}` still leaves
-  the pipeline to the app). Without an atmosphere, `<Earth>` mounts one only while passes are registered, so plain
-  maps keep rendering the scene directly. The output is pixel-identical to before: the four `map` screenshots
+  the pipeline to the app). Without an atmosphere, `<Earth>` mounts one only while passes are registered and no
+  child claims the pipeline (`<Atmosphere>`, `<EarthRenderPipelineHost>`, `useClaimRenderPipeline()`;
+  `<Earth renderPipeline={false}>` opts out), so plain maps keep rendering the scene directly. The host frees
+  its targets one task after unmount, after `useRenderPipeline`'s deferred release, so a last render cannot
+  allocate them again. The output is pixel-identical to before: the four `map` screenshots
   differ only in the atmosphere status text.
 - **`context.registerRenderPass({ name, stage, order, build })`** returns a remover, undone with the plugin, into
   `earth.renderPasses`. `earth.inspect().renderPasses` lists each pass with `active`, `timing` (`fused` for pure
-  node passes, `unavailable` for passes that own targets) and the error of a build that threw (that pass is
-  skipped).
+  node passes, `unavailable` for passes that own targets: v1 has no GPU timestamp queries yet) and the error of
+  a build that threw (that pass is skipped). `order` must be finite; FXAA is appended after the sorted passes,
+  so it stays last.
 - **`context.registerDrapedLayer({ id, bounds, draw })`** returns `{ invalidate(bounds?), remove() }`. Each layer
   becomes a `DrapedLayerOverlay` in the terrain's `ImageOverlayPlugin`, ordered above every imagery overlay
   (imagery now counts its order below a fixed base, so imagery added later stays under it). Regions draw through
   the `ImageryCompositor` queue and budget (`preload`, `waited`, `recomposition`). A region outside `bounds`
   holds a 1 × 1 render target that is never drawn (new GPU textures start zeroed); `invalidate` resizes it in
   place when it enters or leaves the bounds, so terrain materials keep the same `Texture`. `draw` gets the
-  region's Mercator range, bounds, zoom and a 64-bit `project` into a camera spanning the region.
+  region's Mercator range, bounds, zoom and a 64-bit `project` into a camera spanning the region. The
+  compositor resets autoClear, MRT and the clear colour after each custom draw, so one layer's state does not
+  leak into the next job.
+- **Draped layer costs, as measured in the code.** Imagery sources and draped layers share the terrain shader's
+  10 layer slots; registering past them throws with the fix. Bounds do not keep a layer off tiles: upstream
+  builds every overlay's UVs on the CPU for every tile whether or not `hasContent`, and the shader samples every
+  layer, so tiles outside get a 1 × 1 texture and no draw, never no layer (`hasContent` false would also freeze
+  bounds at load time). Registering or removing a layer recompiles every terrain material and rebuilds every
+  loaded tile's UVs: register at install, leave it in place, and change content with `invalidate`. A region
+  resized by `invalidate` makes the tile set recount its memory.
 - **Two terrain-material bugs this exposed**, both from adding an overlay after the first compile (any imagery
   layer added at runtime had them too): the overlay and fade wrappers each replaced `material.defines` with a
   spread copy, which turned the other's `LAYER_COUNT` / `FEATURE_FADE` accessor into a plain value (its setter

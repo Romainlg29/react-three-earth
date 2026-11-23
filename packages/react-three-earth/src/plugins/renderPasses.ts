@@ -56,7 +56,10 @@ export interface RenderPassDefinition {
   /** Unique on an earth: `'bloom'`, `'@acme/grading'`. */
   name: string
   stage: RenderPassStage
-  /** Lower runs first within the stage; passes with the same order run in registration order. Default: 0. */
+  /**
+   * A finite number: lower runs first within the stage; passes with the same order run in registration order.
+   * The built-in FXAA always runs after every `display` pass, whatever its order. Default: 0.
+   */
   order?: number
   /** Returns the stage's new colour node. Pure TSL nodes are fused by three into one fullscreen shader. */
   build(inputs: RenderPassInputs): Node
@@ -98,11 +101,13 @@ export function validateRenderPass(definition: RenderPassDefinition): void {
   if (!RENDER_PASS_STAGES.includes(definition.stage)) {
     throw new Error(`registerRenderPass("${name}"): \`stage\` must be 'scene', 'radiance' or 'display', not ${JSON.stringify(definition.stage)}.`)
   }
-  if (definition.order !== undefined && Number.isNaN(Number(definition.order))) throw new Error(`registerRenderPass("${name}"): \`order\` must be a number.`)
+  if (definition.order !== undefined && !Number.isFinite(definition.order)) {
+    throw new Error(`registerRenderPass("${name}"): \`order\` must be a finite number, such as 10 or -1; leave it out for 0.`)
+  }
   if (typeof definition.build !== 'function') throw new Error(`registerRenderPass("${name}"): \`build\` must be a function returning the stage's new colour node.`)
 }
 
-/** Sorts passes by stage order, then `order`, then registration sequence. */
+/** Sorts passes by `order`, then registration sequence (stages filter the result). */
 export function sortRenderPasses<T extends RegisteredRenderPass>(passes: Iterable<T>): T[] {
   return [...passes].sort((a, b) => a.order - b.order || a.sequence - b.sequence)
 }
@@ -125,7 +130,7 @@ export class RenderPassRegistry {
     if (this.passes.has(definition.name)) {
       throw new Error(`registerRenderPass: a render pass named "${definition.name}" is already registered; pick another name or remove the other pass first.`)
     }
-    const entry: RegisteredRenderPass = { definition, order: Number(definition.order ?? 0), sequence: ++this.sequence }
+    const entry: RegisteredRenderPass = { definition, order: definition.order ?? 0, sequence: ++this.sequence }
     this.passes.set(definition.name, entry)
     this.notify()
     return () => {

@@ -150,6 +150,8 @@ describe('DrapedLayerOverlay', () => {
     const west = await Promise.all([overlay.lockTexture(WEST_HALF), drawAll()]).then(([texture]) => texture)
     const east = await overlay.lockTexture(EAST_QUARTER)
     expect(widthOf(east)).toBe(1)
+    const targetsResized = vi.fn()
+    overlay.onTargetsResized = targetsResized
 
     // Move the content east: the old place and the new one are invalidated.
     bounds = { westDegrees: 100, southDegrees: -60, eastDegrees: 110, northDegrees: -10 }
@@ -158,9 +160,12 @@ describe('DrapedLayerOverlay', () => {
     runFrameTasks()
     expect(jobs.map(job => job.priority)).toEqual(['recomposition'])
     expect(widthOf(east)).toBe(256) // the same texture, resized: the terrain keeps its binding
+    expect(targetsResized).toHaveBeenCalledTimes(1) // once per frame, so the tile set's memory is recounted
+    expect(overlay.recompositionsPending).toBe(1) // the redraw in flight
     handle.invalidate({ westDegrees: -170, southDegrees: 10, eastDegrees: -160, northDegrees: 20 })
     runFrameTasks()
     expect(widthOf(west)).toBe(1)
+    expect(targetsResized).toHaveBeenCalledTimes(2)
     await drawAll()
     expect(overlay.recompositionsPending).toBe(0)
     expect(overlay.drawnRegionCount).toBe(1)
@@ -203,16 +208,34 @@ describe('ImageOverlayPlugin with draped layers', () => {
     const laterImagery = { opacity: 1 }
     plugin.addOverlay(laterImagery as never)
     const order = (overlay: object) => plugin.overlayInfo.get(overlay)!.order
-    const [first, secondOverlay] = plugin.drapedOverlays
+    const [first, secondOverlay] = [...plugin.drapedOverlays]
     expect(order(imagery)).toBe(0)
     expect(order(laterImagery)).toBe(1)
     expect(order(first!)).toBeLessThan(order(secondOverlay!))
     expect(order(first!)).toBeGreaterThan(order(laterImagery))
     second.remove()
-    expect(plugin.drapedOverlays).toEqual([first])
+    expect([...plugin.drapedOverlays]).toEqual([first])
     expect(plugin.overlays).not.toContain(secondOverlay)
     plugin.setDrapedLayers(null)
-    expect(plugin.drapedOverlays).toEqual([])
+    expect([...plugin.drapedOverlays]).toEqual([])
+  })
+})
+
+describe('terrain layer slots shared by imagery and draped layers', () => {
+  it('refuses a draped layer, or imagery, once the 10 slots are taken, naming the fix', () => {
+    const plugin = new ImageOverlayPlugin()
+    const registry = new DrapedLayerRegistry()
+    plugin.setDrapedLayers(registry)
+    for (let index = 0; index < 8; index++) plugin.addOverlay({ opacity: 1 } as never)
+    registry.register({ id: 'ninth', draw: () => {} })
+    const tenth = registry.register({ id: 'tenth', draw: () => {} })
+    expect(plugin.freeLayerSlots).toBe(0)
+    expect(() => registry.register({ id: 'eleventh', draw: () => {} })).toThrow(/share 10.*Remove an imagery source or a draped layer/)
+    expect(registry.has('eleventh')).toBe(false)
+    expect(() => plugin.addOverlay({ opacity: 1 } as never)).toThrow(/imagery source.*share 10/)
+    tenth.remove()
+    expect(plugin.freeLayerSlots).toBe(1)
+    expect(() => registry.register({ id: 'eleventh', draw: () => {} })).not.toThrow()
   })
 })
 

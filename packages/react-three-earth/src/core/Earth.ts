@@ -276,17 +276,25 @@ export class Earth extends Group<EarthEventMap> {
       this.subscribeAttributions(terrain)
       terrain.setView(this.view)
       terrain.setStyleLayerTypes(this.styleLayerTypes)
-      terrain.setDrapedLayers(this.drapedLayers)
       this.add(terrain.object)
-      for (const imagery of this.imagery) terrain.addImagery(imagery)
+      // Imagery first: draped layers take the layer slots left after it (one that does not fit is logged).
+      for (const imagery of this.imagery) {
+        try {
+          terrain.addImagery(imagery)
+        } catch (error) {
+          console.error(error)
+        }
+      }
+      terrain.setDrapedLayers(this.drapedLayers)
     }
     this.dispatchEvent({ type: 'attributionchange' })
   }
 
+  /** Throws, stating the fix, when the terrain has no layer slot left for its sources (nothing changes then). */
   addImagery(imagery: Imagery): void {
+    this.terrain?.addImagery(imagery)
     if (!this.imagery.has(imagery)) this.subscribeAttributions(imagery)
     this.imagery.add(imagery)
-    this.terrain?.addImagery(imagery)
     this.dispatchEvent({ type: 'attributionchange' })
   }
 

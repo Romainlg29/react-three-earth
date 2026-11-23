@@ -167,13 +167,24 @@ export function validateDrapedLayer(definition: DrapedLayerDefinition): void {
 export class DrapedLayerRegistry {
   protected readonly layers = new Map<string, RegisteredDrapedLayer>()
   protected readonly listeners = new Set<DrapedLayerListener>()
+  protected readonly validators = new Set<(definition: DrapedLayerDefinition) => void>()
   protected sequence = 0
 
-  /** Adds a layer on top of the others. Throws when the id is taken, stating the fix. */
+  /**
+   * Adds a check run before each registration, which throws to refuse it (the terrain refuses layers past its
+   * layer slots). Returns a function that removes it.
+   */
+  addValidator(validator: (definition: DrapedLayerDefinition) => void): () => void {
+    this.validators.add(validator)
+    return () => this.validators.delete(validator)
+  }
+
+  /** Adds a layer on top of the others. Throws when the id is taken or the terrain is full, stating the fix. */
   register(definition: DrapedLayerDefinition): DrapedLayerHandle {
     validateDrapedLayer(definition)
     const { id } = definition
     if (this.layers.has(id)) throw new Error(`registerDrapedLayer: a draped layer with id "${id}" is already registered; pick another id or remove the other layer first.`)
+    for (const validator of this.validators) validator(definition)
     const layer = new RegisteredDrapedLayer(definition, ++this.sequence)
     this.layers.set(id, layer)
     this.notify()

@@ -5,7 +5,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 
 import { Atmosphere as AtmosphereImpl, type AtmosphereOptions } from '../core/Atmosphere.js'
 import { useEarth } from './context.js'
-import { EarthRenderPipelineHost, RenderPipelineClaimContext } from './RenderPipeline.js'
+import { RenderPipelineHost, useClaimRenderPipeline } from './RenderPipeline.js'
 
 /** AgX compresses highlights: imagery emitted at about 1.6 comes out close to its own colours. */
 const FLAT_MAP_LUMINANCE_UNDER_AGX = 1.6
@@ -103,12 +103,11 @@ export function Atmosphere({
   useLayoutEffect(() => () => atmosphere.dispose(), [atmosphere])
 
   // The atmosphere decides the render pipeline (its own, or the app's): <Earth> does not host one meanwhile.
-  const claimRenderPipeline = use(RenderPipelineClaimContext)
-  useLayoutEffect(() => claimRenderPipeline?.(), [claimRenderPipeline])
+  useClaimRenderPipeline()
 
   return (
     <AtmosphereContext value={atmosphere}>
-      {renderPipeline ? <EarthRenderPipelineHost atmosphere={atmosphere} antialiasing={antialiasing} /> : null}
+      {renderPipeline ? <RenderPipelineHost atmosphere={atmosphere} antialiasing={antialiasing} /> : null}
       {children}
     </AtmosphereContext>
   )

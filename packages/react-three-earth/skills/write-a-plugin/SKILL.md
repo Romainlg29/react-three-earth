@@ -347,7 +347,7 @@ export function screenEffects(): EarthPlugin {
       context.registerRenderPass({
         name: 'vignette',
         stage: 'display',
-        order: 0, // lower runs first within the stage; ties run in registration order
+        order: 0, // finite; lower runs first within the stage, ties in registration order; FXAA stays last
         build: ({ color }) => vec4(color.rgb.mul(smoothstep(0.35, 1, screenUV.sub(0.5).length().mul(Math.SQRT2)).mul(strength).oneMinus()), color.a),
       })
     },
@@ -358,13 +358,17 @@ export function screenEffects(): EarthPlugin {
 - `build({ color, depth, camera, atmosphere, disposeOnRebuild })` returns the stage's new colour node. It runs
   once per rebuild (a pass added or removed, the atmosphere or camera changed), never per frame: animate
   through uniforms, never by registering again. A build that throws is skipped and logged.
-- Without `<Atmosphere>`, `<Earth>` hosts the pipeline itself as soon as a pass is registered (and stops when the
-  last one goes), so plain maps keep rendering the scene directly. With `<Atmosphere renderPipeline={false}>`
-  the app owns the pipeline: attach an `EarthRenderPipeline` there (atmosphere-and-sun skill) or the passes
-  do not run.
+- `color` is a texture node only for the first pass of the `scene` stage. After a fused pass it is a plain node:
+  to sample neighbours (blur, edge detection), wrap it in `convertToTexture(color)` or `rtt(color)` from
+  `three/tsl` and hand that to `disposeOnRebuild`, as the built-in FXAA does.
+- Without `<Atmosphere>` or `<EarthRenderPipelineHost>` (both claim the pipeline), `<Earth>` hosts it itself
+  while a pass is registered, so plain maps keep rendering the scene directly. An app with its own
+  `useRenderPipeline` opts out with `<Earth renderPipeline={false}>` (or `useClaimRenderPipeline()` in that
+  component), as with `<Atmosphere renderPipeline={false}>`: attach an `EarthRenderPipeline` there
+  (atmosphere-and-sun skill) or the passes do not run.
 - Cost: pure node passes are fused by three into the stage's fullscreen shader (`timing: 'fused'` in
-  `earth.inspect().renderPasses`); passes that own targets (`disposeOnRebuild`) are reported `'unavailable'`:
-  v1 does not time them on their own. Every pass costs fill rate on a phone; prefer one fused pass.
+  `earth.inspect().renderPasses`). Passes that own targets (`disposeOnRebuild`, FXAA) report `'unavailable'`:
+  v1 has no GPU timestamp queries yet. Every pass costs fill rate on a phone; prefer one fused pass.
 
 ### Draped layers
 
@@ -421,10 +425,14 @@ export function selectionGlow(radiusDegrees = 0.03) {
 - `bounds` (static, a function, or null for nowhere; default everywhere) is read on each `invalidate`: regions
   outside hold a 1 × 1 transparent texture and are never drawn. Invalidate where the content was and where it is
   now; each region keeps its texture until the redraw replaces it.
-- Cost: one region texture per visible terrain tile inside `bounds`, one more texture sample in the terrain
-  shader for every tile, and one compositor job per region on each `invalidate`. Animate with scene objects
-  or render passes, not by invalidating every frame. `earth.inspect().drapedLayers` lists `regions` and
-  `regionsDrawn`.
+- Slots: imagery sources and draped layers share the terrain's 10 layer slots. Registering past them throws
+  (remove an imagery source or a draped layer, or merge sources into one `MapStyleSource`).
+- Cost: every terrain tile carries the layer whatever `bounds` says: a CPU pass for its UVs, one more varying
+  and texture sample in its shader; tiles outside get a 1 × 1 texture and no draw. Registering or removing a
+  layer recompiles every terrain material and rebuilds every loaded tile's UVs: register once at install,
+  leave it in place (bounds null while idle) and change it with `invalidate`, which queues one compositor job
+  per region inside the bounds. Animate with scene objects or render passes, not by invalidating every frame.
+  `earth.inspect().drapedLayers` lists `regions` and `regionsDrawn`.
 
 The playground's `src/effects/` has both: run `?fixtures&effects` and call
 `window.effectPlugins.selectionGlow.select({ longitudeDegrees: -90, latitudeDegrees: 0 })`.

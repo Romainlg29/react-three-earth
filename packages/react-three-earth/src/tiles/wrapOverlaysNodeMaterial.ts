@@ -32,7 +32,12 @@ interface OverlayNodeMaterial extends NodeMaterial {
 const emptyTexture = new Texture()
 const emptyColor = new Color()
 
-const MAX_LAYER_COUNT = 10
+/**
+ * Terrain layer slots: every imagery source and every draped layer takes one. `ImageOverlayPlugin` refuses
+ * overlays past it (the terrain shader has no slot for them).
+ */
+export const MAXIMUM_TERRAIN_LAYERS = 10
+const MAX_LAYER_COUNT = MAXIMUM_TERRAIN_LAYERS
 
 const layerMap = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   texture().onObjectUpdate(({ material }, self) => {

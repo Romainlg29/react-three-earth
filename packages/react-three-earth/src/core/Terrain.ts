@@ -6,6 +6,7 @@ import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
+import { MAXIMUM_TERRAIN_LAYERS } from '../tiles/wrapOverlaysNodeMaterial.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
@@ -121,8 +122,15 @@ export class Terrain implements AttributionProvider {
     this.overlays.setDrapedLayers(registry)
   }
 
+  /** Throws, stating the fix, when the layer's sources do not fit the terrain's layer slots (shared with draped layers). */
   addImagery(imagery: Imagery): void {
     if (this.imagery.has(imagery)) return
+    if (imagery.overlays.length > this.overlays.freeLayerSlots) {
+      throw new Error(
+        `Terrain: this imagery layer has ${imagery.overlays.length} sources but only ${this.overlays.freeLayerSlots} terrain layer slots are left ` +
+          `(imagery sources and draped layers share ${MAXIMUM_TERRAIN_LAYERS}). Remove an imagery layer or a plugin's draped layer first.`,
+      )
+    }
     this.imagery.add(imagery)
     for (const overlay of imagery.overlays) this.overlays.addOverlay(overlay as never)
   }
@@ -155,7 +163,7 @@ export class Terrain implements AttributionProvider {
         if (typeof pending === 'number') count += pending
       }
     }
-    for (const overlay of this.overlays.drapedOverlays) count += overlay.recompositionsPending
+    count += this.overlays.drapedRecompositionsPending
     return count
   }
 
