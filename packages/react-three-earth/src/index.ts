@@ -1,4 +1,8 @@
 export { Earth, type EarthOptions, type EarthInspection } from './core/Earth.js'
+export { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugins/plugin.js'
+export { PluginInstallation, PluginManager, type PluginInspection } from './plugins/PluginManager.js'
+export { GeographicAnchor, type GeographicAnchorOptions } from './core/GeographicAnchor.js'
+export { createFlatMapEmissionNode, createLocalCameraPositionNode, depthFromViewZ, getLocalCameraPosition } from './core/sceneNodes.js'
 export {
   AttributionTracker,
   attributionText,
