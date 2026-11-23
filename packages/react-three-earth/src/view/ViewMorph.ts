@@ -22,6 +22,8 @@ export interface ViewTransitionOptions {
 }
 
 const DEFAULT_TRANSITION_SECONDS = 1.8
+/** How far the camera pulls back halfway through a transition, as a share of its distance. */
+const TRANSITION_BREATH = 0.06
 /** Most copies of the world drawn side by side on the flat map. */
 export const MAXIMUM_WORLD_COPIES = 5
 const WORLD_WIDTH_METERS = 2 * WEB_MERCATOR_HALF_EXTENT_METERS
@@ -430,7 +432,8 @@ export class ViewMorph {
     camera.position
       .copy(transition.startDirection)
       .applyQuaternion(scratchQuaternion)
-      .multiplyScalar(logarithmicLerp(transition.startDistanceMeters, transition.endDistanceMeters, ease))
+      // A slight pull-back while the map unrolls, settling at the end: the camera breathes with the morph.
+      .multiplyScalar(logarithmicLerp(transition.startDistanceMeters, transition.endDistanceMeters, ease) * (1 + TRANSITION_BREATH * Math.sin(Math.PI * ease)))
       .add(transition.pivot)
       .addScaledVector(transition.endOffset, ease)
     camera.quaternion.slerpQuaternions(transition.startQuaternion, transition.topDownQuaternion, turn)

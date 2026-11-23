@@ -1,5 +1,5 @@
 import type { Tile } from '3d-tiles-renderer'
-import { BufferAttribute, Matrix4, Mesh, Vector2, type BufferGeometry, type Material, type Object3D } from 'three'
+import { BufferAttribute, InstancedBufferGeometry, Matrix4, Mesh, Vector2, type BufferGeometry, type Material, type Object3D } from 'three'
 import { attribute, diffuseColor, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, smoothstep, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
@@ -154,6 +154,7 @@ export class FlatMapPlugin {
       if (node === scene) break
     }
     const center = computeFlatPositions(mesh.geometry, meshToTileScene, referenceLongitude)
+    mesh.geometry = toInstancedGeometry(mesh.geometry)
     mesh[FLAT_STATE] = {
       centerXMeters: center[0],
       centerYMeters: center[1],
@@ -203,7 +204,7 @@ export class FlatMapPlugin {
     state.firstWorldCopyOffset = view.firstWorldCopy
     state.centerFromAnchorXMeters = centerXMeters - view.anchorMercatorXMeters
     state.centerFromAnchorYMeters = state.centerYMeters - latitudeToMercatorY(view.anchorLatitudeRadians)
-    mesh.count = view.worldCopyCount
+    ;(mesh.geometry as InstancedBufferGeometry).instanceCount = view.worldCopyCount
     flatMatrix
       .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)
       .multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
@@ -218,7 +219,7 @@ export class FlatMapPlugin {
 function restoreGlobeMatrix(mesh: FlatMesh): void {
   const state = mesh[FLAT_STATE]
   if (state === undefined || !state.flattened) return
-  mesh.count = 1
+  ;(mesh.geometry as InstancedBufferGeometry).instanceCount = 1
   if (mesh.parent === null) mesh.matrixWorld.copy(mesh.matrix)
   else mesh.matrixWorld.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
   state.flattened = false
@@ -241,6 +242,29 @@ function wrapMaterial(material: Material, hasNormals: boolean): void {
     }
   }
   nodeMaterial.needsUpdate = true
+}
+
+/**
+ * The same geometry (shared attributes, index and groups) as an `InstancedBufferGeometry`, so world copies
+ * are drawn by its `instanceCount`. Instancing through `mesh.count` instead would give every tile mesh its
+ * own render cache key in three r187, and so its own node build: a hitch per tile loaded on the map.
+ */
+export function toInstancedGeometry(geometry: BufferGeometry): InstancedBufferGeometry {
+  if ((geometry as InstancedBufferGeometry).isInstancedBufferGeometry === true) return geometry as InstancedBufferGeometry
+  const instanced = new InstancedBufferGeometry()
+  instanced.name = geometry.name
+  instanced.index = geometry.index
+  // Shared, not copied: attributes plugins add later (imagery UVs) reach both.
+  instanced.attributes = geometry.attributes
+  instanced.morphAttributes = geometry.morphAttributes
+  instanced.morphTargetsRelative = geometry.morphTargetsRelative
+  instanced.groups = geometry.groups
+  instanced.drawRange = geometry.drawRange
+  instanced.boundingBox = geometry.boundingBox
+  instanced.boundingSphere = geometry.boundingSphere
+  instanced.userData = geometry.userData
+  instanced.instanceCount = 1
+  return instanced
 }
 
 /**

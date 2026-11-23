@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { setCameraView } from '../src/core/camera.js'
 import { getFlatRegionBox } from '../src/tiles/EarthTilesRenderer.js'
-import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE } from '../src/tiles/FlatMapPlugin.js'
+import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 import {
   ecefToGeodetic,
@@ -103,7 +103,7 @@ describe('ViewMorph frames', () => {
     expect(summit.sub(view.anchorPosition).dot(view.anchorUp)).toBeCloseTo(3776, 6)
   })
 
-  it('turns top-down while the map unrolls, anchored where the camera looks, without moving away', () => {
+  it('turns top-down while the map unrolls, anchored where the camera looks, ending where it started', () => {
     const view = new ViewMorph()
     const camera = new PerspectiveCamera(60, 1, 1, 1e8)
     setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
@@ -114,7 +114,8 @@ describe('ViewMorph frames', () => {
     expect(view.morph).toBeLessThan(1)
     expect(MathUtils.radToDeg(view.anchorLongitudeRadians)).toBeCloseTo(138.7274, 4)
     expect(MathUtils.radToDeg(view.anchorLatitudeRadians)).toBeCloseTo(35.3606, 4)
-    expect(camera.position.distanceTo(view.anchorPosition)).toBeCloseTo(60_000, 3)
+    // Only the slight pull-back halfway
+    expect(camera.position.distanceTo(view.anchorPosition)).toBeLessThan(60_000 * 1.07)
     view.update(camera, 0.75)
     expect(view.morph).toBe(1)
     expect(view.transitioning).toBe(false)
@@ -135,8 +136,8 @@ describe('ViewMorph frames', () => {
     let previous = distance()
     for (let step = 0; step < 10; step++) {
       view.update(camera, 1)
-      // Never moves away, never jumps
-      expect(distance()).toBeLessThanOrEqual(previous + 1e-3)
+      // No jumps: at most the slight pull-back halfway, then down to the map's height limit
+      expect(distance()).toBeLessThanOrEqual(previous * 1.07)
       previous = distance()
     }
     view.update(camera, 0.1)
@@ -293,5 +294,21 @@ describe('flat map like MapLibre', () => {
     const view = new ViewMorph()
     view.updateWorldCopies(new PerspectiveCamera())
     expect([view.firstWorldCopy, view.worldCopyCount, view.worldCopyReferenceXMeters]).toEqual([0, 1, view.anchorMercatorXMeters])
+  })
+})
+
+describe('world copies as instances', () => {
+  it('draws the same geometry, sharing attributes added later', () => {
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(9), 3))
+    geometry.setIndex([0, 1, 2])
+    const instanced = toInstancedGeometry(geometry)
+    expect(instanced.instanceCount).toBe(1)
+    expect(instanced.getAttribute('position')).toBe(geometry.getAttribute('position'))
+    expect(instanced.index).toBe(geometry.index)
+    // An imagery plugin adding UVs to either one reaches both
+    geometry.setAttribute('layer_uv_0', new BufferAttribute(new Float32Array(6), 2))
+    expect(instanced.getAttribute('layer_uv_0')).toBe(geometry.getAttribute('layer_uv_0'))
+    expect(toInstancedGeometry(instanced)).toBe(instanced)
   })
 })
