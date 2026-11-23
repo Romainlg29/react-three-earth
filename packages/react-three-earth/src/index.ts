@@ -11,6 +11,34 @@ export {
   type AttributionSegment,
 } from './core/attribution.js'
 export { AttributionControl, type AttributionControlOptions } from './controls/AttributionControl.js'
+export { Marker, type MarkerDragEvent, type MarkerEventMap, type MarkerHeight, type MarkerOptions } from './core/Marker.js'
+export { Popup, type PopupEventMap, type PopupOptions } from './core/Popup.js'
+export {
+  anchoredBox,
+  anchoredTransform,
+  anchorFraction,
+  anchorTransformOrigin,
+  CLICK_TOLERANCE_PIXELS,
+  markerRotation,
+  popupOffset,
+  popupPointOnBox,
+  resolvePopupAnchor,
+  SCREEN_ANCHORS,
+  type MarkerAlignment,
+  type ScreenAnchor,
+  type ScreenBox,
+  type ScreenOffset,
+} from './core/markerLayout.js'
+export {
+  acquireScreenLayer,
+  releaseScreenLayer,
+  ScreenOverlay,
+  TERRAIN_RAYCASTS_PER_FRAME,
+  type ScreenOverlayFrame,
+  type ScreenOverlayItem,
+  type ScreenVisibility,
+} from './core/ScreenOverlay.js'
+export { holdContainerPosition, releaseContainerPosition } from './core/containerPosition.js'
 export { PerformanceMonitor, type PerformanceSample } from './core/PerformanceMonitor.js'
 export { prefersWebGLBackend } from './core/renderer.js'
 export { Terrain, type TerrainOptions } from './core/Terrain.js'
@@ -85,5 +113,17 @@ export { isOccludedByEllipsoid, type ProjectedPosition, type ScreenPosition } fr
 export * from './core/zoom.js'
 export { MapStyleOverlay, type MapStyleOverlayOptions } from './vector/MapStyleOverlay.js'
 export { createVectorTileWorker } from './vector/MapStyleBackend.js'
+export {
+  MapStyle,
+  type MapStyleEventMap,
+  type MapStyleOptions,
+  type ProtocolLoader,
+  type ProtocolRequest,
+  type TransformRequest,
+} from './vector/MapStyle.js'
+export { StyleLayer, type StyleLayerOptions } from './vector/StyleLayer.js'
+export { featureKey, type FeatureIdentifier } from './vector/worker/featureState.js'
+export type { StyleDocument, StyleDocumentLayer } from './vector/worker/styleDocument.js'
+export type { FeatureState, ResourceKind } from './vector/worker/types.js'
 export type { RawImage, StyleImageInput, StyleImageOptions } from './vector/styleImageInput.js'
 export type { StyleImage } from './vector/worker/types.js'

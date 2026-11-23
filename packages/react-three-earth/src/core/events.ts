@@ -25,7 +25,7 @@ export interface EarthPointerEvent {
  *
  * The camera and loading events fire from `earth.update`, once per frame at most, in this order: `movestart`,
  * `zoomstart`, `rotatestart`, `pitchstart`, `move`, `zoom`, `rotate`, `pitch`, `zoomend`, `rotateend`,
- * `pitchend`, `moveend`, `load`, `idle`. `framerequest` fires at once, from `earth.requestFrame`. The
+ * `pitchend`, `moveend`, `load`, `idle`, then `update` last. `framerequest` fires at once, from `earth.requestFrame`. The
  * pointer events (`click`, `doubleclick`, `contextmenu`, `pointermove`) fire from the DOM, once
  * `earth.attachPointerEvents(canvas)` is called; `<Earth>` does it.
  */
@@ -86,6 +86,12 @@ export interface EarthEventMap extends Object3DEventMap {
    * loading its metadata. `AttributionControl` follows it.
    */
   attributionchange: object
+  /**
+   * The end of every `earth.update`: the camera, the morph and the tiles are final for the frame about to be
+   * drawn. Markers and popups place themselves here, so they never lag behind the map. Move the camera before
+   * `earth.update` (as `EarthControls` does) for anything listening here to see it in the same frame.
+   */
+  update: object
 }
 
 export type EarthEventType = Exclude<keyof EarthEventMap, keyof Object3DEventMap>

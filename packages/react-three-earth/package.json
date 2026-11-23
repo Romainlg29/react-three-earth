@@ -56,8 +56,11 @@
     "@react-three/tsl": "10.0.0-alpha.6",
     "@tanstack/intent": "0.5.6",
     "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@types/three": "^0.187.0",
+    "happy-dom": "^20.0.0",
     "react": "~19.3.1",
+    "react-dom": "~19.3.1",
     "three": "0.187.0",
     "tsdown": "^0.23.7",
     "typescript": "~6.0.2",
@@ -69,6 +72,7 @@
     "@mapbox/vector-tile": "^2.0.5",
     "@maplibre/maplibre-gl-style-spec": "^26.9.0",
     "earcut": "^3.2.4",
+    "its-fine": "^2.1.1",
     "pbf": "^4.0.2",
     "pmtiles": "^4.5.0"
   },
@@ -76,6 +80,7 @@
     "@react-three/fiber": "^10.0.0-alpha.6",
     "@react-three/tsl": "^10.0.0-alpha.6",
     "react": ">=19.0 <19.4",
+    "react-dom": ">=19.0 <19.4",
     "three": ">=0.187.0 <0.188.0"
   },
   "peerDependenciesMeta": {
@@ -86,6 +91,9 @@
       "optional": true
     },
     "@react-three/tsl": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     }
   }

@@ -1,11 +1,14 @@
 import {
   Color,
+  createVisibilityExpression,
   featureFilter,
   latest,
   normalizePropertyExpression,
   type Feature,
   type FeatureFilter,
+  type FeatureState,
   type StylePropertyExpression,
+  type VisibilityExpression,
 } from '@maplibre/maplibre-gl-style-spec'
 
 /** Style layer types the renderer draws. Others (raster, hillshade, heatmap…) are skipped with a warning. */
@@ -40,6 +43,27 @@ const specification = latest as unknown as Record<string, Record<string, Propert
 /** RGBA, straight alpha, 0 to 255, sRGB. */
 export type Rgba = [number, number, number, number]
 
+/**
+ * Paint properties whose feature-state dependence a colour slot absorbs: a state change only redraws. Any other
+ * state-dependent paint property (a width, a radius, text paint) changes geometry, so the tile is processed again.
+ */
+const SLOT_PAINT_PROPERTIES = new Set([
+  'fill-color',
+  'fill-opacity',
+  'fill-outline-color',
+  'line-color',
+  'line-opacity',
+  'circle-color',
+  'circle-opacity',
+  'circle-stroke-color',
+  'circle-stroke-opacity',
+  'fill-extrusion-color',
+  'fill-extrusion-opacity',
+])
+
+/** How a layer's drawing depends on feature-state. */
+export type FeatureStateDependence = 'none' | 'colors' | 'geometry'
+
 /** A style layer with its filter and properties compiled once, evaluated per feature. */
 export class CompiledStyleLayer {
   readonly id: string
@@ -48,18 +72,25 @@ export class CompiledStyleLayer {
   readonly sourceLayer: string | undefined
   readonly minimumZoom: number
   readonly maximumZoom: number
-  readonly visible: boolean
-  /** Index of the group of consecutive layers sharing this layer's source. Set by `compileStyleLayers`. */
+  /** Index of the group of consecutive layers sharing this layer's source. Set by `assignLayerOrder`. */
   group = 0
-  /** Index of the layer in the style. */
-  readonly index: number
+  /** Index of the layer in the style. Set by `assignLayerOrder`. */
+  index: number
+  /** How drawing depends on feature-state: not at all, through colour slots only, or through geometry. */
+  readonly featureStateDependence: FeatureStateDependence
+  /** Names of `global-state` values the filter, visibility or properties read; `null` when unknown (any). */
+  readonly globalStateReferences: ReadonlySet<string> | null
 
   protected readonly filter: FeatureFilter
+  protected readonly visibility: VisibilityExpression
   protected readonly properties = new Map<string, StylePropertyExpression>()
   protected readonly specification: StyleLayerSpecification
+  protected readonly globalState: Record<string, unknown>
 
-  constructor(layer: StyleLayerSpecification, index: number) {
+  /** `globalState` is read live: change its values, then process the tiles of layers that reference them. */
+  constructor(layer: StyleLayerSpecification, index: number, globalState: Record<string, unknown> = {}) {
     this.specification = layer
+    this.globalState = globalState
     this.id = layer.id
     this.type = layer.type as SupportedLayerType
     this.index = index
@@ -67,17 +98,37 @@ export class CompiledStyleLayer {
     this.sourceLayer = layer['source-layer']
     this.minimumZoom = layer.minzoom ?? 0
     this.maximumZoom = layer.maxzoom ?? 24
-    this.visible = layer.layout?.visibility !== 'none'
-    this.filter = featureFilter(layer.filter as never, layer.id)
+    this.visibility = createVisibilityExpression((layer.layout?.visibility ?? 'visible') as never, `layers.${layer.id}.layout.visibility`, globalState)
+    this.filter = featureFilter(layer.filter as never, layer.id, globalState)
     // Compile every property now, so a bad expression skips the layer (with a warning) instead of failing tiles.
+    const references = new Set(this.filter.getGlobalStateRefs())
+    let unknownReferences = Array.isArray(layer.layout?.visibility)
+    let dependence: FeatureStateDependence = 'none'
     for (const kind of ['paint', 'layout'] as const) {
-      for (const name of Object.keys(specification[`${kind}_${this.type}`] ?? {})) this.compile(kind, name)
+      for (const name of Object.keys(specification[`${kind}_${this.type}`] ?? {})) {
+        const property = this.compile(kind, name) as StylePropertyExpression & { isStateDependent?: boolean; globalStateRefs?: Set<string> }
+        if (property.globalStateRefs === undefined) unknownReferences ||= this.has(kind, name)
+        else for (const reference of property.globalStateRefs) references.add(reference)
+        if (kind === 'paint' && property.isStateDependent === true) {
+          if (!SLOT_PAINT_PROPERTIES.has(name) || this.type === 'symbol') dependence = 'geometry'
+          else if (dependence === 'none') dependence = 'colors'
+        }
+      }
     }
+    this.featureStateDependence = dependence
+    this.globalStateReferences = unknownReferences ? null : references
   }
 
   /** Whether the layer draws at this zoom (MapLibre: minzoom inclusive, maxzoom exclusive). */
   isVisibleAtZoom(zoom: number): boolean {
-    return this.visible && zoom >= this.minimumZoom && zoom < this.maximumZoom
+    return zoom >= this.minimumZoom && zoom < this.maximumZoom && this.visibility.evaluate() !== 'none'
+  }
+
+  /** Whether the layer reads any of these `global-state` names. */
+  readsGlobalState(names: Iterable<string>): boolean {
+    if (this.globalStateReferences === null) return true
+    for (const name of names) if (this.globalStateReferences.has(name)) return true
+    return false
   }
 
   accepts(zoom: number, feature: StyleFeature): boolean {
@@ -85,13 +136,18 @@ export class CompiledStyleLayer {
   }
 
   /** Evaluates a paint or layout property for a feature (or for no feature, for zoom-only properties). */
-  evaluate<T>(kind: PropertyKind, name: string, zoom: number, feature?: StyleFeature): T {
-    return this.compile(kind, name).evaluate({ zoom }, feature as never) as T
+  evaluate<T>(kind: PropertyKind, name: string, zoom: number, feature?: StyleFeature, featureState?: FeatureState): T {
+    return this.compile(kind, name).evaluate({ zoom }, feature as never, featureState) as T
   }
 
   /** A colour property multiplied by an opacity, as straight-alpha sRGB bytes. */
-  evaluateColor(name: string, zoom: number, feature: StyleFeature | undefined, opacity = 1): Rgba {
-    return toRgba(this.evaluate<Color | undefined>('paint', name, zoom, feature), opacity)
+  evaluateColor(name: string, zoom: number, feature: StyleFeature | undefined, opacity = 1, featureState?: FeatureState): Rgba {
+    return toRgba(this.evaluate<Color | undefined>('paint', name, zoom, feature, featureState), opacity)
+  }
+
+  /** The layer as written in the style. */
+  get layerSpecification(): StyleLayerSpecification {
+    return this.specification
   }
 
   /** The property's value as written in the style, before compilation. */
@@ -111,7 +167,7 @@ export class CompiledStyleLayer {
       const propertySpecification = specification[`${kind}_${this.type}`]?.[name]
       if (propertySpecification === undefined) throw new Error(`Style layer "${this.id}": unknown ${kind} property "${name}".`)
       const value = this.specification[kind]?.[name] ?? propertySpecification.default
-      property = normalizePropertyExpression(value as never, name, propertySpecification as never)
+      property = normalizePropertyExpression(value as never, name, propertySpecification as never, this.globalState)
       this.properties.set(key, property)
     }
     return property
@@ -130,30 +186,48 @@ export function toRgba(color: Color | undefined, opacity = 1): Rgba {
  * Compiles the style's layers that the renderer supports and numbers the groups of consecutive layers that
  * share a source (the draw order across tiles). Returns the ids of skipped layers too.
  */
-export function compileStyleLayers(layers: readonly StyleLayerSpecification[]): { layers: CompiledStyleLayer[]; skipped: string[] } {
+export function compileStyleLayers(
+  layers: readonly StyleLayerSpecification[],
+  globalState: Record<string, unknown> = {},
+): { layers: CompiledStyleLayer[]; skipped: string[] } {
   const compiled: CompiledStyleLayer[] = []
   const skipped: string[] = []
+  layers.forEach((layer, index) => {
+    const compiledLayer = compileStyleLayer(layer, index, globalState)
+    if (compiledLayer === null) skipped.push(layer.id)
+    else compiled.push(compiledLayer)
+  })
+  assignLayerOrder(compiled, layers)
+  return { layers: compiled, skipped }
+}
+
+/** Compiles one layer; null (with a warning) when its type is not drawn yet or an expression does not compile. */
+export function compileStyleLayer(layer: StyleLayerSpecification, index: number, globalState: Record<string, unknown>, onError?: (message: string) => void): CompiledStyleLayer | null {
+  if (!(SUPPORTED_LAYER_TYPES as readonly string[]).includes(layer.type)) return null
+  try {
+    return new CompiledStyleLayer(layer, index, globalState)
+  } catch (error) {
+    const message = `MapStyleSource: skipping layer "${layer.id}": ${(error as Error).message}`
+    console.warn(message)
+    onError?.(message)
+    return null
+  }
+}
+
+/**
+ * Sets each compiled layer's `index` (its position among the style's `layers`) and `group` (consecutive layers
+ * sharing a source), after layers were added, removed or moved.
+ */
+export function assignLayerOrder(compiled: readonly CompiledStyleLayer[], layers: readonly StyleLayerSpecification[]): void {
+  const positions = new Map(layers.map((layer, index) => [layer.id, index]))
   let group = -1
   let groupSource: string | undefined | null = null
-  layers.forEach((layer, index) => {
-    if (!(SUPPORTED_LAYER_TYPES as readonly string[]).includes(layer.type)) {
-      skipped.push(layer.id)
-      return
-    }
-    let compiledLayer: CompiledStyleLayer
-    try {
-      compiledLayer = new CompiledStyleLayer(layer, index)
-    } catch (error) {
-      console.warn(`MapStyleSource: skipping layer "${layer.id}": ${(error as Error).message}`)
-      skipped.push(layer.id)
-      return
-    }
-    if (compiledLayer.type !== 'background' && compiledLayer.source !== groupSource) {
+  for (const layer of [...compiled].sort((a, b) => positions.get(a.id)! - positions.get(b.id)!)) {
+    layer.index = positions.get(layer.id)!
+    if (layer.type !== 'background' && layer.source !== groupSource) {
       group++
-      groupSource = compiledLayer.source
+      groupSource = layer.source
     }
-    compiledLayer.group = Math.max(group, 0)
-    compiled.push(compiledLayer)
-  })
-  return { layers: compiled, skipped }
+    layer.group = Math.max(group, 0)
+  }
 }

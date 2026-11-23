@@ -14,11 +14,36 @@ import {
   Vector4,
   type PixelFormat,
 } from 'three'
-import { attribute, Discard, float, Fn, fract, fwidth, If, max, mix, positionGeometry, smoothstep, sRGBTransferEOTF, step, texture, uniform, uv, vec2, vec4 } from 'three/tsl'
+import {
+  attribute,
+  Discard,
+  float,
+  floor,
+  Fn,
+  fract,
+  fwidth,
+  If,
+  int,
+  ivec2,
+  max,
+  mix,
+  mod,
+  positionGeometry,
+  select,
+  smoothstep,
+  sRGBTransferEOTF,
+  step,
+  texture,
+  uniform,
+  uv,
+  vec2,
+  vec4,
+  vertexStage,
+} from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
 import { GLYPH_EDGE } from './worker/glyphs.js'
-import { TILE_EXTENT, type AtlasUpdate, type ImageAtlasUpdate, type TileBucket } from './worker/types.js'
+import { TILE_EXTENT, type AtlasUpdate, type FeatureColorUpdate, type ImageAtlasUpdate, type TileBucket } from './worker/types.js'
 
 /**
  * Colours arrive as sRGB bytes; three's materials work in linear space and the composite target encodes
@@ -36,17 +61,94 @@ function createMaterial(): MeshBasicNodeMaterial {
 /**
  * Fills, lines and circles: one colour per vertex. Fragments outside the tile square are dropped, so a
  * tile's buffer zone never paints over its neighbour, and each tile can be drawn as one mesh per layer group.
+ *
+ * With a feature colour table, vertices whose `colorSlot` is not 0 read their colour from the table instead
+ * (looked up per vertex): feature-state changes only update the table.
  */
-export function createShapeMaterial(): MeshBasicNodeMaterial {
+export function createShapeMaterial(colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
   const material = createMaterial()
+  const color = shapeColor(colorTable)
   material.colorNode = Fn(() => {
-    const local = positionGeometry
-    If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
-      Discard()
-    })
-    return linearColor('color')
+    discardOutsideTile()
+    return color
   })()
   return material
+}
+
+/** The linear vertex colour of a shape, or its slot's colour in the table when it has one. */
+function shapeColor(colorTable: FeatureColorTexture | undefined): Node<'vec4'> {
+  if (colorTable === undefined) return linearColor('color') as unknown as Node<'vec4'>
+  const slot = attribute<'float'>('colorSlot', 'float')
+  const width = float(colorTable.width)
+  const entry = colorTable.node.load(ivec2(int(mod(slot, width)), int(floor(slot.div(width))))) as unknown as Node<'vec4'>
+  const own = attribute<'vec4'>('color', 'vec4')
+  const chosen = vertexStage(select(slot.greaterThan(0.5), entry, own))
+  return vec4(sRGBTransferEOTF(chosen.rgb) as unknown as Node<'vec3'>, chosen.a) as unknown as Node<'vec4'>
+}
+
+/** Drops fragments outside the tile square. Call inside `Fn`. */
+function discardOutsideTile(): void {
+  const local = positionGeometry
+  If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
+    Discard()
+  })
+}
+
+/**
+ * The main thread's copy of the worker's feature colour table: one RGBA texel per slot, `width` slots per row,
+ * straight-alpha sRGB. Grows by rows; changed slots are written in place and uploaded once per batch.
+ */
+export class FeatureColorTexture {
+  readonly width = 1024
+  texture: DataTexture
+  /** The texture node read by shape materials; its value follows `texture` when the table grows. */
+  readonly node: ReturnType<typeof texture>
+  protected data: Uint8Array
+  protected dirty = false
+
+  constructor() {
+    this.data = new Uint8Array(this.width * 4)
+    this.texture = this.createTexture(1)
+    this.node = texture(this.texture)
+  }
+
+  get rows(): number {
+    return this.texture.image.height
+  }
+
+  apply(update: FeatureColorUpdate): void {
+    if (update.height > this.rows) {
+      const data = new Uint8Array(this.width * update.height * 4)
+      data.set(this.data)
+      this.data = data
+      this.texture.dispose()
+      this.texture = this.createTexture(update.height)
+      this.node.value = this.texture
+    }
+    update.slots.forEach((slot, index) => this.data.set(update.colors.subarray(index * 4, index * 4 + 4), slot * 4))
+    this.dirty = true
+  }
+
+  /** Uploads the table if colours changed since the last upload. Call before drawing. */
+  upload(): void {
+    if (!this.dirty) return
+    this.texture.needsUpdate = true
+    this.dirty = false
+  }
+
+  dispose(): void {
+    this.texture.dispose()
+  }
+
+  protected createTexture(rows: number): DataTexture {
+    const table = new DataTexture(this.data, this.width, rows, RGBAFormat, UnsignedByteType)
+    table.colorSpace = NoColorSpace
+    table.generateMipmaps = false
+    table.flipY = false
+    table.name = 'MapStyleFeatureColors'
+    table.needsUpdate = true
+    return table
+  }
 }
 
 /** A single-colour quad over the whole composite; set `color` (straight-alpha sRGB, 0 to 1) before drawing. */
@@ -178,14 +280,12 @@ function samplePattern(atlas: ImageAtlasTexture, rectangle: Node<'vec4'>, coordi
  * Fills, lines and circles of a tile that has patterns: like `createShapeMaterial`, and vertices with a
  * pattern rectangle take the pattern's colour, times the vertex colour's alpha (the opacity).
  */
-export function createPatternShapeMaterial(atlas: ImageAtlasTexture): MeshBasicNodeMaterial {
+export function createPatternShapeMaterial(atlas: ImageAtlasTexture, colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
   const material = createMaterial()
+  const shape = shapeColor(colorTable)
   material.colorNode = Fn(() => {
-    const local = positionGeometry
-    If(local.x.lessThan(0).or(local.x.greaterThan(TILE_EXTENT)).or(local.y.lessThan(0)).or(local.y.greaterThan(TILE_EXTENT)), () => {
-      Discard()
-    })
-    const color = linearColor('color')
+    discardOutsideTile()
+    const color = shape as unknown as ReturnType<typeof linearColor>
     // Normalised 16-bit attribute: back to atlas pixels.
     const rectangle = attribute<'vec4'>('pattern', 'vec4').mul(65535)
     const pattern = samplePattern(atlas, rectangle, attribute<'vec2'>('patternCoordinates', 'vec2'))
@@ -236,18 +336,33 @@ export function createTextMaterial(atlas: GlyphAtlasTexture): MeshBasicNodeMater
   return material
 }
 
+/** The shape materials a bucket picks from: with or without patterns, with or without feature colour slots. */
+export interface ShapeMaterials {
+  plain: MeshBasicNodeMaterial
+  slotted?: MeshBasicNodeMaterial
+  patterned?: MeshBasicNodeMaterial
+  slottedPatterned?: MeshBasicNodeMaterial
+}
+
+function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slotted: boolean): MeshBasicNodeMaterial {
+  if (patterned && slotted) return materials.slottedPatterned ?? materials.patterned ?? materials.slotted ?? materials.plain
+  if (patterned) return materials.patterned ?? materials.plain
+  if (slotted) return materials.slotted ?? materials.plain
+  return materials.plain
+}
+
 /** A bucket's GPU objects: one shape mesh per layer group (sharing buffers) and one text mesh. */
 export class BucketMeshes {
   readonly shapes: Array<{ group: number; mesh: Mesh }> = []
   readonly text: Mesh | null = null
   protected readonly geometries: BufferGeometry[] = []
 
-  /** `patternShapeMaterial` draws buckets that have patterns, `shapeMaterial` the others. */
-  constructor(bucket: TileBucket, shapeMaterial: MeshBasicNodeMaterial, textMaterial: MeshBasicNodeMaterial, patternShapeMaterial: MeshBasicNodeMaterial = shapeMaterial) {
+  constructor(bucket: TileBucket, shapeMaterials: ShapeMaterials, textMaterial: MeshBasicNodeMaterial) {
     const { shapes, text } = bucket
     if (shapes !== null) {
       const position = new BufferAttribute(toVector3(shapes.positions), 3)
       const color = new BufferAttribute(shapes.colors, 4, true)
+      const slots = shapes.colorSlots == null ? null : new BufferAttribute(shapes.colorSlots, 1)
       const index = new BufferAttribute(shapes.indices, 1)
       const patterned = shapes.patterns != null && shapes.patternCoordinates != null
       const pattern = patterned ? new BufferAttribute(shapes.patterns!, 4, true) : null
@@ -256,6 +371,7 @@ export class BucketMeshes {
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', position)
         geometry.setAttribute('color', color)
+        if (slots !== null) geometry.setAttribute('colorSlot', slots)
         if (pattern !== null && patternCoordinates !== null) {
           geometry.setAttribute('pattern', pattern)
           geometry.setAttribute('patternCoordinates', patternCoordinates)
@@ -263,7 +379,7 @@ export class BucketMeshes {
         geometry.setIndex(index)
         geometry.setDrawRange(start, count)
         this.geometries.push(geometry)
-        this.shapes.push({ group, mesh: createMesh(geometry, patterned ? patternShapeMaterial : shapeMaterial) })
+        this.shapes.push({ group, mesh: createMesh(geometry, chooseShapeMaterial(shapeMaterials, patterned, slots !== null)) })
       }
     }
     if (text !== null) {

@@ -128,6 +128,8 @@ export interface GlyphProviderOptions {
   fetch?: typeof fetch
   /** Replaces the local glyph renderer, for tests (no OffscreenCanvas in Node). */
   drawLocalGlyph?: (fontStack: string, codePoint: number) => Glyph | null
+  /** An atlas to keep packing into (after a style reload), so glyphs already drawn keep their place. */
+  atlas?: GlyphAtlas
 }
 
 /**
@@ -135,7 +137,7 @@ export interface GlyphProviderOptions {
  * OffscreenCanvas with TinySDF when the server does not have them. Every glyph goes into the atlas once.
  */
 export class GlyphProvider {
-  readonly atlas = new GlyphAtlas()
+  readonly atlas: GlyphAtlas
   protected readonly placed = new Map<string, AtlasGlyph | null>()
   protected readonly ranges = new Map<string, Promise<Map<number, Glyph> | null>>()
   protected readonly localRenderers = new Map<string, TinySDF>()
@@ -143,6 +145,12 @@ export class GlyphProvider {
 
   constructor(options: GlyphProviderOptions) {
     this.options = options
+    this.atlas = options.atlas ?? new GlyphAtlas()
+  }
+
+  /** Whether this provider serves the same glyphs as `options` would. */
+  matches(options: Pick<GlyphProviderOptions, 'glyphsUrl' | 'localFontFamily'>): boolean {
+    return options.glyphsUrl === this.options.glyphsUrl && options.localFontFamily === this.options.localFontFamily
   }
 
   /** Loads (if needed) and places the glyphs of these code points for a font stack. */

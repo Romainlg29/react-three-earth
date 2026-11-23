@@ -202,8 +202,8 @@ How it works:
 Not supported yet: icons (sprites load and serve patterns, see W5 below), raster, hillshade and heatmap layers (skipped with one
 warning), right-to-left and complex scripts, `fill-extrusion` in 3D (drawn flat), labels colliding across
 tiles, and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
-through the worker's `fetch` with `requestHeaders`, not 3DTilesRenderer's `preprocessURL` (the style request
-does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
+through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
+3DTilesRenderer's `preprocessURL` (the style request does). Labels change size by 2× where neighbouring terrain tiles are textured at different zooms: draped text
 has a fixed size on the ground.
 
 | Check (fixtures: synthetic water, roads, places; SwiftShader) | Result |
@@ -258,6 +258,71 @@ the foundation GeoJSON `setData`, style edits, feature-state and runtime images 
 | Browser (`?fixtures&map=vector&test=invalidate`, SwiftShader) | the fixture server recolours the lakes, `invalidate(bounds)` around them: of 106 regions held, 90 reach into the bounds and redraw once each; lakes go from blue to pink, and every screenshot taken while redrawing still shows them (no missing texture) |
 
 ![before](map-vector-invalidate-before.png) ![after](map-vector-invalidate-after.png)
+
+### Runtime style API and feature-state (W3)
+
+The style can change after it loaded. `MapStyleSource` has MapLibre's methods (`setPaintProperty`,
+`setLayoutProperty`, `setFilter`, `setLayerZoomRange`, `setLayerVisibility`, `addLayer` / `removeLayer` /
+`moveLayer`, `addSource` / `removeSource`, `setStyle` with the style specification's `diff`,
+`setGlobalStateProperty`, `setFeatureState` / `removeFeatureState` / `getFeatureState`, `transformRequest`,
+`addProtocol`) and `styledata` / `sourcedata` / `error` events. `<StyleLayer>` wraps a vanilla `StyleLayer`
+that diffs its props into those calls and survives `setStyle`. `<MapStyleSource>` applies a new `url` or
+`style` prop with `setStyle` instead of rebuilding.
+
+How it works:
+
+- **One model, many renderers.** `MapStyle` (main thread) holds the document as it is now, feature-state and
+  `global-state` values. Setters check their arguments against the document (`worker/styleDocument.ts`, the
+  same code the worker runs, so the two copies cannot drift) and hand the change to every overlay, batched
+  per microtask and numbered. An overlay starts its worker from a snapshot and sends only changes numbered
+  after it, so nothing is applied twice or lost (including the fall back to the main thread when the worker
+  fails).
+- **Worker protocol.** Style edits travel as `{ type: 'style', commands }`, where a command has the shape of the
+  style specification's `diff` output (`{ command: 'setPaintProperty', args }`), so `setStyle` sends `diff()`
+  as is. A change `diff` cannot express (glyphs, sprite, base URL) sends `reload`, which keeps the glyph atlas
+  and colour slots so buckets still on screen stay valid. `featureState` carries feature-state changes.
+  Results may carry `featureColors`, applied before the result resolves (like the glyph atlas), so a bucket
+  never arrives before the slot colours it uses. The worker asks the main thread to resolve requests
+  (`resource` messages) only when there is a `transformRequest` or a non-http scheme.
+- **What gets processed again.** The worker answers which sources to rebuild: the sources of changed layers,
+  and those whose layer order or layer groups moved (groups set draw order across sources; a new layer of
+  another source between two layers of one source renumbers the groups above it). `global-state` changes
+  rebuild only sources whose layers read the changed name (`globalStateRefs`). Rebuilding re-tessellates from
+  the worker's raw-tile cache: nothing is fetched. The overlay discards those buckets (`rebuildTiles`) and
+  redraws regions in place through F1's machinery. Deviation from the brief: re-tessellation is per tile and
+  source, not per layer. Keeping per-layer geometry would need per-layer buffers in every bucket for a rare
+  gain (a paint change on one layer of a source re-tessellates the source's other layers in that tile, a few
+  milliseconds in the worker).
+- **Feature-state.** Measured first, as the brief asked: re-tessellating a tile for a hover change costs the
+  whole tile (labels included) plus a worker round trip per tile. Default design kept, with one change: a
+  per-vertex *slot* instead of a feature index. The worker gives each (feature, layer, colour role, zoom) of a
+  layer whose colour or opacity reads feature-state a slot in a colour table (`FeatureColorTable`, 1024 wide,
+  up to 1024 rows); vertices carry the slot, and the shape material reads the colour from the table texture in
+  the vertex stage. A state change re-evaluates the feature's slots in the worker (the full expression,
+  any shape) and sends the changed colours; the overlay redraws only regions whose buckets hold the feature
+  (an index from feature key to loaded buckets, built from each bucket's `featureStateKeys`: W4's feature
+  index can replace it). No tile is processed. State-dependent paint that changes geometry (`line-width`,
+  `circle-radius`, any text paint) lists the feature in `rebuildFeatureKeys`, and a change re-tessellates the
+  tiles holding it; a bucket started before such a change is processed again on arrival
+  (`featureStateVersion`). Features in slot layers are tessellated even while transparent, so a highlight can
+  appear. Past a million slots, colours are baked and those features take the rebuild path.
+- **`promoteId`** on vector sources (string, or per source layer) gives tiles without ids feature-state.
+
+| Check (fixtures, SwiftShader; correctness only, never frame times) | Result |
+| --- | --- |
+| `setPaintProperty('water', 'fill-color', pink)` | lakes 0.44 % blue → 0.43 % pink, 106 regions redrawn |
+| `setLayerVisibility('water', false)`, then back | lakes gone, then back blue |
+| `addLayer` (hover layer) + `setFeatureState` on one lake of three | one lake pink, 0 tiles processed, 50 regions redrawn, 2.1 s to settle on the CPU rasteriser |
+
+`setStyle` is asynchronous even for an object (the style specification's `diff` loads on first use, to keep it
+out of the main bundle): changes made while it resolves are held and applied to the new style, and the last of
+overlapping calls wins. Feature colour slots and W5's patterns share one set of shape materials (plain, slotted,
+patterned, both); a patterned fill or line bakes its opacity, so a state-dependent opacity there re-tessellates.
+
+Hover recomposition on a device still needs measuring (SwiftShader rasterises on the CPU; the 2.1 s above is
+50 region redraws there). Not done: `zoom` in expressions is still evaluated at each region's integer level,
+so zoom-interpolated paint steps per level (W6 brings a camera zoom); `setSprite` and `setGlyphs` reload the
+style; a source added at a zoom where terrain tiles had no content shows once those tiles reload.
 
 ### Sprites, image atlas and patterns (W5)
 
@@ -348,6 +413,69 @@ control takes the `earth` and `container` in an options object (the brief left t
 | --- | --- |
 | Unit tests | collection, de-duplication, order, events, the style, TileJSON and PMTiles metadata, sanitising (script, `javascript:` and encoded variants, event attributes, nesting, entities, malformed tags) |
 | Browser, `?fixtures` | OSM link with `target` and `rel`, terrain first, bottom-right; compact with the button at 400 px and expands on click; a style's source attribution appears after the style loads |
+
+### Markers and popups (W9)
+
+HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/core/Marker.ts`, `src/core/Popup.ts`,
+`src/core/ScreenOverlay.ts`, `src/core/markerLayout.ts`, `src/react/Marker.tsx`, `src/react/Popup.tsx`,
+`src/react/domRoot.tsx`).
+
+- **API.** Vanilla `Marker` and `Popup` (three `EventDispatcher`s) with `addTo(earth, container)`, and React `<Marker>` and
+  `<Popup>`. A `<Popup>` anywhere inside `<Marker>` attaches to it through context and opens on click, Enter or Space;
+  everything renders in the marker's element, with a fallback pin that CSS shows only while it is the sole element. `<Popup>` outside a marker points at a position, follows the pointer (`trackPointer`) or
+  is controlled with `open` and `onClose`. Markers take `heightMeters` (a number, or `'terrain'`, the default), `anchor`,
+  `offsetPixels`, `rotationDegrees`, `rotationAlignment` and `pitchAlignment`, `draggable`, `occludedOpacity` and a
+  `label` for screen readers.
+- **React content.** React Three Fiber's reconciler cannot hold DOM nodes, so the content of each marker and popup renders
+  in its own `react-dom` root, with an `its-fine` context bridge: `useEarth`, `useMarker` and the app's own contexts work
+  inside it.
+- **Placement.** Every marker and popup of an earth shares one `ScreenOverlay`, which listens to the new Earth `update`
+  event, fired at the end of `earth.update`, so the DOM is placed from the camera, morph and tiles of the frame that draws
+  (no lag behind the map). The overlay gives each frame a budget of 4 terrain raycasts, spent on terrain height reads
+  (`heightMeters: 'terrain'`) and occlusion tests, served round robin from where the budget ran out (a unit test
+  checks 100 markers all get theirs). Each marker re-checks at most every 250 ms, and only when the scene changed
+  (camera, morph, tiles loading); a check that had to wait asks for a frame, for `frameloop="demand"`: when its interval runs out, or at once
+  when only the budget was short.
+  Hidden markers spend nothing.
+- **Visibility.** `'visible'`, `'occluded'` (faded to `occludedOpacity`) or `'hidden'` (behind the camera or the globe's
+  horizon). Terrain occlusion runs only on the globe at rest: on the flat map the tiles are moved on the GPU, so the meshes
+  the raycast sees do not match what is drawn.
+
+Changed from the brief:
+
+- The CSS is injected once per document and themed with CSS variables (`--react-three-earth-marker-color`,
+  `--react-three-earth-popup-background`, `-color`, `-shadow`, `-radius`, `-padding`, `-font`), like `AttributionControl`,
+  instead of a separate CSS export to import.
+- `anchor` defaults to `'bottom'` for the default pin and `'center'` for an element or content of your own.
+- A popup on a marker opens beside the marker's box (`popupPointOnBox`), so it clears any pin or content size, instead of
+  a per-anchor offset table.
+- New Earth `update` event (see above), so markers are placed in the frame that draws.
+- Terrain occlusion only on the globe at rest (see above).
+- `onClose` fires only when the user closes a popup, never when `open` turns false or the component unmounts, and a
+  popup's close-on-click listens in the capture phase, so clicking marker B closes A before B opens: the usual
+  "one selected popup" state works.
+- Focus: a popup opened from its marker takes focus; one the app opens takes it only when its content has a control;
+  a pointer-tracking tooltip never does. `closeOnClick` closes only on clicks on the map (canvas or markers), not on
+  controls or other popups. With `<Popup open>` on a marker, a marker click calls `onOpen` (`marker.togglePopupOnClick`).
+- Each React root renders into a fresh `display: contents` host per effect run, so StrictMode never puts two roots on one
+  element (a browser check runs the markers under `?strict`).
+- A popup on a marker restores focus to the marker when it closes (a press on the map can keep the marker from taking
+  focus), and `aria-expanded` follows it.
+- A shared `containerPosition` helper (`holdContainerPosition`, `releaseContainerPosition`) makes a static container
+  `position: relative` for markers, popups and now `AttributionControl` too.
+
+Not supported yet: wheel over a marker in a vanilla container that is not inside the controls' element does not zoom;
+occluded markers still take clicks; no clustering (draw thousands of places as W2 / W6 symbols, not DOM).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/markers.test.ts`: anchors, offsets and transforms, popup side and placement beside the marker's box, rotation and tilt with the map, marker lands on `earth.camera.project` in the same update, hidden behind the globe and the camera, shared layer per container, focus and labels, popup open and close (Escape, map click, drag, camera move), pointer tracking |
+| Browser (`?fixtures&markers`, SwiftShader) | the pin on the 3900 m hill reads a terrain height of 3899.99 m |
+| | a marker buried under the hill (height 0) is `'occluded'` at opacity 0.2 |
+| | over 41 frames of camera motion, the pin's transform differs from `earth.project` by at most 0.66 px (whole-pixel rounding, 0.71 px at worst) and the DOM element's tip by 0.66 px |
+| | hidden from the far side of the globe |
+| | the popup opens on click above the pin (gap 0 px, centred within 1 px) with focus inside; `Escape` closes it and returns focus to the marker |
+| | dragging 80 px moves the pin 80 px, fires one `dragend`, and moves the camera 0 m |
 
 ## Atmosphere and @aeronautic effects
 

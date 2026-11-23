@@ -46,13 +46,13 @@ const inTile = (points: Array<[number, number]>) => {
 /** One vector tile of the synthetic data: layers `water`, `roads` and `places`. `waterColor` tags the lakes. */
 export function vectorTile(z: number, x: number, y: number, waterColor?: string): Uint8Array {
   const water: EncodedFeature[] = []
-  for (const lake of LAKES) {
+  for (const [index, lake] of LAKES.entries()) {
     const ring: Array<[number, number]> = []
     for (let step = 0; step <= 48; step++) {
       const angle = (-step / 48) * Math.PI * 2 // clockwise once y points down
       ring.push(project(lake.center[0] + Math.cos(angle) * lake.radius * 1.4, lake.center[1] + Math.sin(angle) * lake.radius, z, x, y))
     }
-    if (inTile(ring)) water.push({ type: 'Polygon', geometry: [ring], properties: { name: lake.name, ...(waterColor === undefined ? {} : { color: waterColor }) } })
+    if (inTile(ring)) water.push({ type: 'Polygon', id: index + 1, geometry: [ring], properties: { name: lake.name, ...(waterColor === undefined ? {} : { color: waterColor }) } })
   }
   const roadFeatures: EncodedFeature[] = []
   if (z >= 8) {

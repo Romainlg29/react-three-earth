@@ -50,6 +50,16 @@ const expectations = {
     ['only regions reaching into the bounds marked', r.pendingAfterCall < r.regionsHeld],
     ['each marked region redrawn once (a few new tiles may load meanwhile)', r.regionsRedrawn >= r.pendingAfterCall && r.regionsRedrawn <= r.pendingAfterCall + 10],
   ],
+  // The runtime style API: setPaintProperty, setLayerVisibility, addLayer, setFeatureState on fixture lakes.
+  'vector map style with fixtures, runtime style': r => [
+    ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
+    ['setPaintProperty recolours the lakes', r.recoloured.pinkShare > r.before.blueShare * 0.6 && r.recoloured.blueShare < r.before.blueShare * 0.2],
+    ['setLayerVisibility hides them', r.hidden.pinkShare < r.before.blueShare * 0.1 && r.hidden.blueShare < r.before.blueShare * 0.1],
+    ['they come back blue', r.restored.blueShare > r.before.blueShare * 0.8 && r.restored.pinkShare < 0.0005],
+    ['setFeatureState highlights one lake of three', r.hovered.pinkShare > r.before.blueShare * 0.05 && r.hovered.blueShare > r.before.blueShare * 0.2],
+    ['feature-state reads back', r.featureState.hover === true],
+    ['a hover redraws regions without processing tiles again', r.tilesProcessedDuringHover === 0 && r.hover.regionsRedrawn > 0],
+  ],
   ...Object.fromEntries(['webgpu', 'webgl2'].map(name => [`vector map style with fixtures, patterns, ${name}`, r => [
     ['background-pattern covers the land (green checks)', r.sprite.meadowShare > 0.5],
     ['fill-pattern stripes the lakes, dark and light', r.sprite.darkBlueShare > 0.004 && r.sprite.lightBlueShare > 0.003],
@@ -70,6 +80,22 @@ const expectations = {
       ['the morph fires movestart, moveend, then idle', r.morphEvents.join() === 'movestart,moveend,idle'],
     ]
   },
+  'markers and popups with fixtures': r => [
+    ['the pin sits on the hill (terrain height within 50 m of 3900 m)', Math.abs(r.peakHeightMeters - 3900) < 50],
+    ['the pin is a labelled button', r.peakRole === 'button' && r.peakTabIndex === 0 && r.peakLabel === 'Fixture peak'],
+    ['React content renders in the marker', r.buriedText === 'sea level'],
+    ['a marker under the hill fades (occluded, opacity 0.2)', r.buriedVisibility === 'occluded' && Number(r.buriedOpacity) === 0.2],
+    ['checked on every frame of the camera move, the pin crossing the screen', r.frames >= 35 && r.travelPixels > 50],
+    // Rounded to whole pixels: at most half a pixel on each axis. A frame of lag would be several pixels here.
+    ['the marker is placed in the frame that draws (transform within pixel rounding of project)', r.maximumTransformErrorPixels <= Math.SQRT1_2 + 1e-6],
+    ['the pin\'s tip stays within 1 px of its projected point while the camera moves', r.maximumElementErrorPixels <= 1],
+    ['hidden behind the globe', r.behindHorizon.visibility === 'hidden' && r.behindHorizon.cssVisibility === 'hidden'],
+    ['the popup opens on click, above the pin, with focus inside', r.popup.text.includes('Fixture peak') && r.popup.anchor === 'bottom' && r.popup.focusInside && Math.abs(r.popup.gapAbovePinPixels) <= 1 && r.popup.centreOffsetPixels <= 1],
+    ['Escape closes the popup and gives focus back to the marker', !r.afterEscape.open && r.afterEscape.focusOnMarker],
+    ['dragging moves the marker, fires dragend once, and leaves the map still', r.drag.dragEnds === 1 && r.drag.movedPixels > 60 && r.drag.cameraMovedMeters < 1],
+    ['controlled popups: a click on another marker moves the selection (one open), a second click closes it', JSON.stringify(r.selection) === JSON.stringify({ afterFirst: { selected: 'east', open: ['Place east'] }, afterSecond: { selected: 'west', open: ['Place west'] }, afterThird: { selected: null, open: [] } })],
+    ['under StrictMode: five markers, four pins, content and popup render, no errors', r.strictMode.markerElements === 5 && r.strictMode.pinsShown === 4 && r.strictMode.buriedText === 'sea level' && r.strictMode.popupText.includes('Fixture peak') && r.strictMode.errors.length === 0],
+  ],
   'camera animations and pointer events with fixtures': r => {
     const angle = (a, b) => Math.abs(((((a - b + 180) % 360) + 360) % 360) - 180)
     const endsAt = (flight, pitchDegrees) =>

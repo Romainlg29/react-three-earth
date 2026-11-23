@@ -51,6 +51,10 @@ class Growable<T extends Float32Array | Uint8Array | Uint16Array | Uint32Array> 
     next.set(this.array.subarray(0, this.length))
     this.array = next
   }
+  push1(a: number): void {
+    this.reserve(1)
+    this.array[this.length++] = a
+  }
   push2(a: number, b: number): void {
     this.reserve(2)
     this.array[this.length++] = a
@@ -84,6 +88,9 @@ export class ShapeBuilder {
   protected readonly indices = new Growable(size => new Uint32Array(size))
   protected readonly groups: DrawGroup[] = []
   protected color: Rgba = [0, 0, 0, 0]
+  /** Created by the first non-zero colour slot; earlier vertices get slot 0. */
+  protected colorSlots: Growable<Float32Array> | null = null
+  protected colorSlot = 0
   /** Created on the first pattern, then filled for every vertex (zero rectangle: coloured, not patterned). */
   protected patternRectangles: Growable<Uint16Array> | null = null
   protected patternCoordinates: Growable<Float32Array> | null = null
@@ -103,8 +110,23 @@ export class ShapeBuilder {
     this.groups.push({ group, start: this.indices.length, count: 0 })
   }
 
+  /** The colour of the vertices about to be added; resets the colour slot to none. */
   setColor(color: Rgba): void {
     this.color = color
+    this.colorSlot = 0
+  }
+
+  /**
+   * A feature colour slot for the vertices about to be added (after `setColor`, whose colour stays as a fallback):
+   * the shader reads the colour from the slot table, so a feature-state change only redraws.
+   */
+  setColorSlot(slot: number): void {
+    this.colorSlot = slot
+    if (slot !== 0 && this.colorSlots === null) {
+      this.colorSlots = new Growable(size => new Float32Array(size))
+      this.colorSlots.reserve(this.vertexCount)
+      this.colorSlots.length = this.vertexCount
+    }
   }
 
   /**
@@ -187,6 +209,7 @@ export class ShapeBuilder {
     return {
       positions: this.positions.toArray(),
       colors: this.colors.toArray(),
+      colorSlots: this.colorSlots?.toArray() ?? null,
       indices: this.indices.toArray(),
       groups: this.groups.filter(group => group.count > 0),
       patterns: this.patternRectangles?.toArray() ?? null,
@@ -198,6 +221,7 @@ export class ShapeBuilder {
     const [r, g, b, a] = this.color
     this.positions.push2(x, y)
     this.colors.push4(r, g, b, a)
+    this.colorSlots?.push1(this.colorSlot)
     if (this.patternRectangles !== null) this.addPatternVertex(x, y)
     return this.vertexCount - 1
   }
