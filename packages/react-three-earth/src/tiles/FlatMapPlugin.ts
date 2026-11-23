@@ -1,6 +1,6 @@
 import type { Tile } from '3d-tiles-renderer'
-import { BufferAttribute, Matrix4, Mesh, type BufferGeometry, type Material, type Object3D } from 'three'
-import { attribute, diffuseColor, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
+import { BufferAttribute, InstancedBufferGeometry, Matrix4, Mesh, Vector2, type BufferGeometry, type Material, type Object3D } from 'three'
+import { attribute, diffuseColor, float, instanceIndex, mat3, mix, normalGeometry, positionGeometry, smoothstep, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
@@ -32,6 +32,9 @@ interface FlatMeshState {
   flatMapLuminance: number
   /** World copies drawn as instances: instance 0 is this many world widths from the mesh's own frame. */
   firstWorldCopyOffset: number
+  /** The mesh's flat centre minus the anchor's, in Web Mercator metres: where the unroll front reaches it. */
+  centerFromAnchorXMeters: number
+  centerFromAnchorYMeters: number
   /** Whether `matrixWorld` holds the flat frame: only between `onBeforeRender` and `onAfterRender`. */
   flattened: boolean
 }
@@ -49,6 +52,10 @@ const globeToFlatUniform = uniform(new Matrix4()).onObjectUpdate(({ object }, se
 })
 const morphUniform = uniform(0).onObjectUpdate(({ object }) => (object === null ? 0 : (getState(object)?.morph ?? 0)))
 const firstWorldCopyOffsetUniform = uniform(0).onObjectUpdate(({ object }) => (object === null ? 0 : (getState(object)?.firstWorldCopyOffset ?? 0)))
+const centerFromAnchorUniform = uniform(new Vector2()).onObjectUpdate(({ object }, self) => {
+  const state = object === null ? undefined : getState(object)
+  self.value.set(state?.centerFromAnchorXMeters ?? 0, state?.centerFromAnchorYMeters ?? 0)
+})
 const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (object === null ? 1 : (getState(object)?.flatMapLuminance ?? 1)))
 
 /**
@@ -57,11 +64,23 @@ const flatMapLuminanceUniform = uniform(1).onObjectUpdate(({ object }) => (objec
  * frame's matrix and the globe position is brought into that frame first.
  */
 const worldCopyOffset = vec3(float(instanceIndex).add(firstWorldCopyOffsetUniform).mul(2 * WEB_MERCATOR_HALF_EXTENT_METERS), 0, 0)
-const morphedPosition = mix(
-  globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz,
-  attribute(FLAT_POSITION_ATTRIBUTE, 'vec3').add(worldCopyOffset),
-  morphUniform,
-)
+const flatPosition = attribute(FLAT_POSITION_ATTRIBUTE, 'vec3')
+
+/**
+ * The unroll: the map opens from the anchor outwards, like a sheet peeling off the globe, and rolls back up
+ * from its edges. Each vertex morphs once the front (at `morph` times the reach) passes its distance from
+ * the anchor.
+ */
+const UNROLL_FRONT_WIDTH = 0.35
+const UNROLL_REACH_METERS = 1.5 * WEB_MERCATOR_HALF_EXTENT_METERS
+const distanceFromAnchorMeters = flatPosition.xy.add(centerFromAnchorUniform).length()
+const distanceFromAnchor = distanceFromAnchorMeters.div(UNROLL_REACH_METERS).min(1)
+const localMorph = smoothstep(0, 1, morphUniform.mul(1 + UNROLL_FRONT_WIDTH).sub(distanceFromAnchor).div(UNROLL_FRONT_WIDTH))
+/** 1 on the crest of the front, 0 away from it. */
+const unrollCrest = localMorph.mul(float(1).sub(localMorph)).mul(4)
+/** The crest lifts off the map, more the farther it has travelled. */
+const crestLift = vec3(0, 0, unrollCrest.mul(unrollCrest).mul(distanceFromAnchorMeters).mul(0.08))
+const morphedPosition = mix(globeToFlatUniform.mul(vec4(positionGeometry, 1)).xyz, flatPosition.add(worldCopyOffset), localMorph).add(crestLift)
 
 /**
  * The normal, turned with the geometry into the flat frame, so shading stays continuous when the morph
@@ -70,7 +89,12 @@ const morphedPosition = mix(
 const morphedNormal = transformNormalToView(mat3(globeToFlatUniform).mul(normalGeometry).normalize())
 
 /** On the flat map the imagery is shown unlit, as a map: its colour is emitted, fading in with the morph. */
-const flatEmission = diffuseColor.rgb.mul(morphUniform).mul(flatMapLuminanceUniform)
+/** A thin glow rides the crest of the front. */
+const UNROLL_GLOW_COLOR = vec3(0.55, 0.8, 1)
+const unrollGlow = UNROLL_GLOW_COLOR.mul(unrollCrest.pow(24).mul(smoothstep(0.05, 0.3, distanceFromAnchor)).mul(1.2))
+// The sunlight fades as 1 - morph (see `Earth.update`): unrolled ground makes up the rest, so its brightness
+// holds steady through the transition.
+const flatEmission = diffuseColor.rgb.mul(localMorph.mul(morphUniform)).add(unrollGlow).mul(flatMapLuminanceUniform)
 
 const WRAPPED = Symbol('FLAT_MAP_WRAPPED')
 const combinedEmissions = new WeakSet<Node>()
@@ -130,6 +154,7 @@ export class FlatMapPlugin {
       if (node === scene) break
     }
     const center = computeFlatPositions(mesh.geometry, meshToTileScene, referenceLongitude)
+    mesh.geometry = toInstancedGeometry(mesh.geometry)
     mesh[FLAT_STATE] = {
       centerXMeters: center[0],
       centerYMeters: center[1],
@@ -138,6 +163,8 @@ export class FlatMapPlugin {
       morph: 0,
       flatMapLuminance: 1,
       firstWorldCopyOffset: 0,
+      centerFromAnchorXMeters: 0,
+      centerFromAnchorYMeters: 0,
       flattened: false,
     }
     wrapMaterial(mesh.material as Material, mesh.geometry.hasAttribute('normal'))
@@ -175,7 +202,9 @@ export class FlatMapPlugin {
     // least a quarter of a world away, so only seen zoomed out, where float32 metres don't show.
     const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.worldCopyReferenceXMeters)
     state.firstWorldCopyOffset = view.firstWorldCopy
-    mesh.count = view.worldCopyCount
+    state.centerFromAnchorXMeters = centerXMeters - view.anchorMercatorXMeters
+    state.centerFromAnchorYMeters = state.centerYMeters - latitudeToMercatorY(view.anchorLatitudeRadians)
+    ;(mesh.geometry as InstancedBufferGeometry).instanceCount = view.worldCopyCount
     flatMatrix
       .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)
       .multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
@@ -190,7 +219,7 @@ export class FlatMapPlugin {
 function restoreGlobeMatrix(mesh: FlatMesh): void {
   const state = mesh[FLAT_STATE]
   if (state === undefined || !state.flattened) return
-  mesh.count = 1
+  ;(mesh.geometry as InstancedBufferGeometry).instanceCount = 1
   if (mesh.parent === null) mesh.matrixWorld.copy(mesh.matrix)
   else mesh.matrixWorld.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
   state.flattened = false
@@ -213,6 +242,29 @@ function wrapMaterial(material: Material, hasNormals: boolean): void {
     }
   }
   nodeMaterial.needsUpdate = true
+}
+
+/**
+ * The same geometry (shared attributes, index and groups) as an `InstancedBufferGeometry`, so world copies
+ * are drawn by its `instanceCount`. Instancing through `mesh.count` instead would give every tile mesh its
+ * own render cache key in three r187, and so its own node build: a hitch per tile loaded on the map.
+ */
+export function toInstancedGeometry(geometry: BufferGeometry): InstancedBufferGeometry {
+  if ((geometry as InstancedBufferGeometry).isInstancedBufferGeometry === true) return geometry as InstancedBufferGeometry
+  const instanced = new InstancedBufferGeometry()
+  instanced.name = geometry.name
+  instanced.index = geometry.index
+  // Shared, not copied: attributes plugins add later (imagery UVs) reach both.
+  instanced.attributes = geometry.attributes
+  instanced.morphAttributes = geometry.morphAttributes
+  instanced.morphTargetsRelative = geometry.morphTargetsRelative
+  instanced.groups = geometry.groups
+  instanced.drawRange = geometry.drawRange
+  instanced.boundingBox = geometry.boundingBox
+  instanced.boundingSphere = geometry.boundingSphere
+  instanced.userData = geometry.userData
+  instanced.instanceCount = 1
+  return instanced
 }
 
 /**

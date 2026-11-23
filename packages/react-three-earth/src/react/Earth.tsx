@@ -15,7 +15,7 @@ export interface EarthProps {
    * morphs between them over `viewTransitionSeconds`; the first value applies at once. Default: '3d'.
    */
   view?: ViewMode
-  /** Length of the globe-to-map transition (dive, swap, rise). Default: 2.4. */
+  /** Length of the globe-to-map transition, in which the map unrolls off the globe. Default: 1.8. */
   viewTransitionSeconds?: number
   /**
    * Where the camera starts, applied on the first frame (`earth.camera.jumpTo`). Read once at mount; move

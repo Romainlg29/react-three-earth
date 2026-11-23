@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { setCameraView } from '../src/core/camera.js'
 import { getFlatRegionBox } from '../src/tiles/EarthTilesRenderer.js'
-import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE } from '../src/tiles/FlatMapPlugin.js'
+import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 import {
   ecefToGeodetic,
@@ -103,19 +103,20 @@ describe('ViewMorph frames', () => {
     expect(summit.sub(view.anchorPosition).dot(view.anchorUp)).toBeCloseTo(3776, 6)
   })
 
-  it('turns top-down and swaps at once near the ground, anchored where the camera looks', () => {
+  it('turns top-down while the map unrolls, anchored where the camera looks, ending where it started', () => {
     const view = new ViewMorph()
     const camera = new PerspectiveCamera(60, 1, 1, 1e8)
     setCameraView(camera, { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, distanceMeters: 60_000, headingDegrees: -40, pitchDegrees: -25 })
     view.setMode('2d', { durationSeconds: 1 })
     expect(view.transitioning).toBe(true)
-    // 60 km is under the swap altitude: no dive, 40 % of the duration
     view.update(camera, 0.3)
     expect(view.morph).toBeGreaterThan(0)
     expect(view.morph).toBeLessThan(1)
     expect(MathUtils.radToDeg(view.anchorLongitudeRadians)).toBeCloseTo(138.7274, 4)
     expect(MathUtils.radToDeg(view.anchorLatitudeRadians)).toBeCloseTo(35.3606, 4)
-    view.update(camera, 0.15)
+    // Only the slight pull-back halfway
+    expect(camera.position.distanceTo(view.anchorPosition)).toBeLessThan(60_000 * 1.07)
+    view.update(camera, 0.75)
     expect(view.morph).toBe(1)
     expect(view.transitioning).toBe(false)
 
@@ -125,28 +126,27 @@ describe('ViewMorph frames', () => {
     expect(camera.position.distanceTo(view.anchorPosition)).toBeCloseTo(60_000, 3)
   })
 
-  it('from orbit, dives to the swap altitude, swaps there, then rises', () => {
+  it('from orbit, eases down to where the whole map fits, and plays backwards when reversed', () => {
     const view = new ViewMorph()
     const camera = new PerspectiveCamera(60, 1, 1, 1e9)
-    setCameraView(camera, { longitudeDegrees: 2.35, latitudeDegrees: 48.85, distanceMeters: 12_000_000, pitchDegrees: -90 })
+    setCameraView(camera, { longitudeDegrees: 2.35, latitudeDegrees: 48.85, distanceMeters: 40_000_000, pitchDegrees: -90 })
     view.setMode('2d', { durationSeconds: 10 })
     view.update(camera, 0)
     const distance = () => camera.position.distanceTo(view.anchorPosition)
-    // Before the swap the globe is untouched; at the swap the camera is low
-    view.update(camera, 3.9)
-    expect(view.morph).toBe(0)
-    view.update(camera, 0.2)
-    expect(view.morph).toBeGreaterThan(0)
-    expect(distance()).toBeCloseTo(200_000, 0)
-    view.update(camera, 1.9)
-    expect(view.morph).toBe(1)
-    expect(distance()).toBeCloseTo(200_000, 0)
-    view.update(camera, 4)
+    let previous = distance()
+    for (let step = 0; step < 10; step++) {
+      view.update(camera, 1)
+      // No jumps: at most the slight pull-back halfway, then down to the map's height limit
+      expect(distance()).toBeLessThanOrEqual(previous * 1.07)
+      previous = distance()
+    }
+    view.update(camera, 0.1)
     expect(view.transitioning).toBe(false)
-    // Back up, capped where the whole map height fills the screen
-    expect(distance()).toBeCloseTo(Math.min(12_000_000, view.maximumFlatCameraHeightMeters(camera)), 0)
+    expect(view.morph).toBe(1)
+    // Capped where the whole map height fills the screen (the pole slide adds a little)
+    expect(distance()).toBeGreaterThanOrEqual(view.maximumFlatCameraHeightMeters(camera) - 1)
 
-    // Reversed halfway back, it plays backwards to the globe at the start distance
+    // Reversed halfway back, it plays backwards to the map
     view.setMode('3d', { durationSeconds: 10 })
     view.update(camera, 0)
     view.update(camera, 5)
@@ -294,5 +294,21 @@ describe('flat map like MapLibre', () => {
     const view = new ViewMorph()
     view.updateWorldCopies(new PerspectiveCamera())
     expect([view.firstWorldCopy, view.worldCopyCount, view.worldCopyReferenceXMeters]).toEqual([0, 1, view.anchorMercatorXMeters])
+  })
+})
+
+describe('world copies as instances', () => {
+  it('draws the same geometry, sharing attributes added later', () => {
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(9), 3))
+    geometry.setIndex([0, 1, 2])
+    const instanced = toInstancedGeometry(geometry)
+    expect(instanced.instanceCount).toBe(1)
+    expect(instanced.getAttribute('position')).toBe(geometry.getAttribute('position'))
+    expect(instanced.index).toBe(geometry.index)
+    // An imagery plugin adding UVs to either one reaches both
+    geometry.setAttribute('layer_uv_0', new BufferAttribute(new Float32Array(6), 2))
+    expect(instanced.getAttribute('layer_uv_0')).toBe(geometry.getAttribute('layer_uv_0'))
+    expect(toInstancedGeometry(instanced)).toBe(instanced)
   })
 })
