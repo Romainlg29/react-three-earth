@@ -101,9 +101,11 @@ The heat is part of the draped map: each terrain tile's texture sums its kernels
 additive blending, then colours it through the layer's 256-step ramp at the layer's place in the style order. So:
 
 - The radius is in map pixels at the zoom the terrain tile is drawn at (512-pixel tiles), like line widths. On a
-  pitched globe, far kernels are smaller on screen, as roads are.
+  pitched globe, far kernels are smaller on screen, as roads are. Radius, intensity and opacity are taken at that
+  whole zoom, so the heat steps slightly when a tile is drawn at the next zoom, where MapLibre changes smoothly.
 - Kernels cross tile edges without seams: points of neighbouring tiles within reach are drawn too, up to one tile
-  (512 pixels). Each point is counted by the tile that owns it, never twice.
+  (512 pixels; the whole ring when the radius or weight reads the feature). Each point is counted by the tile that
+  owns it, never twice.
 - WebGL2 (the fallback) draws the same heat as WebGPU.
 
 ## Common Mistakes
@@ -114,15 +116,10 @@ A clustered `<GeoJsonSource>` hands the layer one point per cluster, so the heat
 Turn clustering off for the heatmap's source, or weight by `['get', 'point_count']` (with a fallback of 1 for
 lone points: `['coalesce', ['get', 'point_count'], 1]`).
 
-### MEDIUM: A radius read from the features on large data
+### MEDIUM: Very large radii
 
-A zoom-only `heatmap-radius` tells each region exactly how far to look into its neighbours. A radius read from
-the feature (`['get', …]`) could be anything, so every region reads its whole ring of neighbouring tiles. Prefer
-a zoom-only radius, and put per-feature variation in `heatmap-weight`.
-
-### MEDIUM: Radii above 512 pixels
-
-Kernels reach at most one tile (512 pixels) past their point; a larger radius is cut there. Lower the radius and
+Kernels reach at most one tile (512 pixels) past their point and are cut there. A kernel reaches about 1.3 radii at
+a weight × intensity of 1 (more for heavier points), so the cut starts near a 400-pixel radius. Lower the radius and
 raise `heatmap-intensity` instead.
 
 ### LOW: Expecting to query the heat

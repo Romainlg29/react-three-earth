@@ -103,14 +103,18 @@ export function summarizeHeatmapLayer(layer: CompiledStyleLayer, maximumZoom: nu
     if (color !== undefined) colorRamp.set([byte(color.r), byte(color.g), byte(color.b), byte(color.a)], index * 4)
   }
   const zooms = Array.from({ length: maximumZoom + 1 }, (_, zoom) => zoom)
-  const radiusVaries = layer.isFeatureDependent('paint', 'heatmap-radius')
+  // A radius or weight read from the features could be anything: those layers reach as far as the region ring.
+  const featureDependent = layer.isFeatureDependent('paint', 'heatmap-radius') || layer.isFeatureDependent('paint', 'heatmap-weight')
+  const reachAt = (zoom: number) => {
+    if (featureDependent) return HEATMAP_MAXIMUM_REACH_PIXELS
+    const weightTimesIntensity = layer.evaluate<number>('paint', 'heatmap-weight', zoom) * Math.max(layer.evaluate<number>('paint', 'heatmap-intensity', zoom), 0)
+    return Math.min(layer.evaluate<number>('paint', 'heatmap-radius', zoom) * heatmapExtentRadii(weightTimesIntensity), HEATMAP_MAXIMUM_REACH_PIXELS)
+  }
   return {
     id: layer.id,
     colorRamp,
     opacityByZoom: zooms.map(zoom => layer.evaluate<number>('paint', 'heatmap-opacity', zoom)),
     intensityByZoom: zooms.map(zoom => layer.evaluate<number>('paint', 'heatmap-intensity', zoom)),
-    // Twice the radius covers the kernel up to a weight times intensity of about 40 000; a radius read from the
-    // features could be anything, so it reaches as far as the region ring does.
-    reachPixelsByZoom: zooms.map(zoom => (radiusVaries ? HEATMAP_MAXIMUM_REACH_PIXELS : Math.min(2 * layer.evaluate<number>('paint', 'heatmap-radius', zoom), HEATMAP_MAXIMUM_REACH_PIXELS))),
+    reachPixelsByZoom: zooms.map(reachAt),
   }
 }

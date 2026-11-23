@@ -93,6 +93,14 @@ describe('heatmap layers in the worker', () => {
     expect(Math.max(...groups)).toBeGreaterThan(mesh.group)
   })
 
+  it('sizes quads at the drawn zoom when the tile is overzoomed', async () => {
+    const { processor } = await createProcessor()
+    const mesh = (await processor.processTile({ sourceId: 'base', x: 0, y: 0, z: 0, zoom: 3 })).layers[0]!
+    const position = values(mesh, 'position')
+    // 8 times the pixels per tile at zoom 3: the same 30 px radius is an eighth as many tile units.
+    expect(position[4]! - position[0]!).toBeCloseTo((2 * 30 * heatmapExtentRadii(1) * 4096) / 512 / 8, 3)
+  })
+
   it('reads data-driven weight and radius per feature, leaving out points of no weight, and clamps the reach to a tile', async () => {
     const { process } = await createProcessor({ 'heatmap-weight': ['get', 'count'], 'heatmap-radius': ['*', 300, ['get', 'count']] })
     const mesh = (await process()).layers[0]!
@@ -123,11 +131,15 @@ describe('heatmap layers in the worker', () => {
     expect(first!.opacityByZoom[0]).toBe(1)
     expect(first!.opacityByZoom[10]).toBeCloseTo(0.5)
     expect(first!.intensityByZoom[5]).toBeCloseTo(2)
-    expect(first!.reachPixelsByZoom[0]).toBe(20)
-    expect(first!.reachPixelsByZoom[10]).toBe(512) // twice 400, clamped to a tile
+    // The radius times the kernel's extent for the zoom's weight × intensity, at most a tile.
+    expect(first!.reachPixelsByZoom[0]).toBeCloseTo(10 * heatmapExtentRadii(1), 6)
+    expect(first!.reachPixelsByZoom[5]).toBeCloseTo(205 * heatmapExtentRadii(2), 6)
+    expect(first!.reachPixelsByZoom[10]).toBe(512)
     expect(first!.opacityByZoom).toHaveLength(25)
-    // A radius read from the features could be anything: it reaches as far as allowed.
+    // A radius read from the features could be anything: it reaches as far as allowed. So does a weight.
     expect(second!.reachPixelsByZoom[0]).toBe(512)
+    const { processor: weighted } = await createProcessor({ 'heatmap-weight': ['get', 'count'], 'heatmap-radius': 10 })
+    expect(weighted.summary.heatmapLayers![0]!.reachPixelsByZoom[3]).toBe(512)
     // The default ramp starts transparent and ends red.
     const { processor: plain } = await createProcessor()
     const ramp = plain.summary.heatmapLayers![0]!.colorRamp
@@ -170,6 +182,20 @@ describe('HeatmapLayers (main thread)', () => {
     expect(draw.userData.heatmap).toMatchObject({ intensity: 0, opacity: 0 })
     expect(heatmap.reachPixelsAt(7)).toBe(70)
     expect(heatmap.definition).toMatchObject({ type: 'heatmap', offscreen: { blending: 'additive' } })
+    // A new copy of the same ramps (every worker summary is one) keeps the atlas; a changed ramp or row count replaces it.
+    const atlas = () => (heatmap as unknown as { rampAtlas: import('three').DataTexture }).rampAtlas
+    const first = atlas()
+    expect(first.image.height).toBe(2)
+    expect(first.image.data![1024]).toBe(20) // row 1 holds layer b
+    heatmap.setLayers([summary('a', 5, 0.5), summary('b', 3, 0.75)])
+    expect(atlas()).toBe(first)
+    heatmap.prepareDraw(draw, 'a', 4)
+    expect(draw.userData.heatmap).toMatchObject({ intensity: 5 })
+    heatmap.setLayers([summary('b', 3, 0.75)])
+    expect(atlas()).not.toBe(first)
+    expect(atlas().image.height).toBe(1)
+    heatmap.prepareDraw(draw, 'b', 4)
+    expect(draw.userData.heatmap).toMatchObject({ rampRow: 0 })
     heatmap.dispose()
   })
 })

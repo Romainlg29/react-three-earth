@@ -71,9 +71,12 @@ export class HeatmapLayers {
   setLayers(layers: readonly HeatmapLayerSummary[] | undefined): void {
     layers ??= []
     if (layers === this.layers) return
+    const sameRamps = sameColorRamps(layers, this.layers)
     this.layers = layers
     this.rows.clear()
     layers.forEach((layer, row) => this.rows.set(layer.id, row))
+    // Every summary from the worker is a new copy: keep the atlas unless a ramp changed.
+    if (sameRamps) return
     const atlas = createRampAtlas(Math.max(layers.length, 1))
     layers.forEach((layer, row) => atlas.image.data!.set(layer.colorRamp, row * HEATMAP_COLOR_RAMP_SIZE * 4))
     atlas.needsUpdate = true
@@ -110,6 +113,16 @@ export class HeatmapLayers {
     if (layer === undefined) return { intensity: 0, rampRow: 0, opacity: 0 }
     return { intensity: atZoom(layer.intensityByZoom, zoom, 1), rampRow: row!, opacity: atZoom(layer.opacityByZoom, zoom, 1) }
   }
+}
+
+function sameColorRamps(a: readonly HeatmapLayerSummary[], b: readonly HeatmapLayerSummary[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((layer, index) => {
+    const other = b[index]!
+    if (layer.id !== other.id || layer.colorRamp.length !== other.colorRamp.length) return false
+    for (let byte = 0; byte < layer.colorRamp.length; byte++) if (layer.colorRamp[byte] !== other.colorRamp[byte]) return false
+    return true
+  })
 }
 
 function atZoom(values: readonly number[], zoom: number, fallback: number): number {

@@ -865,15 +865,16 @@ specification's own.
   MapLibre's formula), carrying the centre, the weight and the radius. Points in the tile's buffer are skipped
   (`host.isInsideTile`): densities add, so a point two tiles draw would count twice.
 - **Summary.** Per heatmap layer: its `heatmap-color` ramp at 256 densities (premultiplied sRGB bytes), and
-  `heatmap-opacity`, `heatmap-intensity` and the reach in pixels per integer zoom. The reach is twice the radius
-  for a zoom-only radius (enough up to a weight × intensity of about 40 000), the full ring (512 px) for a radius
-  read from the features.
+  `heatmap-opacity`, `heatmap-intensity` and the reach in pixels per integer zoom. The reach is the radius times the
+  kernel's extent for that zoom's weight × intensity, at most 512 px; a radius or weight read from the features
+  reaches the full ring (512 px).
 - **Main thread** (`HeatmapLayers`, one per overlay). The type's definition goes through the custom layer path of
   W17 part 2 unchanged: `offscreen: { blending: 'additive' }` into the overlay's half-float layer target, then a
   composite at the layer's place in the order. Two per-layer hooks (`prepareDraw`, `prepareComposite`, internal)
   set the intensity of each draw at the region's zoom and point the composite at the layer's ramp row (one atlas
   texture, 256 × layers) and opacity. The fragment shader evaluates `w · i · G · exp(−4.5 d²)` with `d` the distance
-  in radii at the region's zoom, so a quad sized at the tile's zoom stays exact when overzoomed.
+  in radii at the region's zoom; buckets are processed at the region's level (overzoomed ones too), so quad size
+  and shader agree.
 - **Reach.** Region rings widen by the largest heatmap reach at the region's level (labels already reach half a
   tile, so radii under 128 px cost nothing more); ring tiles draw their own points into the region.
 
@@ -883,13 +884,14 @@ specification's own.
 | WebGL2 fallback (half-float blending) | the same red, heat and magenta pixel shares as WebGPU (0.0157, 0.0737, 0.0014) |
 | 3D, pitched, terrain | the heat drapes on terrain; 3.8 % heat pixels |
 | Per-layer ramps | the second layer draws in its own magenta ramp at 0.8 opacity |
-| Unit tests | 7 new: kernel values and extent against MapLibre's formula; quads per owned point, buffer points skipped, data-driven weight and radius, reach clamp; ramp, opacity, intensity and reach per zoom; `setPaintProperty`; per-layer draw and composite values |
+| Unit tests | 8 new: kernel values and extent against MapLibre's formula; quads per owned point, buffer points skipped, data-driven weight and radius, reach clamp, overzoomed tiles; ramp, opacity, intensity and reach per zoom; `setPaintProperty`; per-layer draw and composite values, the ramp atlas kept across equal summaries |
 
 ![Heatmap layers: default ramp across a tile edge, magenta ramp](heatmap.png)
 
 Limits: the radius is in map pixels at the region's zoom (draped, like line widths), not screen pixels, so on a
-pitched globe far kernels are smaller, and the heat steps when regions change level. Heatmap layers are not
-queryable. A radius above 512 px is cut at one tile.
+pitched globe far kernels are smaller, and the heat steps when regions change level (radius, intensity and opacity
+are taken at integer zooms). Heatmap layers are not queryable, as in MapLibre. Kernels are cut at one tile (512 px),
+which starts near a 400 px radius at a weight × intensity of 1.
 
 ## Map controls (W10)
 
