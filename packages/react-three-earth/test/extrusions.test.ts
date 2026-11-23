@@ -58,10 +58,10 @@ describe('ExtrusionBuilder', () => {
     // Roof triangles face up (+up in the tile centre's east-north-up frame).
     for (const triangle of all.slice(0, 2)) expect(faceNormal(mesh, triangle)[2]).toBeGreaterThan(0)
     // Each wall triangle faces the way its stored normal points: away from the building's middle.
-    const middle = [0, 1, 2, 3].map(index => vertex(mesh, index)).reduce((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4], [0, 0])
+    const middle = [0, 1, 2, 3].map(index => vertex(mesh, index)).reduce<[number, number]>((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4], [0, 0])
     for (const triangle of all.slice(2)) {
       const normal = faceNormal(mesh, triangle)
-      const stored = [mesh.normals[triangle[0] * 3]!, mesh.normals[triangle[0] * 3 + 1]!]
+      const stored: [number, number] = [mesh.normals[triangle[0] * 3]!, mesh.normals[triangle[0] * 3 + 1]!]
       expect(normal[0] * stored[0] + normal[1] * stored[1]).toBeGreaterThan(0)
       const [x, y] = vertex(mesh, triangle[0])
       expect((x - middle[0]!) * stored[0] + (y - middle[1]!) * stored[1]).toBeGreaterThan(0)
@@ -118,7 +118,7 @@ describe('ExtrusionBuilder', () => {
     // Roof: 8 points, 8 triangles around the hole; 8 walls.
     expect(mesh.indices.length / 3).toBe(8 + 8 * 2)
     // Walls face away from the solid: the outer ones away from the middle, the hole's towards it.
-    const middle = [0, 1, 2, 3].map(index => vertex(mesh, index)).reduce((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4], [0, 0])
+    const middle = [0, 1, 2, 3].map(index => vertex(mesh, index)).reduce<[number, number]>((sum, point) => [sum[0] + point[0] / 4, sum[1] + point[1] / 4], [0, 0])
     const facing = []
     for (let index = 8; index < mesh.positions.length / 3; index += 4) {
       const [x, y] = vertex(mesh, index)
