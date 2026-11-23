@@ -8,7 +8,7 @@ import { boundBoxes, moveToAnchor, CollisionGrid, SymbolPlacement, type Placemen
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
 import { lineLabelPaths, radialAnchorOffset, textOffsetForAnchor, variableAnchorShifts } from '../src/vector/worker/labels.js'
-import { MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
+import { iconPaddingPixels, MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
 import { ICON_GLYPH_INDEX, SDF_ICON_GLYPH_INDEX, SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
 import { encodeVectorTile } from './helpers/encodeVectorTile.js'
@@ -478,8 +478,10 @@ describe('icons', () => {
     expect(bucket.images).toEqual(['pin'])
     expect(symbols.keys).toEqual(['places\u0000Fuji\u0000pin'])
     expect(symbols.flags[0]! & (SYMBOL_ICON | SYMBOL_ICON_ONLY)).toBe(SYMBOL_ICON)
-    // 8 map pixels × icon-size 2 = 16 screen pixels beside 12 px text: 32 units of a 24 px font, centred.
-    expect([...symbols.iconBoxes.subarray(0, 4)]).toEqual([-16, -16, 16, 16])
+    // 8 map pixels at icon-size 1, centred; the icon keeps its own sizes (24 × icon-size), apart from the text's.
+    expect([...symbols.iconBoxes.subarray(0, 4)]).toEqual([-4, -4, 4, 4])
+    expect([...symbols.iconSizes.subarray(0, 2)]).toEqual([48, 48])
+    expect([...symbols.sizes.subarray(0, 2)]).toEqual([12, 12])
     // The icon's quad comes first (drawn under the text), then the four glyphs.
     expect(symbols.glyphIndices[0]).toBe(ICON_GLYPH_INDEX)
     expect(symbols.glyphIndices[4]).toBe(-1)
@@ -502,6 +504,13 @@ describe('icons', () => {
     expect([...symbols.boxes.subarray(0, 4)]).toEqual([-4, -4, 4, 4])
     expect(symbols.glyphIndices[0]).toBe(SDF_ICON_GLYPH_INDEX)
     expect([...symbols.colors.subarray(0, 4)]).toEqual([255, 0, 0, 255])
+    // icon-padding is a Padding (four sides): its widest side, MapLibre's default 2.
+    expect(symbols.paddings[0]).toBe(2)
+  })
+
+  it('reads icon-padding as its widest side', () => {
+    expect(iconPaddingPixels({ values: [1, 6, 2, 3] })).toBe(6)
+    expect(iconPaddingPixels(4)).toBe(4)
   })
 
   it('moves only the text box with a variable anchor; the icon box stays at the point', () => {

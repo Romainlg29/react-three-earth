@@ -438,10 +438,12 @@ export interface SymbolMesh {
   anchorShiftCounts: Uint8Array
   anchorShifts: Float32Array
   /**
-   * Per label with an icon (`SYMBOL_ICON`): the icon's box around the anchor (left, top, right, bottom, in the label's
-   * units); zeros otherwise. An icon alone has its box in `boxes` too.
+   * Per label with an icon (`SYMBOL_ICON`): the icon's box around the anchor (left, top, right, bottom, in image
+   * pixels at icon-size 1); zeros otherwise. An icon alone has its box in `boxes` too.
    */
   iconBoxes: Float32Array
+  /** Per label with an icon: 24 × `icon-size` at the tile's zoom and one deeper (the icon's own `sizes`); zeros otherwise. */
+  iconSizes: Float32Array
   corners: Float32Array
   /** Per vertex, in pixels of the glyph atlas, or of the style's image atlas for an icon. */
   uvs: Float32Array

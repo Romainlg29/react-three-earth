@@ -94,8 +94,9 @@ export function GroundLabels() {
 - `icon-image` draws the sprite's icon at the point, facing the viewer: `icon-size`, `icon-anchor`,
   `icon-offset`, `icon-rotate` and `icon-opacity` apply; SDF icons (`"sdf": true` in the sprite JSON) take
   `icon-color`, `icon-halo-color` and `icon-halo-width`. An icon with text collides as two boxes, and a variable
-  anchor moves only the text. An icon alone uses `icon-padding`, `icon-allow-overlap` and
-  `icon-ignore-placement`; with text, the label overlaps only when both the text and icon flags allow it.
+  anchor moves only the text. An icon alone uses `icon-padding` (its widest side), `icon-allow-overlap` and
+  `icon-ignore-placement`; with text, both boxes take `text-padding` and the label overlaps (or ignores placement)
+  only when both the text and icon flags allow it, where MapLibre decides icon and text apart.
 - `earth.queryRenderedFeatures`, layer events and hover hit them by their box on the screen
   (`query-features-and-layer-events`).
 

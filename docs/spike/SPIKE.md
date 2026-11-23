@@ -475,7 +475,7 @@ applied along lines.
   ray hides the label: it stays a candidate with `hidden`, so it fades out like a collision and a copy in another
   tile can take over. Each style's pass stops after 1 ms: labels never read go first (a tile that just arrived), then
   the rest in turn from where the last pass stopped; with the camera still, the once-a-second pass places again, so
-  terrain that loaded finer hides or shows labels. Globe only. `inspect().terrain.symbols.labelsOccluded`.
+  terrain that loaded finer hides or shows labels. With no terrain under the label yet, it is left visible and read again next pass (a height read near a tile edge can come back as the -500 m floor, and a ray ending under the ground would hide it; this made the road-name check flaky). Globe only. `inspect().terrain.symbols.labelsOccluded`.
   The fixture terrain is flat under the labels, so the browser checks only prove nothing is hidden wrongly; unit
   tests cover a ridge, a low hill, missing tiles, a slope and a wall in front of a label.
 
@@ -492,10 +492,13 @@ depth per symbol in the shader), and is decided at placement, every 100 ms while
   the slot in place when its size, pixel ratio and `sdf` flag are unchanged.
 - **Worker.** A point symbol with an icon gets one more quad in the same `SymbolMesh`, written before its glyphs
   and marked by its glyph index (-2 colour, -3 SDF), so one draw call still draws every label of a tile. The quad
-  is sized by `icon-size` (MapLibre's 24 px icon unit relative to the text size when there is text), placed by
-  `icon-anchor`, `icon-offset` and `icon-rotate`. Its collision box (`SymbolMesh.iconBoxes`) is stored next to
-  the text box. An icon alone collides with `icon-padding`, `icon-allow-overlap` and `icon-ignore-placement`;
-  icon with text uses both flags (overlap only when both allow it). Missing images are reported as for patterns.
+  is in image pixels at icon-size 1, placed by `icon-anchor`, `icon-offset` and `icon-rotate`; `icon-size` at the
+  tile's zoom and one deeper is stored per label (`SymbolMesh.iconSizes`), so the main thread scales the icon by
+  icon-size and its text by text-size at the camera's zoom (the ratio rides in the shift texel, and also scales an
+  SDF icon's halo). Its collision box (`SymbolMesh.iconBoxes`) is stored next to the text box. An icon alone
+  collides with `icon-padding` (its widest side), `icon-allow-overlap` and `icon-ignore-placement`; icon with text
+  uses `text-padding` for both boxes and one decision for both (overlap only when both flags allow it; MapLibre
+  decides each part apart). A sprite change that moves an icon in the atlas processes the labels' tiles again. Missing images are reported as for patterns.
 - **Placement.** An icon with text collides as two boxes (icon, then text). Variable anchors move only the text
   box: the icon stays on its point (`PlacementCandidate.anchorBoxStart`). The state texture now holds two texels
   per label, the anchor position and the anchor shift, so the shader shifts text and not the icon.

@@ -883,7 +883,7 @@ export class MapStyleProcessor {
             },
             getGlyph,
           )
-      const icon = symbol.iconId === null ? undefined : this.layoutIcon(layer, feature, state, zoom, symbol.iconId, images, shaped === null ? null : sizePixels)
+      const icon = symbol.iconId === null ? undefined : this.layoutIcon(layer, feature, state, zoom, symbol.iconId, images)
       if (shaped === null && icon === undefined) continue
       // Both must allow overlap (or ignore placement) for the symbol to; an icon alone goes by its own.
       const iconAllowsOverlap = icon === undefined || layer.evaluate<boolean>('layout', 'icon-allow-overlap', zoom, feature)
@@ -892,9 +892,9 @@ export class MapStyleProcessor {
         shaped === null
           ? {
               // An icon alone: the label scales with icon-size instead of text-size.
-              sizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom, feature),
-              nextZoomSizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom + 1, feature),
-              paddingPixels: layer.evaluate<number>('layout', 'icon-padding', zoom, feature),
+              sizePixels: icon!.sizePixels,
+              nextZoomSizePixels: icon!.nextZoomSizePixels,
+              paddingPixels: iconPaddingPixels(layer.evaluate<IconPadding>('layout', 'icon-padding', zoom, feature)),
               allowOverlap: iconAllowsOverlap,
               ignorePlacement: iconIgnoresPlacement,
             }
@@ -921,11 +921,11 @@ export class MapStyleProcessor {
   }
 
   /**
-   * A symbol's icon around its anchor, in the label's units: pixels of a 24 px font at `textSizePixels` beside
-   * text, or image pixels for an icon alone (whose label scales with icon-size). `icon-anchor`, `icon-offset`
-   * (scaled by icon-size) and `icon-rotate` apply. Undefined when the image is missing or the icon invisible.
+   * A symbol's icon around its anchor, in image pixels at icon-size 1, with `icon-size` at the tile's zoom and one
+   * deeper for the main thread to scale it by. `icon-anchor`, `icon-offset` (scaled by icon-size with the icon) and
+   * `icon-rotate` apply. Undefined when the image is missing or the icon invisible.
    */
-  protected layoutIcon(layer: CompiledStyleLayer, feature: StyleFeature, state: FeatureState, zoom: number, id: string, images: TileImages, textSizePixels: number | null): ScreenLabelIcon | undefined {
+  protected layoutIcon(layer: CompiledStyleLayer, feature: StyleFeature, state: FeatureState, zoom: number, id: string, images: TileImages): ScreenLabelIcon | undefined {
     images.used.add(id)
     const rectangle = this.images.getIcon(id)
     if (rectangle === null) {
@@ -934,14 +934,12 @@ export class MapStyleProcessor {
     }
     const opacity = layer.evaluate<number>('paint', 'icon-opacity', zoom, feature, state)
     if (opacity <= 0) return undefined
-    const iconSize = layer.evaluate<number>('layout', 'icon-size', zoom, feature)
-    const unitsPerIconPixel = textSizePixels === null ? 1 : (iconSize * 24) / textSizePixels
-    const width = (rectangle.width / rectangle.pixelRatio) * unitsPerIconPixel
-    const height = (rectangle.height / rectangle.pixelRatio) * unitsPerIconPixel
+    const width = rectangle.width / rectangle.pixelRatio
+    const height = rectangle.height / rectangle.pixelRatio
     const iconAnchor = layer.evaluate<TextAnchor>('layout', 'icon-anchor', zoom, feature)
     const [offsetX = 0, offsetY = 0] = layer.evaluate<number[]>('layout', 'icon-offset', zoom, feature)
     const centred = { minimumX: -width / 2, minimumY: -height / 2, maximumX: width / 2, maximumY: height / 2 }
-    const [shiftX = 0, shiftY = 0] = variableAnchorShifts(centred, [iconAnchor], () => ({ x: offsetX * unitsPerIconPixel, y: offsetY * unitsPerIconPixel }))
+    const [shiftX = 0, shiftY = 0] = variableAnchorShifts(centred, [iconAnchor], () => ({ x: offsetX, y: offsetY }))
     const rotation = (layer.evaluate<number>('layout', 'icon-rotate', zoom, feature) * Math.PI) / 180
     const cosine = Math.cos(rotation)
     const sine = Math.sin(rotation)
@@ -960,6 +958,8 @@ export class MapStyleProcessor {
     const tinted = rectangle.sdf
     return {
       rectangle,
+      sizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom, feature),
+      nextZoomSizePixels: 24 * layer.evaluate<number>('layout', 'icon-size', zoom + 1, feature),
       corners,
       box,
       sdf: tinted,
@@ -1666,7 +1666,6 @@ function headersToRecord(headers: HeadersInit | undefined): Record<string, strin
   return { ...headers } as Record<string, string>
 }
 
-/** The image a `*-pattern` property names, or null when it is not set or empty. */
 /** A symbol's `icon-image` id, or null without one. Legacy `{token}` strings substitute feature properties. */
 function symbolIcon(layer: CompiledStyleLayer, feature: StyleFeature, zoom: number): string | null {
   if (!layer.has('layout', 'icon-image')) return null
@@ -1676,6 +1675,13 @@ function symbolIcon(layer: CompiledStyleLayer, feature: StyleFeature, zoom: numb
   return name === undefined || name === '' ? null : name
 }
 
+/** `icon-padding` as one width in pixels: the widest of its sides (a `Padding`, or a number in older specs). */
+type IconPadding = number | { values: number[] }
+export function iconPaddingPixels(padding: IconPadding): number {
+  return typeof padding === 'number' ? padding : Math.max(0, ...padding.values)
+}
+
+/** The image a `*-pattern` property names, or null when it is not set or empty. */
 function patternName(layer: CompiledStyleLayer, property: string, zoom: number, feature?: StyleFeature, state?: FeatureState): string | null {
   if (!layer.has('paint', property)) return null
   const value = layer.evaluate<{ name: string } | string | undefined | null>('paint', property, zoom, feature, state)

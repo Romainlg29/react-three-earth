@@ -23,7 +23,10 @@ export const SDF_ICON_GLYPH_INDEX = -3
 export interface ScreenLabelIcon {
   /** The icon's place in the style's image atlas, in atlas pixels. */
   rectangle: { x: number; y: number; width: number; height: number }
-  /** Its corners around the label's anchor (top-left, top-right, bottom-right, bottom-left), in the label's units. */
+  /** 24 × `icon-size` at the tile's zoom and one deeper: the main thread scales the icon by it at the camera's zoom. */
+  sizePixels: number
+  nextZoomSizePixels: number
+  /** Its corners around the label's anchor (top-left, top-right, bottom-right, bottom-left), in image pixels at icon-size 1. */
   corners: Point[]
   /** Bounds of the corners. */
   box: Box
@@ -99,6 +102,7 @@ export class SymbolBuilder {
   protected readonly anchorShiftCounts: number[] = []
   protected readonly anchorShifts: number[] = []
   protected readonly iconBoxes: number[] = []
+  protected readonly iconSizes: number[] = []
   protected readonly corners: number[] = []
   protected readonly uvs: number[] = []
   protected readonly labelIndices: number[] = []
@@ -124,7 +128,7 @@ export class SymbolBuilder {
     // The text's box; an icon alone puts its own here.
     const box = textBox ?? icon!.box
     const flags = (label.allowOverlap ? SYMBOL_ALLOW_OVERLAP : 0) | (label.ignorePlacement ? SYMBOL_IGNORE_PLACEMENT : 0) | (icon === undefined ? 0 : SYMBOL_ICON) | (textBox === undefined ? SYMBOL_ICON_ONLY : 0)
-    this.addLabelData(label, box.minimumX, box.minimumY, box.maximumX, box.maximumY, flags, icon?.box)
+    this.addLabelData(label, box.minimumX, box.minimumY, box.maximumX, box.maximumY, flags, icon)
     this.lineStarts.push(0)
     this.lineLengths.push(0)
     this.lineAnchors.push(0)
@@ -173,8 +177,9 @@ export class SymbolBuilder {
     }
   }
 
-  protected addLabelData(label: ScreenLabel, left: number, top: number, right: number, bottom: number, flags: number, iconBox?: Box): void {
-    this.iconBoxes.push(iconBox?.minimumX ?? 0, iconBox?.minimumY ?? 0, iconBox?.maximumX ?? 0, iconBox?.maximumY ?? 0)
+  protected addLabelData(label: ScreenLabel, left: number, top: number, right: number, bottom: number, flags: number, icon?: ScreenLabelIcon): void {
+    this.iconBoxes.push(icon?.box.minimumX ?? 0, icon?.box.minimumY ?? 0, icon?.box.maximumX ?? 0, icon?.box.maximumY ?? 0)
+    this.iconSizes.push(icon?.sizePixels ?? 0, icon?.nextZoomSizePixels ?? 0)
     this.anchors.push(label.anchor.x, label.anchor.y)
     this.sizes.push(label.sizePixels, label.nextZoomSizePixels)
     this.boxes.push(left, top, right, bottom)
@@ -240,6 +245,7 @@ export class SymbolBuilder {
       anchorShiftCounts: new Uint8Array(this.anchorShiftCounts),
       anchorShifts: new Float32Array(this.anchorShifts),
       iconBoxes: new Float32Array(this.iconBoxes),
+      iconSizes: new Float32Array(this.iconSizes),
       glyphIndices: new Float32Array(this.glyphIndices),
       corners: new Float32Array(this.corners),
       uvs: new Float32Array(this.uvs),
@@ -255,12 +261,12 @@ export class SymbolBuilder {
 /** Bytes a symbol mesh holds, for cache budgets. */
 export function symbolMeshByteLength(mesh: SymbolMesh | null): number {
   if (mesh === null) return 0
-  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.iconBoxes, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
+  const arrays = [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.iconBoxes, mesh.iconSizes, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices]
   return arrays.reduce((sum, array) => sum + array.byteLength, 0) + [...mesh.keys, ...mesh.sourceLayers].reduce((sum, key) => sum + key.length * 2, 0)
 }
 
 /** Typed arrays of a symbol mesh, to transfer. */
 export function symbolMeshBuffers(mesh: SymbolMesh | null): ArrayBufferLike[] {
   if (mesh === null) return []
-  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.iconBoxes, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
+  return [mesh.anchors, mesh.sizes, mesh.boxes, mesh.paddings, mesh.flags, mesh.layerIndices, mesh.sortKeys, mesh.featureIndices, mesh.lineStarts, mesh.lineLengths, mesh.lineAnchors, mesh.maximumAngles, mesh.linePoints, mesh.glyphStarts, mesh.glyphCounts, mesh.glyphOffsets, mesh.glyphHalfWidths, mesh.anchorShiftStarts, mesh.anchorShiftCounts, mesh.anchorShifts, mesh.iconBoxes, mesh.iconSizes, mesh.glyphIndices, mesh.corners, mesh.uvs, mesh.labelIndices, mesh.colors, mesh.haloColors, mesh.haloWidths, mesh.indices].map(array => array.buffer)
 }

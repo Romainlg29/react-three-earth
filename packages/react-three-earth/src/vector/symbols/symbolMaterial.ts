@@ -158,16 +158,19 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
   const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
 
-  // Two texels a label: its anchor, scale and opacity, then its text's shift from the anchor (variable anchors).
+  // Two texels a label: its anchor, scale and opacity, then its text's shift from the anchor (variable anchors) and
+  // its icon's scale relative to the label's.
   const slot = int(attribute<'float'>('labelIndex', 'float').mul(2).add(slotBase))
   const shiftSlot = slot.add(1)
   const width = int(SYMBOL_STATE_WIDTH)
   const labelState = textureLoad(state.node as never, ivec2(slot.mod(width), slot.div(width)), 0) as unknown as Node<'vec4'>
-  const shift = (textureLoad(state.node as never, ivec2(shiftSlot.mod(width), shiftSlot.div(width)), 0) as unknown as Node<'vec4'>).xy
-  const corner = attribute<'vec3'>('position', 'vec3').xy.mul(labelState.z)
+  const shiftState = textureLoad(state.node as never, ivec2(shiftSlot.mod(width), shiftSlot.div(width)), 0) as unknown as Node<'vec4'>
+  const shift = shiftState.xy
   // A glyph of a label along a line: at its own place on the screen, turned with the line there. -1: a point
-  // label's text (shifted), -2 and -3: its icon (at the point).
+  // label's text (shifted), -2 and -3: its icon (at the point, at its own scale).
   const glyphIndex = attribute<'float'>('glyphIndex', 'float')
+  const quadScale = select(glyphIndex.lessThan(-1.5), labelState.z.mul(shiftState.z), labelState.z)
+  const corner = attribute<'vec3'>('position', 'vec3').xy.mul(quadScale)
   const glyphSlot = int(max(glyphIndex, float(0)).add(glyphSlotBase))
   const glyph = textureLoad(glyphState.node as never, ivec2(glyphSlot.mod(width), glyphSlot.div(width)), 0) as unknown as Node<'vec4'>
   const cosine = cos(glyph.z)
@@ -182,7 +185,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
 
   const labelOpacity = varying(labelState.w)
   const kind = varying(glyphIndex)
-  const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(labelState.z, float(1e-3)).mul(8))), float(0.05)))
+  const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(quadScale, float(1e-3)).mul(8))), float(0.05)))
   material.colorNode = Fn(() => {
     const uv = attribute<'vec2'>('atlasUv', 'vec2')
     const isIcon = kind.lessThan(-1.5)
