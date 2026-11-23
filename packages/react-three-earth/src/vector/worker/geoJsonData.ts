@@ -83,7 +83,8 @@ export function applyGeoJsonDiff(features: readonly Feature[], diff: GeoJsonSour
   } else {
     const index = featureIndexes.get(features)
     featureIndexes.delete(features)
-    if (index !== undefined && index.promoteId === promoteId) byId = index.byId
+    // A size mismatch means the list was changed in place (a push or a splice): rebuild the index.
+    if (index !== undefined && index.promoteId === promoteId && index.byId.size === features.length) byId = index.byId
     else {
       byId = new Map()
       for (const feature of features) {

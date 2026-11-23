@@ -405,7 +405,7 @@ array, `@2x` on high-density screens, falling back to 1x), and `MapStyleSource.a
 - **`updateData` cost.** Each diff is applied up to three times on the main thread (the `GeoJsonSource`, the
   `MapStyle` document, and the processor's document on the inline backend), so `applyGeoJsonDiff` keeps the id
   index of the list it returns and the next diff on that list reuses it: lookups cost O(changes), and only the copy
-  of the feature list is O(features). Feature-state on a geojson source ignores `sourceLayer`, as in MapLibre.
+  of the feature list is O(features). Feature-state on a geojson source ignores `sourceLayer`, as in MapLibre (once the source is in the style: a state set with a `sourceLayer` before that keeps it, so leave `sourceLayer` out for geojson sources).
 - **`line-gradient`** (with `lineMetrics`): geojson-vt adds `mapbox_clip_start` / `mapbox_clip_end` to each clipped
   line. The ramp is sampled 256 times per layer and zoom (MapLibre's texture width) and cached; `ShapeBuilder`
   splits the line into pieces of at most 1/128 of its progress and colours every vertex, so the gradient continues

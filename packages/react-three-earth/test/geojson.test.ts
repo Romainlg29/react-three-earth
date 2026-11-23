@@ -88,6 +88,10 @@ describe('GeoJSON data helpers', () => {
     // The first list's index went to the second diff: a diff on the first list again starts from its own features
     expect(applyGeoJsonDiff(first, { remove: [2] }, undefined, 'points').features.map(feature => feature.id)).toEqual([1])
     expect(applyGeoJsonDiff(second, { add: [point(3, 2, 2)] }, undefined, 'points').features.map(feature => feature.id)).toEqual([2, 3])
+    // A list changed in place is indexed again
+    const third = applyGeoJsonDiff([point(1, 0, 0)], { add: [point(2, 1, 1)] }, undefined, 'points').features
+    third.push(point(4, 3, 3))
+    expect(applyGeoJsonDiff(third, { remove: [1] }, undefined, 'points').features.map(feature => feature.id)).toEqual([2, 4])
   })
 
   it('matches features by the promoted property and states the fix for a missing id', () => {
