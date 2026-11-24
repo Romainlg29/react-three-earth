@@ -760,7 +760,7 @@ shadows.
 | Check | Result |
 | --- | --- |
 | Unit tests | `test/extrusions.test.ts`: box walls and roof orientation, heights and zoom deltas, clipping to the tile, courtyard walls, vertical gradient, ring clipping, building elevation on a grid, filling unknown grid points, processor tiles and summary, bucket keys; `cameraTilePyramid.test.ts`: deeper tiles over a plateau |
-| Browser (`?fixtures&map=buildings`, SwiftShader) | pitched: 33 tiles (z15, z17, z19), 40 building pieces, every building at 3899.9 to 3900 m on 3900 m ground, red buildings cover 5.5 % of the screen against 0.84 % draped |
+| Browser (`?fixtures&map=buildings`, SwiftShader) | pitched: 33 tiles (z15, z17, z19), 40 building pieces, every building at 3899.95 to 3900 m on 3900 m ground (checked within 1 m), red buildings cover 5.5 % of the screen against 0.84 % draped |
 | | top-down 16 tiles, flat map 12 tiles, with the atmosphere at dusk, WebGL2 and StrictMode: buildings drawn, no `MapStyleSource:` error |
 | Frame cost | main-thread `updateMilliseconds` 1.3 to 3.6 ms on SwiftShader while tiles and elevations load; one draw per layer and tile (two for translucent layers) |
 ### Terrain from raster-dem (W8, part 1)
@@ -862,6 +862,9 @@ How it works (`src/tiles/RasterDemTerrainPlugin.ts`, `src/tiles/dem/`):
 | Unit tests | 4 new and one extended: height offsets, raycast against exaggerated ground (2, 0.5) naming the tile mesh, sampler agrees with the raycast, flat boxes scaled, volumes refit and restored with value checks |
 
 ![exaggeration 2](terrain-exaggeration.png)
+
+![3D buildings on the fixture peak, pitched](buildings-pitched.png)
+![the same, lit by the atmosphere's sun and hazed](buildings-atmosphere.png)
 
 ## Plugins (W17), part 1: the plugin core and 3D SDF shapes
 
