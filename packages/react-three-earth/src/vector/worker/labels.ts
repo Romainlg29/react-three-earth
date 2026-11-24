@@ -107,8 +107,6 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
       character.advance = character.glyph === null ? 0 : GLYPH_FONT_SIZE * character.section.scale + spacing
     }
   }
-  const bidirectional = hasRightToLeft(characters.map(character => character.codePoint))
-  if (bidirectional) resolveParagraphLevels(characters)
 
   // Lines: explicit newlines, then greedy wrapping at breakable characters.
   const maximumWidth = options.maximumWidthEms > 0 ? options.maximumWidthEms * GLYPH_FONT_SIZE : Infinity
