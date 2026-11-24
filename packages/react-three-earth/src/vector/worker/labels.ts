@@ -1,4 +1,5 @@
 import { isArabicScript, needsArabicShaping, shapeArabicCodePoints } from './arabic.js'
+import { isClusterCodePoint, needsClusters, substituteClusters } from './clusters.js'
 import { hasRightToLeft, mirrorCodePoint, resolveLevels, visualOrder } from './bidi.js'
 import { GLYPH_BUFFER, GLYPH_EDGE, GLYPH_FONT_SIZE, type AtlasGlyph } from './glyphs.js'
 import type { Point } from './ShapeBuilder.js'
@@ -63,8 +64,14 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     /** Bidi embedding level: odd runs right to left. */
     level: number
   }
-  // Letter spacing would open gaps between joined Arabic letters: such labels take none, as in MapLibre.
-  const joinedScript = sections.some(section => Array.from(section.text).some(character => isArabicScript(character.codePointAt(0)!)))
+  // Letter spacing would open gaps between joined Arabic letters, or break the headstroke of Devanagari clusters:
+  // such labels take none, as MapLibre does for Arabic.
+  const joinedScript = sections.some(section =>
+    Array.from(section.text).some(character => {
+      const codePoint = character.codePointAt(0)!
+      return isArabicScript(codePoint) || isClusterCodePoint(codePoint)
+    }),
+  )
   const spacing = joinedScript ? 0 : options.letterSpacingEms * GLYPH_FONT_SIZE
   const characters: Character[] = []
   for (const section of sections) {
@@ -166,10 +173,17 @@ function resolveParagraphLevels(characters: Array<{ codePoint: number; level: nu
 }
 
 /**
- * Text sections with Arabic letters in their contextual presentation forms (lam-alef ligatures too), joined
- * across section boundaries: what glyphs are loaded and drawn for. Sections without Arabic are returned as they are.
+ * Text sections ready to draw: Arabic letters in their contextual presentation forms (lam-alef ligatures too),
+ * joined across section boundaries, and each grapheme cluster of a complex script (Devanagari, Thai…) as one
+ * glyph drawn by the local font. Sections with neither are returned as they are.
  */
 export function shapeSectionsForScripts(sections: readonly TextSection[]): TextSection[] {
+  const joined = shapeArabicSections(sections)
+  if (!joined.some(section => needsClusters(section.text))) return joined
+  return joined.map(section => ({ ...section, text: substituteClusters(section.text) }))
+}
+
+function shapeArabicSections(sections: readonly TextSection[]): TextSection[] {
   if (!sections.some(section => needsArabicShaping(section.text))) return [...sections]
   const codePoints: number[] = []
   const owners: number[] = []

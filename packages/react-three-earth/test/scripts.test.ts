@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { shapeArabic } from '../src/vector/worker/arabic.js'
+import { ClusterRegistry, isClusterCodePoint, substituteClusters } from '../src/vector/worker/clusters.js'
 import { bidiClassOf, resolveLevels, visualOrder } from '../src/vector/worker/bidi.js'
 import { shapeSectionsForScripts, shapeText, type ShapingOptions } from '../src/vector/worker/labels.js'
 
@@ -130,5 +131,42 @@ describe('shaping labels with right-to-left text', () => {
     expect(shaped.right - shaped.left).toBeCloseTo(48)
     const xs = shaped.glyphs.map(glyph => glyph.x)
     expect(xs).toEqual([...xs].sort((a, b) => a - b))
+  })
+})
+
+describe('complex scripts', () => {
+  const clusters = (text: string, registry = new ClusterRegistry()) =>
+    Array.from(substituteClusters(text, registry), character => {
+      const codePoint = character.codePointAt(0)!
+      return isClusterCodePoint(codePoint) ? registry.clusterOf(codePoint)! : character === '​' ? '|' : character
+    })
+
+  it('draws each Devanagari grapheme cluster whole, conjuncts and vowel signs included', () => {
+    // नई दिल्ली (New Delhi): "दि" (vowel sign i drawn before its consonant) and the conjunct "ल्ली" stay whole.
+    expect(clusters('नई दिल्ली')).toEqual(['न', 'ई', ' ', 'दि', 'ल्ली'])
+  })
+
+  it('gives one cluster one code point, reused', () => {
+    const registry = new ClusterRegistry()
+    const first = substituteClusters('दिल्ली', registry)
+    expect(substituteClusters('दिल्ली', registry)).toBe(first)
+    expect([...first].every(character => isClusterCodePoint(character.codePointAt(0)!))).toBe(true)
+  })
+
+  it('lets Thai lines break between words', () => {
+    // ถนนสุขุมวิท (Sukhumvit Road): marks above and below stay on their consonant; a break between the two words.
+    const pieces = clusters('ถนนสุขุมวิท')
+    expect(pieces).toEqual(['ถ', 'น', 'น', '|', 'สุ', 'ขุ', 'ม', 'วิ', 'ท'])
+  })
+
+  it('leaves other scripts alone', () => {
+    expect(substituteClusters('Mount Fuji 富士山')).toBe('Mount Fuji 富士山')
+  })
+
+  it('shapes a label with clusters as single glyphs', () => {
+    const sections = shapeSectionsForScripts([{ text: 'दिल्ली', fontStack: 'f', scale: 1 }])
+    const shaped = shapeText(sections, options, lookup)!
+    expect(shaped.glyphs).toHaveLength(2)
+    expect(shaped.glyphs.every(glyph => isClusterCodePoint(glyph.codePoint))).toBe(true)
   })
 })

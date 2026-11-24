@@ -1,6 +1,7 @@
 import TinySDF from '@mapbox/tiny-sdf'
 import Pbf from 'pbf'
 
+import { clusterRegistry, isClusterCodePoint } from './clusters.js'
 import type { AtlasGlyphUpdate, AtlasUpdate } from './types.js'
 
 /** Glyph SDFs are drawn at this font size, in pixels (MapLibre's ONE_EM). */
@@ -158,7 +159,8 @@ export class GlyphProvider {
     const missing = new Set<number>()
     for (const codePoint of codePoints) if (!this.placed.has(glyphKey(fontStack, codePoint))) missing.add(codePoint)
     if (missing.size === 0) return
-    const rangeStarts = new Set([...missing].map(codePoint => Math.floor(codePoint / 256) * 256))
+    // Clusters of complex scripts are always drawn by the local font: glyph servers do not shape.
+    const rangeStarts = new Set([...missing].filter(codePoint => !isClusterCodePoint(codePoint)).map(codePoint => Math.floor(codePoint / 256) * 256))
     const ranges = await Promise.all([...rangeStarts].map(start => this.loadRange(fontStack, start)))
     const byRange = new Map([...rangeStarts].map((start, index) => [start, ranges[index] ?? null]))
     for (const codePoint of missing) {
@@ -207,12 +209,17 @@ export class GlyphProvider {
   protected drawLocal(fontStack: string, codePoint: number): Glyph | null {
     if (this.options.drawLocalGlyph !== undefined) return this.options.drawLocalGlyph(fontStack, codePoint)
     if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') return null
+    const cluster = isClusterCodePoint(codePoint) ? clusterRegistry.clusterOf(codePoint) : undefined
+    if (isClusterCodePoint(codePoint) && cluster === undefined) return null
     const { fontWeight, fontStyle } = parseFontName(fontStack)
-    const rendererKey = `${fontWeight}/${fontStyle}`
+    const rendererKey = `${fontWeight}/${fontStyle}${cluster === undefined ? '' : '/cluster'}`
     let renderer = this.localRenderers.get(rendererKey)
     if (renderer === undefined) {
+      const font = `${fontStyle} ${fontWeight} ${GLYPH_FONT_SIZE}px ${this.options.localFontFamily}`
+      // A cluster (a conjunct with vowel signs above and below) can outgrow the 24 px em box TinySDF sizes its
+      // canvas for: clusters get a canvas sized for twice the font, drawing at the same 24 px.
       renderer = new TinySDF({
-        fontSize: GLYPH_FONT_SIZE,
+        fontSize: cluster === undefined ? GLYPH_FONT_SIZE : GLYPH_FONT_SIZE * 2,
         buffer: GLYPH_BUFFER,
         radius: 8,
         cutoff: 0.25,
@@ -220,9 +227,11 @@ export class GlyphProvider {
         fontWeight,
         fontStyle,
       })
+      // TinySDF's `ctx` is not in its typings (2.x): its canvas and grids keep the larger size.
+      if (cluster !== undefined) (renderer as unknown as { ctx: { font: string } }).ctx.font = font
       this.localRenderers.set(rendererKey, renderer)
     }
-    const drawn = renderer.draw(String.fromCodePoint(codePoint))
+    const drawn = renderer.draw(cluster ?? String.fromCodePoint(codePoint))
     // TinySDF measures from the em box top; glyph servers from the baseline (MapLibre's topAdjustment).
     return {
       id: codePoint,

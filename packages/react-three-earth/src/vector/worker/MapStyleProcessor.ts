@@ -136,7 +136,7 @@ interface SymbolCandidate {
   geometry: Point[][]
   /** The text as the style gives it, in reading order: the label's identity and what `getScreenLabels` reports. */
   text: string
-  /** The text to draw (Arabic letters joined), empty for an icon alone. */
+  /** The text to draw (Arabic joined, complex-script clusters as local glyphs), empty for an icon alone. */
   sections: TextSection[]
   /** `icon-image`, or null without an icon. */
   iconId: string | null

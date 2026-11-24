@@ -334,7 +334,7 @@ expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
 // Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
 expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
 // Place names in other scripts: each shows, reported as the style gives it, and draws text.
-const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)']
+const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)', 'नई दिल्ली', 'ถนนสุขุมวิท']
 for (const name of ['top-down', 'webgl2']) {
   expectations[`script labels, ${name}`] = r => [
     ['every script label shows, with its text in reading order', SCRIPT_NAMES.every(text => r.labels.some(l => l.text === text))],
