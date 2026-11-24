@@ -421,7 +421,8 @@ export function PatternedMap() {
 ### Satellite and relief layers
 
 A style's `raster` and `raster-dem` sources draw `raster`, `hillshade` and `color-relief` layers in style order
-with the vector layers. Read `satellite-and-relief-styles` for sources, encodings and paint.
+with the vector layers. Read `satellite-and-relief-styles` for sources, encodings and paint, and for the style
+root's `terrain`, `center`, `zoom`, `bearing`, `pitch` and `projection`, which the earth follows.
 
 ## Common Mistakes
 

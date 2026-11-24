@@ -109,6 +109,9 @@ function sameValue(a: unknown, b: unknown): boolean {
  *
  * `MapStyleSource` exposes it as its style API; a `MapStyleOverlay` created on its own makes its own.
  */
+/** Root properties MapLibre's style diff sets with commands the renderer skips (`IGNORED_COMMANDS`). */
+const ROOT_PROPERTIES = ['center', 'centerAltitude', 'zoom', 'bearing', 'pitch', 'roll', 'transition', 'light', 'terrain', 'sky', 'projection'] as const
+
 export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   /** The style as it is now; null until it has loaded. */
   protected document: StyleDocument | null = null
@@ -219,6 +222,11 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
   /** A copy of the style as it is now (null before it has loaded). */
   getStyle(): StyleDocument | null {
     return this.document === null ? null : clone(this.document)
+  }
+
+  /** The URL the style's relative URLs resolve against (null before it has loaded). */
+  getBaseUrl(): string | null {
+    return this.baseUrl
   }
 
   /** A copy of a layer, or undefined (also before the style has loaded). */
@@ -443,6 +451,11 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
         const metadata = targetLayers.get(layer.id)?.metadata
         if (metadata === undefined) delete layer.metadata
         else layer.metadata = clone(metadata)
+      }
+      // The diff's root commands draw nothing (`IGNORED_COMMANDS`), but `getStyle` and the earth read the new values.
+      for (const key of ROOT_PROPERTIES) {
+        if (target[key] === undefined) delete this.document![key]
+        else this.document![key] = clone(target[key])
       }
     }
     this.queueEvent('styledata', {})

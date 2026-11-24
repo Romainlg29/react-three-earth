@@ -129,6 +129,16 @@ const expectations = {
     ['the change redraws the relief (over 2 % of pixels change)', r.changedShare > 0.02],
     ['without rebuilding the terrain', r.sameTerrain === true],
   ]])),
+  // `?terrain=style`: an empty <Terrain>, a style with root terrain (exaggeration 1.5), center, zoom, bearing and pitch.
+  'style root properties': r => [
+    ['the earth built the terrain from the style', r.fromStyle === true],
+    ['every point of the grid has a height', r.heights?.count === 49],
+    ['heights read 1.5 times the fixture\'s (within 8 m)', r.heights?.maximum < 8],
+    ['the camera starts at the style\'s center', Math.abs(r.camera?.longitudeDegrees + 90) < 0.05 && Math.abs(r.camera?.latitudeDegrees) < 0.05],
+    ['at its zoom, bearing and pitch', Math.abs(r.camera?.zoom - 9) < 0.15 && Math.abs(r.camera?.headingDegrees - 30) < 0.5 && Math.abs(r.camera?.pitchDegrees + 70) < 0.5],
+    ['the style\'s raster layer drapes on it (over 50 % checker pixels)', r.greenShare > 0.5],
+    ['the terrain credit shows', r.attributions?.includes('Synthetic test elevation')],
+  ],
   'relief style with fixtures, 3d': r => [
     ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
     ['no warnings', r.warnings.length === 0],

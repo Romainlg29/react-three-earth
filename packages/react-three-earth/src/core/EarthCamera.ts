@@ -148,6 +148,7 @@ export class EarthCamera {
   protected animation: RunningAnimation | null = null
   /** A copy of the camera that `cameraForBounds` measures fits with. */
   protected fitCamera: Camera | null = null
+  protected placedView = false
 
   constructor(protected readonly earth: Earth) {}
 
@@ -158,6 +159,11 @@ export class EarthCamera {
   setViewportSize(widthPixels: number, heightPixels: number): void {
     this.viewportWidthPixels = widthPixels
     this.viewportHeightPixels = heightPixels
+  }
+
+  /** Whether `jumpTo`, an animation or the earth's initial view placed the camera (a style's root view then no longer applies). */
+  get hasPlacedView(): boolean {
+    return this.placedView
   }
 
   /** True once there is a perspective camera and a viewport size, so every method can run. */
@@ -260,6 +266,7 @@ export class EarthCamera {
    * changing only zoom, heading or pitch re-aims the camera at that point.
    */
   jumpTo(change: MapViewChange): void {
+    this.placedView = true
     this.stop()
     this.placeView(change)
     this.earth.requestFrame()
@@ -587,11 +594,13 @@ export class EarthCamera {
    * `initialView` with it, so an animation called at mount starts from the initial view.
    */
   jumpToInitialView(change: MapViewChange): void {
+    this.placedView = true
     this.placeView(change)
     this.earth.requestFrame()
   }
 
   protected animate(options: AnimationOptions, plan: (start: MapView) => AnimationPlan | null): Promise<boolean> {
+    this.placedView = true
     this.stop()
     let resolve!: (completed: boolean) => void
     const promise = new Promise<boolean>(settle => (resolve = settle))
