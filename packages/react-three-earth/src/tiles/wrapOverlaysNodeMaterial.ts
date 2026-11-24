@@ -86,6 +86,14 @@ const layerAlphaInvert = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   })
 )
 
+// Layers drawn with premultiplied alpha (a draped layer that asks for it): their colour is already multiplied.
+const layerPremultipliedAlpha = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
+  uniform('bool').onObjectUpdate(({ material }, self) => {
+    const { [OVERLAY_PARAMS]: params } = material as OverlayNodeMaterial
+    self.value = params?.layerInfo.value[index]?.premultipliedAlpha ?? false
+  })
+)
+
 const layerUV = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   attribute(`layer_uv_${index}`, 'vec3').toVarying(`layerUV${index}`)
 )
@@ -130,7 +138,9 @@ function getColorNode(layerCount: number): Node {
       If(layerAlphaMask[i], () => {
         result.a.mulAssign(tint.a)
       }).Else(() => {
-        tint.rgb.mulAssign(tint.a)
+        If(layerPremultipliedAlpha[i].not(), () => {
+          tint.rgb.mulAssign(tint.a)
+        })
         result.assign(tint.add(result.mul(tint.a.oneMinus())))
       })
     }

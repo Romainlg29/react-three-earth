@@ -7,7 +7,9 @@
     "paths": {
       "react-three-earth": ["../../packages/react-three-earth/src/index.ts"],
       "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"],
-      "react-three-earth/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"]
+      "react-three-earth/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"],
+      "react-three-earth-draw": ["../../packages/draw/src/index.ts"],
+      "react-three-earth-draw/react": ["../../packages/draw/src/react/index.ts"]
     }
   },
   "include": ["src", "fixtures", "vite.config.ts"]

@@ -11,7 +11,7 @@ description: >
   sort against terrain and take the atmosphere's haze, per-frame plugin code, label looks (registerSymbolEffect:
   see map-labels), or reading plugin state from earth.inspect().
 metadata:
-  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
+  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), pointer interactions (addPointerInteraction, holdDoubleClickZoom), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
   type: framework
   framework: 'react'
   library: 'react-three-earth'
@@ -20,6 +20,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/plugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/PluginManager.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/GeographicAnchor.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/PointerInteractions.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sceneNodes.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Earth.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
@@ -61,6 +62,7 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 | A new layer `type` with its own tessellation | `registerStyleLayerType({ type, worker: { moduleUrl, exportName }, … })` |
 | A screen effect (bloom, vignette, grading) | `context.registerRenderPass({ name, stage, build })` |
 | A layer you draw yourself, draped over the imagery | `context.registerDrapedLayer({ id, bounds, draw })` → `handle.invalidate(bounds)` |
+| Dragging on the map without panning it (see `react-three-earth-draw#draw-features`) | `context.addPointerInteraction({ pointerDown, pointerMove, pointerUp })` |
 | A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` (disposed with the plugin) |
 | A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
 | Keep colour on the flat map | `createFlatMapEmissionNode(colorNode, earth.view)` |
@@ -425,6 +427,8 @@ export function selectionGlow(radiusDegrees = 0.03) {
 - `bounds` (static, a function, or null for nowhere; default everywhere) is read on each `invalidate`: regions
   outside hold a 1 × 1 transparent texture and are never drawn. Invalidate where the content was and where it is
   now; each region keeps its texture until the redraw replaces it.
+- Translucent overlaps: `premultipliedAlpha: true`, drawing `rgb × alpha` blended `One, OneMinusSrcAlpha`. Regions drawn
+  in one frame need their own vertex buffers (a new geometry per draw): a rewritten shared buffer draws the last one.
 - Slots: imagery sources and draped layers share the terrain's 10 layer slots. Registering past them throws
   while a terrain is attached (layers added before it are logged and skipped when it attaches; remove an imagery source or a draped layer, or merge sources into one `MapStyleSource`).
 - Cost: every terrain tile carries the layer whatever `bounds` says: a CPU pass for its UVs, one more varying
@@ -474,15 +478,11 @@ skipped with a warning naming the URL. Use `host`, and bundle anything else into
 Each `invalidate` queues one redraw per region inside the bounds, under the compositor's budget: calling it
 every frame starves imagery and still lags. Move animation into a render pass or a scene object.
 
-### MEDIUM: Forgetting `uninstall` work
+### MEDIUM: Forgetting `uninstall` work, or heavy work in `onUpdate`
 
-The context undoes what went through it. Geometries, materials, textures and workers the plugin created
-itself need `context.onDispose` or the plugin's `uninstall`.
-
-### MEDIUM: Heavy work in `onUpdate`
-
-It runs on the main thread every frame, inside the 60 fps budget on a Pixel. Move per-feature work to a
-worker or the GPU, and watch `updateMilliseconds` in `earth.inspect().plugins`.
+The context undoes what went through it; geometries, materials, textures and workers the plugin created itself need
+`context.onDispose` or `uninstall`. `onUpdate` runs on the main thread every frame, inside the 60 fps budget on a
+Pixel: move per-feature work to a worker or the GPU, and watch `updateMilliseconds` in `earth.inspect().plugins`.
 
 ## Completion
 

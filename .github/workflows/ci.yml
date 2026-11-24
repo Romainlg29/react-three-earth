@@ -29,5 +29,5 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       # Frontmatter, size limits, links, and every TypeScript example in the skills typechecked against the source
-      - run: pnpm --filter react-three-earth validate:skills
+      - run: pnpm -r --if-present validate:skills
       - run: pnpm build

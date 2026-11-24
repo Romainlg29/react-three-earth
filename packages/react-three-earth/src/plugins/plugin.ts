@@ -2,6 +2,7 @@ import type { Camera, Object3D } from 'three'
 
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
+import type { PointerInteraction } from '../core/PointerInteractions.js'
 import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
 import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
@@ -106,4 +107,10 @@ export interface PluginContext {
    * removes it early.
    */
   registerDrapedLayer(definition: DrapedLayerDefinition): DrapedLayerHandle
+  /**
+   * Lets the plugin take presses on the map from the camera controls (`earth.interactions`): a press its
+   * `pointerDown` returns true for, and that press's moves and release, never pan the map. For dragging
+   * vertices and handles. Returns a function that removes it early.
+   */
+  addPointerInteraction(interaction: PointerInteraction): () => void
 }

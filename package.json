@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm --filter react-three-earth build",
+    "build": "pnpm --filter \"./packages/*\" build",
     "dev": "pnpm --filter playground dev",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test"

@@ -31,6 +31,9 @@ importers:
       react-three-earth:
         specifier: workspace:*
         version: link:../../packages/react-three-earth
+      react-three-earth-draw:
+        specifier: workspace:*
+        version: link:../../packages/draw
       three:
         specifier: 0.187.0
         version: 0.187.0
@@ -62,6 +65,52 @@ importers:
       vite:
         specifier: ^8.3.8
         version: 8.3.8(@types/node@26.6.6)
+
+  packages/draw:
+    dependencies:
+      '@types/geojson':
+        specifier: ^7946.0.16
+        version: 7946.0.16
+      earcut:
+        specifier: ^3.2.4
+        version: 3.2.4
+    devDependencies:
+      '@react-three/fiber':
+        specifier: 10.0.0-alpha.6
+        version: 10.0.0-alpha.6(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(three@0.187.0)
+      '@tanstack/intent':
+        specifier: 0.5.6
+        version: 0.5.6
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@types/three':
+        specifier: ^0.187.0
+        version: 0.187.0
+      happy-dom:
+        specifier: ^20.0.0
+        version: 20.14.6
+      react:
+        specifier: ~19.3.1
+        version: 19.3.1
+      react-three-earth:
+        specifier: workspace:*
+        version: link:../react-three-earth
+      three:
+        specifier: 0.187.0
+        version: 0.187.0
+      tsdown:
+        specifier: ^0.23.7
+        version: 0.23.7(typescript@6.0.3)
+      typescript:
+        specifier: ~6.0.2
+        version: 6.0.3
+      vitest:
+        specifier: ^5.1.1
+        version: 5.1.1(@types/node@26.6.6)(happy-dom@20.14.6)(vite@8.3.8(@types/node@26.6.6))
 
   packages/react-three-earth:
     dependencies:

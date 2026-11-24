@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 export const AREAS = [
   'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'accessibility', 'gestures', 'invalidate', 'style', 'geojson', 'heatmap',
   'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'scripts', 'symbol-effects', 'buildings',
-  'roads', 'dem', 'exaggeration', 'style-root', 'examples',
+  'roads', 'dem', 'exaggeration', 'style-root', 'examples', 'draw',
 ]
 
 /** A name that runs several areas: the group's own area first. */
@@ -25,6 +25,7 @@ const ALL = Symbol('every area')
 const VECTOR_CORE = [...GROUPS.vector, 'labels', 'roads', 'scripts', 'symbol-effects', 'buildings', 'relief', 'effects', 'examples']
 const LIBRARY = 'packages/react-three-earth/src/'
 const PLAYGROUND = 'apps/playground/src/'
+const DRAW = 'packages/draw/src/'
 
 /**
  * Changed path → areas it can break. First match wins. A library or playground source file that no rule names runs
@@ -52,6 +53,9 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}plugins/styleLayerTypes\\.ts$`), ['layers']],
   [new RegExp(`^${LIBRARY}plugins/symbolEffects\\.ts$`), ['symbol-effects']],
   [new RegExp(`^${PLAYGROUND}controls/`), ['controls', 'accessibility', 'gestures', 'examples']],
+  [new RegExp(`^${DRAW}`), ['draw']],
+  [new RegExp(`^${LIBRARY}core/PointerInteractions\\.ts$`), ['draw', 'markers', 'gestures', 'controls']],
+  [new RegExp(`^${PLAYGROUND}examples/DrawExample\\.tsx$`), ['draw']],
   [new RegExp(`^${PLAYGROUND}examples/`), ['examples']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
   [new RegExp(`^${PLAYGROUND}geojson/`), ['geojson']],

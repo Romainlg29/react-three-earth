@@ -22,6 +22,9 @@ interface Finger {
 /** Finger travel, in CSS pixels, before a two-finger gesture picks between tilting and the rest. */
 const GESTURE_DECISION_PIXELS = 8
 
+/** The presses and lifts the gestures make up for the controls (a finger handed back after a pinch): no user press. */
+export const SYNTHETIC_TOUCH_EVENTS = new WeakSet<Event>()
+
 /**
  * Two-finger touch gestures like Apple Maps and Google Maps: pinch, twist and drag act together, the
  * ground under both fingers staying under them, and a two-finger drag up or down tilts. One finger is
@@ -128,9 +131,10 @@ export class TouchGestures {
     copyFinger(this.gestureStart[0], this.frameStart[0])
     copyFinger(this.gestureStart[1], this.frameStart[1])
     event.stopImmediatePropagation()
+    // Before the lift below: a plugin holding the first finger's press cancels it rather than taking the lift.
+    this.onStart?.()
     // The controls saw the first finger: end its drag, as if it lifted.
     this.dispatchSynthetic('pointerup', firstId, this.fingers.get(firstId)!)
-    this.onStart?.()
   }
 
   protected pointerMove(event: PointerEvent): void {
@@ -223,6 +227,7 @@ export class TouchGestures {
       cancelable: true,
     })
     this.synthetic.add(event)
+    SYNTHETIC_TOUCH_EVENTS.add(event)
     try {
       element.dispatchEvent(event)
     } catch {

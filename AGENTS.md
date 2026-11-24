@@ -14,6 +14,9 @@ instead.
   - `src/tiles`: 3DTilesRenderer plugins; `src/tiles/imagery` is the GPU imagery compositor.
   - `skills/`: Agent Skills shipped in the npm package (TanStack Intent format).
   - `test/`: vitest unit tests.
+- `packages/draw`: `react-three-earth-draw`, headless drawing and editing as a plugin, built only on the library's
+  public API (`src/modes` for the tools, `src/render` for the draped features and the live overlay). Ships its own
+  skills in `packages/draw/skills/`.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
   is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
   renders under React's StrictMode, `?example=<name>` opens a gallery example (`src/examples/`, live data or `?fixtures`). `tests/run.mjs` drives it in Chromium.
@@ -42,7 +45,7 @@ run them yourself when you change rendering.
 ```sh
 pnpm typecheck
 pnpm test
-pnpm --filter react-three-earth validate:skills
+pnpm -r --if-present validate:skills
 pnpm build
 pnpm dev &   # then:
 xvfb-run -a node apps/playground/tests/run.mjs --changed && node apps/playground/tests/assert-results.mjs
@@ -65,7 +68,7 @@ The skills are part of the public API. When you change a public name, a default,
 
 1. Update every skill that mentions it (`grep -r <name> packages/react-three-earth/skills`). Each skill
    lists the files it is derived from under `sources:` in its frontmatter.
-2. Run `pnpm --filter react-three-earth validate:skills`: it typechecks every TypeScript example
+2. Run `pnpm -r --if-present validate:skills`: it typechecks every TypeScript example
    against the source, so a renamed export fails here. Mark a fence `no-check` only when it cannot compile
    on its own (for example a Playwright script).
 3. New features that an app developer would ask an agent about get a section in an existing skill, or a
