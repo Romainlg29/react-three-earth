@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setCameraView } from '../src/core/camera.js'
 import type { Earth } from '../src/core/Earth.js'
 import { EarthViewControls } from '../src/core/EarthControls.js'
-import type { MapView, MapViewChange } from '../src/core/EarthCamera.js'
+import type { EarthCamera, MapView, MapViewChange } from '../src/core/EarthCamera.js'
+import { PointerInteractions } from '../src/core/PointerInteractions.js'
 import { DEFAULT_KEYBOARD_OPTIONS, isEditableTarget, keyboardAction, KeyboardControls, type KeyPress } from '../src/core/KeyboardControls.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 
@@ -87,7 +88,7 @@ function createFakeEarth() {
     },
     stop: () => {},
   }
-  const earth = { camera, view: { transitioning: false }, requestFrame: vi.fn() }
+  const earth = { camera, view: { transitioning: false }, requestFrame: vi.fn(), interactions: new PointerInteractions(camera as unknown as EarthCamera) }
   return {
     earth: earth as unknown as Earth,
     raw: earth,
@@ -242,6 +243,19 @@ describe('EarthViewControls accessibility', () => {
     controls.doubleClickZoom = false
     expect(controls.globe.enableDoubleTapZoom).toBe(false)
     expect(controls.flatMap.enableDoubleTapZoom).toBe(false)
+  })
+
+  it('turns double-click zoom off while a tool holds it, and back on when released', () => {
+    const controls = createControls()
+    const earth = (controls as unknown as { earth: Earth }).earth
+    const release = earth.interactions.holdDoubleClickZoom()
+    controls.update(0)
+    expect(controls.globe.enableDoubleTapZoom).toBe(false)
+    release()
+    release() // a second call does nothing
+    controls.update(0)
+    expect(controls.globe.enableDoubleTapZoom).toBe(true)
+    expect(earth.interactions.doubleClickZoomAllowed).toBe(true)
   })
 })
 

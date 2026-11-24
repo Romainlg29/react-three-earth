@@ -95,6 +95,11 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
     this.removeDrawer = layer.addDrawer(this)
   }
 
+  /** Read by the terrain shader: the layer draws premultiplied colour (`DrapedLayerDefinition.premultipliedAlpha`). */
+  get premultipliedAlpha(): boolean {
+    return this.layer.definition.premultipliedAlpha === true
+  }
+
   // Upstream `TiledImageOverlay._init` would create a region source over the (unused) XYZ image source.
   async _init(): Promise<void> {
     await this.imageSource.init()

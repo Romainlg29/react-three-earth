@@ -184,6 +184,9 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `react-hooks-and-frame-loop` | Earth state in React UI, per-frame code, scheduler order, `frameloop="demand"` |
 | `customize-terrain-shading` | custom terrain materials and TSL effects |
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
+| `write-a-plugin` | extending the map: style layer types, render passes, draped layers, 3D objects, taking presses from the controls |
+
+The drawing package, `react-three-earth-draw`, ships its own `draw-features` skill: drawing points, lines and polygons as GeoJSON with a headless toolbar.
 
 Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.
 

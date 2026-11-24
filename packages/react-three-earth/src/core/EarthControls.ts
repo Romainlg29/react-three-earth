@@ -177,6 +177,7 @@ export class EarthViewControls {
   /** Steepest tilt a two-finger drag or `Shift` + up reaches on the globe, in radians. Default: 80°. */
   maximumGlobeTiltRadians = MathUtils.degToRad(80)
   protected mapLabel = 'Map'
+  protected doubleClickZoomEnabled = true
   protected domElement: HTMLElement | null = null
   /** The element's accessibility attributes before `attach`, put back by `detach`. */
   protected savedAttributes = new Map<string, string | null>()
@@ -189,7 +190,12 @@ export class EarthViewControls {
     const stopAnimation = () => earth.camera.stop()
     this.globe.addEventListener('start', stopAnimation)
     this.flatMap.addEventListener('start', stopAnimation)
-    this.touchGestures.onStart = stopAnimation
+    this.touchGestures.onStart = () => {
+      stopAnimation()
+      // A second finger makes the press a pinch, which belongs to the map. The gestures hide that finger from
+      // later window listeners, so they end a plugin's press here, before the first finger's lift reaches it.
+      earth.interactions.cancelTouch()
+    }
     // A key press replaces the fling of the last drag (the press starts its own animation).
     this.keyboard.onStart = () => {
       stopInertia(this.globe)
@@ -268,10 +274,19 @@ export class EarthViewControls {
     this.flatMap.enableDamping = value
   }
 
-  /** Double-click or double-tap zooms in on that point. Default: true. */
+  /**
+   * Double-click or double-tap zooms in on that point. Default: true. Off anyway while a tool holds it
+   * (`earth.interactions.holdDoubleClickZoom`).
+   */
   set doubleClickZoom(value: boolean) {
-    this.globe.enableDoubleTapZoom = value
-    this.flatMap.enableDoubleTapZoom = value
+    this.doubleClickZoomEnabled = value
+    const allowed = value && this.earth.interactions.doubleClickZoomAllowed
+    this.globe.enableDoubleTapZoom = allowed
+    this.flatMap.enableDoubleTapZoom = allowed
+  }
+
+  get doubleClickZoom(): boolean {
+    return this.doubleClickZoomEnabled
   }
 
   update(deltaSeconds?: number): void {
@@ -281,6 +296,9 @@ export class EarthViewControls {
     const onFlatMap = view.mode === '2d' && !view.transitioning
     globe.enabled = onGlobe
     flatMap.enabled = onFlatMap
+    const doubleClickZoom = this.doubleClickZoomEnabled && earth.interactions.doubleClickZoomAllowed
+    globe.enableDoubleTapZoom = doubleClickZoom
+    flatMap.enableDoubleTapZoom = doubleClickZoom
     this.touchGestures.tiltEnabled = onGlobe || flatMap.maximumTiltRadians > 0
     this.keyboard.maximumTiltDegrees = MathUtils.radToDeg(onFlatMap ? flatMap.maximumTiltRadians : this.maximumGlobeTiltRadians)
     // Taken every frame, so finger travel during a view transition is dropped rather than applied after it.

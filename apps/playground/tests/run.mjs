@@ -1602,6 +1602,92 @@ async function galleryExample(name, query = '', interact = null) {
 }
 
 /**
+ * The drawing plugin (`?example=draw`, react-three-earth-draw): a polygon, a line and a point drawn by tapping, with a
+ * mouse or a finger, on the globe or the flat map. Finished features drape on the terrain (green fill, red line and
+ * point); the feature in progress shows in the overlay; one-finger drags between taps still pan.
+ */
+async function drawing(name, { touch = false, flat = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=draw&camera=-90,0,0,60000,0,-60`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  if (flat) {
+    await page.evaluate(() => window.earth.setView('2d', { durationSeconds: 0 }))
+    await page.waitForTimeout(500)
+    await idle()
+  }
+  // The map before drawing, to compare with: the globe is lit, so the draped colours are measured as changes.
+  await analyse(page, await page.screenshot(), 'window.drawingBase = px; return {}')
+  // Collapse the card so taps reach the map, then drive the tools through the plugin (the toolbar is the example's).
+  const tap = (x, y) => (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
+  const result = { check: `drawing, ${name}`, errors }
+  await page.evaluate(() => window.draw.setMode('polygon'))
+  for (const [x, y] of [[420, 250], [620, 260], [640, 420], [440, 430]]) {
+    await tap(x, y)
+    await page.waitForTimeout(150)
+  }
+  result.inProgress = await page.evaluate(() => { const { drawing, vertexCount, canFinish } = window.draw.getState(); return { drawing, vertexCount, canFinish } })
+  writeFileSync(new URL(`drawing-${name.replaceAll(' ', '-')}-progress.png`, OUT), await page.screenshot())
+  await tap(420, 250) // the first vertex closes the polygon
+  await page.evaluate(() => window.draw.setMode('linestring'))
+  for (const [x, y] of [[400, 150], [700, 180], [750, 300]]) {
+    await tap(x, y)
+    await page.waitForTimeout(150)
+  }
+  await tap(750, 300) // the last vertex finishes the line
+  await page.evaluate(() => window.draw.setMode('point'))
+  await tap(540, 340)
+  // A one-finger (or mouse) drag still pans the map in a drawing mode, and places nothing.
+  const before = await page.evaluate(() => window.earth.camera.getView())
+  if (touch) {
+    const client = await page.context().newCDPSession(page)
+    const point = (x, y) => ({ x, y, id: 1 })
+    await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point(600, 520)] })
+    for (let step = 1; step <= 6; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [point(600 - step * 20, 520)] })
+    await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  } else {
+    await page.mouse.move(600, 520)
+    await page.mouse.down()
+    await page.mouse.move(480, 520, { steps: 6 })
+    await page.mouse.up()
+  }
+  await page.waitForTimeout(800)
+  const after = await page.evaluate(() => window.earth.camera.getView())
+  result.panned = Math.abs(after.longitudeDegrees - before.longitudeDegrees) > 1e-4
+  // Back where the features were drawn, to look at them.
+  await page.evaluate(view => window.earth.camera.jumpTo(view), before)
+  await page.waitForTimeout(500)
+  await idle()
+  await page.waitForTimeout(1000)
+  const png = await page.screenshot()
+  writeFileSync(new URL(`drawing-${name.replaceAll(' ', '-')}.png`, OUT), png)
+  result.features = await page.evaluate(() => window.draw.getFeatures().features.map(feature => feature.geometry.type))
+  result.vertices = await page.evaluate(() => window.draw.getFeatures().features.map(feature => feature.geometry.type === 'Polygon' ? feature.geometry.coordinates[0].length : feature.geometry.type === 'LineString' ? feature.geometry.coordinates.length : 1))
+  result.drapedLayers = await page.evaluate(() => window.earth.inspect().drapedLayers)
+  Object.assign(result, await analyse(page, png, `
+    // Right of the card, against the map before drawing: the red line and point, and the green fill over the checker.
+    const base = window.drawingBase
+    let red = 0, green = 0
+    for (let y = 0; y < height; y++) for (let x = 360; x < width; x++) {
+      const i = (y * width + x) * 4
+      const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+      const [dr, dg, db] = [r - base[i], g - base[i + 1], b - base[i + 2]]
+      if (dr > 40 && r > g + 40) red++
+      else if (dg > 10 && dr <= 5 && db > 0 && g > r) green++
+    }
+    return { redPixels: red, greenPixels: green }
+  `))
+  await page.close()
+  results.push(result)
+}
+
+/**
  * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
  * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
  */
@@ -2173,6 +2259,11 @@ try {
     await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
     await terrainExaggeration('quantized-mesh', '&exaggeration=2')
     await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
+  }
+  if (want('draw')) {
+    await drawing('globe, mouse')
+    await drawing('globe, touch', { touch: true })
+    await drawing('flat map, touch', { touch: true, flat: true })
   }
   if (want('examples')) {
     await galleryExample('city')

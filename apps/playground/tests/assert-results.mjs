@@ -457,6 +457,16 @@ expectations['gallery example, embedded'] = r => [
   ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],
 ]
 
+for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
+  expectations[`drawing, ${name}`] = r => [
+    ['four taps place four vertices of a polygon that can finish', r.inProgress.drawing && r.inProgress.vertexCount === 4 && r.inProgress.canFinish],
+    ['taps on the first and last vertices finish a polygon and a line, a tap places a point', JSON.stringify(r.features) === '["Polygon","LineString","Point"]' && JSON.stringify(r.vertices) === '[5,3,1]'],
+    ['a drag still pans the map', r.panned],
+    ['finished features drape on the terrain (red line and point, green fill)', r.redPixels > 300 && r.greenPixels > 2000],
+    ['the draped layer draws only inside its bounds', r.drapedLayers[0]?.regionsDrawn > 0 && r.drapedLayers[0].regionsDrawn < r.drapedLayers[0].regions],
+  ]
+}
+
 let failures = 0
 let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {

@@ -34,7 +34,8 @@ export interface DrapedLayerDrawInputs {
   renderer: WebGPURenderer
   /**
    * The region's texture: sRGB, 8 bits, `resolutionPixels` square, bound and cleared to transparent. Draw
-   * with straight alpha; it is blended over the imagery layers.
+   * with straight alpha (or premultiplied, with the definition's `premultipliedAlpha`); it is blended over the
+   * imagery layers.
    */
   target: RenderTarget
   region: DrapedLayerRegion
@@ -57,6 +58,13 @@ export interface DrapedLayerDefinition {
    * `invalidate`, so it can follow a selection; null draws nowhere. Default: everywhere.
    */
   bounds?: GeographicBounds | null | (() => GeographicBounds | null)
+  /**
+   * The layer draws premultiplied colour (`rgb × alpha`), as `PremultipliedAlphaBlending` or
+   * `NormalBlending` with `premultipliedAlpha` produce. That is what translucent shapes drawn over each other
+   * need: straight alpha cannot be blended in one pass over a transparent target, and filters without dark
+   * fringes. Default: false (straight alpha).
+   */
+  premultipliedAlpha?: boolean
   /**
    * Draws one region into `target`. Called within the compositor's budget, with the renderer's state saved
    * and restored around it. Keep it to a few draw calls: it runs once per region inside `bounds`.

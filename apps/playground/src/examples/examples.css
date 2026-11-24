@@ -101,6 +101,16 @@
   font-size: 14px;
 }
 
+.example-buttons button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.example-status {
+  margin: 8px 0 0;
+  color: #b4bdcc;
+}
+
 .example-field output {
   min-width: 3.5em;
   text-align: right;

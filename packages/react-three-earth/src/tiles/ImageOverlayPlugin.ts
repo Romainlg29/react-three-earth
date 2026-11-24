@@ -29,6 +29,8 @@ interface ImageOverlay {
   opacity: number
   alphaMask: boolean
   alphaInvert: boolean
+  /** The layer's texture holds premultiplied colour (a draped layer with `premultipliedAlpha`). Default: false. */
+  premultipliedAlpha?: boolean
 }
 
 export interface OverlayParams {

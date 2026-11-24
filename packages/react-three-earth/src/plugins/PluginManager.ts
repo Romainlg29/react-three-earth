@@ -1,6 +1,7 @@
 import type { Camera, Object3D } from 'three'
 
 import { GeographicAnchor } from '../core/GeographicAnchor.js'
+import type { PointerInteraction } from '../core/PointerInteractions.js'
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
 import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
@@ -122,6 +123,13 @@ export class PluginInstallation implements PluginContext {
     const handle = this.earth.drapedLayers.register(definition)
     this.undoSteps.push(handle.remove)
     return handle
+  }
+
+  addPointerInteraction(interaction: PointerInteraction): () => void {
+    this.requireActive('addPointerInteraction')
+    const remove = this.earth.interactions.add(interaction)
+    this.undoSteps.push(remove)
+    return remove
   }
 
   /** Runs the plugin's `onUpdate` callbacks. Returns true if one asked for another frame. */

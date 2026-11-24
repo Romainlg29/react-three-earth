@@ -24,6 +24,7 @@ import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import { DrapedLayerRegistry, type DrapedLayerInspection } from '../plugins/drapedLayers.js'
 import { RenderPassRegistry, type RenderPassInspection } from '../plugins/renderPasses.js'
+import { PointerInteractions } from './PointerInteractions.js'
 
 /** Terrain height reads for labels per frame, and the time they may take. */
 const SYMBOL_ELEVATION_READS_PER_FRAME = 512
@@ -169,6 +170,11 @@ export class Earth extends Group<EarthEventMap> {
    * layers, and hover feature-state. See `LayerEvents`.
    */
   readonly layerEvents: LayerEvents = new LayerEvents(this)
+  /**
+   * Presses plugins and apps take from the camera controls (dragging a vertex, a gizmo handle). Connected to the
+   * canvas by `attachPointerEvents`. See `PointerInteractions`.
+   */
+  readonly interactions: PointerInteractions = new PointerInteractions(this.camera)
   /** Layer ids `queryRenderedFeatures` warned about, so each is reported once. */
   protected readonly unknownQueryLayers = new Set<string>()
   /** Anchors made by `createGeographicAnchor`, placed for the morph every frame. */
@@ -259,9 +265,11 @@ export class Earth extends Group<EarthEventMap> {
     element.addEventListener('dblclick', onDoubleClick)
     element.addEventListener('contextmenu', onContextMenu)
     element.addEventListener('pointermove', onPointerMove)
+    this.interactions.attach(element, canvas)
     this.pointerTarget = {
       element,
       remove: () => {
+        this.interactions.detach()
         element.removeEventListener('pointerdown', onPointerDown)
         element.removeEventListener('click', onClick)
         element.removeEventListener('dblclick', onDoubleClick)
