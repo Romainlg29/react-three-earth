@@ -52,7 +52,7 @@ xvfb-run -a node apps/playground/tests/run.mjs && node apps/playground/tests/ass
 ```
 
 `run.mjs` runs only the browser checks a change can reach, and nothing when no change reaches any. Each check
-(`labels/webgl2`, `draw/editing-globe-touch`, … 98 of them) records the source lines it ran when it last passed: in
+(`labels/webgl2`, `draw/editing-globe-touch`, … 100 of them) records the source lines it ran when it last passed: in
 the page, in its workers, in `run.mjs` and in its assertions in `assert-results.mjs`. A check runs again only when one
 of those lines changed (or the code around an inserted line ran), when a file coverage cannot see changed (fixtures,
 `vite.config.ts`, `public/`, the lockfile), or when it failed last time. Comments, blank lines and types never run

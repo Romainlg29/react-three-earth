@@ -486,7 +486,7 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
     ['each edit fires one update', r.updates === 3],
     ['a picked vertex is deleted, and undo brings it back', r.deleted && r.verticesAfterDelete === 4 && r.verticesAfterUndo === 5],
     ['a drag off the selection still pans', r.pannedOffSelection],
-    ['a tap on the empty map clears the selection', r.selectedAfterEmptyTap === 0],
+    ['a tap on the empty map leaves edit mode, keeping the selection; a second clears it', r.leftEditingOnEmptyTap && r.selectedAfterEmptyTap === 0],
     ...(name === 'globe, mouse' ? [['G, then X, moves the selection east only under the pointer, in one update on Enter', r.keyboardMove.updates === 1 && r.keyboardMove.eastDegrees > 1e-4 && r.keyboardMove.northDegrees < r.keyboardMove.eastDegrees * 0.01]] : []),
   ]
 }
@@ -521,6 +521,19 @@ for (const [name, globe] of [['globe, mouse', true], ['flat map, touch', false]]
       ...(globe ? [['the arc around east tilts it: its top face no longer level', r.tilt.updates === 1 && r.tilt.after.topTiltMeters > 10 && r.tilt.after.faces === 6]] : []),
       ['each drag fires one update', r.updates === (globe ? 5 : 4)],
       ['the previews leave once released: one solid per stored feature', r.solids.stored === 6 && r.solids.inScene === 6],
+    ]
+  }
+}
+
+for (const name of ['globe, mouse', 'globe, touch']) {
+  expectations[`mesh editing, ${name}`] = r => {
+    const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance
+    const { before, after } = r.pull
+    return [
+      ['a double tap on the box\'s top enters edit mode with that face picked, its arrow shown', r.entered.editing && r.entered.elementMode === 'face' && r.entered.picked?.kind === 'face' && r.entered.picked.index === 0 && r.entered.canExtrude && r.entered.handle !== null],
+      ['the arrow pulls the top up: the box grows along its normal, footprint and base kept, in one update', r.pull.updates === 1 && after.height > before.height + 50 && near(after.base, before.base, 1e-3) && near(after.extent.east, before.extent.east, before.extent.east * 0.01) && near(after.extent.north, before.extent.north, before.extent.north * 0.01) && after.faces === 6],
+      ['extrude adds four walls and a new top above, in one update, the top still picked', r.extrude.updates === 1 && r.extrude.after.faces === 10 && r.extrude.after.height > r.extrude.before.height + 10 && r.extrude.after.picked?.index === 0],
+      ['one solid per stored feature', r.solids.stored === 6 && r.solids.inScene === 6],
     ]
   }
 }

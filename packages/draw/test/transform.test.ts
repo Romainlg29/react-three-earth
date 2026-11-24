@@ -250,6 +250,7 @@ function createContext(features: DrawFeature[], { oblique = false }: { oblique?:
     remove: ids => store.remove(ids),
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
+    releaseDoubleClickZoom: vi.fn(),
   }
   return { context, store, updates, toScreen }
 }
