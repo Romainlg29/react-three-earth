@@ -320,7 +320,10 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       window.addEventListener('keydown', this.onKeyDown)
       context.onDispose(() => window.removeEventListener('keydown', this.onKeyDown))
     }
-    context.onUpdate(frame => this.updateOverlay(frame))
+    context.onUpdate(frame => {
+      solids.update()
+      this.updateOverlay(frame)
+    })
     context.onDispose(() => {
       this.exitMode()
       this.applyCursor(null)

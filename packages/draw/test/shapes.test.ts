@@ -1,5 +1,6 @@
 import type { MultiPolygon, Polygon, Position } from 'geojson'
-import { Object3D, type Mesh } from 'three'
+import { Object3D, type LineSegments, type Mesh } from 'three'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME } from 'react-three-earth'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
@@ -332,8 +333,13 @@ describe('solids', () => {
 
   it('stands each solid on an anchor at its lowest altitude, shares materials, and rebuilds only changed features', () => {
     const anchors: Array<{ heightMeters: number }> = []
+    const releaseTranslucentPass = vi.fn()
+    let translucentPassBuilt = false
     const earth = {
       view: { morph: 0, flatMapLuminance: 1 },
+      atmosphere: {},
+      requestFrame: vi.fn(),
+      renderPasses: { retainTranslucentPass: () => releaseTranslucentPass, isBuilt: (name: string) => translucentPassBuilt && name === TRANSLUCENT_RENDER_PASS_NAME },
       createGeographicAnchor: (position: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }) => {
         anchors.push(position)
         return Object.assign(new Object3D(), { geographicPosition: { ...position }, dispose() { (this as unknown as Object3D).removeFromParent() } })
@@ -349,6 +355,13 @@ describe('solids', () => {
     const [boxAnchor, ballAnchor] = solids.object.children as Object3D[]
     expect(boxAnchor!.children).toHaveLength(2)
     expect((boxAnchor!.children[0] as Mesh).material).toBe((ballAnchor!.children[0] as Mesh).material)
+    // With an atmosphere, see-through faces move to the translucent layer once a pipeline runs its pass; edges stay.
+    solids.update()
+    expect(boxAnchor!.children[0]!.layers.mask).toBe(1)
+    translucentPassBuilt = true
+    solids.update()
+    expect(boxAnchor!.children[0]!.layers.mask).toBe(1 << TRANSLUCENT_LAYER)
+    expect((boxAnchor!.children[1] as LineSegments).layers.mask).toBe(1)
     solids.setFeatures([{ feature: box, style: DEFAULT_DRAW_STYLE }, { feature: ball, style: DEFAULT_DRAW_STYLE }])
     expect(anchors).toHaveLength(2)
     solids.setPreviews([{ feature: { ...box }, style: DEFAULT_DRAW_STYLE }])
@@ -356,8 +369,10 @@ describe('solids', () => {
     solids.setPreviews([])
     solids.setFeatures([{ feature: ball, style: DEFAULT_DRAW_STYLE }])
     expect(solids.object.children).toHaveLength(1)
+    expect(solids.object.children[0]!.children[0]!.layers.mask).toBe(1 << TRANSLUCENT_LAYER) // built on the layer
     solids.dispose()
     expect(solids.object.children).toHaveLength(0)
+    expect(releaseTranslucentPass).toHaveBeenCalledTimes(1)
   })
 
   it('splits long edges so walls follow the ground, and draws lines at an altitude as lines', () => {

@@ -48,6 +48,13 @@ export {
   type EarthRenderPipelineOptions,
   type EarthRenderPipelineOutput,
 } from './core/EarthRenderPipeline.js'
+export {
+  TRANSLUCENT_LAYER,
+  TRANSLUCENT_RENDER_PASS,
+  TRANSLUCENT_RENDER_PASS_NAME,
+  TranslucentCompositeNode,
+  TranslucentPassNode,
+} from './core/TranslucentPass.js'
 export { GeographicAnchor, type GeographicAnchorOptions } from './core/GeographicAnchor.js'
 export { createFlatMapEmissionNode, createLocalCameraPositionNode, depthFromViewZ, getLocalCameraPosition } from './core/sceneNodes.js'
 export {

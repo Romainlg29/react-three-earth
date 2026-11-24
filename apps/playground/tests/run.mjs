@@ -1810,7 +1810,25 @@ async function solidsOverSky() {
     return count / total`
   const aboveHorizon = await analyse(page, png, orange(245, 270))
   const belowHorizon = await analyse(page, png, orange(330, 390))
-  results.push({ check: 'solids over the sky', aboveHorizon, belowHorizon, errors })
+  // From the other side, the tower's shaded face crosses the horizon: hazed at its own distance, it keeps its shade
+  // across it (hazed at the ground's distance below and not at all above, it went dark against the sky).
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: 6.6, latitudeDegrees: 46.414, heightMeters: 1500, distanceMeters: 9000, headingDegrees: 150, pitchDegrees: -4 }))
+  await page.waitForFunction(() => window.earth.inspect().loaded === true && window.earth.inspect().idle, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(3000)
+  const shadedPng = await page.screenshot()
+  writeFileSync(new URL('solids-over-sky-shaded.png', OUT), shadedPng)
+  const mean = (top, bottom) => `
+    const sum = [0, 0, 0]
+    let count = 0
+    for (let y = ${top}; y < ${bottom}; y++) for (let x = 375; x < 430; x++) {
+      const i = (y * width + x) * 4
+      sum[0] += px[i]; sum[1] += px[i + 1]; sum[2] += px[i + 2]; count++
+    }
+    return sum.map(value => value / count)`
+  const shadedAbove = await analyse(page, shadedPng, mean(250, 262))
+  const shadedBelow = await analyse(page, shadedPng, mean(285, 300))
+  const shadeStep = Math.max(...shadedAbove.map((value, channel) => Math.abs(value - shadedBelow[channel])))
+  results.push({ check: 'solids over the sky', aboveHorizon, belowHorizon, shadedAbove, shadedBelow, shadeStep, errors })
   await page.close()
 }
 

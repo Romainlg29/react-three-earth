@@ -1,6 +1,6 @@
 import earcut from 'earcut'
 import type { MultiPolygon, Polygon, Position } from 'geojson'
-import { createFlatMapEmissionNode, type Earth, type GeographicAnchor } from 'react-three-earth'
+import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from 'react-three-earth'
 import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, type Object3D } from 'three'
 import { uniform, vec4 } from 'three/tsl'
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
@@ -745,6 +745,10 @@ export class SolidFeatures {
   /** Features being dragged or transformed, shown in 3D while they change (`setPreviews`). */
   protected readonly previews = new Map<string, Solid>()
   protected readonly materials = new Map<string, SharedMaterials>()
+  /** Lets go of the translucent pass, held while there is an atmosphere (see `update`). */
+  protected releaseTranslucentPass: (() => void) | null = null
+  /** Whether see-through faces are on the translucent layer, which needs the pass built into a pipeline. */
+  protected onTranslucentLayer = false
 
   constructor(protected readonly earth: Earth) {
     this.object.name = 'DrawSolids'
@@ -791,6 +795,34 @@ export class SolidFeatures {
     this.solids.clear()
     this.previews.clear()
     this.object.removeFromParent()
+    this.releaseTranslucentPass?.()
+    this.releaseTranslucentPass = null
+  }
+
+  /**
+   * Call once per frame. With an atmosphere, see-through faces go on the translucent layer, drawn after the atmosphere
+   * and hazed at their own distance (in the scene, a face crossing the horizon changes shade along it). They move there
+   * only once a pipeline runs the translucent pass, and back when none does, so apps composing their own pipeline
+   * still see them.
+   */
+  update(): void {
+    const hasAtmosphere = this.earth.atmosphere !== null
+    if (hasAtmosphere && this.releaseTranslucentPass === null) this.releaseTranslucentPass = this.earth.renderPasses.retainTranslucentPass()
+    else if (!hasAtmosphere && this.releaseTranslucentPass !== null) {
+      this.releaseTranslucentPass()
+      this.releaseTranslucentPass = null
+    }
+    const translucent = hasAtmosphere && this.earth.renderPasses.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)
+    if (translucent === this.onTranslucentLayer) return
+    this.onTranslucentLayer = translucent
+    this.object.traverse(object => this.placeOnLayer(object))
+    this.earth.requestFrame()
+  }
+
+  protected placeOnLayer(object: Object3D): void {
+    const mesh = object as Mesh
+    if (mesh.isMesh !== true || !(mesh.material as MeshStandardNodeMaterial).transparent) return
+    mesh.layers.set(this.onTranslucentLayer ? TRANSLUCENT_LAYER : 0)
   }
 
   protected createSolid(feature: DrawFeature, style: DrawStyle, coarseness = 1): Solid {
@@ -799,6 +831,7 @@ export class SolidFeatures {
     this.object.add(anchor)
     const solid: Solid = { feature, style, anchor, owned: [], materialKey: null }
     const add = (object: Object3D, geometry: BufferGeometry) => {
+      this.placeOnLayer(object)
       solid.owned.push(geometry)
       anchor.add(object)
     }
