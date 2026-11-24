@@ -50,6 +50,26 @@ export function useRegisterSource<T>(registry: SourceRegistry<T> | null, source:
   useLayoutEffect(() => registry.register(source), [registry, source])
 }
 
+/**
+ * Registers a third-party terrain source with the `<Terrain>` around the calling component, for packages that
+ * ship their own `<MySource>`. Pass a stable instance (memoise it on the props that change its tiles): a new
+ * instance rebuilds the terrain, its tiles and their draped imagery. `componentName` names the component in the error thrown outside one:
+ * `<componentName> must sit inside <Terrain>`.
+ */
+export function useRegisterTerrainSource(source: import('../core/sources.js').TerrainSource, componentName: string): void {
+  useRegisterSource(use(TerrainSourceContext), source, componentName, 'Terrain')
+}
+
+/**
+ * Registers a third-party imagery source with the `<Imagery>` around the calling component, stacked with the
+ * built-in sources in the order they register (a source mounted later, or a new instance, goes on top). Pass a
+ * stable instance (memoise it on the props that change its tiles): a new instance rebuilds the layer. `componentName` names the component in the error thrown outside one:
+ * `<componentName> must sit inside <Imagery>`.
+ */
+export function useRegisterImagerySource(source: import('../core/sources.js').ImagerySource, componentName: string): void {
+  useRegisterSource(use(ImagerySourceContext), source, componentName, 'Imagery')
+}
+
 /** The vanilla `Marker` of the nearest `<Marker>`, for a `<Popup>` or content inside it. */
 export const MarkerContext = createContext<import('../core/Marker.js').Marker | null>(null)
 

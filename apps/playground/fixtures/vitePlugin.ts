@@ -4,7 +4,7 @@ import type { Plugin } from 'vite'
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
 import { terrariumTile } from './dem.ts'
-import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
+import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureScriptStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
@@ -12,6 +12,8 @@ import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureRe
  * no network.
  *
  * `/fixtures/style-labels.json` adds a dense grid of town labels (layer `towns`), for collision and fades.
+ *
+ * `/fixtures/style-scripts.json` adds place names in Arabic, Hebrew and mixed scripts (layer `scripts`).
  *
  * `/fixtures/style-patterns.json` is the same style with patterns, from the sprite at /fixtures/sprite.json
  * (and `@2x`).
@@ -63,6 +65,11 @@ export function fixtureTiles(): Plugin {
         if (url === '/fixtures/style-labels.json') {
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(fixtureLabelStyle()))
+          return
+        }
+        if (url === '/fixtures/style-scripts.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixtureScriptStyle()))
           return
         }
         if (url === '/fixtures/style-relief.json') {

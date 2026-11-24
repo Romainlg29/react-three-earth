@@ -1275,6 +1275,56 @@ async function screenSymbols(name, query, map = 'labels') {
   results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })
 }
 
+/**
+ * Place names in other scripts (`?map=scripts`): every name shows, reported in reading order, with text pixels
+ * inside its box. Shaping and order are unit-tested (test/scripts.test.ts); the screenshot shows them drawn.
+ */
+async function scriptLabels(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=scripts${query}`)
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  let previous = ''
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await page.waitForTimeout(1000)
+    const state = await page.evaluate(() => {
+      const s = window.earth.inspect().terrain.symbols ?? { labelsShown: 0, elevationsPending: 0 }
+      return JSON.stringify([s.labelsShown, s.elevationsPending, window.earth.terrain.getScreenLabels().filter(l => l.opacity < 1).length])
+    })
+    if (state === previous && JSON.parse(state)[1] === 0 && JSON.parse(state)[2] === 0) break
+    previous = state
+  }
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-scripts-${name.replaceAll(/[^a-z0-9]+/gi, '-')}.png`, OUT), png)
+  const labels = await page.evaluate(() =>
+    window.earth.terrain.getScreenLabels()
+      .filter(l => /[^\x00-\x7f]/.test(l.text))
+      .map(l => ({ text: l.text, box: l.box.map(Math.round) })),
+  )
+  // Text-colour pixels inside each label's box.
+  const inBoxes = await analyse(page, png, `
+    const boxes = ${JSON.stringify(labels.map(l => l.box))}
+    return boxes.map(([left, top, right, bottom]) => {
+      let count = 0
+      for (let y = Math.max(0, top); y < Math.min(height, bottom); y++) {
+        for (let x = Math.max(0, left); x < Math.min(width, right); x++) {
+          const i = (y * width + x) * 4
+          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+          if (r < 110 && r > g && g > b && r - b > 15 && r - b < 60) count++
+        }
+      }
+      return count
+    })
+  `)
+  await page.close()
+  results.push({
+    check: `script labels, ${name}`,
+    labels: labels.map((l, index) => ({ ...l, textPixels: inBoxes[index] })),
+    errors,
+  })
+}
+
 const BUILDING_PIXELS = `
   // Red buildings (roofs bright, walls darker), the blue glass tower blended over the ground, and the courtyard's
   // middle (the screen centre in the top-down view).
@@ -1690,6 +1740,97 @@ async function georeferenced(kind, query, label = kind) {
   results.push(result)
 }
 
+/**
+ * Keyboard and accessibility: the map is a labelled region in the tab order, keys move the camera, a double
+ * click zooms, `prefers-reduced-motion` switches the view at once, and axe-core finds no violation with the
+ * controls, markers and an open popup on the page.
+ */
+async function accessibility() {
+  const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js')
+  const runAxe = async page => {
+    await page.addScriptTag({ path: axePath })
+    return page.evaluate(async () => {
+      // WCAG 2.2 A and AA rules. Markers faded behind terrain (`occludedOpacity`) are left out on purpose: the fade
+      // shows they are hidden, as MapLibre's `opacityWhenCovered` does, so their text is not meant to be read there.
+      const context = { exclude: [['[data-visibility="occluded"]']] }
+      const options = { resultTypes: ['violations'], runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] } }
+      const { violations } = await window.axe.run(context, options)
+      return violations.map(v => ({ id: v.id, impact: v.impact, targets: v.nodes.map(n => n.target.join(' ')).slice(0, 5) }))
+    })
+  }
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&markers&camera=-90,0,3900,40000,0,-60', { width: 1000, height: 640 })
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
+  const settle = () => page.waitForFunction(() => !window.earth.camera.animating && !window.earth.view.transitioning, null, { timeout: 60_000 })
+  const view = () => page.evaluate(() => window.earth.camera.getView())
+  const result = { check: 'keyboard and accessibility' }
+
+  result.region = await page.evaluate(() => {
+    const region = document.querySelector('[role="region"][aria-label="Map"]')
+    return region === null ? null : { tabIndex: region.tabIndex, holdsCanvas: region.querySelector('canvas') !== null }
+  })
+  // Tab from the page's start reaches the map (the "Examples" link comes first)
+  await page.evaluate(() => document.activeElement?.blur())
+  for (let press = 0; press < 3 && !(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'region')); press++) await page.keyboard.press('Tab')
+  result.focusedByTab = await page.evaluate(() => document.activeElement?.getAttribute('role') === 'region')
+  await page.focus('[role="region"][aria-label="Map"]')
+
+  await settle()
+  const start = await view()
+  await page.keyboard.press('ArrowRight')
+  await settle()
+  const panned = await view()
+  result.panEastDegrees = panned.longitudeDegrees - start.longitudeDegrees
+  result.panLatitudeChange = panned.latitudeDegrees - start.latitudeDegrees
+  await page.keyboard.press('=')
+  await settle()
+  result.zoomInDelta = (await view()).zoom - panned.zoom
+  const beforeTurn = await view()
+  await page.keyboard.press('Shift+ArrowRight')
+  await settle()
+  const turned = await view()
+  result.turnDegrees = turned.headingDegrees - beforeTurn.headingDegrees
+  await page.keyboard.press('Shift+ArrowUp')
+  await settle()
+  result.tiltDegrees = (await view()).pitchDegrees - turned.pitchDegrees
+  const beforeZoomOut = await view()
+  await page.keyboard.press('-')
+  await page.keyboard.press('-')
+  await settle()
+  result.twoZoomOutsDelta = (await view()).zoom - beforeZoomOut.zoom
+  result.pageScrolled = await page.evaluate(() => scrollX !== 0 || scrollY !== 0)
+
+  // Double click zooms in on the point (away from the markers in the middle)
+  const beforeDoubleClick = await view()
+  await page.mouse.dblclick(250, 480)
+  await page.waitForTimeout(800)
+  await settle()
+  result.doubleClickZoomDelta = (await view()).zoom - beforeDoubleClick.zoom
+
+  // axe with the controls and markers, then with a popup open (opened from the keyboard)
+  result.violations = await runAxe(page)
+  await page.focus('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  result.popupViolations = await runAxe(page)
+  writeFileSync(new URL('accessibility.png', OUT), await page.screenshot())
+  await page.close()
+
+  // Reduced motion: the view button switches at once
+  const reduced = await open('/?fixtures&stats=0&atmosphere=0', { width: 1000, height: 640 })
+  await reduced.page.emulateMedia({ reducedMotion: 'reduce' })
+  await reduced.page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('button[aria-label="Switch to the flat map"]'), null, { timeout: 120_000 })
+  await reduced.page.evaluate(() => {
+    window.morphFrames = []
+    window.earth.addEventListener('update', () => window.morphFrames.push(window.earth.view.morph))
+  })
+  await reduced.page.click('button[aria-label="Switch to the flat map"]')
+  await reduced.page.waitForFunction(() => window.earth.view.mode === '2d' && !window.earth.view.transitioning, null, { timeout: 30_000 })
+  result.reducedMotionInBetweenFrames = await reduced.page.evaluate(() => window.morphFrames.filter(morph => morph > 0 && morph < 1).length)
+  await reduced.page.close()
+
+  results.push({ ...result, errors: [...errors, ...reduced.errors] })
+}
+
 try {
   if (want('precision')) {
     await precision(true)
@@ -1714,6 +1855,7 @@ try {
   }
   if (want('attribution')) await attribution()
   if (want('controls')) await controls()
+  if (want('accessibility')) await accessibility()
   if (want('invalidate')) await vectorInvalidate()
   if (want('style')) await vectorStyleRuntime()
   if (want('geojson')) {
@@ -1772,6 +1914,10 @@ try {
     await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
+  }
+  if (want('scripts')) {
+    await scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')
+    await scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')
   }
   if (want('buildings')) {
     // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.

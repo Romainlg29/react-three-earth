@@ -20,6 +20,7 @@ import { NodeMaterial } from 'three/webgpu'
 import type { ViewMorph } from '../view/ViewMorph.js'
 import { mercatorScaleFactor } from '../view/webMercator.js'
 import type { Earth } from './Earth.js'
+import { KeyboardControls } from './KeyboardControls.js'
 import {
   applyTwoFingerTilt,
   applyTwoFingerTransformOnGlobe,
@@ -165,16 +166,28 @@ export class EarthViewControls {
   readonly flatMap = new FlatMapControls()
   /** Two-finger touch gestures (pan, pinch, twist and tilt together), like Apple Maps. */
   readonly touchGestures = new TouchGestures()
-  /** Steepest tilt a two-finger drag reaches on the globe, in radians. Default: 80°. */
+  /** Arrows, `+` / `-` and `Shift` + arrows while the map has focus, like MapLibre. */
+  readonly keyboard: KeyboardControls
+  /** Steepest tilt a two-finger drag or `Shift` + up reaches on the globe, in radians. Default: 80°. */
   maximumGlobeTiltRadians = MathUtils.degToRad(80)
+  protected mapLabel = 'Map'
+  protected domElement: HTMLElement | null = null
+  /** The element's accessibility attributes before `attach`, put back by `detach`. */
+  protected savedAttributes = new Map<string, string | null>()
 
   constructor(protected readonly earth: Earth) {
     this.globe.setScene(earth)
+    this.keyboard = new KeyboardControls(earth)
     // User input takes over from a running camera animation (`earth.camera.flyTo` and the rest).
     const stopAnimation = () => earth.camera.stop()
     this.globe.addEventListener('start', stopAnimation)
     this.flatMap.addEventListener('start', stopAnimation)
     this.touchGestures.onStart = stopAnimation
+    // A key press replaces the fling of the last drag (the press starts its own animation).
+    this.keyboard.onStart = () => {
+      stopInertia(this.globe)
+      stopInertia(this.flatMap)
+    }
   }
 
   setCamera(camera: Camera): void {
@@ -182,22 +195,70 @@ export class EarthViewControls {
     this.flatMap.setCamera(camera)
   }
 
+  /**
+   * Listens to the element's mouse, touch and keyboard input, and makes it the map for assistive technology:
+   * in the tab order (`tabindex="0"`), `role="region"`, named by `label`.
+   */
   attach(domElement: HTMLElement): void {
+    if (this.domElement !== null) this.detach()
+    this.domElement = domElement
+    this.describe(domElement)
     // First, so the gestures see each touch before the controls do.
     this.touchGestures.attach(domElement)
     this.globe.attach(domElement)
     this.flatMap.attach(domElement)
+    this.keyboard.attach(domElement)
   }
 
   detach(): void {
     this.touchGestures.detach()
     this.globe.detach()
     this.flatMap.detach()
+    this.keyboard.detach()
+    const domElement = this.domElement
+    this.domElement = null
+    if (domElement === null) return
+    for (const [name, value] of this.savedAttributes) {
+      if (value === null) domElement.removeAttribute(name)
+      else domElement.setAttribute(name, value)
+    }
+    this.savedAttributes.clear()
+  }
+
+  /**
+   * What screen readers call the map: the `aria-label` of the element the controls attach to (with
+   * `role="region"`). Default: "Map". Changing it while attached renames the map without detaching, so focus and
+   * gestures in progress are kept.
+   */
+  get label(): string {
+    return this.mapLabel
+  }
+
+  set label(value: string) {
+    this.mapLabel = value
+    this.domElement?.setAttribute('aria-label', value)
+  }
+
+  /** Sets the map's accessibility attributes, keeping the element's own values to put back on `detach`. */
+  protected describe(domElement: HTMLElement): void {
+    const attributes: Record<string, string> = { tabindex: '0', role: 'region', 'aria-label': this.mapLabel }
+    for (const [name, value] of Object.entries(attributes)) {
+      // An app's own `tabindex` (for example -1, to keep the map out of the tab order) wins
+      if (name === 'tabindex' && domElement.hasAttribute('tabindex')) continue
+      this.savedAttributes.set(name, domElement.getAttribute(name))
+      domElement.setAttribute(name, value)
+    }
   }
 
   set enableDamping(value: boolean) {
     this.globe.enableDamping = value
     this.flatMap.enableDamping = value
+  }
+
+  /** Double-click or double-tap zooms in on that point. Default: true. */
+  set doubleClickZoom(value: boolean) {
+    this.globe.enableDoubleTapZoom = value
+    this.flatMap.enableDoubleTapZoom = value
   }
 
   update(deltaSeconds?: number): void {
@@ -208,6 +269,7 @@ export class EarthViewControls {
     globe.enabled = onGlobe
     flatMap.enabled = onFlatMap
     this.touchGestures.tiltEnabled = onGlobe || flatMap.maximumTiltRadians > 0
+    this.keyboard.maximumTiltDegrees = MathUtils.radToDeg(onFlatMap ? flatMap.maximumTiltRadians : this.maximumGlobeTiltRadians)
     // Taken every frame, so finger travel during a view transition is dropped rather than applied after it.
     const frame = this.touchGestures.takeFrame()
     const gesture = onGlobe || onFlatMap ? frame : null
@@ -285,7 +347,7 @@ export class EarthViewControls {
   }
 
   dispose(): void {
-    this.touchGestures.detach()
+    this.detach()
     this.globe.dispose()
     this.flatMap.dispose()
   }

@@ -54,6 +54,20 @@ const expectations = {
     ['phone: every button is at least 44 pixels and inside the screen', r.phone.sizes.length >= 6 && r.phone.sizes.every(size => size >= 44) && r.phone.inside],
     ['phone: a tap on zoom in zooms', Math.abs(r.phone.zoomInDelta - 1) < 0.05],
   ],
+  'keyboard and accessibility': r => [
+    ['the map is a focusable region named "Map", around the canvas', r.region?.tabIndex === 0 && r.region?.holdsCanvas],
+    ['Tab reaches the map', r.focusedByTab],
+    ['the right arrow pans east', r.panEastDegrees > 0 && Math.abs(r.panLatitudeChange) < r.panEastDegrees / 4],
+    ['= zooms in one level', Math.abs(r.zoomInDelta - 1) < 0.05],
+    ['Shift + right turns 15°', Math.abs(r.turnDegrees - 15) < 0.5],
+    ['Shift + up tilts 10°', Math.abs(r.tiltDegrees - 10) < 0.5],
+    ['two presses of - zoom out two levels', Math.abs(r.twoZoomOutsDelta + 2) < 0.05],
+    ['the keys do not scroll the page', !r.pageScrolled],
+    ['a double click zooms in', r.doubleClickZoomDelta > 0.5],
+    ['axe-core finds no violation with the controls and markers', r.violations.length === 0],
+    ['nor with a popup open', r.popupViolations.length === 0],
+    ['with prefers-reduced-motion the view switches without a morph', r.reducedMotionInBetweenFrames === 0],
+  ],
   'attribution control': r => [
     ['wide window shows the terrain and OpenStreetMap credits', r.wide.text === 'Synthetic test terrain | © OpenStreetMap contributors'],
     ['the OpenStreetMap credit is a safe link', r.wide.links.length === 1 && r.wide.links[0].href === 'https://www.openstreetmap.org/copyright' && r.wide.links[0].target === '_blank' && r.wide.links[0].rel === 'noopener noreferrer'],
@@ -338,6 +352,14 @@ for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectation
 expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
 // Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
 expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
+// Place names in other scripts: each shows, reported as the style gives it, and draws text.
+const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)']
+for (const name of ['top-down', 'webgl2']) {
+  expectations[`script labels, ${name}`] = r => [
+    ['every script label shows, with its text in reading order', SCRIPT_NAMES.every(text => r.labels.some(l => l.text === text))],
+    ['every script label draws text pixels', r.labels.length > 0 && r.labels.every(l => l.textPixels > 30)],
+  ]
+}
 for (const name of ['road names, pitched', 'road names, top-down']) {
   expectations[`screen-space labels, ${name}`] = r => [
     ['road names show along their roads, none upside down', r.roadNames >= 2 && r.roadNamesUpsideDown === 0],
