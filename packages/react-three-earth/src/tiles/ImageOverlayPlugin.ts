@@ -7,6 +7,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 import type { DrapedLayerRegistry, RegisteredDrapedLayer } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { DrapedLayerOverlay } from './imagery/DrapedLayerOverlay.js'
+import { GeoreferencedImageOverlay } from './imagery/GeoreferencedImageOverlay.js'
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
 import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
@@ -202,8 +203,11 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   override addOverlay(overlay: Parameters<ImageOverlayPluginBase['addOverlay']>[0], order?: number): void {
     if (this.overlays.includes(overlay)) return
     if (this.freeLayerSlots < 1) throw terrainFullError(overlay instanceof DrapedLayerOverlay ? `draped layer "${overlay.layer.id}"` : 'imagery source')
-    // Imagery counts up below the draped layers, whenever it is added.
-    if (order === undefined && !(overlay instanceof DrapedLayerOverlay)) {
+    // Imagery counts up below the draped layers, whenever it is added. A georeferenced picture is imagery drawn
+    // the way a draped layer is.
+    const isImagery = !(overlay instanceof DrapedLayerOverlay) || overlay instanceof GeoreferencedImageOverlay
+    if (overlay instanceof GeoreferencedImageOverlay) overlay.onTargetsResized = this.recountBytes
+    if (order === undefined && isImagery) {
       order = 0
       for (const other of this.overlays) {
         const otherOrder = this.overlayInfo.get(other)?.order ?? 0

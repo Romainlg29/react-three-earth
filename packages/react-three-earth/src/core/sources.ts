@@ -1,8 +1,10 @@
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
 import type { Feature, GeoJSON, Point } from 'geojson'
+import { SRGBColorSpace, Texture, TextureLoader, VideoTexture } from 'three'
 
 import { AttributionTracker, type AttributionProvider } from './attribution.js'
 import { XYZImageryOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
+import { GeoreferencedImageOverlay, validateCorners, type GeoreferencedCorners } from '../tiles/imagery/GeoreferencedImageOverlay.js'
 import type { GeographicBounds } from './camera.js'
 import { MapStyle, type MapStyleEventMap, type ProtocolLoader, type TransformRequest } from '../vector/MapStyle.js'
 import { MapStyleOverlay, type SourceFeatureQueryOptions } from '../vector/MapStyleOverlay.js'
@@ -240,6 +242,262 @@ export class RasterTileSource extends AttributionTracker implements ImagerySourc
       opacity,
       ...(this.tileJsonUrl !== undefined ? { tileJsonUrl: this.tileJsonUrl, onTileJson: info => this.setLoadedAttributions(info.attribution) } : {}),
     })
+  }
+}
+
+export type { GeoreferencedCorners }
+
+export interface ImageSourceOptions {
+  /**
+   * The picture's URL (PNG, JPEG, WebP, SVG…). Served with CORS headers when it is on another origin.
+   * @example 'https://example.com/survey.png'
+   */
+  url: string
+  /**
+   * The four corners as `[longitudeDegrees, latitudeDegrees]`, clockwise from the top-left: top-left, top-right,
+   * bottom-right, bottom-left, as MapLibre's `coordinates`. Need not be a rectangle in longitude and latitude.
+   */
+  coordinates: GeoreferencedCorners
+  /** Credit for the picture, same format as `RasterTileSource`'s. */
+  attribution?: string | readonly string[]
+}
+
+/**
+ * A picture stretched over four geographic corners, draped on the terrain: MapLibre's `image` source. It is
+ * drawn into the terrain regions it covers with a projective quad, so it lines up with the map at every zoom, and
+ * redrawn in place when `setUrl` or `setCoordinates` change it. Goes inside `<Imagery>`.
+ */
+export class ImageSource extends AttributionTracker implements ImagerySource {
+  readonly kind = 'imagery'
+  protected _url: string
+  protected _coordinates: GeoreferencedCorners
+  protected readonly overlays = new Set<GeoreferencedImageOverlay>()
+  /** Pictures that failed to load, reported once per URL. */
+  protected readonly failedUrls = new Set<string>()
+
+  constructor({ url, coordinates, attribution }: ImageSourceOptions) {
+    super(attribution)
+    if (typeof url !== 'string' || url.length === 0) throw new Error('ImageSource: pass the picture\'s `url`.')
+    validateCorners(coordinates, 'ImageSource')
+    this._url = url
+    this._coordinates = coordinates
+  }
+
+  get url(): string {
+    return this._url
+  }
+
+  get coordinates(): GeoreferencedCorners {
+    return this._coordinates
+  }
+
+  createOverlay({ opacity }: { opacity: number }): GeoreferencedImageOverlay {
+    const overlay = new GeoreferencedImageOverlay({ coordinates: this._coordinates, opacity, label: 'ImageSource' })
+    this.overlays.add(overlay)
+    overlay.disposers.push(() => this.overlays.delete(overlay))
+    this.load(overlay, this._url)
+    return overlay
+  }
+
+  /** Shows another picture in the same corners, once it has loaded (the old one stays until then). */
+  setUrl(url: string): void {
+    if (url === this._url) return
+    this._url = url
+    for (const overlay of this.overlays) this.load(overlay, url)
+  }
+
+  /** Moves the picture, redrawing only the terrain it left and now covers. */
+  setCoordinates(coordinates: GeoreferencedCorners): void {
+    validateCorners(coordinates, 'ImageSource.setCoordinates')
+    this._coordinates = coordinates
+    for (const overlay of this.overlays) overlay.setCoordinates(coordinates)
+  }
+
+  protected load(overlay: GeoreferencedImageOverlay, url: string): void {
+    const loader = new TextureLoader()
+    loader.setCrossOrigin('anonymous')
+    loader.load(
+      url,
+      texture => {
+        // Superseded by a newer URL, or the overlay is gone.
+        if (url !== this._url || !this.overlays.has(overlay)) {
+          texture.dispose()
+          return
+        }
+        texture.colorSpace = SRGBColorSpace
+        const previous = (overlay as { loadedTexture?: Texture }).loadedTexture
+        overlay.setTexture(texture)
+        previous?.dispose()
+        ;(overlay as { loadedTexture?: Texture }).loadedTexture = texture
+        if (previous === undefined) overlay.disposers.push(() => (overlay as { loadedTexture?: Texture }).loadedTexture?.dispose())
+      },
+      undefined,
+      () => {
+        if (this.failedUrls.has(url)) return
+        this.failedUrls.add(url)
+        console.error(`ImageSource: the picture at ${url} did not load. Check the URL, and that a picture on another origin is served with CORS headers (Access-Control-Allow-Origin).`)
+      },
+    )
+  }
+}
+
+export interface VideoSourceOptions {
+  /**
+   * Video URLs in preference order; the browser plays the first format it supports (for example an MP4 then a WebM).
+   * Served with CORS headers when on another origin.
+   * @example ['https://example.com/loop.mp4', 'https://example.com/loop.webm']
+   */
+  urls: readonly string[]
+  /** The four corners, as `ImageSource`'s `coordinates`. */
+  coordinates: GeoreferencedCorners
+  /** Starts playing as soon as it can (muted, since browsers block unmuted autoplay). Default: true. */
+  autoplay?: boolean
+  /** Plays again from the start at the end. Default: true. */
+  loop?: boolean
+  /** Credit for the video, same format as `RasterTileSource`'s. */
+  attribution?: string | readonly string[]
+}
+
+/**
+ * A video stretched over four geographic corners, draped on the terrain: MapLibre's `video` source. Only the
+ * terrain regions the video covers are redrawn, once per decoded video frame and inside the imagery composition
+ * budget; nothing is redrawn while it is paused. Goes inside `<Imagery>`.
+ *
+ * Path taken: the brief suggested sampling the video live in the terrain shader, which would need a second material
+ * hook and a texture slot of its own. Redrawing the covered regions per frame through the draped-layer machinery
+ * costs one quad per region and shares the compositor's per-frame budget, so a video over a few regions is cheap;
+ * a video covering the whole screen at 30 fps redraws every visible region 30 times a second.
+ */
+export class VideoSource extends AttributionTracker implements ImagerySource {
+  readonly kind = 'imagery'
+  readonly urls: readonly string[]
+  readonly autoplay: boolean
+  readonly loop: boolean
+  protected _coordinates: GeoreferencedCorners
+  protected element: HTMLVideoElement | null = null
+  protected readonly overlays = new Set<GeoreferencedImageOverlay>()
+  protected frameCallback: number | null = null
+
+  constructor({ urls, coordinates, autoplay = true, loop = true, attribution }: VideoSourceOptions) {
+    super(attribution)
+    if (!Array.isArray(urls) || urls.length === 0) throw new Error('VideoSource: pass `urls`, a list of video URLs (for example an MP4 and a WebM).')
+    validateCorners(coordinates, 'VideoSource')
+    this.urls = urls
+    this.autoplay = autoplay
+    this.loop = loop
+    this._coordinates = coordinates
+  }
+
+  get coordinates(): GeoreferencedCorners {
+    return this._coordinates
+  }
+
+  /** The `<video>` element, created with the first `Imagery` layer that uses the source; null before. Use it for `currentTime`, `playbackRate`, events. */
+  get video(): HTMLVideoElement | null {
+    return this.element
+  }
+
+  play(): Promise<void> {
+    return this.element?.play() ?? Promise.resolve()
+  }
+
+  pause(): void {
+    this.element?.pause()
+  }
+
+  setCoordinates(coordinates: GeoreferencedCorners): void {
+    validateCorners(coordinates, 'VideoSource.setCoordinates')
+    this._coordinates = coordinates
+    for (const overlay of this.overlays) overlay.setCoordinates(coordinates)
+  }
+
+  createOverlay({ opacity }: { opacity: number }): GeoreferencedImageOverlay {
+    const video = this.ensureElement()
+    const overlay = new GeoreferencedImageOverlay({ coordinates: this._coordinates, opacity, label: 'VideoSource' })
+    const texture = new VideoTexture(video)
+    texture.colorSpace = SRGBColorSpace
+    overlay.setTexture(texture)
+    this.overlays.add(overlay)
+    this.startFrameLoop()
+    overlay.disposers.push(() => {
+      this.overlays.delete(overlay)
+      texture.dispose()
+      if (this.overlays.size === 0) {
+        this.stopFrameLoop()
+        this.releaseElement()
+      }
+    })
+    return overlay
+  }
+
+  protected ensureElement(): HTMLVideoElement {
+    if (this.element !== null) return this.element
+    const video = document.createElement('video')
+    video.crossOrigin = 'anonymous'
+    video.muted = true
+    video.loop = this.loop
+    video.playsInline = true
+    video.preload = 'auto'
+    for (const url of this.urls) {
+      const source = document.createElement('source')
+      source.src = url
+      video.appendChild(source)
+    }
+    // With `<source>` children the browser reports a failure on the last one, not on the video.
+    video.lastElementChild?.addEventListener('error', () => console.error(`VideoSource: none of ${this.urls.join(', ')} could be played. Check the URLs, the formats the browser supports, and CORS headers on another origin.`), { once: true })
+    this.element = video
+    if (this.autoplay) {
+      video.play().catch((error: unknown) => {
+        if ((error as Error).name === 'NotAllowedError') console.warn('VideoSource: the browser blocked autoplay; call `source.play()` from a user gesture.')
+      })
+    }
+    return video
+  }
+
+  /** Stops decoding and downloading once no layer shows the video; a later layer makes a new element. */
+  protected releaseElement(): void {
+    const video = this.element
+    if (video === null) return
+    video.pause()
+    video.replaceChildren()
+    video.removeAttribute('src')
+    video.load()
+    this.element = null
+  }
+
+  /** One redraw per decoded frame (`requestVideoFrameCallback`; `requestAnimationFrame` where it is missing). */
+  protected startFrameLoop(): void {
+    const video = this.element
+    if (video === null || this.frameCallback !== null) return
+    let lastTime = -1
+    const onFrame = (): void => {
+      this.frameCallback = null
+      if (this.overlays.size === 0) return
+      // `VideoTexture` registered first, so it has flagged its upload before this redraw is queued. A frame that
+      // arrives while the last one is still being drawn is skipped: replacing a draw in flight would starve the
+      // regions on a slow device, so the video's rate follows what the compositor can draw.
+      let drawing = false
+      for (const overlay of this.overlays) drawing ||= overlay.recompositionsPending > 0
+      const changed = video.currentTime !== lastTime
+      if (!drawing && changed) {
+        lastTime = video.currentTime
+        for (const overlay of this.overlays) overlay.invalidate(overlay.layer.readBounds() ?? undefined)
+      }
+      // A skipped frame is retried each animation frame: a paused video fires no more video frame callbacks.
+      schedule(drawing && changed)
+    }
+    const schedule = (retry = false): void => {
+      this.frameCallback = !retry && 'requestVideoFrameCallback' in video ? video.requestVideoFrameCallback(onFrame) : requestAnimationFrame(onFrame)
+    }
+    schedule()
+  }
+
+  protected stopFrameLoop(): void {
+    if (this.frameCallback === null || this.element === null) return
+    // The handle may be either kind (a retry uses an animation frame): cancelling both is harmless.
+    if ('cancelVideoFrameCallback' in this.element) this.element.cancelVideoFrameCallback(this.frameCallback)
+    cancelAnimationFrame(this.frameCallback)
+    this.frameCallback = null
   }
 }
 

@@ -1599,6 +1599,79 @@ async function terrainExaggeration(name, query) {
   results.push({ check: `terrain exaggeration, ${name}`, exaggerated, plain, changedShare, sameTerrain, errors })
 }
 
+/**
+ * Georeferenced image and video sources (`?georef=image|video`: a four-colour picture over a skewed quad). The image
+ * lines up with its corners (colours inside each corner, its white margin just inside every edge); the video changes
+ * colour over time. Points are placed with the same projective map the source uses, in Web Mercator.
+ */
+async function georeferenced(kind, query, label = kind) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&georef=${kind}&camera=-90,0,0,8000,0,-90${query}`)
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 4 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(3000)
+  // Where picture coordinates (u right, v up) land on the screen.
+  const locate = () => page.evaluate(() => {
+    const mercator = ([longitude, latitude]) => [(longitude + 180) / 360, 0.5 + Math.log(Math.tan(Math.PI / 4 + (latitude * Math.PI) / 360)) / (2 * Math.PI)]
+    const [tl, tr, br, bl] = window.georefCorners.map(mercator)
+    // Heckbert's unit square to quad: bottom-left, bottom-right, top-right, top-left.
+    const [p0, p1, p2, p3] = [bl, br, tr, tl]
+    const dx1 = p1[0] - p2[0], dx2 = p3[0] - p2[0], dx3 = p0[0] - p1[0] + p2[0] - p3[0]
+    const dy1 = p1[1] - p2[1], dy2 = p3[1] - p2[1], dy3 = p0[1] - p1[1] + p2[1] - p3[1]
+    const den = dx1 * dy2 - dy1 * dx2
+    const g = (dx3 * dy2 - dy3 * dx2) / den, h = (dx1 * dy3 - dy1 * dx3) / den
+    const a = p1[0] - p0[0] + g * p1[0], b = p3[0] - p0[0] + h * p3[0], d = p1[1] - p0[1] + g * p1[1], e = p3[1] - p0[1] + h * p3[1]
+    const at = (u, v) => {
+      const w = g * u + h * v + 1
+      const x = (a * u + b * v + p0[0]) / w, y = (d * u + e * v + p0[1]) / w
+      const longitude = x * 360 - 180, latitude = (Math.atan(Math.sinh((y - 0.5) * 2 * Math.PI)) * 180) / Math.PI
+      const position = { longitudeDegrees: longitude, latitudeDegrees: latitude }
+      const projected = window.earth.project({ ...position, heightMeters: window.earth.queryTerrainElevation(position) ?? 0 })
+      return [projected.xPixels, projected.yPixels]
+    }
+    return { at: { red: at(0.25, 0.75), green: at(0.75, 0.75), blue: at(0.75, 0.25), yellow: at(0.25, 0.25), marginInside: at(0.25, 0.94), marginOutside: at(0.25, 0.985), centre: at(0.5, 0.5), outsideAbove: at(0.25, 1.05) } }
+  })
+  const sample = async (points) => {
+    const png = await page.screenshot()
+    return analyse(page, png, `
+      const points = ${JSON.stringify(points)}
+      const out = {}
+      for (const [name, [x, y]] of Object.entries(points)) {
+        let r = 0, g = 0, b = 0, n = 0
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const i = ((Math.round(y) + dy) * width + Math.round(x) + dx) * 4
+          r += px[i]; g += px[i + 1]; b += px[i + 2]; n++
+        }
+        out[name] = [r / n, g / n, b / n]
+      }
+      return out
+    `)
+  }
+  const { at } = await locate()
+  const result = { check: `georeferenced ${label}`, errors }
+  const first = await sample(at)
+  result.first = first
+  if (kind === 'image') {
+    const dominant = ([r, g, b]) => r > 1.7 * Math.max(g, b) ? 'red' : g > 1.5 * Math.max(r, b) ? 'green' : b > 1.7 * Math.max(r, g) ? 'blue' : r > 1.7 * b && g > 1.7 * b ? 'yellow' : r > 120 && g > 120 && b > 120 ? 'white' : 'other'
+    result.colours = Object.fromEntries(Object.entries(first).map(([name, rgb]) => [name, dominant(rgb)]))
+    writeFileSync(new URL('georef-image.png', OUT), await page.screenshot())
+  } else {
+    // Redraws follow the compositor's speed (slow on SwiftShader): sample until the colour has moved.
+    const hues = [first.centre]
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(500)
+      hues.push((await sample({ centre: at.centre })).centre)
+      if (Math.max(...hues.map(rgb => Math.max(...rgb.map((value, channel) => Math.abs(value - hues[0][channel]))))) > 40) break
+    }
+    result.hues = hues
+    result.maximumHueChange = Math.max(...hues.map(rgb => Math.max(...rgb.map((value, channel) => Math.abs(value - hues[0][channel])))))
+    writeFileSync(new URL('georef-video.png', OUT), await page.screenshot())
+  }
+  await page.close()
+  results.push(result)
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1663,6 +1736,11 @@ try {
     await reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)
     await reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)
     await reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)
+  }
+  if (!only || only === 'georef') {
+    await georeferenced('image', '')
+    await georeferenced('image', '&webgl', 'image webgl2')
+    await georeferenced('video', '')
   }
   if (!only || only === 'effects') {
     await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
