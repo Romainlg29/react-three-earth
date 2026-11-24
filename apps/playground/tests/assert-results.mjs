@@ -341,7 +341,7 @@ expectations['screen-space labels, draped'] = r => [
 // 3D buildings on the fixture peak plateau (3900 m): 26 blocks, a courtyard across four tiles, a glass tower.
 const standing = r => [
   ['building tiles drawn, deeper than the source maximum zoom (overzoomed)', r.inspection?.tilesDrawn > 0 && Math.max(...r.tileZooms) >= 15],
-  ['every building stands on the terrain as read (3900 m plateau, within 10 m)', r.lowestElevation !== null && r.lowestElevation > r.groundAtCenter - 10 && r.highestElevation < r.groundAtCenter + 1],
+  ['every building stands on the terrain as read (3900 m plateau, within 1 m)', r.lowestElevation !== null && r.lowestElevation > r.groundAtCenter - 1 && r.highestElevation < r.groundAtCenter + 1],
   ['the terrain under every building shown is read', r.inspection?.elevationsPending === 0],
 ]
 const pitchedBuildings = r => [

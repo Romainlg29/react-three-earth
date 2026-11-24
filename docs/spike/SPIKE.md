@@ -724,9 +724,11 @@ and `{-y}`.
   origin) plus Web Mercator positions for the flat map. `fill-extrusion` layers leave the draped pass.
 - **Terrain.** Each tile reads `terrain.sampleElevation` on a grid (4 to 32 cells, about 40 m) under a per-frame
   budget (1024 reads, 1 ms); a building takes the lowest of its footprint's corner and centre samples, so on a slope
-  it sinks in uphill instead of floating downhill. A tile shows after its first complete pass, re-reads every 5 s to
-  follow finer terrain, and retries unknown points every 500 ms. Heights are read as drawn, so buildings follow the terrain's `exaggeration`
-  (within one refresh after it changes). The elevation is a vertex attribute, uploaded only
+  it sinks in uphill instead of floating downhill. A tile shows after its first complete pass. When the terrain's drawn tiles change
+  (`Terrain.visibleTilesVersion`: finer tiles, or a new `exaggeration`) it reads the ground again, at most once a
+  second, and the terrain counts as loading until it has (so `idle` means buildings stand on the terrain as drawn);
+  points with no terrain under them (off the screen) are retried every 500 ms after full passes. Heights are read as
+  drawn, so buildings follow the terrain's `exaggeration`. The elevation is a vertex attribute, uploaded only
   when it moves by more than 5 cm.
 - **Shading.** `MeshStandardNodeMaterial` lit by the scene's lights (the atmosphere's sun), so aerial perspective
   hazes buildings like the ground. Translucent layers draw a depth prepass then colour with `LessEqual` and no depth
@@ -735,6 +737,9 @@ and `{-y}`.
   MapLibre's default light, unlit.
 - **Zoom.** Heights and opacity interpolate in the shader between the tile's zoom and the next by the camera's
   zoom, so a style growing buildings from 0 at z14 to full height at z15 grows them smoothly.
+- **Terrain reads on tile edges.** W8's nearest-triangle fallback in `sampleTerrainHeight` could answer from a skirt
+  wall, whose float32 bottom edge sits a hair off the tile's edge, so reads on terrain tile edges came out metres low.
+  Walls are now told apart by shape (area against their longest edge) rather than by an absolute area.
 - **Camera zoom over high ground.** `Earth` now measures the camera's zoom and the tile pyramid from the ground
   under the screen centre, not the ellipsoid: on the fixture's 3900 m plateau a top-down view asked for no tiles
   before. Labels use the same correction.

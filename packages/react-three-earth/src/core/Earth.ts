@@ -451,7 +451,7 @@ export class Earth extends Group<EarthEventMap> {
     // Buildings read the terrain under them with a budget of their own.
     const extrusionsNeedFrame =
       terrain.hasExtrusions &&
-      terrain.updateExtrusions({ ...frame, elevationBudget: { remaining: EXTRUSION_ELEVATION_READS_PER_FRAME, milliseconds: EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME } })
+      terrain.updateExtrusions({ ...frame, terrainVersion: terrain.visibleTilesVersion, elevationBudget: { remaining: EXTRUSION_ELEVATION_READS_PER_FRAME, milliseconds: EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME } })
     return symbolsNeedFrame || extrusionsNeedFrame
   }
 

@@ -28,6 +28,11 @@ interface TriangleGrid {
 }
 
 const GRID_SIZE = 16
+/**
+ * Twice a triangle's area over its longest edge squared, under which it is a wall seen edge-on (a skirt): 0.5 for a right
+ * isosceles triangle, about 1e-6 for a float32 skirt.
+ */
+const MAXIMUM_WALL_SHAPE = 1e-3
 /** How far outside a triangle (in barycentric weight) a point may lie and still read it, when no triangle holds it. */
 const NEAREST_TRIANGLE_TOLERANCE = 1e-4
 const grids = new WeakMap<BufferGeometry, TriangleGrid | null>()
@@ -200,7 +205,11 @@ function buildGrid(geometry: BufferGeometry, matrixWorld: Matrix4, west: number,
     const y0 = latitudes[i0]!
     const y1 = latitudes[i1]!
     const y2 = latitudes[i2]!
-    if (Math.abs((y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)) <= minimumDeterminant) continue // a skirt wall
+    // A skirt wall: flat seen from above, though float32 positions leave its bottom a hair off the edge. Judged against
+    // the triangle's own size, since a wall's sliver can outweigh a small absolute threshold.
+    const determinant = Math.abs((y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2))
+    const longestEdgeSquared = Math.max((x1 - x0) ** 2 + (y1 - y0) ** 2, (x2 - x1) ** 2 + (y2 - y1) ** 2, (x0 - x2) ** 2 + (y0 - y2) ** 2)
+    if (determinant <= minimumDeterminant || determinant <= MAXIMUM_WALL_SHAPE * longestEdgeSquared) continue
     // On a mesh a whole turn wide (zoom 0 raster-dem terrain, polar caps), a vertex on the antimeridian can come back on
     // either side: a triangle spanning over half a turn is one of those, and would answer for points across the globe.
     if (Math.max(x0, x1, x2) - Math.min(x0, x1, x2) > Math.PI) continue

@@ -108,7 +108,7 @@ Building tiles come from the camera, as labels facing the viewer do: deeper near
 `maxzoom` by overzooming, never two tiles over the same ground. Each building stands on the lowest ground under
 its footprint as the terrain is drawn (read on a grid over its tile), so on a slope its uphill side sinks in
 rather than its downhill side floating. A building shows once the terrain under it has been read, and follows
-finer terrain as it loads, every few seconds. Without terrain tiles there (out of the screen), it takes the
+finer terrain as it shows (or a new `exaggeration`), within about a second. Without terrain tiles there (out of the screen), it takes the
 nearest ground read.
 
 ### Check them in a test
@@ -122,7 +122,8 @@ export function buildingsReady(earth: Earth): boolean {
 }
 ```
 
-`buildings` counts the buildings in drawn tiles (one cut by a tile edge counts in each tile);
+`elevationsPending` also counts the re-reads after the terrain changes, and the terrain reports loading until
+they finish, so `earth.inspect().idle` means the buildings stand on the terrain as drawn. `buildings` counts the buildings in drawn tiles (one cut by a tile edge counts in each tile);
 `updateMilliseconds` is the main-thread time of the last frame's update.
 
 ## Common Mistakes

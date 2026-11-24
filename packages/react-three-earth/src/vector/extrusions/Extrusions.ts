@@ -10,7 +10,10 @@ import { TILE_EXTENT, type ExtrusionMesh, type MapStyleSummary, type TileBucket,
 import { createExtrusionAttributes, createExtrusionGeometry, createExtrusionMaterials, createExtrusionMesh, type ExtrusionAttributes, type ExtrusionMaterials, type ExtrusionMeshUserData } from './extrusionMaterial.js'
 
 /** What 3D extrusions need from the earth in a frame: the same as labels facing the viewer. */
-export type ExtrusionFrame = SymbolFrame
+export interface ExtrusionFrame extends SymbolFrame {
+  /** Changes whenever the terrain's drawn tiles change (`Terrain.visibleTilesVersion`): the ground is read again then. */
+  terrainVersion: number
+}
 
 /** What `Extrusions` needs from its map style overlay. */
 export interface ExtrusionsHost {
@@ -29,7 +32,7 @@ export interface ExtrusionsInspection {
   tilesDrawn: number
   /** Buildings in drawn tiles. */
   buildings: number
-  /** Terrain height reads that buildings not yet shown wait for (later refreshes are not counted). */
+  /** Terrain height reads still to do: for buildings not yet shown, and for buildings re-reading the ground since the terrain changed (finer tiles, exaggeration). */
   elevationsPending: number
   /** Main-thread time of the last frame's update (choosing tiles, reading terrain, heights), in milliseconds. */
   updateMilliseconds: number
@@ -62,6 +65,9 @@ interface ExtrusionTile {
   gridReadAt: number
   /** When the last full pass (not a retry of unknown points) finished: finer terrain is read again from it. */
   gridRefreshedAt: number
+  /** The terrain's version when the last full pass started, and when the one under way started. */
+  gridTerrainVersion: number
+  gridPassTerrainVersion: number
   /** The pass under way reads only the points still unknown (a retry), not the whole grid (a refresh). */
   gridRetry: boolean
   /** Grid points still unknown after the last pass. */
@@ -73,8 +79,8 @@ interface ExtrusionTile {
 
 /** Between two choices of tiles while the camera moves. */
 const PYRAMID_INTERVAL_MILLISECONDS = 100
-/** The terrain under buildings is read again this often, as finer terrain loads. */
-const ELEVATION_REFRESH_MILLISECONDS = 5000
+/** The terrain under buildings is read again at most this often, once its drawn tiles have changed (finer terrain). */
+const ELEVATION_REFRESH_MILLISECONDS = 1000
 /** A grid with points where no terrain was loaded is read again this soon. */
 const ELEVATION_RETRY_MILLISECONDS = 500
 /** As labels: coarse terrain tiles sag below the ellipsoid between their vertices. */
@@ -112,6 +118,8 @@ export class Extrusions implements FlatMorphHost {
   protected requestedKeys = new Set<string>()
   protected lastPyramidMilliseconds = -Infinity
   protected pyramidDue = true
+  /** Some standing buildings wait to read the ground again since the terrain changed: frames are asked for until they do. */
+  protected refreshPending = false
   protected tilesChanged = true
   protected statistics: ExtrusionsInspection = { tilesRequested: 0, tilesDrawn: 0, buildings: 0, elevationsPending: 0, updateMilliseconds: 0 }
   protected disposed = false
@@ -137,8 +145,10 @@ export class Extrusions implements FlatMorphHost {
     return { ...this.statistics }
   }
 
-  /** True while building tiles the camera asks for are still being processed or wait for the terrain under them. */
+  /** True while building tiles the camera asks for are still being processed, or wait for the terrain under them (first read or a re-read after the terrain changed). */
   get loading(): boolean {
+    // Buildings reading the ground again since the terrain changed are still settling.
+    if (this.refreshPending) return true
     for (const key of this.requestedKeys) {
       const tile = this.tiles.get(key)
       if (tile === undefined || !tile.loaded || (tile.extrusions !== null && !tile.ready)) return true
@@ -173,8 +183,8 @@ export class Extrusions implements FlatMorphHost {
     this.chooseDrawnTiles()
     this.setDrawState(frame.zoom)
     this.statistics.updateMilliseconds = performance.now() - start
-    // Refreshing the ground under buildings already standing rides on frames drawn anyway; only buildings waiting
-    // for their first ground (in `loading`) ask for frames.
+    // Buildings waiting for their first ground, or to read it again since the terrain changed (both `loading`), ask for
+    // frames; retries of points with no terrain under them ride on frames drawn anyway.
     return this.pyramidDue || this.loading
   }
 
@@ -275,6 +285,8 @@ export class Extrusions implements FlatMorphHost {
       gridCursor: 0,
       gridReadAt: -Infinity,
       gridRefreshedAt: -Infinity,
+      gridTerrainVersion: -1,
+      gridPassTerrainVersion: -1,
       gridRetry: false,
       gridUnknown: 0,
       ready: false,
@@ -342,29 +354,42 @@ export class Extrusions implements FlatMorphHost {
   }
 
   /**
-   * Reads the terrain under the tiles waiting for it, within the frame's budget: tiles never read first, then
-   * requested tiles, the deepest (nearest) first.
+   * Reads the terrain under the tiles waiting for it, within the frame's budget: tiles never read first, then full
+   * passes, then retries; requested tiles before others, passes under way before new ones.
    */
   protected readElevations(frame: ExtrusionFrame): void {
     const sample = frame.sampleTerrainElevation
     const budget = frame.elevationBudget
     const start = performance.now()
     let pending = 0
+    this.refreshPending = false
     const due: ExtrusionTile[] = []
     for (const tile of this.tiles.values()) {
       // Tiles kept only until their replacement is ready are not read again.
       if (tile.extrusions === null || (tile.ready && !this.requestedKeys.has(tile.key))) continue
       if (tile.gridCursor > 0 || !Number.isFinite(tile.gridReadAt)) {
+        if (tile.ready) this.refreshPending = true
         due.push(tile)
         continue
       }
-      // Retries of unknown points (every 500 ms) never put off the full refresh (every 5 s).
-      if (frame.timeMilliseconds - tile.gridRefreshedAt >= ELEVATION_REFRESH_MILLISECONDS) tile.gridRetry = false
+      // Retries of unknown points (every 500 ms) never put off the full refresh, once the terrain has changed.
+      const terrainChanged = tile.gridTerrainVersion !== frame.terrainVersion
+      if (terrainChanged) this.refreshPending = true
+      if (terrainChanged && frame.timeMilliseconds - tile.gridRefreshedAt >= ELEVATION_REFRESH_MILLISECONDS) tile.gridRetry = false
       else if (frame.timeMilliseconds - tile.gridReadAt >= ELEVATION_RETRY_MILLISECONDS && tile.gridUnknown > 0) tile.gridRetry = true
       else continue
       due.push(tile)
     }
-    due.sort((a, b) => Number(a.ready) - Number(b.ready) || Number(this.requestedKeys.has(b.key)) - Number(this.requestedKeys.has(a.key)) || b.request.z - a.request.z)
+    // Buildings not shown yet first, then full passes over the ground (it changed) before retries of points with no
+    // terrain under them (off the screen, often: they must not starve the rest).
+    due.sort(
+      (a, b) =>
+        Number(a.ready) - Number(b.ready) ||
+        Number(a.gridRetry) - Number(b.gridRetry) ||
+        Number(this.requestedKeys.has(b.key)) - Number(this.requestedKeys.has(a.key)) ||
+        b.gridCursor - a.gridCursor ||
+        b.request.z - a.request.z,
+    )
     for (const tile of due) {
       const side = tile.gridCells + 1
       const total = side * side
@@ -372,6 +397,7 @@ export class Extrusions implements FlatMorphHost {
         tile.grid.fill(0)
         tile.gridCursor = total
       }
+      if (tile.gridCursor === 0 && !tile.gridRetry) tile.gridPassTerrainVersion = frame.terrainVersion
       while (tile.gridCursor < total) {
         if (budget.remaining <= 0 || performance.now() - start > budget.milliseconds) break
         const index = tile.gridCursor++
@@ -386,12 +412,15 @@ export class Extrusions implements FlatMorphHost {
         tile.grid[index] = height === null ? Number.NaN : Math.max(MINIMUM_ELEVATION_METERS, height)
       }
       if (tile.gridCursor < total) {
-        if (!tile.ready) pending += total - tile.gridCursor
+        if (!tile.ready || !tile.gridRetry) pending += total - tile.gridCursor
         continue
       }
       tile.gridCursor = 0
       tile.gridReadAt = frame.timeMilliseconds
-      if (!tile.gridRetry) tile.gridRefreshedAt = frame.timeMilliseconds
+      if (!tile.gridRetry) {
+        tile.gridRefreshedAt = frame.timeMilliseconds
+        tile.gridTerrainVersion = tile.gridPassTerrainVersion
+      }
       tile.gridUnknown = 0
       for (const height of tile.grid) if (Number.isNaN(height)) tile.gridUnknown++
       // Points still unknown (no terrain tile drawn there yet, or off the screen) take their nearest known neighbour,

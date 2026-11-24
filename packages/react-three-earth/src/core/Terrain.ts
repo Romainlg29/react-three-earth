@@ -69,6 +69,7 @@ export class Terrain implements AttributionProvider {
   protected readonly source: TerrainSource
   /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
   protected updateRequested = false
+  protected visibleTilesVersionValue = 0
 
   constructor({
     sources,
@@ -93,6 +94,9 @@ export class Terrain implements AttributionProvider {
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
 
+    ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('tile-visibility-change', () => {
+      this.visibleTilesVersionValue++
+    })
     // A failed load needs an update too, to see that nothing is loading any more.
     for (const type of ['needs-update', 'load-error']) {
       ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener(type, () => {
@@ -118,6 +122,7 @@ export class Terrain implements AttributionProvider {
     if (value === this.flatMap.exaggeration) return
     this.flatMap.exaggeration = value
     this.tiles.exaggeration = value
+    this.visibleTilesVersionValue++
     this.updateRequested = true
     ;(this.tiles as unknown as { dispatchEvent(event: { type: string }): void }).dispatchEvent({ type: 'needs-update' })
   }
@@ -181,6 +186,11 @@ export class Terrain implements AttributionProvider {
       const extrusions = extrusionsOf(overlay)
       if (extrusions !== null) this.extrusions.remove(extrusions.object)
     }
+  }
+
+  /** Goes up whenever a terrain tile is shown or hidden or the exaggeration changes: heights read before may have changed. */
+  get visibleTilesVersion(): number {
+    return this.visibleTilesVersionValue
   }
 
   /**
