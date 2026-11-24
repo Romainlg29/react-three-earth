@@ -1,55 +1,79 @@
 import type { Position } from 'geojson'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature, type VertexPath } from '../editing.js'
-import { hasAltitude, lowestAltitude, storedLines } from '../geometry.js'
+import { distanceToSegment, hasAltitude, lowestAltitude, storedLines } from '../geometry.js'
+import { LocalFrame, type LocalPoint } from '../localFrame.js'
 import { indexMesh, isMeshGeometry, meshSharpEdges } from '../mesh.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import { isSolidFeature } from '../render/SolidFeatures.js'
-import { destination } from '../shapes.js'
-import {
-  baseAltitudeOf,
-  extrudeFeature,
-  liftFeature,
-  meshTopOf,
-  moveMeshTop,
-  rotateFeature,
-  scaleFeature,
-  stretchFeature,
-  transformFrame,
-  type TransformFrame,
-  type TransformSideHandle,
-} from '../transform.js'
-import type { DrawFeature, DrawPointerEvent, DrawStyle, DrawStyleState, LongitudeLatitude } from '../types.js'
+import { altitudeRangeOf, featureAxes, featureCenter, offsetFeature, rotateFeatureAroundAxis, scaleFeature, scaleFeatureAlongAxis, WORLD_AXES } from '../transform.js'
+import type { DrawFeature, DrawPointerEvent, DrawStyleState, GroundHeight, LongitudeLatitude } from '../types.js'
 import { DrawMode, hitTolerancePixels, IDLE_STATUS, NO_FEATURE_IDS, type DrawModeContext, type DrawModeStatus } from './DrawMode.js'
+
+/** Which handles the gizmo shows: all of them, or one tool's. */
+export type GizmoTool = 'all' | 'move' | 'rotate' | 'scale'
+/** The gizmo's axes: east, north and up, or the feature's own (`featureAxes`). */
+export type GizmoSpace = 'world' | 'local'
+export const GIZMO_TOOLS: readonly GizmoTool[] = Object.freeze(['all', 'move', 'rotate', 'scale'])
+export const GIZMO_SPACES: readonly GizmoSpace[] = Object.freeze(['world', 'local'])
+
+/**
+ * A handle of the gizmo. x, y and z are east, north and up (in local space, the feature's own axes): `move-x` is the
+ * east arrow, `move-xy` the square between east and north, `move-free` the center ring, `rotate-z` the arc around up
+ * (the heading), `scale-x` the cube on the east axis, `scale-uniform` the outer ring (and the center ring with the scale
+ * tool).
+ */
+export type GizmoHandle =
+  | 'move-x'
+  | 'move-y'
+  | 'move-z'
+  | 'move-xy'
+  | 'move-yz'
+  | 'move-xz'
+  | 'move-free'
+  | 'rotate-x'
+  | 'rotate-y'
+  | 'rotate-z'
+  | 'scale-x'
+  | 'scale-y'
+  | 'scale-z'
+  | 'scale-uniform'
+
+/** A transform the keyboard starts (G, R, S) or `startTransform`. */
+export type TransformKind = 'move' | 'rotate' | 'scale'
+
+/** Where a gizmo handle is drawn: screen pixels of the point a press grabs it at. */
+export interface GizmoHandleOnScreen {
+  handle: GizmoHandle
+  x: number
+  y: number
+}
 
 /** Options of the select mode. */
 export interface SelectModeOptions {
-  /** A press on a selected feature drags it whole. Default: true. */
+  /** A press on a selected feature, away from the gizmo's handles, drags it whole on the ground. Default: true. */
   moveFeatures?: boolean
   /**
    * A second tap on the selected line or polygon swaps its gizmo for vertex handles (drag a vertex, tap or drag a
    * midpoint to add one); another tap swaps back. Meshes keep their gizmo. Default: true.
    */
   editVertices?: boolean
-  /** A knob beyond the gizmo's top edge turns the selected feature. Default: true. */
+  /** The gizmo's move handles: the axis arrows, the plane squares and the center ring. Default: true. */
+  move?: boolean
+  /** The gizmo's rotation arcs, one around each axis. Default: true. */
   rotate?: boolean
-  /** The gizmo's corners scale the selected feature around its center. Default: true. */
+  /** The gizmo's scale handles: a cube on each axis and the outer ring. Default: true. */
   scale?: boolean
-  /** Handles in the middle of the gizmo's edges stretch the selected feature along one axis, the opposite edge fixed. Default: true. */
-  stretch?: boolean
-  /**
-   * A knob in the middle of a flat line or polygon extrudes it: drag it up to turn it into a mesh (a polygon into a
-   * prism, a line into a wall). On a mesh with a level top face (a prism, a box) the knob sits on top: drag it to move
-   * the top face up or down, never closer than 1 m to the rest. Default: true.
-   */
-  height?: boolean
-  /**
-   * A knob under the feature's base, on a short stem, moves it up and down: its positions get altitudes (the GeoJSON
-   * third coordinate), those on the terrain starting from its height under each. Default: true.
-   */
-  lift?: boolean
-  /** Turns snap to this many degrees while Shift is held. Default: 15. */
+  /** Shift snaps turns to multiples of `snapDegrees`. Off unless enabled (opt-in). Default: false. */
+  snapping?: boolean
+  /** The snapping step of turns, in degrees. Default: 15. */
   snapDegrees?: number
+  /** The length of the gizmo's arrows on the screen, in CSS pixels, at any zoom. Default: 80. */
+  gizmoSizePixels?: number
+  /** The handles to start with (`Draw.setGizmoTool` changes them). Default: 'all'. */
+  gizmoTool?: GizmoTool
+  /** The axes to start with (`Draw.setGizmoSpace` changes them). Default: 'world'. */
+  gizmoSpace?: GizmoSpace
   /** Edits `undo()` can take back. Default: 50. */
   undoLimit?: number
 }
@@ -71,20 +95,62 @@ export type SelectDrag =
       position: LongitudeLatitude
     }
   | { kind: 'feature'; base: DrawFeature; feature: DrawFeature; origin: LongitudeLatitude }
-  | { kind: 'transform'; base: DrawFeature; feature: DrawFeature; handle: string; update: (event: DrawPointerEvent) => DrawFeature | null }
+  | { kind: 'transform'; base: DrawFeature; feature: DrawFeature; handle: GizmoHandle; update: (event: DrawPointerEvent) => DrawFeature | null }
 
 type Drag = SelectDrag
 
-/** The handles of the gizmo. */
-export type GizmoHandle = 'rotate' | 'scale' | 'stretch' | 'height' | 'lift'
+/** A screen point, in CSS pixels. */
+type Screen = { x: number; y: number }
+
+/**
+ * The gizmo of a feature version for the current camera: its center (the feature's center, at the middle of its
+ * altitudes or on the terrain), its axes and how long `gizmoSizePixels` is there in metres.
+ */
+export interface GizmoBasis {
+  feature: DrawFeature
+  center: LongitudeLatitude
+  /** The gizmo center's altitude. */
+  heightMeters: number
+  /** The feature's lowest altitude, or the terrain under its center when it has none. */
+  baseMeters: number
+  /** The feature has no altitude: it lies on the terrain. */
+  onTerrain: boolean
+  /** The east-north-up frame at the gizmo center. */
+  frame: LocalFrame
+  /**
+   * Unit x, y and z axes in that frame: east, north and up or the feature's own, those pointing away from the camera
+   * turned around (so the gizmo may be left-handed).
+   */
+  axes: readonly [LocalPoint, LocalPoint, LocalPoint]
+  /** Metres that `gizmoSizePixels` covers at the center. */
+  sizeMeters: number
+  centerScreen: Screen
+  /** Screen pixels of `sizeMeters` along each axis, from the center. */
+  axisScreen: readonly [Screen, Screen, Screen]
+}
+
+/** A drawn piece of the gizmo, in metres from its center along east, north and up. */
+interface GizmoPart {
+  handle: GizmoHandle
+  /** `line`: a polyline; `dot`: a square; `knob`: a dot on a stem up the screen; `plane`: a filled quad; `ring`: a circle on the screen around the center. */
+  kind: 'line' | 'dot' | 'knob' | 'plane' | 'ring'
+  local: LocalPoint[]
+  color: string
+  /** Line width, dot half size or ring radius, in pixels. */
+  sizePixels: number
+  arrowhead?: boolean
+  /** Where `gizmoHandles` says the handle is, in metres from the center (rings: on their right). */
+  grab: LocalPoint
+  /** The center ring with the scale tool: scales by the travel, not the distance from the center. */
+  fromCenter?: boolean
+}
 
 /** A gizmo handle under a press. */
 interface GizmoHit {
-  feature: DrawFeature
-  frame: TransformFrame
-  handle: GizmoHandle
-  /** The stretch handle's side. */
-  side: TransformSideHandle | null
+  basis: GizmoBasis
+  part: GizmoPart
+  /** The press, and the part's point nearest to it (an arc's), in metres from the center. */
+  nearest: LocalPoint
 }
 
 /** One edit, as what restores it: features to put back, and ids to remove (features the edit created). */
@@ -92,25 +158,63 @@ interface UndoEntry {
   restore: DrawFeature[]
 }
 
+/** A move, turn or scale started from the keyboard (G, R, S): it follows the pointer, no press needed. */
+interface KeyboardTransform {
+  kind: TransformKind
+  /** The axis it is locked to (X, Y, Z), or none. */
+  axis: 0 | 1 | 2 | null
+  base: DrawFeature
+  feature: DrawFeature
+  basis: GizmoBasis
+  /** The pointer when it started. */
+  start: Screen
+  /** The pointer now, and Shift. */
+  pointer: Screen
+  shiftKey: boolean
+}
+
 /** Pixels a press moves before it counts as a drag rather than a tap. */
 const DRAG_THRESHOLD_PIXELS = 4
-/** Smallest scale or stretch factor a drag reaches, so a feature never collapses. */
+/** Smallest scale factor a drag reaches, so a feature never collapses. */
 const MINIMUM_SCALE_FACTOR = 0.01
-/**
- * A gizmo smaller on the screen than this many knob diameters (across or along) hides its side handles and middle knob,
- * which would cover it: a press inside then always moves it.
- */
-const SMALL_GIZMO_KNOB_DIAMETERS = 3
 /** The style state of selected features. */
 const SELECTED_STATE: DrawStyleState = Object.freeze({ selected: true, drawing: false })
-/** The vertical drags measure the vertical over a step about this many pixels of ground long. */
-const HEIGHT_STEP_PIXELS = 100
-/** A height drag on a flat feature makes a mesh once it rises at least this many metres. */
-const MINIMUM_EXTRUSION_METERS = 1
-/** The lift knob is drawn this many pixels below the feature's base, on a stem, so it never covers the height knob. */
-const LIFT_OFFSET_PIXELS = 24
-/** A feature on the terrain stays there (unchanged) unless a lift raises it at least this many metres. */
+/** A feature on the terrain stays there (unchanged) unless a move raises it at least this many metres. */
 const MINIMUM_LIFT_METERS = 1
+
+/** Colours of the x (east), y (north) and z (up) axes, of the rings and of the handle under the pointer. */
+const AXIS_COLORS = ['#ef4444', '#22c55e', '#3b82f6'] as const
+const RING_COLOR = '#ffffff'
+const ACTIVE_COLOR = '#facc15'
+const OUTLINE_COLOR = '#111827'
+
+/** Proportions of the gizmo, in arrow lengths: arrows start out of the center ring and end at 1. */
+const ARROW_START = 0.15
+const PLANE_NEAR = 0.22
+const PLANE_FAR = 0.4
+const ARC_RADIUS = 0.72
+const CUBE_DISTANCE = 1.16
+const OUTER_RING_RADIUS = 1.3
+/** Pixel sizes of the gizmo's pieces. */
+const CENTER_RING_PIXELS = 9
+const ARROW_WIDTH_PIXELS = 3
+const ARROWHEAD_PIXELS = 14
+const ARC_WIDTH_PIXELS = 2.5
+const CUBE_PIXELS = 5
+/** An axis shorter than this share of the arrow length on the screen points at the camera: its arrow and cube hide. */
+const MINIMUM_AXIS_SHARE = 0.2
+/** A plane square smaller on the screen than this share of its full size is seen edge on: it hides. */
+const MINIMUM_PLANE_SHARE = 0.15
+/** A rotation arc seen more face on than this (its circle's screen area, in squared arrow lengths) turns with the pointer around the center. */
+const FACE_ON_SHARE = 0.25
+/**
+ * A rotation arc seen more edge on than this hides: it would lie on the arrows of its plane (the arc around east, seen
+ * looking north), out of reach. Turn the camera a little to tilt that way, or use R then X.
+ */
+const EDGE_ON_SHARE = 0.1
+/** Samples of the arc around z (a full circle) and of the arcs around x and y (half circles). */
+const FULL_ARC_SAMPLES = 48
+const HALF_ARC_SAMPLES = 24
 
 const STATUS_UNDO: DrawModeStatus = Object.freeze({ ...IDLE_STATUS, canUndo: true })
 const STATUS_VERTICES: DrawModeStatus = Object.freeze({ ...IDLE_STATUS, editingVertices: true })
@@ -118,17 +222,21 @@ const STATUS_VERTICES_UNDO: DrawModeStatus = Object.freeze({ ...IDLE_STATUS, can
 
 /**
  * Selects and edits finished features. A tap selects the feature under it (points and lines before the polygons under
- * them); a tap on the empty map clears the selection. A selected line, polygon or mesh shows a gizmo:
+ * them); a tap on the empty map clears the selection. A selected line, polygon or mesh shows a gizmo at its center, the
+ * same size on the screen at any zoom (`gizmoSizePixels`):
  *
- * - drag the feature to move it (shapes keep their size in metres);
- * - drag a corner of the box around it to scale it around its center (a mesh in 3D, from its base);
- * - drag the middle of an edge to stretch it along that axis, the opposite edge fixed;
- * - drag the knob beyond its top edge to turn it around the vertical through its center (Shift snaps to 15°);
- * - drag the knob in the middle of a flat line or polygon up to extrude it into a mesh (a rectangle into a box, a
- *   circle into a cylinder, a line into a wall); on a mesh with a level top face it sits on top: drag it up or down to
- *   move that face;
- * - drag the knob on a stem under its base up or down to move it vertically: its positions get altitudes (those on the
- *   terrain start from its height under each, so the shape keeps the relief's offsets).
+ * - drag an axis arrow (x east in red, y north in green, z up in blue) to move along that axis only; up gives every
+ *   position an altitude, as `liftFeature` does;
+ * - drag a square between two axes to move in that plane (the one between east and north moves on the ground);
+ * - drag the white center ring to move freely on the ground, the center following the pointer;
+ * - drag an arc to turn around that axis through the center: around up is the heading; around east or north tilts the
+ *   feature (`rotateFeatureAroundAxis`); with `snapping`, Shift snaps the turn to `snapDegrees`;
+ * - drag a cube on an axis to scale along it (`scaleFeatureAlongAxis`), and the outer ring (or the center ring with the
+ *   scale tool) to scale uniformly.
+ *
+ * `setGizmoTool` shows all the handles or one tool's, `setGizmoSpace` turns the axes to the feature's own. A press on
+ * the feature away from every handle still moves it on the ground. With the `Draw`'s `keyboard` option, G, R and S move,
+ * turn and scale under the pointer (X, Y, Z lock an axis; a click or Enter confirms; Escape or a right click cancels).
  *
  * Tap the selected line or polygon again to edit its vertices instead: drag a vertex handle to move it; tap a vertex to
  * pick it, then Delete or Backspace (or `draw.deleteSelected()`) removes it; drag or tap a midpoint handle to insert a
@@ -143,17 +251,19 @@ export class SelectMode extends DrawMode {
   readonly name: string = 'select'
   readonly moveFeatures: boolean
   readonly editVertices: boolean
+  readonly move: boolean
   readonly rotate: boolean
   readonly scale: boolean
-  readonly stretch: boolean
-  readonly height: boolean
-  readonly lift: boolean
+  readonly snapping: boolean
   readonly snapDegrees: number
+  readonly gizmoSizePixels: number
+  protected tool: GizmoTool
+  protected space: GizmoSpace
   protected readonly undoLimit: number
   /** The selected feature shows vertex handles rather than the gizmo. */
   protected vertexEditing = false
-  /** Gizmo frames of feature versions (features are replaced, never changed, so a version's frame stays right). */
-  protected readonly frames = new WeakMap<DrawFeature, TransformFrame>()
+  /** Local axes of feature versions (features are replaced, never changed, so a version's axes stay right). */
+  protected readonly localAxes = new WeakMap<DrawFeature, [LocalPoint, LocalPoint, LocalPoint]>()
   protected selection: readonly string[] = NO_FEATURE_IDS
   /** The picked vertex of the selected feature, which Delete removes, on the stored version it was picked on. */
   protected selectedVertex: { feature: DrawFeature; path: VertexPath } | null = null
@@ -166,17 +276,36 @@ export class SelectMode extends DrawMode {
   protected pressStart: { x: number; y: number } | null = null
   protected dragging = false
   protected readonly undoStack: UndoEntry[] = []
+  /** The gizmo handle under the mouse, drawn highlighted. */
+  protected hoveredHandle: GizmoHandle | null = null
+  /** Where the mouse last was over the map, for keyboard transforms. */
+  protected lastPointer: Screen | null = null
+  protected keyboardTransform: KeyboardTransform | null = null
 
-  constructor({ moveFeatures = true, editVertices = true, rotate = true, scale = true, stretch = true, height = true, lift = true, snapDegrees = 15, undoLimit = 50 }: SelectModeOptions = {}) {
+  constructor({
+    moveFeatures = true,
+    editVertices = true,
+    move = true,
+    rotate = true,
+    scale = true,
+    snapping = false,
+    snapDegrees = 15,
+    gizmoSizePixels = 80,
+    gizmoTool = 'all',
+    gizmoSpace = 'world',
+    undoLimit = 50,
+  }: SelectModeOptions = {}) {
     super()
     this.moveFeatures = moveFeatures
     this.editVertices = editVertices
+    this.move = move
     this.rotate = rotate
     this.scale = scale
-    this.stretch = stretch
-    this.height = height
-    this.lift = lift
+    this.snapping = snapping
     this.snapDegrees = snapDegrees
+    this.gizmoSizePixels = gizmoSizePixels
+    this.tool = gizmoTool
+    this.space = gizmoSpace
     this.undoLimit = undoLimit
   }
 
@@ -188,17 +317,48 @@ export class SelectMode extends DrawMode {
       if (this.committing) return
       this.undoStack.length = 0
       if (this.selectedVertex !== null && context.store.get(this.selectedVertex.feature.id) !== this.selectedVertex.feature) this.selectedVertex = null
+      if (this.keyboardTransform !== null && context.store.get(this.keyboardTransform.base.id) !== this.keyboardTransform.base) this.keyboardTransform = null
     })
   }
 
   override exit(): void {
     this.drag = null
     this.pressStart = null
+    this.keyboardTransform = null
     this.setSelection([])
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
     this.undoStack.length = 0
     super.exit()
+  }
+
+  // ---- Gizmo settings ----
+
+  /** Which handles the gizmo shows. */
+  get gizmoTool(): GizmoTool {
+    return this.tool
+  }
+
+  /** The gizmo's axes. */
+  get gizmoSpace(): GizmoSpace {
+    return this.space
+  }
+
+  /** Shows all the gizmo's handles (`'all'`) or only one tool's. `Draw.setGizmoTool` calls it. */
+  setGizmoTool(tool: GizmoTool): void {
+    if (!GIZMO_TOOLS.includes(tool)) throw new Error(`SelectMode.setGizmoTool: "${String(tool)}" is no gizmo tool; pick one of ${GIZMO_TOOLS.join(', ')}.`)
+    if (tool === this.tool) return
+    this.tool = tool
+    this.hoveredHandle = null
+    this.context?.changed()
+  }
+
+  /** Puts the gizmo's axes along east, north and up (`'world'`) or the feature's own (`'local'`). `Draw.setGizmoSpace` calls it. */
+  setGizmoSpace(space: GizmoSpace): void {
+    if (!GIZMO_SPACES.includes(space)) throw new Error(`SelectMode.setGizmoSpace: "${String(space)}" is no gizmo space; pick 'world' or 'local'.`)
+    if (space === this.space) return
+    this.space = space
+    this.context?.changed()
   }
 
   // ---- Selection ----
@@ -224,6 +384,7 @@ export class SelectMode extends DrawMode {
       this.selectedVertex = null
       this.vertexEditing = false
       this.drag = null
+      this.keyboardTransform = null
       this.context?.changed()
     } else if (next.length === 0 && this.vertexEditing) {
       this.vertexEditing = false
@@ -247,6 +408,7 @@ export class SelectMode extends DrawMode {
     this.vertexEditing = next
     this.selectedVertex = null
     this.drag = null
+    this.keyboardTransform = null
     this.pressStart = null
     this.context?.changed()
   }
@@ -270,6 +432,7 @@ export class SelectMode extends DrawMode {
     if (features.length === 0) return false
     this.selection = NO_FEATURE_IDS
     this.vertexEditing = false
+    this.keyboardTransform = null
     this.commit(features, () => context.remove(features.map(feature => feature.id)))
     return true
   }
@@ -279,6 +442,11 @@ export class SelectMode extends DrawMode {
   override click(event: DrawPointerEvent): void {
     const context = this.context
     if (context === null) return
+    // A keyboard transform is confirmed by its press (see `pointerUp`); a click without one confirms it too.
+    if (this.keyboardTransform !== null) {
+      this.confirmKeyboardTransform()
+      return
+    }
     const hit = this.featureAt(event)
     // A tap on the selected line or polygon swaps its gizmo and its vertex handles.
     if (hit !== null && this.selection.length === 1 && this.selection[0] === hit.id && this.canEditVertices(hit)) {
@@ -291,10 +459,16 @@ export class SelectMode extends DrawMode {
   override pointerDown(event: DrawPointerEvent): boolean {
     const context = this.context
     if (context === null || this.selection.length === 0) return false
+    // A keyboard transform: the press confirms it on release, and never pans.
+    if (this.keyboardTransform !== null) {
+      this.pressStart = { x: event.screen.xPixels, y: event.screen.yPixels }
+      this.dragging = false
+      return true
+    }
     const gizmo = this.gizmoHandleAt(event)
     const update = gizmo === null ? null : this.gizmoUpdate(gizmo, event)
     if (gizmo !== null && update !== null) {
-      this.drag = { kind: 'transform', base: gizmo.feature, feature: gizmo.feature, handle: gizmo.handle, update }
+      this.drag = { kind: 'transform', base: gizmo.basis.feature, feature: gizmo.basis.feature, handle: gizmo.part.handle, update }
       this.pressStart = { x: event.screen.xPixels, y: event.screen.yPixels }
       this.dragging = false
       return true
@@ -319,9 +493,14 @@ export class SelectMode extends DrawMode {
 
   override pointerMove(event: DrawPointerEvent): void {
     const context = this.context
+    if (context === null) return
+    if (this.keyboardTransform !== null) {
+      this.updateKeyboardTransform(event)
+      return
+    }
     const drag = this.drag
     const start = this.pressStart
-    if (context === null || drag === null || start === null) return
+    if (drag === null || start === null) return
     if (!this.dragging && Math.hypot(event.screen.xPixels - start.x, event.screen.yPixels - start.y) < DRAG_THRESHOLD_PIXELS) return
     this.dragging = true
     if (drag.kind === 'transform') {
@@ -342,7 +521,7 @@ export class SelectMode extends DrawMode {
     }
     // A vertex at an altitude moves level, under the pointer as drawn; the rest follow the ground.
     if (drag.kind === 'vertex' && drag.heightMeters !== null) {
-      const position = this.positionUnderPointer(event, drag.heightMeters, drag.position)
+      const position = this.positionUnderPointer(event.screen.xPixels, event.screen.yPixels, drag.heightMeters, drag.position)
       if (position === null) return
       const base = drag.inserted ? insertVertex(original, drag.path, position) : original
       this.drag = { ...drag, position, feature: moveVertex(base, drag.path, position) }
@@ -364,6 +543,12 @@ export class SelectMode extends DrawMode {
 
   override pointerUp(event: DrawPointerEvent): void {
     const context = this.context
+    if (this.keyboardTransform !== null) {
+      this.pressStart = null
+      this.updateKeyboardTransform(event)
+      this.confirmKeyboardTransform()
+      return
+    }
     const drag = this.drag
     this.drag = null
     this.pressStart = null
@@ -382,8 +567,8 @@ export class SelectMode extends DrawMode {
       }
     } else if (drag.kind === 'transform') {
       if (!this.dragging) {
-        // A tap on a knob in the middle (on a flat shape, over the feature) is a tap on what is there; on the others, nothing.
-        if ((drag.handle === 'height' || drag.handle === 'lift') && this.featureAt(event) !== null) this.click(event)
+        // A tap on a handle over the feature is a tap on the feature (a second tap edits its vertices); elsewhere, nothing.
+        if (this.featureAt(event) !== null) this.click(event)
         else context.changed()
         return
       }
@@ -392,14 +577,9 @@ export class SelectMode extends DrawMode {
       this.click(event)
       return
     }
-    // A drag that ends where it started (a knob dragged and brought back) changes nothing: no update, no undo step.
-    if (drag.feature === original || (JSON.stringify(drag.feature.geometry) === JSON.stringify(original.geometry) && JSON.stringify(drag.feature.properties) === JSON.stringify(original.properties))) {
-      context.changed()
-      return
-    }
-    this.commit([original], () => context.update([drag.feature]))
+    this.commitEdit(original, drag.feature)
     const edited = context.store.get(drag.feature.id)
-    if (drag.kind === 'vertex' && edited !== undefined) this.selectedVertex = { feature: edited, path: drag.path }
+    if (drag.kind === 'vertex' && edited !== undefined && edited !== original) this.selectedVertex = { feature: edited, path: drag.path }
   }
 
   override pointerCancel(): void {
@@ -412,25 +592,63 @@ export class SelectMode extends DrawMode {
   override hover(event: DrawPointerEvent): void {
     const context = this.context
     if (context === null) return
+    this.lastPointer = { x: event.screen.xPixels, y: event.screen.yPixels }
+    if (this.keyboardTransform !== null) {
+      this.updateKeyboardTransform(event)
+      return
+    }
     if (this.selection.length === 0) {
       context.setCursor(null)
       return
     }
-    const cursor = this.gizmoHandleAt(event) !== null ? 'grab' : this.handleAt(event) !== null ? 'pointer' : this.moveFeatures && this.selectedFeatureAt(event) !== null ? 'move' : null
+    const gizmo = this.gizmoHandleAt(event)
+    const hovered = gizmo?.part.handle ?? null
+    if (hovered !== this.hoveredHandle) {
+      this.hoveredHandle = hovered
+      context.changed()
+    }
+    const cursor = gizmo !== null ? 'grab' : this.handleAt(event) !== null ? 'pointer' : this.moveFeatures && this.selectedFeatureAt(event) !== null ? 'move' : null
     context.setCursor(cursor)
   }
 
   override keyDown(event: KeyboardEvent): boolean {
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
+    const transform = this.keyboardTransform
+    if (transform !== null) {
+      if (key === 'Escape') this.cancelKeyboardTransform()
+      else if (key === 'Enter') this.confirmKeyboardTransform()
+      else if (key === 'x' || key === 'y' || key === 'z') {
+        const axis = key === 'x' ? 0 : key === 'y' ? 1 : 2
+        // The same key again unlocks.
+        this.keyboardTransform = { ...transform, axis: transform.axis === axis ? null : axis }
+        this.refreshKeyboardTransform()
+      } else if (key === 'g' || key === 'r' || key === 's') {
+        this.keyboardTransform = { ...transform, kind: key === 'g' ? 'move' : key === 'r' ? 'rotate' : 'scale' }
+        this.refreshKeyboardTransform()
+      } else return false
+      return true
+    }
     if (event.key === 'Escape' && this.selection.length > 0) {
       this.cancel()
       return true
     }
     if ((event.key === 'Delete' || event.key === 'Backspace') && this.selection.length > 0) return this.deleteSelection()
+    if ((key === 'g' || key === 'r' || key === 's') && !event.ctrlKey && !event.metaKey && !event.altKey) return this.startTransform(key === 'g' ? 'move' : key === 'r' ? 'rotate' : 'scale')
     return false
   }
 
-  /** Drops a drag in progress, then the vertex editing (back to the gizmo), then the selection. */
+  override secondaryPress(): boolean {
+    if (this.keyboardTransform === null) return false
+    this.cancelKeyboardTransform()
+    return true
+  }
+
+  /** Drops a transform or drag in progress, then the vertex editing (back to the gizmo), then the selection. */
   override cancel(): void {
+    if (this.keyboardTransform !== null) {
+      this.cancelKeyboardTransform()
+      return
+    }
     if (this.drag !== null) {
       this.pointerCancel()
       return
@@ -451,6 +669,7 @@ export class SelectMode extends DrawMode {
     const existing = entry.restore.filter(feature => context.store.has(feature.id))
     const removed = entry.restore.filter(feature => !context.store.has(feature.id))
     this.selectedVertex = null
+    this.keyboardTransform = null
     this.committing = true
     try {
       if (existing.length > 0) context.update(existing)
@@ -472,10 +691,10 @@ export class SelectMode extends DrawMode {
   override liveFeatureIds(): readonly string[] {
     const context = this.context
     if (context === null) return NO_FEATURE_IDS
-    // Draped features show live while selected; a solid only while it is dragged (then as a preview solid).
+    // Draped features show live while selected; a solid only while it changes (then as a preview solid).
     const live = this.selectedFeatureIds().filter(id => {
       const feature = context.store.get(id)
-      return feature !== undefined && (!isSolidFeature(feature) || (this.drag !== null && this.dragging && this.drag.feature.id === id))
+      return feature !== undefined && (!isSolidFeature(feature) || this.editedFeature(id) !== null)
     })
     return live.length === 0 ? NO_FEATURE_IDS : live
   }
@@ -488,7 +707,7 @@ export class SelectMode extends DrawMode {
       const stored = context.store.get(id)
       if (stored === undefined) continue
       const drag = this.drag !== null && this.drag.feature.id === id && (this.dragging || this.drag.kind === 'vertex') ? this.drag : null
-      const feature = drag?.feature ?? stored
+      const feature = this.editedFeature(id) ?? stored
       const style = context.style(feature, SELECTED_STATE)
       if (live.has(id)) content.features.push({ feature, style })
       else if (isMeshGeometry(feature.geometry)) {
@@ -510,8 +729,12 @@ export class SelectMode extends DrawMode {
       }
       // Moving whole: the handles wait for the release.
       if (drag?.kind === 'feature') continue
+      if (this.keyboardTransform?.base.id === id) {
+        this.keyboardOverlay(this.keyboardTransform, content)
+        continue
+      }
       if (this.showsGizmo(feature)) {
-        this.gizmoOverlay(feature, style, content)
+        this.gizmoOverlay(feature, content, drag?.kind === 'transform' ? drag.handle : this.hoveredHandle)
         continue
       }
       if (!this.showsVertexHandles(feature) || drag?.kind === 'transform') continue
@@ -537,17 +760,139 @@ export class SelectMode extends DrawMode {
   }
 
   override inspect(): unknown {
+    const transform = this.keyboardTransform
     return {
       ...this.status(),
       selection: [...this.selection],
       editingVertices: this.vertexEditing,
+      gizmoTool: this.tool,
+      gizmoSpace: this.space,
       selectedVertex: this.selectedVertex === null ? null : { featureId: this.selectedVertex.feature.id, path: this.selectedVertex.path },
-      drag: this.drag === null ? null : { kind: this.drag.kind, featureId: this.drag.feature.id, dragging: this.dragging },
+      drag: this.drag === null ? null : { kind: this.drag.kind, featureId: this.drag.feature.id, dragging: this.dragging, handle: this.drag.kind === 'transform' ? this.drag.handle : null },
+      keyboardTransform: transform === null ? null : { kind: transform.kind, axis: transform.axis === null ? null : 'xyz'[transform.axis], featureId: transform.base.id },
       undo: this.undoStack.length,
     }
   }
 
+  // ---- Keyboard transforms ----
+
+  /** The keyboard transform in progress (G, R, S), or null. */
+  get transforming(): TransformKind | null {
+    return this.keyboardTransform?.kind ?? null
+  }
+
+  /**
+   * Starts moving, turning or scaling the selected feature under the pointer, as G, R and S do with the `keyboard`
+   * option: it follows the mouse with no press; a click or Enter confirms, Escape or a right click cancels, X, Y and Z
+   * lock it to an axis of the gizmo (east, north, up in world space). Without an axis a move stays on the ground, a turn
+   * goes around up and a scale is uniform, all from the pointer's distance to the center. Returns false when nothing
+   * can start (no selected line, polygon or mesh, vertex editing, a drag in progress).
+   */
+  startTransform(kind: TransformKind): boolean {
+    const context = this.context
+    if (context === null || this.drag !== null || this.vertexEditing) return false
+    const feature = this.selection.map(id => context.store.get(id)).find(each => each !== undefined && this.showsGizmo(each))
+    if (feature === undefined) return false
+    const basis = this.gizmoBasis(feature, 0)
+    if (basis === null) return false
+    // Without a mouse over the map yet, from a gizmo's length to the right of the center.
+    const start = this.lastPointer ?? { x: basis.centerScreen.x + this.gizmoSizePixels, y: basis.centerScreen.y }
+    this.keyboardTransform = { kind, axis: null, base: feature, feature, basis, start, pointer: start, shiftKey: false }
+    context.changed()
+    return true
+  }
+
+  protected updateKeyboardTransform(event: DrawPointerEvent): void {
+    const transform = this.keyboardTransform
+    if (transform === null) return
+    this.lastPointer = { x: event.screen.xPixels, y: event.screen.yPixels }
+    this.keyboardTransform = { ...transform, pointer: this.lastPointer, shiftKey: event.originalEvent?.shiftKey === true }
+    this.refreshKeyboardTransform()
+  }
+
+  /** Recomputes the keyboard transform's feature from the pointer, its kind and its axis. */
+  protected refreshKeyboardTransform(): void {
+    const transform = this.keyboardTransform
+    const context = this.context
+    if (transform === null || context === null) return
+    if (context.store.get(transform.base.id) !== transform.base) {
+      this.cancelKeyboardTransform()
+      return
+    }
+    const { basis, start, pointer, axis } = transform
+    const base = transform.base
+    const center = basis.centerScreen
+    const deltaX = pointer.x - start.x
+    const deltaY = pointer.y - start.y
+    let feature: DrawFeature | null = null
+    if (transform.kind === 'move') {
+      if (axis === null) feature = this.freeMove(basis, pointer.x + center.x - start.x, pointer.y + center.y - start.y)
+      else {
+        const along = this.axisScreen(basis, axis)
+        if (along !== null) feature = this.moveAlong(basis, axis, ((deltaX * along.x + deltaY * along.y) / (along.x * along.x + along.y * along.y)) * basis.sizeMeters)
+      }
+    } else if (transform.kind === 'rotate') {
+      const rotationAxis = axis ?? 2
+      const turn = angleBetween(start.x - center.x, start.y - center.y, pointer.x - center.x, pointer.y - center.y)
+      feature = this.turn(basis, rotationAxis, (this.screenTurnSign(basis, rotationAxis) * turn * 180) / Math.PI, transform.shiftKey)
+    } else {
+      const factor = Math.max(MINIMUM_SCALE_FACTOR, Math.hypot(pointer.x - center.x, pointer.y - center.y) / Math.max(10, Math.hypot(start.x - center.x, start.y - center.y)))
+      feature = axis === null ? this.scaleUniformly(basis, factor) : this.scaleAlong(basis, axis, factor)
+    }
+    if (feature !== null) this.keyboardTransform = { ...transform, feature }
+    context.changed()
+  }
+
+  protected confirmKeyboardTransform(): void {
+    const transform = this.keyboardTransform
+    const context = this.context
+    this.keyboardTransform = null
+    if (transform === null || context === null) return
+    const original = context.store.get(transform.base.id)
+    if (original !== transform.base) {
+      context.changed()
+      return
+    }
+    this.commitEdit(original, transform.feature)
+  }
+
+  protected cancelKeyboardTransform(): void {
+    if (this.keyboardTransform === null) return
+    this.keyboardTransform = null
+    this.context?.changed()
+  }
+
+  /** While a keyboard transform runs: the axis it is locked to, as a long line through the center. */
+  protected keyboardOverlay(transform: KeyboardTransform, content: OverlayContent): void {
+    if (transform.axis === null) return
+    const { basis } = transform
+    const reach = basis.sizeMeters * 12
+    const axis = basis.axes[transform.axis]
+    const from = basis.frame.toGeographic(-axis[0] * reach, -axis[1] * reach, -axis[2] * reach)
+    const to = basis.frame.toGeographic(axis[0] * reach, axis[1] * reach, axis[2] * reach)
+    content.lines.push({ positions: [[from[0], from[1]], [basis.center[0], basis.center[1]], [to[0], to[1]]], heightsMeters: [from[2], basis.heightMeters, to[2]], color: AXIS_COLORS[transform.axis], widthPixels: 1.5, opacity: 0.9 })
+  }
+
   // ---- Internals ----
+
+  /** The feature as it is being changed (dragged, transformed), or null when it is not. */
+  protected editedFeature(id: string): DrawFeature | null {
+    if (this.keyboardTransform?.base.id === id) return this.keyboardTransform.feature
+    const drag = this.drag
+    if (drag !== null && drag.feature.id === id && (this.dragging || drag.kind === 'vertex')) return drag.feature
+    return null
+  }
+
+  /** Stores an edit as one `update` and one undo step, unless it changes nothing. */
+  protected commitEdit(original: DrawFeature, edited: DrawFeature): void {
+    const context = this.context!
+    // A drag that ends where it started (a handle dragged and brought back) changes nothing: no update, no undo step.
+    if (edited === original || (JSON.stringify(edited.geometry) === JSON.stringify(original.geometry) && JSON.stringify(edited.properties) === JSON.stringify(original.properties))) {
+      context.changed()
+      return
+    }
+    this.commit([original], () => context.update([edited]))
+  }
 
   /** Whether a feature can show vertex handles: lines and polygons (not points, nor meshes, whose faces share vertices). */
   protected canEditVertices(feature: DrawFeature): boolean {
@@ -665,14 +1010,12 @@ export class SelectMode extends DrawMode {
   }
 
   /**
-   * The position at `heightMeters` whose projection is under the pointer, found by Newton steps on the screen from
-   * `start` (where the vertex was). Null when it is hidden or cannot be found (the pointer over the horizon).
+   * The position at `heightMeters` whose projection is at screen pixels `targetX`, `targetY`, found by Newton steps on
+   * the screen from `start`. Null when it is hidden or cannot be found (the pointer over the horizon).
    */
-  protected positionUnderPointer(event: DrawPointerEvent, heightMeters: number, start: LongitudeLatitude): LongitudeLatitude | null {
+  protected positionUnderPointer(targetX: number, targetY: number, heightMeters: number, start: LongitudeLatitude): LongitudeLatitude | null {
     const context = this.context
     if (context === null) return null
-    const targetX = event.screen.xPixels
-    const targetY = event.screen.yPixels
     const step = 1e-6
     let longitude = start[0]
     let latitude = start[1]
@@ -704,281 +1047,537 @@ export class SelectMode extends DrawMode {
 
   // ---- Gizmo ----
 
-  /** The gizmo frame of a feature version, computed once. */
-  protected frameOf(feature: DrawFeature): TransformFrame {
-    let frame = this.frames.get(feature)
-    if (frame === undefined) {
-      frame = transformFrame(feature)
-      this.frames.set(feature, frame)
+  /** The axes of the gizmo on a feature version: east, north and up, or its own (computed once per version). */
+  protected axesOf(feature: DrawFeature): readonly [LocalPoint, LocalPoint, LocalPoint] {
+    if (this.space === 'world') return WORLD_AXES
+    let axes = this.localAxes.get(feature)
+    if (axes === undefined) {
+      axes = featureAxes(feature)
+      this.localAxes.set(feature, axes)
     }
-    return frame
-  }
-
-  /** Pixels a knob covers: its radius and its outline. */
-  protected knobRadiusPixels(style: DrawStyle): number {
-    return style.vertexRadiusPixels + 1 + style.vertexOutlineWidthPixels
+    return axes
   }
 
   /**
-   * Whether the gizmo is too small on the screen for its side handles and middle knob: its box is under a few knob
-   * diameters across or along (or the feature has no extent at all). They are hidden then, so a press inside always
-   * moves the feature.
+   * The gizmo of a feature for the current camera, or null when its center is hidden. Its size in metres comes from the
+   * screen: the pixels one metre spans at the center along east, north and up (their squares add up to twice the
+   * squared scale, whatever the view), so the gizmo keeps its size on the screen at any zoom.
    */
-  protected gizmoIsSmall(feature: DrawFeature, frame: TransformFrame, style: DrawStyle, fallbackHeightMeters: number): boolean {
-    if (frame.corners.length !== 4) return false
-    const origin = this.gizmoOnScreen(feature, frame.corners[0]!, fallbackHeightMeters)
-    const across = this.gizmoOnScreen(feature, frame.corners[1]!, fallbackHeightMeters)
-    const along = this.gizmoOnScreen(feature, frame.corners[3]!, fallbackHeightMeters)
-    if (origin === null || across === null || along === null) return false
-    const minimum = SMALL_GIZMO_KNOB_DIAMETERS * 2 * this.knobRadiusPixels(style)
-    // An axis without side handles (across a straight line) does not count: the line is as small as it is long.
-    let hasWidth = false
-    let hasLength = false
-    for (const side of frame.sideHandles) {
-      if (side.axis === 'across') hasWidth = true
-      else hasLength = true
+  protected gizmoBasis(feature: DrawFeature, fallbackHeightMeters: number): GizmoBasis | null {
+    const context = this.context
+    if (context === null) return null
+    const center = featureCenter(feature)
+    const range = altitudeRangeOf(feature)
+    const groundMeters = range === null ? context.heights.heightAt(center[0], center[1], fallbackHeightMeters) : 0
+    const heightMeters = range === null ? groundMeters : (range.minimumMeters + range.maximumMeters) / 2
+    const frame = new LocalFrame(center[0], center[1], heightMeters)
+    const centerScreen = context.projectAtHeight(center, heightMeters)
+    if (centerScreen === null) return null
+    let squares = 0
+    let upScreen: Screen = { x: 0, y: 0 }
+    for (const axis of WORLD_AXES) {
+      const offset = this.screenOffset(frame, axis[0], axis[1], axis[2], centerScreen)
+      if (offset === null) return null
+      squares += offset.x * offset.x + offset.y * offset.y
+      upScreen = offset
     }
-    if (!hasWidth && !hasLength) return true
-    return (hasWidth && Math.hypot(across.x - origin.x, across.y - origin.y) < minimum) || (hasLength && Math.hypot(along.x - origin.x, along.y - origin.y) < minimum)
+    const pixelsPerMetre = Math.sqrt(squares / 2)
+    if (!(pixelsPerMetre > 0) || !Number.isFinite(pixelsPerMetre)) return null
+    const sizeMeters = this.gizmoSizePixels / pixelsPerMetre
+    const axes: LocalPoint[] = []
+    const axisScreen: Screen[] = []
+    for (const axis of this.axesOf(feature)) {
+      const offset = this.screenOffset(frame, axis[0] * sizeMeters, axis[1] * sizeMeters, axis[2] * sizeMeters, centerScreen)
+      if (offset === null) return null
+      // An axis pointing away from the camera goes up the screen with up (north, seen looking north): it is drawn the
+      // other way, towards the camera, so no two arrows lie on each other (as Blender's gizmo flips).
+      if (!this.isVertical(axis) && offset.x * upScreen.x + offset.y * upScreen.y > 0) {
+        axes.push([-axis[0], -axis[1], -axis[2]])
+        axisScreen.push({ x: -offset.x, y: -offset.y })
+      } else {
+        axes.push(axis)
+        axisScreen.push(offset)
+      }
+    }
+    return {
+      feature,
+      center,
+      heightMeters,
+      baseMeters: range?.minimumMeters ?? groundMeters,
+      onTerrain: range === null,
+      frame,
+      axes: axes as [LocalPoint, LocalPoint, LocalPoint],
+      sizeMeters,
+      centerScreen,
+      axisScreen: axisScreen as [Screen, Screen, Screen],
+    }
   }
 
-  /** Adds the gizmo of a selected feature (as dragged so far) to the overlay. */
-  protected gizmoOverlay(feature: DrawFeature, style: DrawStyle, content: OverlayContent): void {
-    const context = this.context
-    if (context === null) return
-    const frame = this.frameOf(feature)
-    const small = this.gizmoIsSmall(feature, frame, style, 0)
-    const knob = { radiusPixels: style.vertexRadiusPixels + 1, color: style.vertexColor, outlineColor: style.vertexOutlineColor, outlineWidthPixels: style.vertexOutlineWidthPixels }
-    const inverted = { ...knob, color: style.vertexOutlineColor, outlineColor: style.vertexColor }
-    // A feature at an altitude has its gizmo there (a mesh's at its base); one on the ground, on the terrain.
-    const altitude = frame.baseHeightMeters ?? undefined
-    if ((this.scale || this.stretch) && frame.corners.length === 4) {
-      const corners = frame.corners
-      content.lines.push({ positions: [corners[0]!, corners[1]!, corners[2]!, corners[3]!, corners[0]!], heightsMeters: altitude === undefined ? undefined : [altitude, altitude, altitude, altitude, altitude], color: style.vertexOutlineColor, widthPixels: 1.5, opacity: 0.8 })
-    }
-    if (this.scale) for (const corner of frame.corners) content.handles.push({ ...knob, position: corner, heightMeters: altitude })
-    if (this.stretch && !small) {
-      for (const side of frame.sideHandles) content.handles.push({ ...knob, radiusPixels: style.vertexRadiusPixels - 1, position: side.position, heightMeters: altitude })
-    }
-    if (this.rotate && frame.rotationHandle !== null) {
-      const topMiddle = middle(frame.corners[2]!, frame.corners[3]!)
-      content.lines.push({ positions: [topMiddle, frame.rotationHandle], heightsMeters: altitude === undefined ? undefined : [altitude, altitude], color: style.vertexOutlineColor, widthPixels: 1.5, opacity: 0.8 })
-      content.handles.push({ ...inverted, position: frame.rotationHandle, heightMeters: altitude })
-    }
-    const top = small ? null : this.heightKnob(feature, frame, 0)
-    if (top !== null && top.topMeters > top.baseMeters) {
-      content.lines.push({ positions: [frame.center, frame.center], heightsMeters: [top.baseMeters, top.topMeters], color: style.vertexOutlineColor, widthPixels: 1.5, opacity: 0.8 })
-    }
-    if (top !== null) content.handles.push({ ...inverted, position: frame.center, heightMeters: top.topMeters })
-    const lift = this.liftKnob(feature, frame, 0)
-    if (lift !== null) {
-      content.handles.push({ ...knob, position: frame.center, heightMeters: lift.baseMeters, offsetYPixels: LIFT_OFFSET_PIXELS, stemWidthPixels: 2 })
-    }
+  /** Screen pixels from the gizmo center to a point of its frame, or null when it is hidden. */
+  protected screenOffset(frame: LocalFrame, east: number, north: number, up: number, centerScreen: Screen): Screen | null {
+    const [longitude, latitude, height] = frame.toGeographic(east, north, up)
+    const screen = this.context!.projectAtHeight([longitude, latitude], height)
+    return screen === null ? null : { x: screen.x - centerScreen.x, y: screen.y - centerScreen.y }
+  }
+
+  /** Whether an axis is (nearly) straight up. */
+  protected isVertical(axis: LocalPoint): boolean {
+    return axis[2] > 0.999
+  }
+
+  /** Whether an axis's arrow shows: long enough on the screen not to point at the camera. */
+  protected axisShows(basis: GizmoBasis, index: number): boolean {
+    const screen = basis.axisScreen[index]!
+    return Math.hypot(screen.x, screen.y) >= this.gizmoSizePixels * MINIMUM_AXIS_SHARE
   }
 
   /**
-   * The height knob: on a flat line, polygon or multipolygon, in its middle at its altitude or on the ground (base and
-   * top the same); on a mesh with a level top face, on that face over the mesh's base. Null for points and other meshes.
+   * Screen pixels of `sizeMeters` along an axis, for dragging along it; null when it points at the camera. Up seen from
+   * (nearly) straight above, as on the flat map, goes up the screen instead, a gizmo length per arrow length.
    */
-  protected heightKnob(feature: DrawFeature, frame: TransformFrame, fallbackHeightMeters: number): { baseMeters: number; topMeters: number } | null {
-    const context = this.context
-    if (!this.height || context === null) return null
-    const geometry = feature.geometry
-    if (geometry.type === 'Point') return null
-    if (isMeshGeometry(geometry)) {
-      const top = meshTopOf(feature)
-      return top === null || frame.baseHeightMeters === null ? null : { baseMeters: frame.baseHeightMeters, topMeters: top.topMeters }
+  protected axisScreen(basis: GizmoBasis, index: number): Screen | null {
+    if (this.axisShows(basis, index)) return basis.axisScreen[index]!
+    return this.isVertical(basis.axes[index]!) ? { x: 0, y: -this.gizmoSizePixels } : null
+  }
+
+  /** The pieces of a gizmo for the current camera and tool. */
+  protected gizmoParts(basis: GizmoBasis): GizmoPart[] {
+    const parts: GizmoPart[] = []
+    const { axes, sizeMeters } = basis
+    const tool = this.tool
+    const moves = this.move && (tool === 'all' || tool === 'move')
+    const rotates = this.rotate && (tool === 'all' || tool === 'rotate')
+    const scales = this.scale && (tool === 'all' || tool === 'scale')
+    const at = (index: number, distance: number): LocalPoint => {
+      const axis = axes[index]!
+      return [axis[0] * distance * sizeMeters, axis[1] * distance * sizeMeters, axis[2] * distance * sizeMeters]
     }
-    const baseMeters = frame.baseHeightMeters ?? context.heights.heightAt(frame.center[0], frame.center[1], fallbackHeightMeters)
-    return { baseMeters, topMeters: baseMeters }
+    const combine = (first: number, a: number, second: number, b: number): LocalPoint => {
+      const one = axes[first]!
+      const two = axes[second]!
+      return [(one[0] * a + two[0] * b) * sizeMeters, (one[1] * a + two[1] * b) * sizeMeters, (one[2] * a + two[2] * b) * sizeMeters]
+    }
+    const names = ['x', 'y', 'z'] as const
+    if (rotates) {
+      // Around z a full circle; around x and y the half above the plane of x and y, so they stand out of the ground.
+      for (const index of [2, 0, 1] as const) {
+        const [first, second] = index === 2 ? [0, 1] : index === 0 ? [1, 2] : [0, 2]
+        const a = basis.axisScreen[first]!
+        const b = basis.axisScreen[second]!
+        if (Math.abs(a.x * b.y - a.y * b.x) < EDGE_ON_SHARE * this.gizmoSizePixels * this.gizmoSizePixels) continue
+        const full = index === 2
+        const samples = full ? FULL_ARC_SAMPLES : HALF_ARC_SAMPLES
+        const local: LocalPoint[] = []
+        for (let sample = 0; sample <= samples; sample++) {
+          const angle = ((full ? 2 : 1) * Math.PI * sample) / samples
+          local.push(combine(first, Math.cos(angle) * ARC_RADIUS, second, Math.sin(angle) * ARC_RADIUS))
+        }
+        const grab = combine(first, Math.SQRT1_2 * ARC_RADIUS, second, Math.SQRT1_2 * ARC_RADIUS)
+        parts.push({ handle: `rotate-${names[index]}`, kind: 'line', local, color: AXIS_COLORS[index], sizePixels: ARC_WIDTH_PIXELS, grab })
+      }
+    }
+    for (const index of [0, 1, 2] as const) {
+      const shows = this.axisShows(basis, index)
+      if (moves && shows) {
+        parts.push({ handle: `move-${names[index]}`, kind: 'line', local: [at(index, ARROW_START), at(index, 1)], color: AXIS_COLORS[index], sizePixels: ARROW_WIDTH_PIXELS, arrowhead: true, grab: at(index, 0.6) })
+      } else if (moves && this.isVertical(axes[index]!)) {
+        // Up seen from above: a knob on a stem up the screen.
+        parts.push({ handle: `move-${names[index]}`, kind: 'knob', local: [[0, 0, 0]], color: AXIS_COLORS[index], sizePixels: 6, grab: [0, 0, 0] })
+      }
+      if (scales && shows) {
+        const distance = tool === 'scale' ? 1 : CUBE_DISTANCE
+        if (tool === 'scale') parts.push({ handle: `scale-${names[index]}`, kind: 'line', local: [at(index, ARROW_START), at(index, distance)], color: AXIS_COLORS[index], sizePixels: 2, grab: at(index, 0.6) })
+        parts.push({ handle: `scale-${names[index]}`, kind: 'dot', local: [at(index, distance)], color: AXIS_COLORS[index], sizePixels: CUBE_PIXELS, grab: at(index, distance) })
+      }
+    }
+    if (moves) {
+      const full = (PLANE_FAR - PLANE_NEAR) * this.gizmoSizePixels
+      for (const [first, second, normal] of [[0, 1, 2], [1, 2, 0], [0, 2, 1]] as const) {
+        const a = basis.axisScreen[first]!
+        const b = basis.axisScreen[second]!
+        // The square's area on the screen against its full size: edge on, it hides.
+        const share = (Math.abs(a.x * b.y - a.y * b.x) * (PLANE_FAR - PLANE_NEAR) ** 2) / (full * full)
+        if (share < MINIMUM_PLANE_SHARE) continue
+        const handle = `move-${names[first]}${names[second]}` as GizmoHandle
+        const middle = (PLANE_NEAR + PLANE_FAR) / 2
+        parts.push({
+          handle,
+          kind: 'plane',
+          local: [combine(first, PLANE_NEAR, second, PLANE_NEAR), combine(first, PLANE_FAR, second, PLANE_NEAR), combine(first, PLANE_FAR, second, PLANE_FAR), combine(first, PLANE_NEAR, second, PLANE_FAR)],
+          color: AXIS_COLORS[normal],
+          sizePixels: 0,
+          grab: combine(first, middle, second, middle),
+        })
+      }
+    }
+    if (moves) parts.push({ handle: 'move-free', kind: 'ring', local: [[0, 0, 0]], color: RING_COLOR, sizePixels: CENTER_RING_PIXELS, grab: [0, 0, 0] })
+    else if (scales && tool === 'scale') parts.push({ handle: 'scale-uniform', kind: 'ring', local: [[0, 0, 0]], color: RING_COLOR, sizePixels: CENTER_RING_PIXELS, grab: [0, 0, 0], fromCenter: true })
+    if (scales) parts.push({ handle: 'scale-uniform', kind: 'ring', local: [[0, 0, 0]], color: RING_COLOR, sizePixels: OUTER_RING_RADIUS * this.gizmoSizePixels, grab: [0, 0, 0] })
+    return parts
+  }
+
+  /** Screen pixels of a point of the gizmo's frame, or null when hidden. */
+  protected gizmoScreen(basis: GizmoBasis, local: LocalPoint): Screen | null {
+    const offset = this.screenOffset(basis.frame, local[0], local[1], local[2], basis.centerScreen)
+    return offset === null ? null : { x: basis.centerScreen.x + offset.x, y: basis.centerScreen.y + offset.y }
+  }
+
+  /** Where a part is grabbed on the screen (`gizmoHandles`). */
+  protected grabScreen(basis: GizmoBasis, part: GizmoPart): Screen | null {
+    const center = basis.centerScreen
+    if (part.kind === 'ring') return part.fromCenter === true || part.handle === 'move-free' ? { x: center.x, y: center.y } : { x: center.x + part.sizePixels, y: center.y }
+    if (part.kind === 'knob') return { x: center.x, y: center.y - this.gizmoSizePixels * 0.85 }
+    if (part.handle.startsWith('rotate-')) {
+      // An arc: its point farthest from the arrows' lines on the screen, clear of them.
+      let best: Screen | null = null
+      let bestClearance = -1
+      for (const local of part.local) {
+        const screen = this.gizmoScreen(basis, local)
+        if (screen === null) continue
+        let clearance = Infinity
+        for (const axis of basis.axisScreen) {
+          const length = Math.hypot(axis.x, axis.y)
+          if (length > 1) clearance = Math.min(clearance, Math.abs((screen.x - center.x) * axis.y - (screen.y - center.y) * axis.x) / length)
+        }
+        if (clearance > bestClearance) {
+          bestClearance = clearance
+          best = screen
+        }
+      }
+      return best
+    }
+    return this.gizmoScreen(basis, part.grab)
   }
 
   /**
-   * The lift knob of a line, polygon or mesh: the terrain's height under its center and the altitude of its base (a
-   * mesh's lowest), where the knob's stem starts. Null for points.
+   * Screen positions of the selected feature's gizmo handles, where a press grabs them (for tests and tutorials): one
+   * entry per drawn piece, so `scale-uniform` comes twice with the scale tool (the center ring, then the outer ring).
+   * Empty without a selected line, polygon or mesh showing its gizmo.
    */
-  protected liftKnob(feature: DrawFeature, frame: TransformFrame, fallbackHeightMeters: number): { groundMeters: number; baseMeters: number } | null {
+  gizmoHandles(): GizmoHandleOnScreen[] {
     const context = this.context
-    if (!this.lift || context === null || feature.geometry.type === 'Point') return null
-    const groundMeters = context.heights.heightAt(frame.center[0], frame.center[1], fallbackHeightMeters)
-    return { groundMeters, baseMeters: frame.baseHeightMeters ?? groundMeters }
-  }
-
-  /** Screen pixels of a gizmo position: at the feature's base altitude, or on the terrain. */
-  protected gizmoOnScreen(feature: DrawFeature, position: LongitudeLatitude, fallbackHeightMeters: number): { x: number; y: number } | null {
-    const context = this.context!
-    const altitude = this.frameOf(feature).baseHeightMeters
-    return altitude === null ? context.project(position, fallbackHeightMeters) : context.projectAtHeight(position, altitude)
-  }
-
-  /** The gizmo handle of the selected features under a press, nearest first. */
-  protected gizmoHandleAt(event: DrawPointerEvent): GizmoHit | null {
-    const context = this.context
-    if (context === null || this.selection.length === 0) return null
-    const input = this.hitInput(event)
-    const fallback = event.geographic?.heightMeters ?? 0
-    const pointerX = event.screen.xPixels
-    const pointerY = event.screen.yPixels
-    const outside = hitTolerancePixels(event.pointerType)
-    let best: GizmoHit | null = null
-    let bestDistance = Infinity
+    if (context === null) return []
     for (const id of this.selection) {
       const feature = context.store.get(id)
       if (feature === undefined || !this.showsGizmo(feature)) continue
-      const style = context.style(feature, SELECTED_STATE)
-      const frame = this.frameOf(feature)
-      // Inside the feature a press moves it, unless it lands on a knob as drawn: a finger's full reach would cover
-      // small features (and the knob in the middle) and leave no way to move them.
-      const inside = hitFeature(feature, input) === 0
-      const knobTolerance = inside ? this.knobRadiusPixels(style) : outside
-      const sideTolerance = inside ? this.knobRadiusPixels(style) - 2 : outside
-      const small = this.gizmoIsSmall(feature, frame, style, fallback)
-      const consider = (handle: GizmoHandle, screen: { x: number; y: number } | null, tolerance: number, side: TransformSideHandle | null = null, offsetYPixels = 0) => {
-        if (screen === null) return
-        const distance = Math.hypot(screen.x - pointerX, screen.y + offsetYPixels - pointerY)
-        if (distance > tolerance) return
-        // Side handles win ties (half a pixel) over the corners they meet on a straight line.
-        const ranked = handle === 'stretch' ? distance - 0.5 : distance
-        if (ranked < bestDistance) {
-          bestDistance = ranked
-          best = { feature, frame, handle, side }
+      const basis = this.gizmoBasis(feature, 0)
+      if (basis === null) return []
+      const handles: GizmoHandleOnScreen[] = []
+      for (const part of this.gizmoParts(basis)) {
+        const screen = this.grabScreen(basis, part)
+        if (screen !== null) handles.push({ handle: part.handle, x: screen.x, y: screen.y })
+      }
+      return handles
+    }
+    return []
+  }
+
+  /** Adds the gizmo of a selected feature (as changed so far) to the overlay, `active` highlighted. */
+  protected gizmoOverlay(feature: DrawFeature, content: OverlayContent, active: GizmoHandle | null): void {
+    const basis = this.gizmoBasis(feature, 0)
+    if (basis === null) return
+    const geographic = (local: LocalPoint) => basis.frame.toGeographic(local[0], local[1], local[2])
+    const centerPosition: LongitudeLatitude = [basis.center[0], basis.center[1]]
+    for (const part of this.gizmoParts(basis)) {
+      const color = part.handle === active ? ACTIVE_COLOR : part.color
+      if (part.kind === 'line') {
+        const points = part.local.map(geographic)
+        content.lines.push({
+          positions: points.map(point => [point[0], point[1]]),
+          heightsMeters: points.map(point => point[2]),
+          color,
+          widthPixels: part.sizePixels,
+          opacity: 1,
+          arrowheadPixels: part.arrowhead === true ? ARROWHEAD_PIXELS : undefined,
+        })
+      } else if (part.kind === 'plane') {
+        const points = part.local.map(geographic)
+        ;(content.polygons ??= []).push({ positions: points.map(point => [point[0], point[1]]), heightsMeters: points.map(point => point[2]), color, opacity: part.handle === active ? 0.95 : 0.75 })
+      } else if (part.kind === 'dot') {
+        const [longitude, latitude, height] = geographic(part.local[0]!)
+        content.handles.push({ position: [longitude, latitude], heightMeters: height, shape: 'square', radiusPixels: part.sizePixels, color, outlineColor: OUTLINE_COLOR, outlineWidthPixels: 1 })
+      } else if (part.kind === 'knob') {
+        content.handles.push({ position: centerPosition, heightMeters: basis.heightMeters, radiusPixels: part.sizePixels, color, outlineColor: color, outlineWidthPixels: 0, offsetYPixels: -this.gizmoSizePixels * 0.85, stemWidthPixels: ARROW_WIDTH_PIXELS })
+      } else {
+        const outer = part.handle === 'scale-uniform' && part.fromCenter !== true
+        content.handles.push({ position: centerPosition, heightMeters: basis.heightMeters, shape: 'ring', radiusPixels: part.sizePixels, color, outlineColor: OUTLINE_COLOR, outlineWidthPixels: outer ? 1.5 : 2.5, faded: outer && part.handle !== active })
+      }
+    }
+  }
+
+  /**
+   * The gizmo handle of the selected features under a press, nearest first. Over the feature a handle takes the press
+   * only where it is drawn (a few pixels around it), so the body stays draggable between handles even when the gizmo
+   * covers a small feature; elsewhere it takes it within a finger's reach (`hitTolerancePixels`).
+   */
+  protected gizmoHandleAt(event: DrawPointerEvent): GizmoHit | null {
+    const context = this.context
+    if (context === null || this.selection.length === 0) return null
+    const pointerX = event.screen.xPixels
+    const pointerY = event.screen.yPixels
+    const reach = hitTolerancePixels(event.pointerType)
+    const fallback = event.geographic?.heightMeters ?? 0
+    let best: GizmoHit | null = null
+    let bestRank = Infinity
+    for (const id of this.selection) {
+      const feature = context.store.get(id)
+      if (feature === undefined || !this.showsGizmo(feature)) continue
+      const basis = this.gizmoBasis(feature, fallback)
+      if (basis === null) continue
+      const inside = hitFeature(feature, this.hitInput(event)) === 0
+      const center = basis.centerScreen
+      for (const part of this.gizmoParts(basis)) {
+        let distance = Infinity
+        let drawn = 0
+        let nearest: LocalPoint = part.grab
+        if (part.kind === 'ring') {
+          const fromCenter = Math.hypot(pointerX - center.x, pointerY - center.y)
+          const centerRing = part.handle === 'move-free' || part.fromCenter === true
+          // The center ring takes its inside too; the outer ring only its circle.
+          distance = centerRing ? Math.max(0, fromCenter - part.sizePixels) : Math.abs(fromCenter - part.sizePixels)
+          drawn = 2
+        } else if (part.kind === 'knob') {
+          distance = Math.hypot(pointerX - center.x, pointerY - (center.y - this.gizmoSizePixels * 0.85))
+          drawn = part.sizePixels
+        } else if (part.kind === 'dot') {
+          const screen = this.gizmoScreen(basis, part.local[0]!)
+          if (screen !== null) distance = Math.max(Math.abs(pointerX - screen.x), Math.abs(pointerY - screen.y))
+          drawn = part.sizePixels + 1
+        } else if (part.kind === 'plane') {
+          const corners = part.local.map(local => this.gizmoScreen(basis, local))
+          if (corners.every(corner => corner !== null)) {
+            const ring = corners as Screen[]
+            distance = insideConvex(pointerX, pointerY, ring) ? 0 : Math.min(...ring.map((corner, index) => distanceToSegment(pointerX, pointerY, corner.x, corner.y, ring[(index + 1) % ring.length]!.x, ring[(index + 1) % ring.length]!.y)))
+          }
+        } else {
+          let previous: Screen | null = null
+          part.local.forEach((local, index) => {
+            const screen = this.gizmoScreen(basis, local)
+            if (screen !== null && previous !== null) {
+              const segment = distanceToSegment(pointerX, pointerY, previous.x, previous.y, screen.x, screen.y)
+              if (segment < distance) {
+                distance = segment
+                // The nearer end of the nearest piece: where an arc is grabbed.
+                nearest = Math.hypot(pointerX - screen.x, pointerY - screen.y) < Math.hypot(pointerX - previous.x, pointerY - previous.y) ? local : part.local[index - 1]!
+              }
+            }
+            previous = screen
+          })
+          drawn = part.sizePixels / 2 + (part.arrowhead === true ? 1 : 0)
+        }
+        const tolerance = inside ? drawn + 3 : Math.max(drawn, reach)
+        if (distance > tolerance) continue
+        // Small pieces win ties over the lines they sit on (a cube on its shaft, a plane square across an arc).
+        // Arrows win over the arcs that cross them.
+        const rank = distance - (part.kind === 'dot' || part.kind === 'knob' ? 3 : part.kind === 'plane' || part.kind === 'ring' || part.arrowhead === true ? 1 : 0)
+        if (rank < bestRank) {
+          bestRank = rank
+          best = { basis, part, nearest }
         }
       }
-      if (this.stretch && !small) for (const side of frame.sideHandles) consider('stretch', this.gizmoOnScreen(feature, side.position, fallback), sideTolerance, side)
-      if (this.scale) for (const corner of frame.corners) consider('scale', this.gizmoOnScreen(feature, corner, fallback), knobTolerance)
-      if (this.rotate && frame.rotationHandle !== null) consider('rotate', this.gizmoOnScreen(feature, frame.rotationHandle, fallback), knobTolerance)
-      const top = small ? null : this.heightKnob(feature, frame, fallback)
-      if (top !== null) consider('height', context.projectAtHeight(frame.center, top.topMeters), knobTolerance)
-      const lift = this.liftKnob(feature, frame, fallback)
-      if (lift !== null) consider('lift', context.projectAtHeight(frame.center, lift.baseMeters), knobTolerance, null, LIFT_OFFSET_PIXELS)
     }
     return best
   }
 
-  /** How a drag on a gizmo handle changes the feature, from the press. Null when it cannot start here. */
-  protected gizmoUpdate(hit: GizmoHit, press: DrawPointerEvent): ((event: DrawPointerEvent) => DrawFeature | null) | null {
-    const context = this.context
-    if (context === null) return null
-    const { feature, frame, handle } = hit
-    const center = frame.center
-    const fallback = press.geographic?.heightMeters ?? 0
-    if (handle === 'rotate' || handle === 'scale') {
-      // Turns and scales follow the pointer around the center as drawn (at the feature's altitude), so they work the
-      // same for features in the air and with the pointer over the sky.
-      const centerOnScreen = this.gizmoOnScreen(feature, center, fallback)
-      if (centerOnScreen === null) return null
-      const startX = press.screen.xPixels - centerOnScreen.x
-      const startY = press.screen.yPixels - centerOnScreen.y
-      if (handle === 'rotate') {
-        // Clockwise on the screen (y down) is clockwise from north, seen from above.
-        const startAngle = Math.atan2(startY, startX)
-        const startRotation = frame.rotationDegrees
-        return event => {
-          let angle = ((Math.atan2(event.screen.yPixels - centerOnScreen.y, event.screen.xPixels - centerOnScreen.x) - startAngle) * 180) / Math.PI
-          // Shift snaps the resulting rotation (0°, 15°, 30°…), not the turn.
-          if (event.originalEvent.shiftKey && this.snapDegrees > 0) angle = Math.round((startRotation + angle) / this.snapDegrees) * this.snapDegrees - startRotation
-          return rotateFeature(feature, center, angle)
-        }
+  /** Terrain heights under positions, sampled once each (for features on the terrain getting altitudes). */
+  protected groundSampler(fallbackHeightMeters: number): GroundHeight {
+    const heights = this.context!.heights
+    const known = new Map<string, number>()
+    return (longitude, latitude) => {
+      const key = `${longitude},${latitude}`
+      let height = known.get(key)
+      if (height === undefined) {
+        height = heights.heightAt(longitude, latitude, fallbackHeightMeters, { immediate: true })
+        known.set(key, height)
       }
-      const startDistance = Math.hypot(startX, startY)
-      if (startDistance < 1) return null
-      return event => {
-        const distance = Math.hypot(event.screen.xPixels - centerOnScreen.x, event.screen.yPixels - centerOnScreen.y)
-        return scaleFeature(feature, center, Math.max(MINIMUM_SCALE_FACTOR, distance / startDistance))
-      }
+      return height
     }
-    if (handle === 'stretch') {
-      // The pointer's travel along the side's axis as drawn: the side's distance from the opposite one on the screen
-      // stands for its distance in metres.
-      const side = hit.side
-      if (side === null) return null
-      const fixed = this.gizmoOnScreen(feature, side.oppositePosition, fallback)
-      const moving = this.gizmoOnScreen(feature, side.position, fallback)
-      if (fixed === null || moving === null) return null
-      const axisX = moving.x - fixed.x
-      const axisY = moving.y - fixed.y
-      const lengthSquared = axisX * axisX + axisY * axisY
-      if (lengthSquared < 1) return null
-      return event => {
-        const travel = ((event.screen.xPixels - press.screen.xPixels) * axisX + (event.screen.yPixels - press.screen.yPixels) * axisY) / lengthSquared
-        return stretchFeature(feature, frame, side.axis, side.fixedMeters, Math.max(MINIMUM_SCALE_FACTOR, 1 + travel))
-      }
-    }
-    if (handle === 'height') {
-      const top = this.heightKnob(feature, frame, fallback)
-      if (top === null) return null
-      const rise = this.verticalDrag(center, top.baseMeters, top.topMeters, press)
-      if (rise === null) return null
-      // A mesh: its top face moves.
-      if (isMeshGeometry(feature.geometry)) return event => moveMeshTop(feature, rise(event))
-      // A flat feature: a mesh standing on its altitudes or on the terrain under each vertex, sampled once.
-      const heights = context.heights
-      const ground = new Map<string, number>()
-      const groundAt = (longitude: number, latitude: number) => {
-        const key = `${longitude},${latitude}`
-        let height = ground.get(key)
-        if (height === undefined) {
-          height = heights.heightAt(longitude, latitude, top.baseMeters, { immediate: true })
-          ground.set(key, height)
-        }
-        return height
-      }
-      return event => {
-        const height = rise(event)
-        return height < MINIMUM_EXTRUSION_METERS ? feature : extrudeFeature(feature, height, groundAt)
-      }
-    }
-    const lift = this.liftKnob(feature, frame, fallback)
-    if (lift === null) return null
-    const rise = this.verticalDrag(center, lift.groundMeters, lift.baseMeters, press)
-    if (rise === null) return null
-    // Every position at an altitude, once: those on the terrain at its height under them (or under the press, where
-    // it is not known yet), so the shape keeps the relief's offsets as it rises.
-    const heights = context.heights
-    const start = liftFeature(feature, 0, (longitude, latitude) => heights.heightAt(longitude, latitude, fallback))
-    const onTerrain = baseAltitudeOf(feature) === null
-    return event => {
-      const delta = rise(event)
-      // A feature that stood on the terrain stays there until it is lifted a metre; one in the air keeps its altitudes.
-      if (onTerrain && delta < MINIMUM_LIFT_METERS) return feature
-      return liftFeature(start, delta)
-    }
+  }
+
+  /** The feature moved on the ground (level, at its altitude) so that its center is under screen pixels `x`, `y`. */
+  protected freeMove(basis: GizmoBasis, x: number, y: number): DrawFeature | null {
+    const target = this.positionUnderPointer(x, y, basis.heightMeters, basis.center)
+    return target === null ? null : translateFeature(basis.feature, basis.center, target)
+  }
+
+  /** The feature moved `meters` along a gizmo axis; one on the terrain stays there unless raised a metre. */
+  protected moveAlong(basis: GizmoBasis, index: number, meters: number): DrawFeature {
+    const axis = basis.axes[index]!
+    return this.moveBy(basis, [axis[0] * meters, axis[1] * meters, axis[2] * meters])
+  }
+
+  protected moveBy(basis: GizmoBasis, offset: LocalPoint): DrawFeature {
+    const up = basis.onTerrain && Math.abs(offset[2]) < MINIMUM_LIFT_METERS ? 0 : offset[2]
+    if (offset[0] === 0 && offset[1] === 0 && up === 0) return basis.feature
+    return offsetFeature(basis.feature, [offset[0], offset[1], up], this.groundSampler(basis.baseMeters))
+  }
+
+  /** The feature turned `angleDegrees` (right-handed) around a gizmo axis through its center, snapped with Shift. */
+  protected turn(basis: GizmoBasis, index: number, angleDegrees: number, shiftKey: boolean): DrawFeature {
+    const angle = this.snapping && shiftKey && this.snapDegrees > 0 ? Math.round(angleDegrees / this.snapDegrees) * this.snapDegrees : angleDegrees
+    return rotateFeatureAroundAxis(basis.feature, [basis.center[0], basis.center[1], basis.heightMeters], basis.axes[index]!, angle, this.groundSampler(basis.baseMeters))
   }
 
   /**
-   * How far up a drag from `press` goes, in metres, along the vertical through `center` at `atMeters` as drawn on the
-   * screen (the ground's scale measured at `groundMeters`). Seen from (nearly) straight above, as on the flat map, the
-   * vertical is short on the screen: then dragging up the screen goes up by as many metres as the ground spans under
-   * the pointer. Null when neither can be measured.
+   * The feature scaled along a gizmo axis through its center. Along up it scales from its base, so it stays standing
+   * where it is; a feature on the terrain has no height to scale.
    */
-  protected verticalDrag(center: LongitudeLatitude, groundMeters: number, atMeters: number, press: DrawPointerEvent): ((event: DrawPointerEvent) => number) | null {
-    const context = this.context
-    if (context === null) return null
-    const east = context.projectAtHeight(destination(center, 1000, 90), groundMeters)
-    const base = context.projectAtHeight(center, groundMeters)
-    const groundPixelsPerKilometre = east === null || base === null ? 0 : Math.hypot(east.x - base.x, east.y - base.y)
-    // Measured over a step of about 100 pixels: close to a small solid, a whole kilometre up may be behind the camera.
-    const stepKilometres = groundPixelsPerKilometre > 0 ? Math.min(1000, Math.max(0.001, HEIGHT_STEP_PIXELS / groundPixelsPerKilometre)) : 1
-    const lower = context.projectAtHeight(center, atMeters)
-    const upper = context.projectAtHeight(center, atMeters + stepKilometres * 1000)
-    if (lower === null) return null
-    let alongX = upper === null ? 0 : (upper.x - lower.x) / stepKilometres
-    let alongY = upper === null ? 0 : (upper.y - lower.y) / stepKilometres
-    let pixelsPerKilometre = Math.hypot(alongX, alongY)
-    // From above the vertical is short and points away from the middle of the screen: use up the screen instead.
-    if (pixelsPerKilometre < groundPixelsPerKilometre / 3 || alongY >= -0.5 * pixelsPerKilometre) {
-      if (groundPixelsPerKilometre < 1e-3) return null
-      pixelsPerKilometre = groundPixelsPerKilometre
-      alongX = 0
-      alongY = -pixelsPerKilometre
-    }
-    const metresPerSquarePixel = 1000 / (pixelsPerKilometre * pixelsPerKilometre)
+  protected scaleAlong(basis: GizmoBasis, index: number, factor: number): DrawFeature {
+    const axis = basis.axes[index]!
+    const vertical = this.isVertical(axis)
+    if (basis.onTerrain && Math.abs(axis[2]) > 1e-9) return basis.feature
+    const pivotHeight = vertical ? basis.baseMeters : basis.heightMeters
+    return scaleFeatureAlongAxis(basis.feature, [basis.center[0], basis.center[1], pivotHeight], axis, factor, this.groundSampler(basis.baseMeters))
+  }
+
+  /** The feature scaled uniformly around its center (a mesh from its base, `scaleFeature`). */
+  protected scaleUniformly(basis: GizmoBasis, factor: number): DrawFeature {
+    return scaleFeature(basis.feature, basis.center, factor)
+  }
+
+  /**
+   * The sign that turns a turn of the pointer around the gizmo's center on the screen (clockwise positive, y down) into
+   * a right-handed turn around an axis: negative when the axis points at the camera.
+   */
+  protected screenTurnSign(basis: GizmoBasis, index: number): number {
+    const [first, second] = index === 0 ? [1, 2] : index === 1 ? [2, 0] : [0, 1]
+    const a = basis.axisScreen[first]!
+    const b = basis.axisScreen[second]!
+    const cross = a.x * b.y - a.y * b.x
+    // An axis turned towards the camera makes the gizmo left-handed: the other two then cross to minus this one.
+    const [x, y, z] = basis.axes
+    const handedness = x[0] * (y[1] * z[2] - y[2] * z[1]) - x[1] * (y[0] * z[2] - y[2] * z[0]) + x[2] * (y[0] * z[1] - y[1] * z[0]) < 0 ? -1 : 1
+    // Edge on, either way: the up axis seen level turns as from above.
+    return (cross > 0 ? 1 : -1) * handedness
+  }
+
+  /** How a drag on a gizmo handle changes the feature, from the press. Null when it cannot start here. */
+  protected gizmoUpdate(hit: GizmoHit, press: DrawPointerEvent): ((event: DrawPointerEvent) => DrawFeature | null) | null {
+    const { basis, part } = hit
+    const handle = part.handle
     const pressX = press.screen.xPixels
     const pressY = press.screen.yPixels
-    return event => ((event.screen.xPixels - pressX) * alongX + (event.screen.yPixels - pressY) * alongY) * metresPerSquarePixel
+    const center = basis.centerScreen
+    const index = (name: string) => (name === 'x' ? 0 : name === 'y' ? 1 : 2)
+    if (handle === 'move-free') {
+      const offsetX = center.x - pressX
+      const offsetY = center.y - pressY
+      return event => this.freeMove(basis, event.screen.xPixels + offsetX, event.screen.yPixels + offsetY)
+    }
+    if (handle === 'move-x' || handle === 'move-y' || handle === 'move-z') {
+      const axis = index(handle[5]!)
+      const along = this.axisScreen(basis, axis)
+      if (along === null) return null
+      const lengthSquared = along.x * along.x + along.y * along.y
+      return event => this.moveAlong(basis, axis, (((event.screen.xPixels - pressX) * along.x + (event.screen.yPixels - pressY) * along.y) / lengthSquared) * basis.sizeMeters)
+    }
+    if (handle === 'move-xy' || handle === 'move-yz' || handle === 'move-xz') {
+      const first = index(handle[5]!)
+      const second = index(handle[6]!)
+      const one = basis.axes[first]!
+      const two = basis.axes[second]!
+      // Level: on the ground, the center under the pointer.
+      if (Math.abs(one[2]) < 1e-9 && Math.abs(two[2]) < 1e-9) {
+        const offsetX = center.x - pressX
+        const offsetY = center.y - pressY
+        return event => this.freeMove(basis, event.screen.xPixels + offsetX, event.screen.yPixels + offsetY)
+      }
+      // Else across the plane as it lies on the screen.
+      const a = basis.axisScreen[first]!
+      const b = basis.axisScreen[second]!
+      const determinant = a.x * b.y - a.y * b.x
+      if (Math.abs(determinant) < 1e-6) return null
+      return event => {
+        const deltaX = event.screen.xPixels - pressX
+        const deltaY = event.screen.yPixels - pressY
+        const alongOne = ((deltaX * b.y - deltaY * b.x) / determinant) * basis.sizeMeters
+        const alongTwo = ((a.x * deltaY - a.y * deltaX) / determinant) * basis.sizeMeters
+        return this.moveBy(basis, [one[0] * alongOne + two[0] * alongTwo, one[1] * alongOne + two[1] * alongTwo, one[2] * alongOne + two[2] * alongTwo])
+      }
+    }
+    if (handle === 'rotate-x' || handle === 'rotate-y' || handle === 'rotate-z') {
+      const axis = index(handle[7]!)
+      const [first, second] = axis === 0 ? [1, 2] : axis === 1 ? [2, 0] : [0, 1]
+      const a = basis.axisScreen[first]!
+      const b = basis.axisScreen[second]!
+      const faceOn = Math.abs(a.x * b.y - a.y * b.x) / (this.gizmoSizePixels * this.gizmoSizePixels)
+      const startX = pressX - center.x
+      const startY = pressY - center.y
+      if (faceOn > FACE_ON_SHARE && Math.hypot(startX, startY) > 4) {
+        // Seen face on: the pointer turns around the center (whole turns too).
+        const sign = this.screenTurnSign(basis, axis)
+        let previousX = startX
+        let previousY = startY
+        let total = 0
+        return event => {
+          const x = event.screen.xPixels - center.x
+          const y = event.screen.yPixels - center.y
+          if (Math.hypot(x, y) > 1) {
+            total += angleBetween(previousX, previousY, x, y)
+            previousX = x
+            previousY = y
+          }
+          return this.turn(basis, axis, (sign * total * 180) / Math.PI, event.originalEvent?.shiftKey === true)
+        }
+      }
+      // Seen edge on: dragging along the arc where it was grabbed, as it lies on the screen.
+      const rotationAxis = basis.axes[axis]!
+      const grabbed = hit.nearest
+      const tangent: LocalPoint = [
+        rotationAxis[1] * grabbed[2] - rotationAxis[2] * grabbed[1],
+        rotationAxis[2] * grabbed[0] - rotationAxis[0] * grabbed[2],
+        rotationAxis[0] * grabbed[1] - rotationAxis[1] * grabbed[0],
+      ]
+      const step = 0.01
+      const from = this.gizmoScreen(basis, grabbed)
+      const to = this.gizmoScreen(basis, [grabbed[0] + tangent[0] * step, grabbed[1] + tangent[1] * step, grabbed[2] + tangent[2] * step])
+      if (from === null || to === null) return null
+      const perRadianX = (to.x - from.x) / step
+      const perRadianY = (to.y - from.y) / step
+      const lengthSquared = perRadianX * perRadianX + perRadianY * perRadianY
+      if (lengthSquared < 1) return null
+      return event => {
+        const radians = ((event.screen.xPixels - pressX) * perRadianX + (event.screen.yPixels - pressY) * perRadianY) / lengthSquared
+        return this.turn(basis, axis, (radians * 180) / Math.PI, event.originalEvent?.shiftKey === true)
+      }
+    }
+    if (handle === 'scale-x' || handle === 'scale-y' || handle === 'scale-z') {
+      const axis = index(handle[6]!)
+      const along = this.axisScreen(basis, axis)
+      if (along === null) return null
+      const lengthSquared = along.x * along.x + along.y * along.y
+      // Metres from the center to where it was grabbed: the cube (or its shaft) moves by the pointer's travel.
+      const reach = (part.kind === 'dot' ? (this.tool === 'scale' ? 1 : CUBE_DISTANCE) : 0.6) * basis.sizeMeters
+      return event => {
+        const travel = (((event.screen.xPixels - pressX) * along.x + (event.screen.yPixels - pressY) * along.y) / lengthSquared) * basis.sizeMeters
+        return this.scaleAlong(basis, axis, Math.max(MINIMUM_SCALE_FACTOR, (reach + travel) / reach))
+      }
+    }
+    // Uniform: the outer ring by the pointer's distance from the center; the center ring by its travel right and up.
+    if (part.fromCenter === true) {
+      return event => this.scaleUniformly(basis, Math.max(MINIMUM_SCALE_FACTOR, 1 + (event.screen.xPixels - pressX - (event.screen.yPixels - pressY)) / 2 / this.gizmoSizePixels))
+    }
+    const startDistance = Math.hypot(pressX - center.x, pressY - center.y)
+    if (startDistance < 1) return null
+    return event => this.scaleUniformly(basis, Math.max(MINIMUM_SCALE_FACTOR, Math.hypot(event.screen.xPixels - center.x, event.screen.yPixels - center.y) / startDistance))
   }
 }
 
-function middle(a: LongitudeLatitude, b: LongitudeLatitude): LongitudeLatitude {
-  return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+/** The signed angle in radians from one screen vector to another, between -π and π (clockwise positive, y down). */
+function angleBetween(fromX: number, fromY: number, toX: number, toY: number): number {
+  return Math.atan2(fromX * toY - fromY * toX, fromX * toX + fromY * toY)
+}
+
+/** Whether a screen point lies inside a convex quad, whichever its winding. */
+function insideConvex(x: number, y: number, ring: readonly Screen[]): boolean {
+  let sign = 0
+  for (let index = 0; index < ring.length; index++) {
+    const a = ring[index]!
+    const b = ring[(index + 1) % ring.length]!
+    const cross = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)
+    if (cross === 0) continue
+    if (sign === 0) sign = Math.sign(cross)
+    else if (Math.sign(cross) !== sign) return false
+  }
+  return true
 }

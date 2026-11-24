@@ -493,8 +493,9 @@ export function rotateFeatureAroundAxis(feature: DrawFeature, center: readonly n
  * multiplied; distances along the other two axes are kept.
  *
  * Along a horizontal axis this is `stretchFeature` around the center: altitudes are kept, positions on the terrain stay
- * there. Along any other axis positions move in the center's east-north-up frame and all get altitudes, those on the
- * terrain starting from its height under them (`groundHeightMeters`).
+ * there. Along the vertical, altitudes scale around the center's and the footprint stays. Along any other axis
+ * positions move in the center's east-north-up frame. Both give every position an altitude, those on the terrain
+ * starting from its height under them (`groundHeightMeters`).
  */
 export function scaleFeatureAlongAxis(feature: DrawFeature, center: readonly number[], axis: readonly [number, number, number], factor: number, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
   if (!(factor > 0) || !Number.isFinite(factor)) throw new Error(`scaleFeatureAlongAxis: factor is ${factor}; give a positive number.`)
@@ -506,8 +507,19 @@ export function scaleFeatureAlongAxis(feature: DrawFeature, center: readonly num
     const rotationDegrees = (-Math.atan2(unit[1], unit[0]) * 180) / Math.PI
     return stretchFeature(feature, { center: [center[0]!, center[1]!], rotationDegrees }, 'across', 0, factor)
   }
-  const frame = new LocalFrame(center[0]!, center[1]!, center[2] ?? 0)
   const ground = groundFunction(groundHeightMeters)
+  if (Math.hypot(unit[0], unit[1]) < AXIS_EPSILON) {
+    // Along the vertical: altitudes scale around the center's, the footprint stays.
+    const pivot = center[2] ?? 0
+    return {
+      ...feature,
+      geometry: mapGeometryPositions(feature.geometry, position => {
+        const altitude = hasAltitude(position) ? position[2]! : ground(position[0]!, position[1]!)
+        return [position[0]!, position[1]!, pivot + (altitude - pivot) * factor]
+      }),
+    }
+  }
+  const frame = new LocalFrame(center[0]!, center[1]!, center[2] ?? 0)
   const grow = factor - 1
   return {
     ...feature,
@@ -560,6 +572,8 @@ export function featureAxes(feature: DrawFeature): [LocalPoint, LocalPoint, Loca
       }
     }
   }
+  // Level within a millionth: straight up, so turns around it keep features on the terrain there.
+  if (Math.abs(z[0]) < 1e-6 && Math.abs(z[1]) < 1e-6) z = [0, 0, 1]
   // A basis of the plane across z, from east (north when z lies along east).
   const eastInPlane = unitVector([1 - z[0] * z[0], -z[0] * z[1], -z[0] * z[2]]) ?? unitVector([-z[1] * z[0], 1 - z[1] * z[1], -z[1] * z[2]])!
   const northInPlane = cross(z, eastInPlane)
@@ -573,5 +587,7 @@ export function featureAxes(feature: DrawFeature): [LocalPoint, LocalPoint, Loca
     Math.cos(turn) * eastInPlane[1] + Math.sin(turn) * northInPlane[1],
     Math.cos(turn) * eastInPlane[2] + Math.sin(turn) * northInPlane[2],
   ]
-  return [x, cross(z, x), z]
+  // Without negative zeros, which compare unequal.
+  const clean = (vector: LocalPoint): LocalPoint => [vector[0] + 0, vector[1] + 0, vector[2] + 0]
+  return [clean(x), clean(cross(z, x)), clean(z)]
 }
