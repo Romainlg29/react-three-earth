@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 export const AREAS = [
   'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'accessibility', 'gestures', 'invalidate', 'style', 'geojson', 'heatmap',
   'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'scripts', 'symbol-effects', 'buildings',
-  'roads', 'dem', 'exaggeration',
+  'roads', 'dem', 'exaggeration', 'style-root',
 ]
 
 /** A name that runs several areas: the group's own area first. */
@@ -38,6 +38,7 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}vector/extrusions/`), ['buildings']],
   [new RegExp(`^${LIBRARY}vector/raster/`), ['relief', 'dem', 'exaggeration']],
   [new RegExp(`^${LIBRARY}(vector|react)/GeoJsonSource\\.tsx?$`), ['geojson', 'heatmap']],
+  [new RegExp(`^${LIBRARY}vector/styleRoot\\.ts$`), ['style-root']],
   [new RegExp(`^${LIBRARY}vector/`), VECTOR_CORE],
   [new RegExp(`^${LIBRARY}tiles/(dem/|RasterDemTerrainPlugin\\.ts$)`), ['dem', 'exaggeration', 'relief']],
   [new RegExp(`^${LIBRARY}(controls/AttributionControl\\.ts|react/AttributionControl\\.tsx)$`), ['attribution']],

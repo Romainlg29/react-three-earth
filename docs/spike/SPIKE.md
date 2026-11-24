@@ -1436,6 +1436,40 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - Not supported yet: `image` and `video` entries inside a `MapStyleSource` style, `canvas` sources, video
   controls beyond `play()` / `pause()` and the element.
 
+## W16: style root properties
+
+The earth follows a map style's root `terrain`, `center`, `zoom`, `bearing`, `pitch` and `projection` when the app
+does not set them. `readStyleRoot` (`src/vector/styleRoot.ts`) maps them; `Earth` follows the map style sources of its
+imagery layers (`styledata`), and `MapStyleSource.getStyleRoot()` returns the reading.
+
+- **Terrain.** With no terrain from the app, the earth builds one from the root `terrain`: a `RasterDemSource` of
+  the raster-dem source it names (`tiles` or TileJSON `url` resolved against the style URL, `encoding`, factors,
+  `maxzoom`, `attribution`) with its `exaggeration`. `setTerrain(app)` drops and disposes it; `setTerrain(null)`
+  brings it back. A new exaggeration (`setStyle`) applies in place; a new source rebuilds it. In React this means an
+  empty `<Terrain />`. Since nothing loads a style while there is no terrain to drape it on, the earth loads it
+  itself to read the root (with the page's `fetch`, not 3DTilesRenderer's queue the overlay uses: one small JSON).
+  The DEM source cannot use the style's protocols or `pmtiles://` (`RasterDemSource` has none): such a source, or
+  one without `{z}/{x}/{y}` tiles, warns stating the fix and is skipped. With `requestHeaders` or `transformRequest`
+  set, the terrain still loads, without them, and a warning says so.
+- **Starting view.** `center`, `zoom`, `bearing` (`headingDegrees`) and `pitch` (`pitchDegrees = pitch - 90`) apply
+  once, from the first style that has them, as MapLibre does while its transform is unmodified: not when the app
+  gave `initialView`, and not when the camera was placed before the style loaded: by `jumpTo` or an animation, or
+  moved out of the Earth's centre, where a fresh three.js camera starts (`setCameraView`, controls, app code). The centre lands on the ellipsoid because the terrain has
+  not loaded yet: the browser check, pitched 70° from straight down over a 5.8 km hill, starts 0.02° short.
+- **Projection.** `'mercator'` → `'2d'`; `'globe'`, `'vertical-perspective'` and expressions (MapLibre's globe preset
+  is one that flattens from zoom 10 to 12) → `'3d'`, unless the app gave `view` (`<Earth view>` no longer defaults to
+  `'3d'` in React; `setView` also takes over). The first style's projection applies at once, a later change morphs.
+- **Not read: `light`, `sky`, `fog`.** The Bruneton atmosphere lights and hazes the scene from the sun's real
+  position (`date`); a style's light direction or sky colours would contradict it, and the flat map is unlit.
+  Mapping `fog` ranges onto aerial perspective is possible but would fake a physical quantity; left out.
+- **Root changes through `setStyle`.** MapLibre's diff expresses root changes as `setTerrain`, `setCenter`… commands
+  the renderer skips; `MapStyle` now copies the root properties into its document on the diff path, so `getStyle()`
+  and the earth see them.
+- **Browser check** (`run.mjs style-root`, `?terrain=style`): an empty `<Terrain>` and a style with the DEM fixture
+  as root terrain (exaggeration 1.5) and a center, zoom, bearing and pitch: the terrain is built from the style,
+  heights read 1.5 times the fixture's (within 0.5 m), the camera starts at the style's view, and the style's
+  raster layer drapes on it.
+
 ## Round 3: faster atmosphere startup
 
 Lookup-texture generation was the slowest part of startup and caused long frames while it ran. Three changes:

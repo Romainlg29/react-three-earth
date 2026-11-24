@@ -45,6 +45,7 @@ export function report(earth: Earth) {
 | --- | --- |
 | `terrain` | null when no `<Terrain>` has a source |
 | `terrain.url` | terrain root URL in use |
+| `terrain.fromStyle` | true when the earth built the terrain from a map style's root `terrain` |
 | `tilesLoaded`, `tilesVisible` | tiles in memory, tiles drawn this frame |
 | `tilesDownloading`, `tilesParsing` | work in flight; both 0 means the view is settled |
 | `memoryUsedBytes`, `memoryBudgetBytes` | tile cache use against `memoryBudgetBytes` |

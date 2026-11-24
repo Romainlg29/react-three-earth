@@ -193,8 +193,8 @@ export const APPLICABLE_COMMANDS: ReadonlySet<string> = new Set<StyleCommand['co
 ])
 
 /**
- * Style `diff` commands that change nothing the renderer draws (camera, transitions, and root properties that
- * W16 will read): skipped rather than reloading the style.
+ * Style `diff` commands that change nothing the renderer draws (camera, transitions, and root properties the
+ * earth reads from the style itself, `readStyleRoot`): skipped rather than reloading the style.
  */
 export const IGNORED_COMMANDS: ReadonlySet<string> = new Set([
   'setCenter',
