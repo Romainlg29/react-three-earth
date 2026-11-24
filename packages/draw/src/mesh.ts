@@ -1,6 +1,6 @@
 import type { MultiPolygon, Position } from 'geojson'
 
-import { hasAltitude, unwrapLongitudeNear } from './geometry.js'
+import { hasAltitude } from './geometry.js'
 import { LocalFrame, type LocalPoint } from './localFrame.js'
 import type { DrawFeature, DrawGeometry } from './types.js'
 
@@ -26,7 +26,12 @@ export interface IndexedMesh {
   faces: number[][][]
 }
 
-/** Whether a geometry is a mesh: a multipolygon with at least one face, every position with an altitude. */
+/**
+ * Whether a geometry is a mesh: a multipolygon with an altitude on every position that looks like a solid's surface,
+ * with at least one steep face (steeper than 60°: a wall, a sphere's side) or closed (`isClosedMesh`). Any other
+ * multipolygon is a set of flat polygons: draped on the terrain, or standing at their altitudes when they have them
+ * (like a polygon with altitudes, even lifted over relief), and placing it back on the terrain drapes it again.
+ */
 export function isMeshGeometry(geometry: DrawGeometry): geometry is MultiPolygon {
   if (geometry.type !== 'MultiPolygon' || geometry.coordinates.length === 0) return false
   for (const polygon of geometry.coordinates) {
@@ -36,7 +41,21 @@ export function isMeshGeometry(geometry: DrawGeometry): geometry is MultiPolygon
       for (const position of ring) if (!hasAltitude(position)) return false
     }
   }
-  return true
+  return geometry.coordinates.some(isSteepFace) || isClosedMesh(indexMesh(geometry))
+}
+
+/** The cosine of 60°: a face whose unit normal points less upwards than this is steep. */
+const STEEP_FACE_UP = 0.5
+
+/** Whether a face (with altitudes) is steeper than 60°: its normal, in the frame at its first vertex, points that far from up. */
+function isSteepFace(polygon: readonly Position[][]): boolean {
+  const ring = openRing(polygon[0] ?? [])
+  if (ring.length < 3) return false
+  const first = ring[0]!
+  const frame = new LocalFrame(first[0]!, first[1]!, first[2]!)
+  const normal = newellNormal(ring.map(position => frame.toLocal(position[0]!, position[1]!, position[2]!)))
+  const length = Math.hypot(...normal)
+  return length > 0 && Math.abs(normal[2]) < STEEP_FACE_UP * length
 }
 
 /** Whether a feature is a mesh (see `isMeshGeometry`). */
@@ -59,8 +78,9 @@ function samePosition(a: Position, b: Position): boolean {
   return a[0] === b[0] && a[1] === b[1] && (a[2] ?? null) === (b[2] ?? null)
 }
 
-function positionKey(position: Position): string {
-  return `${position[0]},${position[1]},${position[2] ?? ''}`
+/** A number for a position, equal for equal positions: a hash, so different positions may share it. */
+function positionHash(position: Position): number {
+  return position[0]! * 92_821 + position[1]! * 1_000_003 + (position[2] ?? 0.5) * 7.919
 }
 
 /** The faces of a mesh, each as its rings without their closing position. */
@@ -71,20 +91,22 @@ export function meshFaces(geometry: MultiPolygon): Position[][][] {
 /** The mesh with each vertex once, shared by the faces that use it (equal coordinates make one vertex). */
 export function indexMesh(geometry: MultiPolygon): IndexedMesh {
   const vertices: Position[] = []
-  const indices = new Map<string, number>()
-  const faces = geometry.coordinates.map(polygon =>
-    polygon.map(ring =>
-      openRing(ring).map(position => {
-        const key = positionKey(position)
-        let index = indices.get(key)
-        if (index === undefined) {
-          index = vertices.push(position) - 1
-          indices.set(key, index)
-        }
-        return index
-      }),
-    ),
-  )
+  // The vertices with each hash: almost always one.
+  const buckets = new Map<number, number | number[]>()
+  const indexOf = (position: Position): number => {
+    const hash = positionHash(position)
+    const bucket = buckets.get(hash)
+    if (bucket === undefined) {
+      buckets.set(hash, vertices.length)
+      return vertices.push(position) - 1
+    }
+    const candidates = typeof bucket === 'number' ? [bucket] : bucket
+    for (const candidate of candidates) if (samePosition(vertices[candidate]!, position)) return candidate
+    const index = vertices.push(position) - 1
+    buckets.set(hash, [...candidates, index])
+    return index
+  }
+  const faces = geometry.coordinates.map(polygon => polygon.map(ring => openRing(ring).map(indexOf)))
   return { vertices, faces }
 }
 
@@ -95,8 +117,9 @@ export function meshFromIndexed(mesh: IndexedMesh): MultiPolygon {
 
 /** Each edge of a mesh once, as the indices of its two vertices (the smaller first). */
 export function meshEdges(mesh: IndexedMesh): Array<[number, number]> {
-  const seen = new Set<string>()
+  const seen = new Set<number>()
   const edges: Array<[number, number]> = []
+  const count = mesh.vertices.length
   for (const face of mesh.faces) {
     for (const ring of face) {
       for (let index = 0; index < ring.length; index++) {
@@ -104,7 +127,7 @@ export function meshEdges(mesh: IndexedMesh): Array<[number, number]> {
         const b = ring[(index + 1) % ring.length]!
         if (a === b) continue
         const edge: [number, number] = a < b ? [a, b] : [b, a]
-        const key = `${edge[0]},${edge[1]}`
+        const key = edge[0] * count + edge[1]
         if (seen.has(key)) continue
         seen.add(key)
         edges.push(edge)
@@ -119,11 +142,13 @@ export function meshEdges(mesh: IndexedMesh): Array<[number, number]> {
  * Its faces then all face outwards, or all inwards (`meshVolume` tells which).
  */
 export function isClosedMesh(mesh: IndexedMesh): boolean {
-  const directed = new Map<string, number>()
+  // Each directed edge (a to b) as a × vertices + b, counted.
+  const directed = new Map<number, number>()
+  const vertices = mesh.vertices.length
   for (const face of mesh.faces) {
     for (const ring of face) {
       for (let index = 0; index < ring.length; index++) {
-        const key = `${ring[index]},${ring[(index + 1) % ring.length]}`
+        const key = ring[index]! * vertices + ring[(index + 1) % ring.length]!
         directed.set(key, (directed.get(key) ?? 0) + 1)
       }
     }
@@ -131,8 +156,9 @@ export function isClosedMesh(mesh: IndexedMesh): boolean {
   if (directed.size === 0) return false
   for (const [key, count] of directed) {
     if (count !== 1) return false
-    const [a, b] = key.split(',')
-    if (directed.get(`${b},${a}`) !== 1) return false
+    const a = Math.floor(key / vertices)
+    const b = key - a * vertices
+    if (directed.get(b * vertices + a) !== 1) return false
   }
   return true
 }
@@ -191,14 +217,16 @@ export function meshSharpEdges(mesh: IndexedMesh, thresholdDegrees = 30): Array<
     const length = Math.hypot(...normal)
     return length > 0 ? normal.map(value => value / length) : [0, 0, 0]
   })
-  const edgeFaces = new Map<string, number[]>()
+  // Each edge as smaller × vertices + larger, with the faces using it.
+  const edgeFaces = new Map<number, number[]>()
+  const count = mesh.vertices.length
   mesh.faces.forEach((face, faceIndex) => {
     for (const ring of face) {
       for (let index = 0; index < ring.length; index++) {
         const a = ring[index]!
         const b = ring[(index + 1) % ring.length]!
         if (a === b) continue
-        const key = a < b ? `${a},${b}` : `${b},${a}`
+        const key = a < b ? a * count + b : b * count + a
         const list = edgeFaces.get(key)
         if (list === undefined) edgeFaces.set(key, [faceIndex])
         else list.push(faceIndex)
@@ -210,8 +238,8 @@ export function meshSharpEdges(mesh: IndexedMesh, thresholdDegrees = 30): Array<
   for (const [key, faces] of edgeFaces) {
     const sharp = faces.length !== 2 || dot(normals[faces[0]!]!, normals[faces[1]!]!) < cosine
     if (!sharp) continue
-    const [a, b] = key.split(',').map(Number) as [number, number]
-    edges.push([a, b])
+    const a = Math.floor(key / count)
+    edges.push([a, key - a * count])
   }
   return edges
 }
@@ -268,14 +296,31 @@ export function setMeshTop(geometry: MultiPolygon, topMeters: number, minimumGap
 /** The altitude of a base vertex, from its position (longitude, latitude, and the altitude it may already have). */
 export type BaseHeightOf = (position: Position) => number
 
-/** Twice the signed area of a ring in plain degrees (longitudes unwrapped near its first): positive when counter-clockwise. */
-function signedAreaDegrees(ring: readonly Position[]): number {
-  const reference = ring[0]?.[0] ?? 0
+/**
+ * Twice the signed area of a ring seen from above, in square metres: positive when counter-clockwise. Measured in the
+ * east-north-up frame at the ring's middle (the mean of its directions from the Earth's centre), so it holds for a
+ * ring around a pole or across the antimeridian, where plain degrees give noise.
+ */
+export function signedAreaFromAbove(ring: readonly Position[]): number {
+  let x = 0
+  let y = 0
+  let z = 0
+  for (const position of ring) {
+    const longitude = (position[0]! * Math.PI) / 180
+    const latitude = (position[1]! * Math.PI) / 180
+    x += Math.cos(latitude) * Math.cos(longitude)
+    y += Math.cos(latitude) * Math.sin(longitude)
+    z += Math.sin(latitude)
+  }
+  const middleLongitude = (Math.atan2(y, x) * 180) / Math.PI
+  const middleLatitude = (Math.atan2(z, Math.hypot(x, y)) * 180) / Math.PI
+  const frame = new LocalFrame(middleLongitude, middleLatitude, 0)
+  const local = ring.map(position => frame.toLocal(position[0]!, position[1]!, 0))
   let area = 0
-  for (let index = 0; index < ring.length; index++) {
-    const a = ring[index]!
-    const b = ring[(index + 1) % ring.length]!
-    area += unwrapLongitudeNear(a[0]!, reference) * b[1]! - unwrapLongitudeNear(b[0]!, reference) * a[1]!
+  for (let index = 0; index < local.length; index++) {
+    const a = local[index]!
+    const b = local[(index + 1) % local.length]!
+    area += a[0] * b[1] - b[0] * a[1]
   }
   return area
 }
@@ -298,7 +343,7 @@ export function prismMesh(rings: readonly (readonly Position[])[], baseOf: BaseH
     .filter(ring => ring.length >= 3)
     .map((ring, ringIndex) => {
       // The exterior counter-clockwise and the holes clockwise, seen from above.
-      const counterClockwise = signedAreaDegrees(ring) > 0
+      const counterClockwise = signedAreaFromAbove(ring) > 0
       const ordered = counterClockwise === (ringIndex === 0) ? ring : [...ring].reverse()
       return ordered.map(position => [position[0]!, position[1]!, base(position)] as Position)
     })

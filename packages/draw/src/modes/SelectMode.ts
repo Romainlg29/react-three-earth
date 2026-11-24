@@ -1,6 +1,7 @@
 import type { Position } from 'geojson'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature, type VertexPath } from '../editing.js'
+import { hasAltitude, lowestAltitude, storedLines } from '../geometry.js'
 import { indexMesh, isMeshGeometry, meshSharpEdges } from '../mesh.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import { isSolidFeature } from '../render/SolidFeatures.js'
@@ -498,11 +499,13 @@ export class SelectMode extends DrawMode {
           const to = vertices[b]!
           content.lines.push({ positions: [[from[0]!, from[1]!], [to[0]!, to[1]!]], heightsMeters: [from[2]!, to[2]!], color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
         }
-      } else if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'LineString') {
-        // A solid: its outline, over the map.
-        for (const ring of feature.geometry.type === 'Polygon' ? feature.geometry.coordinates : [feature.geometry.coordinates]) {
-          const atAltitude = ring.every(position => position.length > 2 && Number.isFinite(position[2]))
-          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), heightsMeters: atAltitude ? ring.map(position => position[2]!) : undefined, color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
+      } else if (feature.geometry.type !== 'Point') {
+        // Lines and flat polygons at their altitudes: their rings, over the map, where they are drawn (positions without
+        // an altitude at the lowest, as `isSolidFeature` says).
+        const lowest = lowestAltitude(feature.geometry)
+        for (const ring of storedLines(feature.geometry)) {
+          const heightsMeters = lowest === null ? undefined : ring.map(position => (hasAltitude(position) ? position[2]! : lowest))
+          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), heightsMeters, color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
         }
       }
       // Moving whole: the handles wait for the release.
@@ -774,15 +777,15 @@ export class SelectMode extends DrawMode {
   }
 
   /**
-   * The height knob: on a flat line or polygon, in its middle at its altitude or on the ground (base and top the same);
-   * on a mesh with a level top face, on that face over the mesh's base. Null for points and other meshes.
+   * The height knob: on a flat line, polygon or multipolygon, in its middle at its altitude or on the ground (base and
+   * top the same); on a mesh with a level top face, on that face over the mesh's base. Null for points and other meshes.
    */
   protected heightKnob(feature: DrawFeature, frame: TransformFrame, fallbackHeightMeters: number): { baseMeters: number; topMeters: number } | null {
     const context = this.context
     if (!this.height || context === null) return null
     const geometry = feature.geometry
     if (geometry.type === 'Point') return null
-    if (geometry.type === 'MultiPolygon') {
+    if (isMeshGeometry(geometry)) {
       const top = meshTopOf(feature)
       return top === null || frame.baseHeightMeters === null ? null : { baseMeters: frame.baseHeightMeters, topMeters: top.topMeters }
     }
@@ -907,7 +910,7 @@ export class SelectMode extends DrawMode {
       const rise = this.verticalDrag(center, top.baseMeters, top.topMeters, press)
       if (rise === null) return null
       // A mesh: its top face moves.
-      if (feature.geometry.type === 'MultiPolygon') return event => moveMeshTop(feature, rise(event))
+      if (isMeshGeometry(feature.geometry)) return event => moveMeshTop(feature, rise(event))
       // A flat feature: a mesh standing on its altitudes or on the terrain under each vertex, sampled once.
       const heights = context.heights
       const ground = new Map<string, number>()

@@ -166,18 +166,25 @@ export function scaleFeature(feature: DrawFeature, center: LongitudeLatitude, fa
 }
 
 /**
- * The flat polygon or line extruded into a mesh `heightMeters` tall: a polygon into a closed prism (`prismMesh`: a level
- * top `heightMeters` above its highest base vertex), a line into a wall (`wallMesh`). The base is each position's
- * altitude, or the terrain's height under it (`groundHeightMeters`: one height, or a function). Holes become inner
- * walls. Other features (points, meshes) are returned unchanged. Properties and id are kept.
+ * The flat polygon, multipolygon or line extruded into a mesh `heightMeters` tall: a polygon into a closed prism
+ * (`prismMesh`: a level top `heightMeters` above its highest base vertex), a multipolygon into one prism per polygon
+ * with one level top over them all (`heightMeters` above the highest base vertex of any), a line into a wall
+ * (`wallMesh`). The base is each position's altitude, or the terrain's height under it (`groundHeightMeters`: one
+ * height, or a function). Holes become inner walls. Other features (points, meshes) are returned unchanged. Properties
+ * and id are kept.
  */
 export function extrudeFeature(feature: DrawFeature, heightMeters: number, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
   const geometry = feature.geometry
-  if (geometry.type !== 'Polygon' && geometry.type !== 'LineString') return feature
+  if (geometry.type === 'Point' || isMeshGeometry(geometry)) return feature
   const ground: GroundHeight = typeof groundHeightMeters === 'number' ? () => groundHeightMeters : groundHeightMeters
   const base = (position: Position) => (hasAltitude(position) ? position[2]! : ground(position[0]!, position[1]!))
-  const mesh = geometry.type === 'Polygon' ? prismMesh(geometry.coordinates, base, heightMeters) : wallMesh(geometry.coordinates, base, heightMeters)
-  return { ...feature, geometry: mesh }
+  if (geometry.type === 'LineString') return { ...feature, geometry: wallMesh(geometry.coordinates, base, heightMeters) }
+  if (geometry.type === 'Polygon') return { ...feature, geometry: prismMesh(geometry.coordinates, base, heightMeters) }
+  // Each polygon's highest base, so every prism's top lands at one altitude.
+  const highest = geometry.coordinates.map(polygon => Math.max(...openRing(polygon[0] ?? []).map(base)))
+  const topMeters = Math.max(...highest) + heightMeters
+  const coordinates = geometry.coordinates.flatMap((polygon, index) => prismMesh(polygon, base, topMeters - highest[index]!).coordinates)
+  return { ...feature, geometry: { type: 'MultiPolygon', coordinates } }
 }
 
 /**

@@ -1,0 +1,271 @@
+import { isOccludedByEllipsoid, type Earth } from 'react-three-earth'
+import { Group, Vector3, type Camera } from 'three'
+
+import { distanceMeters, geometryLines, geometryPolygons, unwrapLongitudeNear, triangulatePolygon, fromMercator } from '../geometry.js'
+import { linearColor } from '../style.js'
+import type { DrawFeature, DrawStyle, LongitudeLatitude } from '../types.js'
+import { ShapeBatch } from './ShapeBatch.js'
+
+/** A handle drawn over the map: a vertex, a midpoint, a gizmo knob. */
+export interface OverlayHandle {
+  position: LongitudeLatitude
+  /** Pixels; default: the style's `vertexRadiusPixels`. */
+  radiusPixels?: number
+  color: string
+  outlineColor: string
+  outlineWidthPixels: number
+  /** Drawn semi-transparent (a midpoint, an inactive knob). */
+  faded?: boolean
+  /** Height above the WGS84 ellipsoid, in metres. Default: on the terrain. */
+  heightMeters?: number
+  /** Drawn this many pixels below where its position is on the screen (above when negative). Default: 0. */
+  offsetYPixels?: number
+  /** With an offset, a line this many pixels wide joins the handle to its position, in `outlineColor`. Default: none. */
+  stemWidthPixels?: number
+}
+
+/** A line drawn over the map in screen pixels: a guide, a gizmo ring. */
+export interface OverlayLine {
+  positions: LongitudeLatitude[]
+  /** Height of each position above the WGS84 ellipsoid, in metres. Default: on the terrain. */
+  heightsMeters?: number[]
+  color: string
+  widthPixels: number
+  opacity: number
+}
+
+/** What the overlay draws this frame. */
+export interface OverlayContent {
+  features: Array<{ feature: DrawFeature; style: DrawStyle }>
+  lines: OverlayLine[]
+  handles: OverlayHandle[]
+}
+
+/** Longest piece a line is cut into on the globe, so it follows the curve of the Earth. */
+const SUBDIVISION_METERS = 50_000
+const MAXIMUM_SUBDIVISIONS = 64
+/** New terrain heights sampled per frame (each is a raycast); the rest wait for the next frames. */
+const HEIGHT_SAMPLES_PER_FRAME = 24
+
+const scenePoint = new Vector3()
+const viewPoint = new Vector3()
+const cameraPosition = new Vector3()
+
+/**
+ * Terrain heights of positions, for drawing over the map where the ground is: raycasts are cached by position and
+ * limited per frame.
+ */
+export class HeightSampler {
+  protected readonly heights = new Map<string, number>()
+  protected samplesLeft = HEIGHT_SAMPLES_PER_FRAME
+  /** True when a height was left unsampled this frame: draw again next frame. */
+  pending = false
+
+  constructor(protected readonly earth: Earth) {}
+
+  protected key(longitude: number, latitude: number): string {
+    return `${longitude.toFixed(7)},${latitude.toFixed(7)}`
+  }
+
+  /** Records a height known from elsewhere (the ground under a tap). */
+  remember(longitude: number, latitude: number, heightMeters: number): void {
+    if (this.heights.size > 4096) this.heights.clear()
+    this.heights.set(this.key(longitude, latitude), heightMeters)
+  }
+
+  /**
+   * The terrain height at a position, or `fallback` until it can be sampled. Samples are limited per frame; with
+   * `immediate`, it samples now whatever the budget (for one-off uses, such as the base of a solid being created).
+   */
+  heightAt(longitude: number, latitude: number, fallback = 0, { immediate = false }: { immediate?: boolean } = {}): number {
+    const key = this.key(longitude, latitude)
+    const known = this.heights.get(key)
+    if (known !== undefined) return known
+    if (this.samplesLeft <= 0 && !immediate) {
+      this.pending = true
+      return fallback
+    }
+    this.samplesLeft--
+    const height = this.earth.queryTerrainElevation({ longitudeDegrees: longitude, latitudeDegrees: latitude })
+    // Not loaded yet: try again later rather than remembering sea level.
+    if (height === null) {
+      this.pending = true
+      return fallback
+    }
+    this.remember(longitude, latitude, height)
+    return height
+  }
+
+  /** Call once per frame, before sampling. */
+  startFrame(): void {
+    this.samplesLeft = HEIGHT_SAMPLES_PER_FRAME
+    this.pending = false
+  }
+
+  /** Forgets every height: the terrain changed. */
+  clear(): void {
+    this.heights.clear()
+  }
+}
+
+/**
+ * The live layer: what is being drawn or dragged, and handles, drawn over the map in screen pixels every frame the
+ * camera or the content changes. Features under the pointer move here without redrawing any draped region; once they
+ * settle they go back to `DrapedFeatures`.
+ *
+ * Positions follow the ground (sampled terrain heights) and the globe-to-map morph (`earth.camera.toScenePosition`);
+ * whatever is behind the camera or the globe's horizon is left out.
+ */
+export class LiveOverlay {
+  readonly object = new Group()
+  readonly heights: HeightSampler
+  protected readonly batch = new ShapeBatch({ flipY: true })
+  protected camera: Camera | null = null
+  protected widthPixels = 0
+  protected heightPixels = 0
+  protected onGlobe = true
+
+  constructor(protected readonly earth: Earth) {
+    this.heights = new HeightSampler(earth)
+    this.object.name = 'DrawOverlay'
+    this.object.add(this.batch.mesh)
+  }
+
+  /**
+   * Redraws `content` for the camera. Returns true when heights are still being sampled (draw again next frame).
+   */
+  draw(camera: Camera, content: OverlayContent): boolean {
+    const earth = this.earth
+    const batch = this.batch
+    batch.clear()
+    this.widthPixels = earth.camera.viewportWidthPixels
+    this.heightPixels = earth.camera.viewportHeightPixels
+    if (this.widthPixels <= 0 || this.heightPixels <= 0 || !earth.camera.ready) {
+      batch.upload()
+      return false
+    }
+    camera.updateMatrixWorld()
+    this.camera = camera
+    this.onGlobe = earth.view.morph < 0.5
+    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
+    this.heights.startFrame()
+    for (const { feature, style } of content.features) this.drawFeature(feature, style)
+    for (const line of content.lines) this.drawLine(line.positions, line.widthPixels, linearColor(line.color), line.opacity, line.heightsMeters)
+    for (const handle of content.handles) this.drawHandle(handle)
+    batch.sizePixels.value.set(this.widthPixels, this.heightPixels)
+    batch.upload()
+    return this.heights.pending
+  }
+
+  /** Screen pixels of a position (written to `target`), or null behind the camera or the horizon. */
+  project(longitude: number, latitude: number, heightMeters: number, target: { x: number; y: number }): { x: number; y: number } | null {
+    const camera = this.camera
+    if (camera === null) return null
+    this.earth.camera.toScenePosition({ longitudeDegrees: longitude, latitudeDegrees: latitude, heightMeters }, scenePoint)
+    if (this.onGlobe && isOccludedByEllipsoid(cameraPosition, scenePoint)) return null
+    viewPoint.copy(scenePoint).applyMatrix4(camera.matrixWorldInverse)
+    if (viewPoint.z >= 0) return null
+    viewPoint.applyMatrix4(camera.projectionMatrix)
+    target.x = ((viewPoint.x + 1) / 2) * this.widthPixels
+    target.y = ((1 - viewPoint.y) / 2) * this.heightPixels
+    return target
+  }
+
+  protected drawFeature(feature: DrawFeature, style: DrawStyle): void {
+    const geometry = feature.geometry
+    if (geometry.type === 'Point') {
+      const [longitude, latitude] = geometry.coordinates as [number, number]
+      const point = this.project(longitude, latitude, this.heights.heightAt(longitude, latitude), { x: 0, y: 0 })
+      if (point === null) return
+      this.batch.circle(point.x, point.y, style.pointRadiusPixels + style.pointOutlineWidthPixels, linearColor(style.pointOutlineColor), 1)
+      this.batch.circle(point.x, point.y, style.pointRadiusPixels, linearColor(style.pointColor), 1)
+      return
+    }
+    const lines = geometryLines(geometry)
+    if (style.fillOpacity > 0) for (const rings of geometryPolygons(geometry)) if (rings.length > 0 && rings[0]!.length >= 3) this.drawFill(rings, style)
+    if (style.lineOpacity <= 0 || style.lineWidthPixels <= 0) return
+    for (const line of lines) this.drawLine(line, style.lineWidthPixels, linearColor(style.lineColor), style.lineOpacity)
+  }
+
+  protected drawFill(rings: LongitudeLatitude[][], style: DrawStyle): void {
+    const { vertices, indices } = triangulatePolygon(rings)
+    const color = linearColor(style.fillColor)
+    const reference = rings[0]![0]![0]
+    const fallback = this.heights.heightAt(rings[0]![0]![0], rings[0]![0]![1])
+    const screen: Array<{ x: number; y: number } | null> = []
+    for (let index = 0; index < vertices.length; index += 2) {
+      const [longitude, latitude] = fromMercator({ x: vertices[index]!, y: vertices[index + 1]! })
+      const unwrapped = unwrapLongitudeNear(longitude, reference)
+      screen.push(this.project(unwrapped, latitude, this.heights.heightAt(unwrapped, latitude, fallback), { x: 0, y: 0 }))
+    }
+    for (let index = 0; index < indices.length; index += 3) {
+      const a = screen[indices[index]!]
+      const b = screen[indices[index + 1]!]
+      const c = screen[indices[index + 2]!]
+      if (a == null || b == null || c == null) continue
+      this.batch.triangle(a.x, a.y, b.x, b.y, c.x, c.y, color, style.fillOpacity)
+    }
+  }
+
+  /** A line through positions, cut into pieces that follow the globe; pieces behind the camera or horizon are skipped. */
+  protected drawLine(positions: readonly LongitudeLatitude[], widthPixels: number, color: readonly [number, number, number], alpha: number, heightsMeters?: readonly number[]): void {
+    if (positions.length < 2 || widthPixels <= 0 || alpha <= 0) return
+    const run: number[] = []
+    const flush = () => {
+      if (run.length >= 4) this.batch.polyline(run, widthPixels, color, alpha)
+      run.length = 0
+    }
+    const point = { x: 0, y: 0 }
+    let previousHeight = heightsMeters?.[0] ?? this.heights.heightAt(positions[0]![0], positions[0]![1])
+    for (let index = 0; index + 1 < positions.length; index++) {
+      const from = positions[index]!
+      const to: LongitudeLatitude = [unwrapLongitudeNear(positions[index + 1]![0], from[0]), positions[index + 1]![1]]
+      const fromHeight = previousHeight
+      const toHeight = heightsMeters?.[index + 1] ?? this.heights.heightAt(to[0], to[1], fromHeight)
+      previousHeight = toHeight
+      const pieces = this.onGlobe ? Math.min(MAXIMUM_SUBDIVISIONS, Math.max(1, Math.ceil(distanceMeters(from, to) / SUBDIVISION_METERS))) : 1
+      for (let piece = index === 0 ? 0 : 1; piece <= pieces; piece++) {
+        const t = piece / pieces
+        // Straight on the map (Web Mercator), as the draped line is drawn.
+        const longitude = from[0] + (to[0] - from[0]) * t
+        const latitude = pieces === 1 ? (t === 0 ? from[1] : to[1]) : mercatorLatitudeLerp(from[1], to[1], t)
+        const projected = this.project(longitude, latitude, fromHeight + (toHeight - fromHeight) * t, point)
+        if (projected === null) {
+          flush()
+          continue
+        }
+        run.push(projected.x, projected.y)
+      }
+    }
+    flush()
+  }
+
+  protected drawHandle(handle: OverlayHandle): void {
+    const [longitude, latitude] = handle.position
+    const point = this.project(longitude, latitude, handle.heightMeters ?? this.heights.heightAt(longitude, latitude), { x: 0, y: 0 })
+    if (point === null) return
+    const radius = handle.radiusPixels ?? 5
+    const alpha = handle.faded === true ? 0.6 : 1
+    const offset = handle.offsetYPixels ?? 0
+    if (offset !== 0) {
+      if (handle.stemWidthPixels !== undefined && handle.stemWidthPixels > 0) this.batch.segment(point.x, point.y, point.x, point.y + offset, handle.stemWidthPixels, linearColor(handle.outlineColor), alpha)
+      point.y += offset
+    }
+    this.batch.circle(point.x, point.y, radius + handle.outlineWidthPixels, linearColor(handle.outlineColor), alpha)
+    this.batch.circle(point.x, point.y, radius, linearColor(handle.color), alpha)
+  }
+
+  dispose(): void {
+    this.batch.dispose()
+    this.object.removeFromParent()
+  }
+}
+
+const DEGREES = Math.PI / 180
+
+/** The latitude a fraction of the way between two, straight in Web Mercator. */
+export function mercatorLatitudeLerp(from: number, to: number, t: number): number {
+  const y = (latitude: number) => Math.log(Math.tan(Math.PI / 4 + (Math.max(-85.06, Math.min(85.06, latitude)) * DEGREES) / 2))
+  const value = y(from) + (y(to) - y(from)) * t
+  return (2 * Math.atan(Math.exp(value)) - Math.PI / 2) / DEGREES
+}

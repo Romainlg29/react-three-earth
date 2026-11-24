@@ -100,6 +100,24 @@ export function hasAltitude(position: Position): boolean {
   return position.length > 2 && Number.isFinite(position[2])
 }
 
+/**
+ * The lowest altitude among a geometry's positions, or null when none has one (it drapes on the terrain). A geometry
+ * with altitudes stands at them, and its positions without one stand at this altitude.
+ */
+export function lowestAltitude(geometry: DrawGeometry): number | null {
+  let lowest = Infinity
+  for (const position of storedPositions(geometry)) if (hasAltitude(position) && position[2]! < lowest) lowest = position[2]!
+  return Number.isFinite(lowest) ? lowest : null
+}
+
+/** A geometry's lines as stored (altitudes kept): a line string, or every ring of its polygons. None for a point. */
+export function storedLines(geometry: DrawGeometry): Position[][] {
+  if (geometry.type === 'Point') return []
+  if (geometry.type === 'LineString') return [geometry.coordinates]
+  if (geometry.type === 'Polygon') return geometry.coordinates
+  return geometry.coordinates.flat()
+}
+
 /** Every position of a geometry, flattened. */
 export function geometryPositions(geometry: DrawGeometry): LongitudeLatitude[] {
   if (geometry.type === 'Point') return [[geometry.coordinates[0]!, geometry.coordinates[1]!]]

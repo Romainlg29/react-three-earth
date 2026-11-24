@@ -331,15 +331,20 @@ describe('solids', () => {
   it('splits long edges so walls follow the ground, and draws lines at an altitude as lines', () => {
     const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
     const wall = buildSolidGeometry(feature(wallMesh([CENTER, destination(CENTER, 10_000, 90)], 0, 50)), frame)
-    // 10 km split in halves until no piece is longer than 2 km across: its foot in 8 pieces, on the ground.
+    // 10 km (10.03 km across in the frame: the destination is on a sphere) split into pieces no longer than 2 km across:
+    // its foot in 6 pieces, on the ground.
     const positions = wall.faces!.getAttribute('position')
-    const foot = new Set<string>()
+    const foot = new Set<number>()
     for (let index = 0; index < positions.count; index++) {
       const [east, north, up] = [positions.getX(index), positions.getY(index), positions.getZ(index)]
       const aboveGround = up + (east * east + north * north) / (2 * 6_378_137)
-      if (Math.abs(aboveGround) < 0.5) foot.add(east.toFixed(0))
+      if (Math.abs(aboveGround) < 0.5) foot.add(Math.round(east) + 0)
     }
-    expect(foot.size).toBe(9)
+    expect(foot.size).toBe(7)
+    const steps = [...foot].sort((a, b) => a - b)
+    for (let index = 1; index < steps.length; index++) expect(steps[index]! - steps[index - 1]!).toBeLessThanOrEqual(2001)
+    // Its outline: the quad's four edges, the long ones split at the same points.
+    expect(wall.edges!.getAttribute('position').count).toBe(2 * (6 + 6 + 1 + 1))
     const line = buildSolidGeometry(feature({ type: 'LineString', coordinates: [[6.6, 46.45, 900], [6.61, 46.45, 900]] }), frame)
     expect(line.faces).toBeNull()
     expect(line.line!.getAttribute('position').getZ(0)).toBeCloseTo(900, 3)

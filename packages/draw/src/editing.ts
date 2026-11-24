@@ -1,6 +1,6 @@
 import type { Position } from 'geojson'
 
-import { distanceMeters, distanceToSegment, hasAltitude, mapGeometryPositions, pointInPolygon, unwrapLongitudeNear } from './geometry.js'
+import { distanceMeters, distanceToSegment, hasAltitude, lowestAltitude, mapGeometryPositions, pointInPolygon, storedPositions, unwrapLongitudeNear } from './geometry.js'
 import { bearingDegrees, destination } from './shapes.js'
 import type { DrawFeature, LongitudeLatitude } from './types.js'
 
@@ -166,10 +166,6 @@ function insideScreenRing(point: ScreenPoint, ring: readonly ScreenPoint[]): boo
   return inside
 }
 
-function hasAltitudes(positions: readonly Position[]): boolean {
-  return positions.some(hasAltitude)
-}
-
 /**
  * Whether a tap is inside a face (its rings drawn at their altitudes, or on the terrain where they have none): inside
  * its exterior and outside its holes. False when part of it is hidden.
@@ -201,14 +197,17 @@ export function hitFeature(feature: DrawFeature, input: HitTestInput): number | 
     const distance = Math.hypot(screen.x - input.screen.x, screen.y - input.screen.y)
     return distance <= input.tolerancePixels ? distance : null
   }
-  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.type === 'MultiPolygon' ? geometry.coordinates : []
+  // With any altitude, the feature stands where it is drawn: positions without one at its lowest (see `isSolidFeature`).
+  const lowest = lowestAltitude(geometry)
+  const placed = lowest === null || storedPositions(geometry).every(hasAltitude) ? geometry : mapGeometryPositions(geometry, position => (hasAltitude(position) ? position : [position[0]!, position[1]!, lowest]))
+  const polygons = placed.type === 'Polygon' ? [placed.coordinates] : placed.type === 'MultiPolygon' ? placed.coordinates : []
   for (const rings of polygons) {
-    if (rings.some(hasAltitudes)) {
+    if (lowest !== null) {
       // A face in the air (a mesh's, a polygon's at an altitude): where it is drawn.
       if (insideFace(rings, input)) return 0
     } else if (pointInPolygon(input.ground, rings.map(ring => ring.map(position => [position[0]!, position[1]!] as LongitudeLatitude)))) return 0
   }
-  const lines = geometry.type === 'LineString' ? [geometry.coordinates] : polygons.flat()
+  const lines = placed.type === 'LineString' ? [placed.coordinates] : polygons.flat()
   // Lines, and outlines tapped from just outside, where they are drawn.
   let closest = Infinity
   for (const line of lines) {
