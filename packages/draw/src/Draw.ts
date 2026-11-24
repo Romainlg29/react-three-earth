@@ -15,7 +15,7 @@ import { EventDispatcher, Matrix4 } from 'three'
 import { createFeatureId, FeatureStore, type FeatureStoreChange } from './FeatureStore.js'
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
-import { GIZMO_SPACES, GIZMO_TOOLS, SelectMode, type GizmoSpace, type GizmoTool } from './modes/SelectMode.js'
+import { ELEMENT_MODES, GIZMO_SPACES, GIZMO_TOOLS, SelectMode, type ElementMode, type GizmoSpace, type GizmoTool } from './modes/SelectMode.js'
 import { LineStringMode, PointMode, PolygonMode } from './modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from './modes/ShapeModes.js'
 import { DrapedFeatures } from './render/DrapedFeatures.js'
@@ -44,6 +44,7 @@ export interface DrawOptions {
   /**
    * Keys act on the mode while the map has focus: Escape, Enter, Backspace and Delete, and in the select mode G, R and
    * S (move, rotate, scale under the pointer), then X, Y and Z (lock to an axis); a right click cancels such a move.
+   * Tab enters and leaves edit mode, where 1, 2 and 3 pick vertices, edges or faces and E extrudes the picked face.
    * Default: false (opt-in).
    */
   keyboard?: boolean
@@ -61,8 +62,15 @@ export interface DrawState extends DrawModeStatus {
   features: FeatureCollection<DrawGeometry>
   /** Ids of the selected features (in the select mode). The same array until the selection changes. */
   selectedIds: readonly string[]
-  /** The select mode shows the selected feature's vertex handles; false while it shows the gizmo (or in other modes). */
+  /**
+   * The select mode is in edit mode: the selected feature shows its vertices, edges or faces (`elementMode`) to pick and
+   * drag; false while it shows the gizmo (or in other modes).
+   */
   editingVertices: boolean
+  /** The elements edit mode picks: `'vertex'` (the default), `'edge'` or `'face'`. See `setElementMode`. */
+  elementMode: ElementMode
+  /** `extrude()` would act: in edit mode, a face of a mesh or polygon is picked. */
+  canExtrude: boolean
   /** The gizmo's handles: `'all'` (the default), or only those of `'move'`, `'rotate'` or `'scale'`. See `setGizmoTool`. */
   gizmoTool: GizmoTool
   /** The gizmo's axes: east, north and up (`'world'`, the default), or the feature's own (`'local'`). See `setGizmoSpace`. */
@@ -237,6 +245,27 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.gizmoSpace = space
     for (const mode of this.modes.values()) if (mode instanceof SelectMode) mode.setGizmoSpace(space)
     this.refresh()
+  }
+
+  // ---- Edit mode ----
+
+  /**
+   * Which elements the select mode's edit mode picks: `'vertex'`, `'edge'` or `'face'` (what was picked is dropped).
+   * Headless: build the buttons from `state.elementMode`; a double tap on a mesh switches to `'face'`.
+   */
+  setElementMode(mode: ElementMode): void {
+    if (!ELEMENT_MODES.includes(mode)) throw new Error(`Draw.setElementMode: "${String(mode)}" is no element mode; pick 'vertex', 'edge' or 'face'.`)
+    for (const each of this.modes.values()) if (each instanceof SelectMode) each.setElementMode(mode)
+    this.refresh()
+  }
+
+  /**
+   * Extrudes the picked face of the selected mesh along its normal (a polygon's face becomes a prism), as E does with
+   * `keyboard`: one `update`, one undo step, the new face picked with its push and pull arrow. Without `distanceMeters`,
+   * half the arrow's length (about 40 px on the screen). Returns false when no face is picked (`state.canExtrude`).
+   */
+  extrude(distanceMeters?: number): boolean {
+    return this.mode instanceof SelectMode ? this.mode.extrude(distanceMeters) : false
   }
 
   // ---- Selection ----
@@ -610,6 +639,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       selectedIds: this.mode.selectedFeatureIds(),
       ...status,
       editingVertices: status.editingVertices ?? false,
+      elementMode: status.elementMode ?? [...this.modes.values()].find((each): each is SelectMode => each instanceof SelectMode)?.elementMode ?? 'vertex',
+      canExtrude: status.canExtrude ?? false,
       gizmoTool: this.gizmoTool,
       gizmoSpace: this.gizmoSpace,
     }

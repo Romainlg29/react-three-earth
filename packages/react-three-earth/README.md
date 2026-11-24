@@ -186,7 +186,12 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
 | `write-a-plugin` | extending the map: style layer types, render passes, draped layers, 3D objects, taking presses from the controls |
 
-The drawing package, `react-three-earth-draw`, ships its own `draw-features` skill: drawing points, lines and polygons as GeoJSON with a headless toolbar.
+The drawing package, `react-three-earth-draw`, ships its own skills:
+
+| Skill | Use when |
+| --- | --- |
+| `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
+| `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
 
 Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.
 

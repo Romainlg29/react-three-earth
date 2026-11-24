@@ -9,7 +9,7 @@ description: >
   for 3D: solids stored as meshes of faces (MultiPolygon with altitudes, like Blender): boxes, cylinders, prisms,
   walls, spheres, imported solids, and shapes at an altitude (the GeoJSON third coordinate). Also for editing:
   selecting features, a Blender-style gizmo (arrows, planes, arcs, scale cubes, tools, local axes) to move, raise,
-  tilt and scale them, G / R / S keys, dragging, adding and deleting vertices, undo.
+  tilt and scale them, G / R / S keys, dragging, adding and deleting vertices, undo (edit mode: edit-shapes).
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -268,14 +268,11 @@ first face normal, so it follows any tilt, straight up for a sphere; x and y its
 scales under the mouse with no press (on the ground, around up, uniformly), X, Y or Z locks a gizmo axis, a click or
 Enter confirms, Escape or a right click cancels (`select.startTransform('move')` from a button).
 
-Tap the selected line or polygon again to edit its vertices instead of the gizmo (`state.editingVertices` is then true):
-
-- Drag a vertex handle to move it. Tap or drag a faded midpoint handle to insert a vertex there. A vertex at an
-  altitude is drawn there and moves level under the pointer, keeping its altitude.
-- Tap a vertex to pick it, then press Delete or Backspace, or call `draw.deleteSelected()`. A line keeps 2 vertices and a ring keeps 3.
-- Flat shapes are plain polygons, so their vertices edit like any other. Meshes keep the gizmo: their faces share
-  vertices, which this mode does not edit one by one.
-- Tap the feature again, or press Escape, for the gizmo. Selecting another feature always starts with the gizmo.
+Tap the selected feature again, or double tap a line, polygon or solid, for **edit mode** (`state.editingVertices`):
+its vertices, edges or faces instead of the gizmo, to pick and drag; a picked face pushes, pulls and extrudes. A tap
+on the empty map (or Escape) goes back to the gizmo. `react-three-earth-draw#edit-shapes` covers it. Picking vertices
+of a line or polygon, drag a vertex handle (one at an altitude moves level, keeping it), tap or drag a faded midpoint
+to insert one, tap a vertex then Delete or `draw.deleteSelected()` to remove it (a line keeps 2, a ring 3).
 
 Points have no gizmo and no vertices: they move whole. For all features:
 - Presses off the selection still pan, with one finger too, and two fingers cancel a drag and pinch.
@@ -296,7 +293,7 @@ function EditBar({ draw }: { draw: Draw }) {
       <button aria-pressed={mode === 'select'} onClick={() => draw.setMode('select')}>Select</button>
       <button disabled={selectedIds.length === 0} onClick={() => draw.deleteSelected()}>Delete</button>
       <button disabled={!canUndo} onClick={() => draw.undo()}>Undo</button>
-      <span>{editingVertices ? 'Tap the feature for the gizmo.' : 'Tap it again to edit its vertices.'}</span>
+      <span>{editingVertices ? 'Tap the empty map for the gizmo.' : 'Tap it again to edit it.'}</span>
     </div>
   )
 }
@@ -354,8 +351,8 @@ altitude, and `select.gizmoHandles()` where each gizmo handle is on the screen (
 ### React hooks
 
 - `useDrawState(draw)`: the state (`mode`, `modes`, `features`, `selectedIds`, `drawing`, `vertexCount`, `canFinish`,
-  `canUndo`, `editingVertices`, `gizmoTool`, `gizmoSpace`), re-rendering on change; `useDrawState(draw, state =>
-  state.mode)` only when that part changes.
+  `canUndo`, `editingVertices`, `elementMode`, `canExtrude`, `gizmoTool`, `gizmoSpace`), re-rendering on change;
+  `useDrawState(draw, state => state.mode)` only when that part changes.
 - `useDrawEvent(draw, 'create', ({ features }) => …)`: an event listener for the component's lifetime.
 - Install with `<Earth plugins={[draw]}>` (a stable array) or `usePlugin(draw)` from `react-three-earth/react` inside
   `<Earth>`.
@@ -494,6 +491,6 @@ then only while the map has focus. Shift snaps turns only with `new SelectMode({
 - In the select mode, a tap selects and shows the gizmo: arrows and squares move, the ring moves on the ground, arcs
   turn and tilt, cubes and the outer ring scale; tool and axes buttons call `setGizmoTool` and `setGizmoSpace`. A drag
   on the feature off the handles moves it, while a drag elsewhere still pans.
-- A second tap shows vertex handles: they drag vertices, midpoints add them, and Delete removes the picked one.
+- A second tap enters edit mode (see edit-shapes): vertex handles drag, midpoints add, Delete removes the picked one.
 - Shapes made in two taps or with the builders are plain GeoJSON; those with a height are meshes (faces with
   altitudes) and stand as solids on the globe and the flat map, as do features at an altitude.

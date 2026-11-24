@@ -53,7 +53,7 @@ function DrawToolbar({ draw }: { draw: Draw }) {
             ? state.selectedIds.length === 0
               ? 'Tap a feature to select it.'
               : state.editingVertices
-                ? 'Drag a vertex or the feature; tap a midpoint to add a vertex, a vertex then Delete to remove it. Tap the feature again for the gizmo.'
+                ? 'Drag a vertex or the feature; tap a midpoint to add a vertex, a vertex then Delete to remove it. Tap the empty map for the gizmo.'
                 : `${GIZMO_HELP} Drag the feature itself to move it; tap it again to edit its vertices.`
             : `${state.features.features.length} features drawn.`}
       </p>
