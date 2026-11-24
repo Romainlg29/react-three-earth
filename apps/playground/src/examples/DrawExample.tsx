@@ -9,6 +9,7 @@ import { ExampleShell } from './ExampleShell'
 
 const TOOLS = [
   { mode: 'static', label: 'Pan' },
+  { mode: 'select', label: 'Select' },
   { mode: 'point', label: 'Point' },
   { mode: 'linestring', label: 'Line' },
   { mode: 'polygon', label: 'Polygon' },
@@ -36,12 +37,21 @@ function DrawToolbar({ draw }: { draw: Draw }) {
         <button type="button" disabled={!state.drawing} onClick={() => draw.cancel()}>
           Cancel
         </button>
+        <button type="button" disabled={state.selectedIds.length === 0} onClick={() => draw.deleteSelected()}>
+          Delete
+        </button>
         <button type="button" disabled={state.features.features.length === 0} onClick={() => draw.clear()}>
           Clear
         </button>
       </div>
       <p className="example-status" data-testid="draw-status">
-        {state.drawing ? `${state.vertexCount} vertices placed. Tap the last one to finish.` : `${state.features.features.length} features drawn.`}
+        {state.drawing
+          ? `${state.vertexCount} vertices placed. Tap the last one to finish.`
+          : state.mode === 'select'
+            ? state.selectedIds.length > 0
+              ? 'Drag a handle or the feature; tap a midpoint to add a vertex, a vertex then Delete to remove it.'
+              : 'Tap a feature to edit it.'
+            : `${state.features.features.length} features drawn.`}
       </p>
     </>
   )
@@ -70,8 +80,8 @@ export function DrawExample() {
   const style = useMemo(() => rasterBasemapStyle({ 'raster-saturation': -0.3 }), [])
   return (
     <ExampleShell
-      title="Draw points, lines and polygons"
-      description="Pick a tool and tap the map to place vertices; tap the last vertex to finish. One finger still pans between taps and two fingers pinch, on the globe and the flat map. Features are kept as GeoJSON."
+      title="Draw and edit points, lines and polygons"
+      description="Pick a tool and tap the map to place vertices; tap the last vertex to finish. Select a feature to drag its vertices, add new ones at the midpoints, or move it whole. One finger still pans between taps and two fingers pinch, on the globe and the flat map. Features are kept as GeoJSON."
       camera={{ longitudeDegrees: 6.6, latitudeDegrees: 46.45, heightMeters: 0, distanceMeters: 70_000, headingDegrees: 0, pitchDegrees: -60 }}
       onEarth={setEarth}
       plugins={plugins}

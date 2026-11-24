@@ -1688,6 +1688,96 @@ async function drawing(name, { touch = false, flat = false } = {}) {
 }
 
 /**
+ * Editing (`?example=draw`, the select mode): a tap selects a polygon, a drag on a vertex handle moves it, a tap on a
+ * midpoint inserts a vertex, a drag inside moves the polygon whole without panning, a drag off it still pans, and a
+ * picked vertex can be deleted. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
+ */
+async function editing(name, { touch = false, flat = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=draw&camera=-90,0,0,60000,0,-60`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  if (flat) {
+    await page.evaluate(() => window.earth.setView('2d', { durationSeconds: 0 }))
+    await page.waitForTimeout(500)
+    await idle()
+  }
+  const tap = async (x, y) => {
+    await (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
+    await page.waitForTimeout(200)
+  }
+  const client = touch ? await page.context().newCDPSession(page) : null
+  const drag = async ([x0, y0], [x1, y1]) => {
+    const steps = 8
+    if (touch) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x0, y: y0, id: 1 }] })
+      for (let step = 1; step <= steps; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x0 + ((x1 - x0) * step) / steps, y: y0 + ((y1 - y0) * step) / steps, id: 1 }] })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    } else {
+      await page.mouse.move(x0, y0)
+      await page.mouse.down()
+      await page.mouse.move(x1, y1, { steps })
+      await page.mouse.up()
+    }
+    await page.waitForTimeout(400)
+  }
+  const result = { check: `editing, ${name}`, errors }
+  // A polygon to edit, drawn with the polygon tool.
+  await page.evaluate(() => window.draw.setMode('polygon'))
+  for (const [x, y] of [[420, 250], [620, 260], [640, 420], [440, 430]]) await tap(x, y)
+  await tap(420, 250)
+  await page.evaluate(() => {
+    window.drawUpdates = 0
+    window.draw.addEventListener('update', () => window.drawUpdates++)
+    window.draw.setMode('select')
+  })
+  const ring = () => page.evaluate(() => window.draw.getFeatures().features[0].geometry.coordinates[0])
+  const view = () => page.evaluate(() => window.earth.camera.getView())
+  await tap(530, 340)
+  result.selected = await page.evaluate(() => window.draw.getState().selectedIds.length)
+  const before = await ring()
+  await drag([640, 420], [700, 490])
+  const afterVertex = await ring()
+  result.vertexMoved = afterVertex.length === before.length && afterVertex.filter((position, index) => position[0] !== before[index][0] || position[1] !== before[index][1]).length === 1
+  await tap(520, 255) // the midpoint of the first edge
+  result.verticesAfterInsert = (await ring()).length - 1
+  const viewBeforeMove = await view()
+  const beforeMove = await ring()
+  await drag([520, 340], [470, 300])
+  const afterMove = await ring()
+  const viewAfterMove = await view()
+  result.movedWhole = afterMove.every((position, index) => position[0] !== beforeMove[index][0])
+  result.cameraHeldDuringMove = Math.abs(viewAfterMove.longitudeDegrees - viewBeforeMove.longitudeDegrees) < 1e-9
+  result.updates = await page.evaluate(() => window.drawUpdates)
+  writeFileSync(new URL(`editing-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
+  // Pick the first vertex (it followed the move) and delete it.
+  const first = await page.evaluate(() => {
+    const [longitude, latitude] = window.draw.getFeatures().features[0].geometry.coordinates[0][0]
+    return window.earth.project({ longitudeDegrees: longitude, latitudeDegrees: latitude, heightMeters: window.earth.queryTerrainElevation({ longitudeDegrees: longitude, latitudeDegrees: latitude }) ?? 0 })
+  })
+  await tap(first.xPixels, first.yPixels)
+  result.deleted = await page.evaluate(() => window.draw.deleteSelected())
+  result.verticesAfterDelete = (await ring()).length - 1
+  await page.evaluate(() => window.draw.undo())
+  result.verticesAfterUndo = (await ring()).length - 1
+  // A drag off the selection pans the map.
+  const viewBeforePan = await view()
+  await drag([740, 560], [640, 560])
+  result.pannedOffSelection = Math.abs((await view()).longitudeDegrees - viewBeforePan.longitudeDegrees) > 1e-4
+  await idle() // a tap while the map still glides only stops it
+  await tap(680, 150) // the empty map clears the selection
+  result.selectedAfterEmptyTap = await page.evaluate(() => window.draw.getState().selectedIds.length)
+  await page.close()
+  results.push(result)
+}
+
+/**
  * Shapes and solids (`?example=shapes`): six starting solids (a cylinder, a box, a hexagonal tower, a slab at 2.5 km,
  * a sphere and a wall) stand on the terrain, on the globe and the flat map; two taps draw an extruded circle and two
  * more a rectangle, each kept as GeoJSON with its shape and height. Clearing them leaves the map as it was.
@@ -2328,6 +2418,9 @@ try {
     await drawing('globe, mouse')
     await drawing('globe, touch', { touch: true })
     await drawing('flat map, touch', { touch: true, flat: true })
+    await editing('globe, mouse')
+    await editing('globe, touch', { touch: true })
+    await editing('flat map, touch', { touch: true, flat: true })
     await shapes('globe, mouse')
     await shapes('flat map, touch', { touch: true, flat: true })
   }

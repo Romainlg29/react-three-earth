@@ -1,5 +1,19 @@
 export { Draw, type DrawEventMap, type DrawFeatureInput, type DrawOptions, type DrawState, type DrawStateListener } from './Draw.js'
-export { DrawMode, StaticMode, hitTolerancePixels, IDLE_STATUS, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
+export { DrawMode, StaticMode, hitTolerancePixels, IDLE_STATUS, NO_FEATURE_IDS, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
+export { SelectMode, type SelectModeOptions } from './modes/SelectMode.js'
+export {
+  featureMidpoints,
+  featureVertices,
+  hitFeature,
+  insertVertex,
+  moveVertex,
+  removeVertex,
+  translateFeature,
+  type FeatureMidpoint,
+  type FeatureVertex,
+  type HitTestInput,
+  type VertexPath,
+} from './editing.js'
 export { LineStringMode, PathMode, PointMode, PolygonMode, type PlacementModeOptions } from './modes/PathModes.js'
 export { CircleMode, RectangleMode, SphereMode, TwoTapShapeMode, type ShapeModeOptions } from './modes/ShapeModes.js'
 export {
@@ -19,7 +33,7 @@ export {
   type ShapeOptions,
 } from './shapes.js'
 export { createFeatureId, FeatureStore, validateFeature, type FeatureStoreChange, type FeatureStoreListener } from './FeatureStore.js'
-export { DEFAULT_DRAW_STYLE, resolveStyle } from './style.js'
+export { DEFAULT_DRAW_STYLE, DEFAULT_SELECTED_STYLE, resolveStyle } from './style.js'
 export {
   closeRing,
   distanceMeters,

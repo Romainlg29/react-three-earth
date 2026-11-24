@@ -15,6 +15,7 @@ import { EventDispatcher, Matrix4 } from 'three'
 import { createFeatureId, FeatureStore, type FeatureStoreChange } from './FeatureStore.js'
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
+import { SelectMode } from './modes/SelectMode.js'
 import { LineStringMode, PointMode, PolygonMode } from './modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from './modes/ShapeModes.js'
 import { DrapedFeatures } from './render/DrapedFeatures.js'
@@ -32,7 +33,7 @@ export interface DrawOptions {
    * Default: 'draw'.
    */
   name?: string
-  /** The modes `setMode` can switch to. Default: static, point, linestring, polygon, circle, rectangle and sphere. */
+  /** The modes `setMode` can switch to. Default: static, select, point, linestring, polygon, circle, rectangle and sphere. */
   modes?: DrawMode[]
   /** The mode to start in. Default: 'static'. */
   mode?: string
@@ -54,6 +55,8 @@ export interface DrawState extends DrawModeStatus {
   modes: readonly string[]
   /** Every finished feature, as GeoJSON. */
   features: FeatureCollection<DrawGeometry>
+  /** Ids of the selected features (in the select mode). The same array until the selection changes. */
+  selectedIds: readonly string[]
 }
 
 /** Events a `Draw` fires (`draw.addEventListener('create', listener)`). */
@@ -131,7 +134,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.styleInput = style
     this.keyboard = keyboard
     this.makeId = createId
-    for (const each of modes ?? [new StaticMode(), new PointMode(), new LineStringMode(), new PolygonMode(), new CircleMode(), new RectangleMode(), new SphereMode()]) {
+    for (const each of modes ?? [new StaticMode(), new SelectMode(), new PointMode(), new LineStringMode(), new PolygonMode(), new CircleMode(), new RectangleMode(), new SphereMode()]) {
       if (this.modes.has(each.name)) throw new Error(`Draw: two modes are named "${each.name}"; give each mode a unique name.`)
       this.modes.set(each.name, each)
     }
@@ -185,9 +188,37 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.mode.cancel()
   }
 
-  /** Removes the last vertex of the feature being drawn. */
+  /** Removes the last vertex of the feature being drawn, or takes back the last edit in the select mode. */
   undo(): void {
     this.mode.undo()
+  }
+
+  // ---- Selection ----
+
+  /** Ids of the selected features. */
+  getSelectedIds(): readonly string[] {
+    return this.mode.selectedFeatureIds()
+  }
+
+  /**
+   * Selects features by id (an empty list clears the selection). Switches to the `'select'` mode first when the active
+   * mode does not select.
+   */
+  select(ids: readonly string[]): void {
+    if (this.mode.setSelection(ids)) {
+      this.refresh()
+      return
+    }
+    if (!this.modes.has('select')) throw new Error('Draw.select: no mode selects features; add a SelectMode to `modes`.')
+    this.setMode('select')
+    this.mode.setSelection(ids)
+    // Before install the mode has no context to refresh through.
+    this.refresh()
+  }
+
+  /** Deletes what is selected: the picked vertex of the selected feature, or else the selected features. Fires `update` or `delete`. */
+  deleteSelected(): boolean {
+    return this.mode.deleteSelection()
   }
 
   // ---- Features ----
@@ -326,7 +357,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       },
       style: (feature, state) => this.styleOf(feature, state),
       createId: () => this.makeId(),
-      project: position => this.overlay?.project(position[0], position[1], this.overlay.heights.heightAt(position[0], position[1]), { x: 0, y: 0 }) ?? null,
+      project: (position, fallbackHeightMeters = 0) => this.overlay?.project(position[0], position[1], this.overlay.heights.heightAt(position[0], position[1], fallbackHeightMeters), { x: 0, y: 0 }) ?? null,
+      projectAtHeight: (position, heightMeters) => this.overlay?.project(position[0], position[1], heightMeters, { x: 0, y: 0 }) ?? null,
       changed: () => this.refresh(),
       create: features => {
         this.store.set(features)
@@ -338,6 +370,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
         this.dispatchEvent({ type: 'update', features })
         this.dispatchChange()
       },
+      remove: ids => this.removeFeatures(ids),
       setCursor: cursor => this.applyCursor(cursor),
       holdDoubleClickZoom: () => {
         this.doubleClickZoomRelease ??= this.earth?.interactions.holdDoubleClickZoom() ?? null
@@ -463,7 +496,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   }
 
   protected computeState(): DrawState {
-    return { mode: this.mode.name, modes: this.modeNames(), features: this.store.toFeatureCollection(), ...this.mode.status() }
+    return { mode: this.mode.name, modes: this.modeNames(), features: this.store.toFeatureCollection(), selectedIds: this.mode.selectedFeatureIds(), ...this.mode.status() }
   }
 
   protected cachedModeNames: readonly string[] = []

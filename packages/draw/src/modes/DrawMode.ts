@@ -15,14 +15,21 @@ export interface DrawModeContext {
   style(feature: DrawFeature, state: DrawStyleState): DrawStyle
   /** A new feature id. */
   createId(): string
-  /** Screen pixels of a position as the overlay last drew it, or null when hidden. */
-  project(position: LongitudeLatitude): { x: number; y: number } | null
+  /**
+   * Screen pixels of a position on the terrain as the overlay last drew it, or null when hidden. Where the terrain's
+   * height there is not known yet, `fallbackHeightMeters` stands in (default 0).
+   */
+  project(position: LongitudeLatitude, fallbackHeightMeters?: number): { x: number; y: number } | null
+  /** Screen pixels of a position at a height above the WGS84 ellipsoid, or null when hidden. */
+  projectAtHeight(position: LongitudeLatitude, heightMeters: number): { x: number; y: number } | null
   /** The mode's state or overlay changed: redraw the overlay and tell subscribers. */
   changed(): void
   /** Adds finished features to the store and fires `create`. */
   create(features: DrawFeature[]): void
   /** Replaces features in the store and fires `update`. */
   update(features: DrawFeature[]): void
+  /** Removes features from the store and fires `delete`. */
+  remove(ids: readonly string[]): void
   /** Sets the cursor over the map (null: the map's own). */
   setCursor(cursor: string | null): void
   /** Turns double-click and double-tap zoom off while the mode places things by tapping. Released on `exit`. */
@@ -42,6 +49,9 @@ export interface DrawModeStatus {
 }
 
 export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false })
+
+/** No selected features: one shared empty list, so states compare equal by identity. */
+export const NO_FEATURE_IDS: readonly string[] = Object.freeze([])
 
 /** How close a tap must land to a handle to hit it, in CSS pixels: wider for fingers. */
 export function hitTolerancePixels(pointerType: string): number {
@@ -108,6 +118,21 @@ export abstract class DrawMode {
 
   /** Adds what the mode draws live to `content`: the feature in progress, guides, handles. */
   overlay(_content: OverlayContent): void {}
+
+  /** Ids of the selected features: the same array until the selection changes. Modes that do not select return none. */
+  selectedFeatureIds(): readonly string[] {
+    return NO_FEATURE_IDS
+  }
+
+  /** Selects these features (unknown ids are skipped). Returns false when the mode does not select. */
+  setSelection(_ids: readonly string[]): boolean {
+    return false
+  }
+
+  /** Deletes what is selected: a picked vertex, or the selected features. Returns true when something was deleted. */
+  deleteSelection(): boolean {
+    return false
+  }
 
   /** Ids of stored features the mode draws live (in `overlay`): they are left out of the draped layer meanwhile. */
   liveFeatureIds(): readonly string[] {

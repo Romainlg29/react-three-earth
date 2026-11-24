@@ -6,7 +6,8 @@ description: >
   toolbar (headless: the app renders the buttons from useDrawState). Also when drawing must work with touch on
   iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode. Also for circles,
   rectangles, ellipses, regular polygons and spheres in metres (createCircle, createRectangle…, like turf.circle), and
-  for 3D: extruded cylinders, boxes, prisms and walls, and shapes at an altitude (the GeoJSON third coordinate).
+  for 3D: extruded cylinders, boxes, prisms and walls, and shapes at an altitude (the GeoJSON third coordinate). Also
+  for editing: selecting features, dragging vertices, adding and deleting vertices, moving features, undo.
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -18,6 +19,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/DrawMode.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/PathModes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/ShapeModes.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/modes/SelectMode.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/editing.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/shapes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/render/SolidFeatures.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/types.ts'
@@ -38,7 +41,8 @@ map, and nothing else. No buttons, no CSS. The app builds its toolbar from the s
 | maplibre-gl-draw / terra-draw | react-three-earth-draw |
 | --- | --- |
 | `new MapboxDraw()`, `map.addControl(draw)` | `new Draw()`, `earth.addPlugin(draw)` or `<Earth plugins={[draw]}>` |
-| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
+| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
+| `draw.changeMode('simple_select', { featureIds })`, `draw.getSelectedIds()`, `draw.trash()` | `draw.select(ids)`, `draw.getSelectedIds()` (or `state.selectedIds`), `draw.deleteSelected()` |
 | `draw.getAll()` | `draw.getFeatures()` (a `FeatureCollection`) |
 | `draw.add(geojson)`, `draw.delete(ids)`, `draw.deleteAll()` | `draw.addFeatures(geojson)`, `draw.removeFeatures(ids)`, `draw.clear()` |
 | `draw.create`, `draw.update`, `draw.delete` events | `create`, `update`, `delete`, `change`, `modechange` events |
@@ -208,9 +212,55 @@ const draw = new Draw({ modes: [new StaticMode(), circle, new RectangleMode(), p
 circle.extrusionHeightMeters = 2000 // the next circles are 2 km tall; undefined draws flat ones
 ```
 
+### Editing features
+
+The `select` mode selects and edits finished features:
+
+- A tap selects the feature under it. Points and lines win over the polygon under them, and a tap on the empty map clears the selection.
+- On a selected line or polygon, drag a vertex handle to move it.
+- Tap or drag a faded midpoint handle to insert a vertex there.
+- Tap a vertex to pick it, then press Delete or Backspace, or call `draw.deleteSelected()`. A line keeps 2 vertices and a ring keeps 3.
+- Drag inside a selected feature to move it whole. Each position keeps its distance and bearing in metres, so shapes keep their size.
+- Shapes (`properties.shape`) and spheres only move whole: they show no vertex handles, so they stay circles and boxes. An edited outline would drop `properties.shape`.
+- Presses off the selection still pan, with one finger too, and two fingers cancel a drag and pinch.
+- Each edit fires `update` once, on release (`delete` for a deletion). `undo()` takes edits back.
+- Solids are picked where they are drawn: their faces and walls at their altitude, a sphere by its outline on the screen.
+- A solid stays in 3D while selected; a polygon or wall solid has its footprint outlined, and shows its footprint while dragged.
+- A tap inside a selected polygon still selects a point or line under it. Among polygons, the one containing the tap wins over a neighbour whose edge is near.
+- Changes made elsewhere (`addFeatures`, `clear`, another tool) clear the undo history, drop a picked vertex, and cancel a drag on that feature.
+
+```tsx
+import { Draw } from 'react-three-earth-draw'
+import { useDrawEvent, useDrawState } from 'react-three-earth-draw/react'
+
+function EditBar({ draw }: { draw: Draw }) {
+  const { mode, selectedIds, canUndo } = useDrawState(draw)
+  useDrawEvent(draw, 'update', ({ features }) => console.log('edited', features.map(feature => feature.id)))
+  return (
+    <div>
+      <button aria-pressed={mode === 'select'} onClick={() => draw.setMode('select')}>Select</button>
+      <button disabled={selectedIds.length === 0} onClick={() => draw.deleteSelected()}>Delete</button>
+      <button disabled={!canUndo} onClick={() => draw.undo()}>Undo</button>
+    </div>
+  )
+}
+
+// From code: selects (switching to the select mode when needed) and clears.
+declare const draw: Draw
+draw.select(['parcel-12'])
+draw.select([])
+```
+
+Selected features use the style with `selected: true`. By default lines, fills, points and handle rings turn
+amber (`DEFAULT_SELECTED_STYLE`); a style function can pick its own colours from `state.selected`. The editing
+helpers (`moveVertex`, `insertVertex`, `removeVertex`, `translateFeature`, `featureVertices`, `hitFeature`) are
+exported for custom modes. `new SelectMode({ moveFeatures: false })` only edits vertices, and
+`new SelectMode({ editVertices: false })` only selects and moves.
+
 ### React hooks
 
-- `useDrawState(draw)`: the state (`mode`, `modes`, `features`, `drawing`, `vertexCount`, `canFinish`, `canUndo`),
+- `useDrawState(draw)`: the state (`mode`, `modes`, `features`, `selectedIds`, `drawing`, `vertexCount`, `canFinish`,
+  `canUndo`),
   re-rendering on change. `useDrawState(draw, state => state.mode)` re-renders only when the selected part changes.
 - `useDrawEvent(draw, 'create', ({ features }) => …)`: an event listener for the component's lifetime.
 - Install with `<Earth plugins={[draw]}>` (a stable array) or `usePlugin(draw)` from `react-three-earth/react` inside
@@ -327,5 +377,7 @@ scale, split them into smaller features.
 - The toolbar switches modes, and `canFinish`/`canUndo` enable its buttons.
 - Taps place vertices on the globe and on the flat map, with a finger on a phone too; one finger still pans.
 - `getFeatures()` (or the `change` event) gives the GeoJSON to save, and `features`/`addFeatures` load it back.
+- In the select mode, a tap selects, handles drag vertices, midpoints add them, Delete removes the picked one, and a
+  drag inside moves the feature, while a drag elsewhere still pans.
 - Shapes made in two taps or with the builders keep `properties.shape`; extruded ones and ones at an altitude stand as
   solids on the globe and the flat map.

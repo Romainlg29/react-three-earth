@@ -467,6 +467,19 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
   ]
 }
 
+for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
+  expectations[`editing, ${name}`] = r => [
+    ['a tap selects the polygon', r.selected === 1],
+    ['a drag on a vertex handle moves that vertex only', r.vertexMoved],
+    ['a tap on a midpoint inserts a vertex', r.verticesAfterInsert === 5],
+    ['a drag inside the selection moves it whole, and the camera stays', r.movedWhole && r.cameraHeldDuringMove],
+    ['each edit fires one update', r.updates === 3],
+    ['a picked vertex is deleted, and undo brings it back', r.deleted && r.verticesAfterDelete === 4 && r.verticesAfterUndo === 5],
+    ['a drag off the selection still pans', r.pannedOffSelection],
+    ['a tap on the empty map clears the selection', r.selectedAfterEmptyTap === 0],
+  ]
+}
+
 for (const name of ['globe, mouse', 'flat map, touch']) {
   expectations[`shapes, ${name}`] = r => [
     ['the six starting shapes stand as solids', r.startingSolids === 6],
