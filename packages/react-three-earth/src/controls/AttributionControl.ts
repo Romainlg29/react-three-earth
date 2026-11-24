@@ -45,10 +45,12 @@ export interface AttributionControlState {
  *
  * ```ts
  * const attribution = new AttributionControl({ earth, container })
- * attribution.subscribe(state => {
+ * const draw = (state = attribution.getState()) => {
  *   credits.hidden = !state.visible
  *   appendAttribution(credits, state.entries)
- * })
+ * }
+ * draw() // `subscribe` calls the listener on changes only
+ * attribution.subscribe(draw)
  * ```
  */
 export class AttributionControl extends MapControl<AttributionControlState> {

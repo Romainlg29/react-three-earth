@@ -70,14 +70,14 @@ export function App() {
         </Imagery>
         <Atmosphere />
         <EarthControls />
-        <AttributionControl className="credits" />
+        <AttributionControl style={{ position: 'absolute', right: 0, bottom: 0, background: '#fffc' }} />
       </Earth>
     </Canvas>
   )
 }
 ```
 
-The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` renders them all as unstyled HTML (compact on small screens; place it with a `className`, the library ships no CSS); tile providers such as OpenStreetMap require visible credit.
+The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` renders them all as unstyled HTML (compact on small screens; place it with a `style` or `className`, the library ships no CSS); tile providers such as OpenStreetMap require visible credit.
 
 ## Quick start (vanilla three.js)
 

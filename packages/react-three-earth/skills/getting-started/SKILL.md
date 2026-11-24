@@ -68,8 +68,8 @@ export function App() {
         </Imagery>
         <Atmosphere />
         <EarthControls />
-        {/* Unstyled: place it with a class of yours, e.g. .credits { position: absolute; right: 0; bottom: 0 } */}
-        <AttributionControl className="credits" />
+        {/* Unstyled: place it yourself (a style or a class of yours) */}
+        <AttributionControl style={{ position: 'absolute', right: 0, bottom: 0, background: '#fffc' }} />
       </Earth>
     </Canvas>
   )
@@ -175,7 +175,7 @@ addEventListener('resize', () => {
 
 The order inside the loop matters: controls, then `earth.update`, then render. Without an atmosphere,
 call `renderer.render(scene, camera)` instead of the pipeline and add lights. Call `earth.dispose()`
-`stopAttribution()` and `controls.dispose()` on teardown.
+`stopAttribution()`, `credits.remove()` and `controls.dispose()` on teardown.
 
 ### Show attribution
 
@@ -213,10 +213,6 @@ compact, customAttribution })` with `getState()` and `subscribe()`, and `appendA
 the text and links; `earth.getAttributions()` returns the raw strings. Only text and `<a href>` links with `http` or
 `https` URLs are kept; any other markup is dropped, so provider strings are safe to pass. Render segments as text and
 `<a>` elements, never through `innerHTML`.
-
-The control injects one `<style>` tag, which a strict Content Security Policy blocks unless it allows
-`style-src 'unsafe-inline'`; otherwise write the rules yourself for the class names
-`react-three-earth-attribution`, `-text` and `-toggle`.
 
 ### Expose the Earth to agents and tests
 
