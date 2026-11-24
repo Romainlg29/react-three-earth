@@ -65,6 +65,23 @@ const terrainKind = params.get('terrain') ?? 'quantized-mesh'
 const demUrl = useFixtures
   ? `${import.meta.env.BASE_URL}fixtures/dem/{z}/{x}/{y}.png${terrainKind === 'dem-hills' ? '' : '?plain'}`
   : (import.meta.env.VITE_DEM_URL ?? 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png')
+// `?terrain=style` leaves <Terrain> empty and draws a style whose root `terrain`, `center`, `zoom`, `bearing` and
+// `pitch` the earth follows: terrain from the DEM tiles above, exaggerated 1.5 times, seen from over (-90°, 0°).
+const rootStyle = terrainKind === 'style'
+  ? {
+      version: 8,
+      center: [-90, 0],
+      zoom: 9,
+      bearing: 30,
+      pitch: 20,
+      terrain: { source: 'dem', exaggeration: 1.5 },
+      sources: {
+        dem: { type: 'raster-dem', tiles: [demUrl], encoding: 'terrarium', maxzoom: useFixtures ? 12 : 15, attribution: 'Synthetic test elevation' },
+        imagery: { type: 'raster', tiles: [imageryUrl], tileSize: 256, maxzoom: useFixtures ? 17 : 19 },
+      },
+      layers: [{ id: 'imagery', type: 'raster', source: 'imagery' }],
+    }
+  : undefined
 // `?exaggeration=2` scales the terrain's heights (`<Terrain exaggeration>`); tests change it with `window.setExaggeration`.
 const initialExaggeration = Number(params.get('exaggeration') ?? 1)
 const withAtmosphere = params.get('atmosphere') !== '0'
@@ -204,7 +221,8 @@ function InitialView() {
   const camera = useThree(state => state.camera)
   const earth = useEarth()
   useLayoutEffect(() => {
-    setCameraView(camera, readCameraView())
+    // `?terrain=style` without `?camera`: the style's root view places the camera.
+    if (rootStyle === undefined || params.has('camera')) setCameraView(camera, readCameraView())
     window.earth = earth // agents and tests read earth.inspect()
     window.camera = camera
   }, [camera, earth])
@@ -357,14 +375,16 @@ export function MapDemo() {
           <InitialView />
           {showStatistics ? <PerformanceStats /> : null}
           <Terrain exaggeration={exaggeration}>
-            {terrainKind.startsWith('dem') ? (
+            {rootStyle !== undefined ? null : terrainKind.startsWith('dem') ? (
               <RasterDemSource url={demUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={useFixtures ? 'Synthetic test elevation' : 'Terrain: Mapzen, AWS Terrain Tiles'} />
             ) : (
               <QuantizedMeshSource url={terrainUrl} attribution={useFixtures ? 'Synthetic test terrain' : 'Terrain: Re:Earth Terrain, Mapterhorn'} />
             )}
           </Terrain>
           <Imagery>
-            {mapStyleUrl !== undefined ? (
+            {rootStyle !== undefined ? (
+              <MapStyleSource style={rootStyle} ref={source => void (window.mapStyleSource = source)} />
+            ) : mapStyleUrl !== undefined ? (
               <MapStyleSource url={mapStyleUrl} symbols={symbolPlacement} extrusions={extrusionMode} ref={source => void (window.mapStyleSource = source)} onStyleImageMissing={imageId => (window.styleImagesMissing ??= []).push(imageId)}>
                 {showStyleLayerTypes ? <StyleLayerTypeExamples /> : null}
                 {showGeoJson ? <GeoJsonExample /> : null}

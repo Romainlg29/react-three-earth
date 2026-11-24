@@ -10,10 +10,11 @@ import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type Earth
 import type { Imagery } from './Imagery.js'
 import { screenToMercatorQuery, type RenderedFeature, type RenderedFeatureQueryOptions, type ScreenQueryGeometry } from './featureQuery.js'
 import { LayerEvents } from './LayerEvents.js'
-import type { MapStyleSource } from './sources.js'
+import { RasterDemSource, type MapStyleSource } from './sources.js'
 import type { MercatorPoint, RenderedSourceFeature } from '../vector/worker/types.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
-import type { Terrain } from './Terrain.js'
+import { Terrain } from './Terrain.js'
+import type { StyleRoot } from '../vector/styleRoot.js'
 import type { ExtrusionsInspection } from '../vector/extrusions/Extrusions.js'
 import type { ScreenSymbolsInspection, SymbolFrame } from '../vector/symbols/ScreenSymbols.js'
 import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnchor.js'
@@ -33,6 +34,11 @@ const MINIMUM_CENTER_RAY_SINE = 0.2
 const MAXIMUM_GROUND_ZOOM_GAIN = 4
 /** Terrain height reads under 3D buildings per frame, and milliseconds of reading. */
 const EXTRUSION_ELEVATION_READS_PER_FRAME = 1024
+/**
+ * A camera this close to the Earth's centre has not been placed: a fresh three.js camera starts near the origin,
+ * deep inside the planet (the polar radius is 6357 km).
+ */
+const UNPLACED_CAMERA_DISTANCE_METERS = 6_000_000
 const EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME = 1
 
 /** An imagery overlay that can answer feature queries (`MapStyleOverlay`). */
@@ -46,11 +52,15 @@ const CLICK_TOLERANCE_PIXELS = 3
 export interface EarthOptions {
   /** Drives the sun's position. Default: now. */
   date?: Date
-  /** The view to start in: `'3d'` (globe) or `'2d'` (flat Web Mercator map). Default: '3d'. */
+  /**
+   * The view to start in: `'3d'` (globe) or `'2d'` (flat Web Mercator map). Default: the first map style's root
+   * `projection` (`'mercator'` is `'2d'`), else '3d'.
+   */
   view?: ViewMode
   /**
    * Where the camera starts: `earth.camera.jumpTo(initialView)` on the first `update`, once the camera
-   * is known. Default: the camera stays where it is.
+   * is known. Default: the first map style's root `center`, `zoom`, `bearing` and `pitch` when it loads, if
+   * nothing moved the camera before; otherwise the camera stays where it is.
    */
   initialView?: MapViewChange
 }
@@ -62,6 +72,8 @@ export interface EarthInspection {
   updateMilliseconds: number
   terrain: null | {
     url: string
+    /** True when the earth built it from a map style's root `terrain` (the app set no terrain). */
+    fromStyle: boolean
     tilesLoaded: number
     tilesVisible: number
     tilesDownloading: number
@@ -170,15 +182,33 @@ export class Earth extends Group<EarthEventMap> {
   protected lastUpdateTimestamp: number | null = null
   /** Applied by the first `update`. */
   protected pendingInitialView: MapViewChange | null
+  /** Whether the app chose the view (`view` option, `setView`): styles' root `projection` then leaves it alone. */
+  protected viewChosen: boolean
+  /** The view the last style's root `projection` asked for, so only a change to it morphs again. */
+  protected styleView: ViewMode | null = null
+  /** Whether the starting camera is settled (`initialView`, or a style's root `center`…): later styles leave it. */
+  protected initialViewSettled: boolean
+  /** The camera of the last `update`, to tell whether the app placed it before a style's view arrived. */
+  protected lastCamera: Camera | null = null
+  /** The terrain the app set with `setTerrain`; without one, `terrain` is built from a style's root `terrain`. */
+  protected appTerrain: Terrain | null = null
+  /** The terrain built from a map style's root `terrain`, while the app sets none. */
+  protected styleTerrain: { source: MapStyleSource; key: string; terrain: Terrain; removeFrameRequestListener: () => void } | null = null
+  /** Map style sources of the imagery layers, followed for their root properties: their last read root and how to stop. */
+  protected readonly followedStyles = new Map<MapStyleSource, { root: StyleRoot | null; stop: () => void }>()
+  /** Style root warnings already logged, so each is reported once. */
+  protected readonly styleRootWarnings = new Set<string>()
   /** The element `attachPointerEvents` listens to, and how to stop listening. */
   protected pointerTarget: { element: HTMLElement; remove: () => void } | null = null
   protected readonly viewSample: ViewSample = { groundMetersPerPixel: 0, headingDegrees: 0, pitchDegrees: 0 }
 
-  constructor({ date = new Date(), view = '3d', initialView }: EarthOptions = {}) {
+  constructor({ date = new Date(), view, initialView }: EarthOptions = {}) {
     super()
     this.name = 'Earth'
     this.date = date
     this.pendingInitialView = initialView ?? null
+    this.initialViewSettled = initialView !== undefined
+    this.viewChosen = view !== undefined
     if (view === '2d') this.view.setMode('2d', { durationSeconds: 0 })
   }
 
@@ -265,6 +295,7 @@ export class Earth extends Group<EarthEventMap> {
    * turns to look straight down. The morph runs in `update`; `view.transitioning` tells when it is done.
    */
   setView(mode: ViewMode, options?: ViewTransitionOptions): void {
+    this.viewChosen = true
     this.view.setMode(mode, options)
   }
 
@@ -307,7 +338,18 @@ export class Earth extends Group<EarthEventMap> {
     return anchor
   }
 
+  /**
+   * Sets the ground. Without one (null), the earth builds terrain from the root `terrain` of its first map style
+   * that has one (a `RasterDemSource` of the raster-dem source it names, with its exaggeration), and drops it when
+   * the app sets a terrain again.
+   */
   setTerrain(terrain: Terrain | null): void {
+    if (this.appTerrain === terrain && this.terrain === (terrain ?? this.styleTerrain?.terrain ?? null)) return
+    this.appTerrain = terrain
+    this.updateStyleTerrain()
+  }
+
+  protected attachTerrain(terrain: Terrain | null): void {
     if (this.terrain === terrain) return
     if (this.terrain !== null) {
       this.unsubscribeAttributions(this.terrain)
@@ -347,6 +389,7 @@ export class Earth extends Group<EarthEventMap> {
     this.terrain?.addImagery(imagery)
     if (!this.imagery.has(imagery)) this.subscribeAttributions(imagery)
     this.imagery.add(imagery)
+    this.followStyles()
     this.dispatchEvent({ type: 'attributionchange' })
   }
 
@@ -354,7 +397,127 @@ export class Earth extends Group<EarthEventMap> {
     this.unsubscribeAttributions(imagery)
     this.imagery.delete(imagery)
     this.terrain?.removeImagery(imagery)
+    this.followStyles()
     this.dispatchEvent({ type: 'attributionchange' })
+  }
+
+  /** Map style sources of the imagery layers, in the order the layers were added. */
+  protected *mapStyleSources(): Iterable<MapStyleSource> {
+    for (const imagery of this.imagery) {
+      for (const source of imagery.sources) if (typeof (source as Partial<MapStyleSource>).getStyleRoot === 'function') yield source as MapStyleSource
+    }
+  }
+
+  /** Starts following the root properties of new map styles, stops for those gone, and updates the style terrain. */
+  protected followStyles(): void {
+    const current = new Set(this.mapStyleSources())
+    for (const [source, followed] of this.followedStyles) {
+      if (current.has(source)) continue
+      followed.stop()
+      this.followedStyles.delete(source)
+    }
+    for (const source of current) {
+      if (this.followedStyles.has(source)) continue
+      const onStyleData = () => this.applyStyleRoot(source)
+      source.addEventListener('styledata', onStyleData)
+      this.followedStyles.set(source, { root: null, stop: () => source.removeEventListener('styledata', onStyleData) })
+      if (source.getStyle() !== null) {
+        this.applyStyleRoot(source)
+      } else if (this.terrain === null) {
+        // Nothing draws the style yet (no terrain), so nothing loads it: load it to read its root `terrain`.
+        source
+          .getMapStyle()
+          .load()
+          .catch((error: unknown) => console.warn(`MapStyleSource: the style could not load, so its root properties are not read. ${(error as Error).message}`))
+      }
+    }
+    this.updateStyleTerrain()
+  }
+
+  /** Follows a style's root `projection`, `center`… (first load only) and `terrain`, after it loaded or changed. */
+  protected applyStyleRoot(source: MapStyleSource): void {
+    const followed = this.followedStyles.get(source)
+    if (followed === undefined) return
+    const root = source.getStyleRoot()
+    followed.root = root
+    if (root === null) return
+    for (const warning of root.warnings) {
+      if (this.styleRootWarnings.has(warning)) continue
+      this.styleRootWarnings.add(warning)
+      console.warn(warning)
+    }
+    if (!this.viewChosen && root.view !== null && root.view !== this.styleView) {
+      // The first style's projection applies at once; a later change morphs, as `setView` does.
+      this.view.setMode(root.view, this.styleView === null ? { durationSeconds: 0 } : undefined)
+      this.styleView = root.view
+    }
+    if (!this.initialViewSettled && root.initialView !== null) {
+      this.initialViewSettled = true
+      if (this.cameraUnplaced()) {
+        this.pendingInitialView = root.initialView
+        this.requestFrame()
+      }
+    }
+    this.updateStyleTerrain()
+    this.requestFrame()
+  }
+
+  /**
+   * True while nothing placed the camera: no `jumpTo` or animation, and the camera is still where a fresh three.js
+   * camera starts, near the Earth's centre (an app's `setCameraView`, controls or its own code put it outside).
+   */
+  protected cameraUnplaced(): boolean {
+    if (this.camera.hasPlacedView) return false
+    const camera = this.lastCamera
+    if (camera === null) return true
+    camera.updateMatrixWorld()
+    const elements = camera.matrixWorld.elements
+    return Math.hypot(elements[12]!, elements[13]!, elements[14]!) < UNPLACED_CAMERA_DISTANCE_METERS
+  }
+
+  /**
+   * Sets `terrain`: the app's, else one built from the root `terrain` of the first map style that has one (rebuilt
+   * when its source changes, exaggeration applied in place), else none.
+   */
+  protected updateStyleTerrain(): void {
+    let wanted: { source: MapStyleSource; key: string; root: StyleRoot } | null = null
+    if (this.appTerrain === null) {
+      for (const source of this.mapStyleSources()) {
+        const root = this.followedStyles.get(source)?.root
+        if (root?.terrain == null) continue
+        wanted = { source, key: JSON.stringify([root.terrain.sourceId, root.terrain.source]), root }
+        break
+      }
+    }
+    const previous = this.styleTerrain
+    if (wanted !== null && previous !== null && previous.source === wanted.source && previous.key === wanted.key) {
+      previous.terrain.exaggeration = wanted.root.terrain!.exaggeration
+      return
+    }
+    this.styleTerrain = null
+    if (wanted !== null) {
+      const { source, exaggeration } = wanted.root.terrain!
+      let terrain: Terrain
+      try {
+        terrain = new Terrain({ sources: [new RasterDemSource(source)], exaggeration })
+      } catch (error) {
+        // `readStyleRoot` checks the source; anything it misses must not break the earth for every later change.
+        console.warn(`MapStyleSource: the style's terrain could not be built, so it is ignored; put a <RasterDemSource> in the <Terrain> instead. ${(error as Error).message}`)
+        this.attachTerrain(this.appTerrain ?? null)
+        if (previous !== null) {
+          previous.removeFrameRequestListener()
+          previous.terrain.dispose()
+        }
+        return
+      }
+      const removeFrameRequestListener = terrain.addFrameRequestListener(() => this.requestFrame())
+      this.styleTerrain = { source: wanted.source, key: wanted.key, terrain, removeFrameRequestListener }
+    }
+    this.attachTerrain(this.appTerrain ?? this.styleTerrain?.terrain ?? null)
+    if (previous !== null && previous !== this.styleTerrain) {
+      previous.removeFrameRequestListener()
+      previous.terrain.dispose()
+    }
   }
 
   /**
@@ -394,6 +557,7 @@ export class Earth extends Group<EarthEventMap> {
     renderer.getSize(this.viewportSize)
     this.camera.setCamera(camera)
     this.camera.setViewportSize(this.viewportSize.x, this.viewportSize.y)
+    this.lastCamera = camera
     if (this.pendingInitialView !== null && this.camera.ready && !this.view.transitioning) {
       this.camera.jumpToInitialView(this.pendingInitialView)
       this.pendingInitialView = null
@@ -600,6 +764,7 @@ export class Earth extends Group<EarthEventMap> {
           ? null
           : {
               url: tiles.rootURL ?? '',
+              fromStyle: this.styleTerrain !== null && this.styleTerrain.terrain === terrain,
               tilesLoaded: tiles.stats.loaded,
               tilesVisible: tiles.visibleTiles.size,
               tilesDownloading: tiles.stats.downloading,
@@ -638,6 +803,9 @@ export class Earth extends Group<EarthEventMap> {
     this.camera.stop()
     for (const remove of this.attributionSubscriptions.values()) remove()
     this.attributionSubscriptions.clear()
+    for (const followed of this.followedStyles.values()) followed.stop()
+    this.followedStyles.clear()
+    this.styleTerrain?.removeFrameRequestListener()
     this.terrain?.dispose()
     this.atmosphere?.dispose()
   }

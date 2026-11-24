@@ -1682,6 +1682,30 @@ async function rasterDemTerrain(name, query, { heights = false } = {}) {
   results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
 }
 
+/**
+ * A style's root properties (`?terrain=style`): with an empty `<Terrain>`, the earth builds terrain from the style's
+ * `terrain` (DEM fixture, exaggeration 1.5) and the camera starts at its `center`, `zoom`, `bearing` and `pitch`.
+ */
+async function styleRoot() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&terrain=style')
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect().terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(2000) // tiles fade in
+  const png = await page.screenshot()
+  writeFileSync(new URL('style-root.png', OUT), png)
+  const stats = await analyse(page, png, `
+    let green = 0
+    for (let i = 0; i < px.length; i += 4) if (px[i + 1] > px[i] + 20 && px[i + 1] > px[i + 2] + 20) green++
+    return { greenShare: +(green / (px.length / 4)).toFixed(3) }
+  `)
+  const heights = await fixtureHeightErrors(page, 1.5)
+  const { inspection, attributions } = await page.evaluate(() => ({ inspection: window.earth.inspect(), attributions: window.earth.getAttributions() }))
+  await page.close()
+  results.push({ check: 'style root properties', ...stats, heights, fromStyle: inspection.terrain?.fromStyle, camera: inspection.camera, attributions, errors })
+}
+
 /** Heights under a 7 × 7 grid over 2.4° around (-90°, 0°), against the fixture function times `exaggeration`. */
 async function fixtureHeightErrors(page, exaggeration = 1) {
   const points = []
@@ -2110,6 +2134,7 @@ try {
     await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
     await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
   }
+  if (want('style-root')) await styleRoot()
   if (want('exaggeration')) {
     await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
     await terrainExaggeration('quantized-mesh', '&exaggeration=2')

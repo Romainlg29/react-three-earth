@@ -14,14 +14,16 @@ export interface EarthProps {
   date?: Date
   /**
    * `'3d'` shows the globe, `'2d'` a flat Web Mercator map of the same terrain and imagery. Changing it
-   * morphs between them over `viewTransitionSeconds`; the first value applies at once. Default: '3d'.
+   * morphs between them over `viewTransitionSeconds`; the first value applies at once. Default: the first map
+   * style's root `projection` (`'mercator'` is `'2d'`), else '3d'.
    */
   view?: ViewMode
   /** Length of the globe-to-map transition, in which the map unrolls off the globe. Default: 1.8. */
   viewTransitionSeconds?: number
   /**
    * Where the camera starts, applied on the first frame (`earth.camera.jumpTo`). Read once at mount; move
-   * the camera afterwards with `useEarthCamera()`. Default: the camera stays where it is.
+   * the camera afterwards with `useEarthCamera()`. Default: the first map style's root `center`, `zoom`, `bearing`
+   * and `pitch` when it loads, if nothing moved the camera before; otherwise the camera stays where it is.
    * @example <Earth initialView={{ longitudeDegrees: 2.35, latitudeDegrees: 48.86, zoom: 11, pitchDegrees: -60 }}>
    */
   initialView?: MapViewChange
@@ -48,7 +50,7 @@ export interface EarthProps {
  * (ECEF) metres.
  *
   * Everything else (`<Terrain>`, `<Imagery>`, `<Atmosphere>`, `<EarthControls>`) goes inside it. */
-export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, plugins, renderPipeline = true, children }: EarthProps) {
+export function Earth({ date, view, viewTransitionSeconds, initialView, plugins, renderPipeline = true, children }: EarthProps) {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
@@ -75,6 +77,8 @@ export function Earth({ date, view = '3d', viewTransitionSeconds, initialView, p
   }, [earth, date])
 
   useLayoutEffect(() => {
+    // Without `view`, the style's root `projection` (or the globe) stands.
+    if (view === undefined) return
     earth.setView(view, { durationSeconds: viewTransitionSeconds })
     invalidate()
   }, [earth, view, viewTransitionSeconds, invalidate])
