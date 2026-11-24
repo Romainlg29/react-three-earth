@@ -1688,7 +1688,8 @@ async function drawing(name, { touch = false, flat = false } = {}) {
 }
 
 /**
- * Editing (`?example=draw`, the select mode): a tap selects a polygon, a drag on a vertex handle moves it, a tap on a
+ * Editing (`?example=draw`, the select mode): a tap selects a polygon (with its gizmo), a second tap shows its vertex
+ * handles, a drag on a vertex handle moves it, a tap on a
  * midpoint inserts a vertex, a drag inside moves the polygon whole without panning, a drag off it still pans, and a
  * picked vertex can be deleted. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
  */
@@ -1741,6 +1742,9 @@ async function editing(name, { touch = false, flat = false } = {}) {
   const view = () => page.evaluate(() => window.earth.camera.getView())
   await tap(530, 340)
   result.selected = await page.evaluate(() => window.draw.getState().selectedIds.length)
+  result.gizmoFirst = await page.evaluate(() => !window.draw.getState().editingVertices)
+  await tap(530, 340) // a second tap on the selected polygon: its vertex handles instead of the gizmo
+  result.editingVertices = await page.evaluate(() => window.draw.getState().editingVertices)
   const before = await ring()
   await drag([640, 420], [700, 490])
   const afterVertex = await ring()
@@ -1869,8 +1873,9 @@ async function shapes(name, { touch = false, flat = false } = {}) {
 }
 
 /**
- * The gizmo (`?example=shapes`, the transform mode): a tap on the box where it stands in 3D selects it; a corner
+ * The gizmo (`?example=shapes`, the select mode): a tap on the box where it stands in 3D selects it; a corner
  * scales it, the knob beyond its top turns it, and the knob on top raises it (on the globe, where the vertical shows).
+ * The middle of an edge stretches it with the opposite edge fixed, and the knob under its base lifts it into the air.
  * Each change fires one update and keeps the shape's measurements; the preview solids go once released.
  */
 async function transforming(name, { touch = false, flat = false } = {}) {
@@ -1918,20 +1923,44 @@ async function transforming(name, { touch = false, flat = false } = {}) {
       const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
       return { x: xPixels, y: yPixels }
     }
-    return { id: box.id, shape: box.properties.shape, extrusion: box.properties.extrusionHeightMeters, center: ground(frame.center), top: ground(frame.center, frame.extrusionHeightMeters), corner: ground(frame.corners[2]), knob: ground(frame.rotationHandle) }
+    const base = ground(frame.center)
+    const altitude = box.geometry.coordinates[0][0][2] ?? null
+    const atBase = position => {
+      if (altitude === null) return ground(position)
+      const { xPixels, yPixels } = window.earth.project({ longitudeDegrees: position[0], latitudeDegrees: position[1], heightMeters: altitude })
+      return { x: xPixels, y: yPixels }
+    }
+    const [longitudeDegrees, latitudeDegrees] = frame.center
+    return {
+      id: box.id,
+      shape: box.properties.shape,
+      extrusion: box.properties.extrusionHeightMeters,
+      altitude,
+      groundMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0,
+      center: base,
+      top: ground(frame.center, frame.extrusionHeightMeters),
+      corner: ground(frame.corners[2]),
+      knob: ground(frame.rotationHandle),
+      right: atBase(frame.sideHandles[1].position),
+      left: atBase(frame.sideHandles[3].position),
+      leftPosition: frame.sideHandles[3].position,
+      lift: { x: base.x, y: base.y + 24 },
+    }
   })
   const result = { check: `transforming, ${name}`, errors }
   await page.evaluate(() => {
     window.drawUpdates = 0
     window.draw.addEventListener('update', () => window.drawUpdates++)
-    window.draw.setMode('transform')
+    window.draw.setMode('select')
   })
   let box = await gizmo()
   result.before = box.shape
   // Where the box is drawn: its top, 900 m over the ground (on the flat map, seen from above, the same place).
   await tap(box.top)
   result.selected = await page.evaluate(id => window.draw.getState().selectedIds.includes(id), box.id)
+  result.gizmoShown = await page.evaluate(() => !window.draw.getState().editingVertices)
   await page.waitForTimeout(300)
+  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}-gizmo.png`, OUT), await page.screenshot())
   box = await gizmo()
   await drag(box.corner, { x: box.center.x + (box.corner.x - box.center.x) * 1.5, y: box.center.y + (box.corner.y - box.center.y) * 1.5 })
   box = await gizmo()
@@ -1964,6 +1993,20 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   result.flatSelected = await page.evaluate(() => window.draw.getState().selectedIds.includes('flat'))
   await drag(flatCenter, { x: flatCenter.x, y: flatCenter.y - 40 })
   result.flatExtrusion = await page.evaluate(() => window.draw.getFeature('flat').properties.extrusionHeightMeters ?? 0)
+  // Back to the box: stretch it by the middle of its right edge, then lift it by the knob under its base.
+  await page.evaluate(id => window.draw.select([id]), box.id)
+  await page.waitForTimeout(500)
+  box = await gizmo()
+  await drag(box.right, { x: box.right.x + (box.right.x - box.left.x) * 0.5, y: box.right.y + (box.right.y - box.left.y) * 0.5 })
+  const leftBefore = box.leftPosition
+  box = await gizmo()
+  result.afterStretch = box.shape
+  const metresPerDegree = 111_320
+  result.fixedSideMovedMeters = Math.hypot((box.leftPosition[0] - leftBefore[0]) * metresPerDegree * Math.cos((leftBefore[1] * Math.PI) / 180), (box.leftPosition[1] - leftBefore[1]) * metresPerDegree)
+  await drag(box.lift, { x: box.lift.x, y: box.lift.y - 40 })
+  box = await gizmo()
+  result.lifted = { altitude: box.altitude, groundMeters: box.groundMeters, extrusion: box.extrusion }
+  result.updates = await page.evaluate(() => window.drawUpdates)
   writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
   await page.waitForTimeout(500)
   result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))

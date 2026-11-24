@@ -7,8 +7,8 @@ description: >
   iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode. Also for circles,
   rectangles, ellipses, regular polygons and spheres in metres (createCircle, createRectangle…, like turf.circle), and
   for 3D: extruded cylinders, boxes, prisms and walls, and shapes at an altitude (the GeoJSON third coordinate). Also
-  for editing: selecting features, dragging vertices, adding and deleting vertices, moving features, undo; and for a
-  transform gizmo: move, rotate and scale features, and extrude flat shapes into volumes by dragging a height knob.
+  for editing: selecting features, a gizmo to move, rotate, scale, stretch, extrude and lift them (up and down, into the
+  air), dragging, adding and deleting vertices, undo.
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -22,7 +22,6 @@ sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/ShapeModes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/SelectMode.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/editing.ts'
-  - 'Romainlg29/react-three-earth:packages/draw/src/modes/TransformMode.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/transform.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/shapes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/render/SolidFeatures.ts'
@@ -44,7 +43,7 @@ map, and nothing else. No buttons, no CSS. The app builds its toolbar from the s
 | maplibre-gl-draw / terra-draw | react-three-earth-draw |
 | --- | --- |
 | `new MapboxDraw()`, `map.addControl(draw)` | `new Draw()`, `earth.addPlugin(draw)` or `<Earth plugins={[draw]}>` |
-| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'transform'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
+| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
 | `draw.changeMode('simple_select', { featureIds })`, `draw.getSelectedIds()`, `draw.trash()` | `draw.select(ids)`, `draw.getSelectedIds()` (or `state.selectedIds`), `draw.deleteSelected()` |
 | `draw.getAll()` | `draw.getFeatures()` (a `FeatureCollection`) |
 | `draw.add(geojson)`, `draw.delete(ids)`, `draw.deleteAll()` | `draw.addFeatures(geojson)`, `draw.removeFeatures(ids)`, `draw.clear()` |
@@ -215,21 +214,39 @@ const draw = new Draw({ modes: [new StaticMode(), circle, new RectangleMode(), p
 circle.extrusionHeightMeters = 2000 // the next circles are 2 km tall; undefined draws flat ones
 ```
 
-### Editing features
+### Selecting and editing features
 
-The `select` mode selects and edits finished features:
+The `select` mode selects and edits finished features. A tap selects the feature under it: points and lines win over
+the polygon under them, and a tap on the empty map clears the selection. A selected line, polygon or sphere shows a
+gizmo:
 
-- A tap selects the feature under it. Points and lines win over the polygon under them, and a tap on the empty map clears the selection.
-- On a selected line or polygon, drag a vertex handle to move it.
-- Tap or drag a faded midpoint handle to insert a vertex there.
+- Drag the feature to move it whole. Each position keeps its distance and bearing in metres, so shapes keep their size.
+- Drag a corner of the box around it to scale it around its center.
+- Drag the middle of an edge to stretch it along that axis; the opposite edge stays put and cannot be crossed.
+  A rectangle gets a new width or length, a circle becomes an ellipse, and a regular polygon becomes a plain polygon.
+- Drag the knob beyond the box's top edge to turn it; hold Shift to snap to 15°. Circles and spheres have no turning knob.
+- Drag the knob in the middle of a line or polygon up to extrude it: a rectangle becomes a box, a circle a cylinder, a
+  line a wall. On a solid the knob sits on top: drag it up or down to change the height, down to the ground to flatten it.
+- Drag the knob on a short stem under the feature's base up or down to lift it into the air. Every position gets an
+  altitude (the GeoJSON third coordinate), the extrusion is kept, and down to the ground puts it back on the terrain.
+  A sphere lifts by its center.
+- Seen from straight above, as on the flat map, dragging the height or lift knob up the screen raises it.
+
+Tap the selected line or polygon again to edit its vertices instead of the gizmo (`state.editingVertices` is then true):
+
+- Drag a vertex handle to move it. Tap or drag a faded midpoint handle to insert a vertex there.
 - Tap a vertex to pick it, then press Delete or Backspace, or call `draw.deleteSelected()`. A line keeps 2 vertices and a ring keeps 3.
-- Drag inside a selected feature to move it whole. Each position keeps its distance and bearing in metres, so shapes keep their size.
-- Shapes (`properties.shape`) and spheres only move whole: they show no vertex handles, so they stay circles and boxes. An edited outline would drop `properties.shape`.
+- Shapes can be edited too, but an edited outline drops `properties.shape`: the circle becomes a plain polygon.
+- Tap the feature again, or press Escape, for the gizmo. Selecting another feature always starts with the gizmo.
+
+Points have no gizmo and no vertices: they move whole. For all features:
+
 - Presses off the selection still pan, with one finger too, and two fingers cancel a drag and pinch.
-- Each edit fires `update` once, on release (`delete` for a deletion). `undo()` takes edits back.
+- Each edit fires `update` once, on release (`delete` for a deletion). A drag that changes nothing records nothing. `undo()` takes edits back.
 - Solids are picked where they are drawn: their faces and walls at their altitude, a sphere by its outline on the screen.
-- A solid stays in 3D while selected; a polygon or wall solid has its footprint outlined, and shows its footprint while dragged.
+- A solid stays in 3D while selected and while it changes; a polygon or wall solid has its footprint outlined.
 - A tap inside a selected polygon still selects a point or line under it. Among polygons, the one containing the tap wins over a neighbour whose edge is near.
+- On a small feature a press inside it moves it unless it lands right on a knob, so it can always be moved.
 - Changes made elsewhere (`addFeatures`, `clear`, another tool) clear the undo history, drop a picked vertex, and cancel a drag on that feature.
 
 ```tsx
@@ -237,13 +254,14 @@ import { Draw } from 'react-three-earth-draw'
 import { useDrawEvent, useDrawState } from 'react-three-earth-draw/react'
 
 function EditBar({ draw }: { draw: Draw }) {
-  const { mode, selectedIds, canUndo } = useDrawState(draw)
+  const { mode, selectedIds, canUndo, editingVertices } = useDrawState(draw)
   useDrawEvent(draw, 'update', ({ features }) => console.log('edited', features.map(feature => feature.id)))
   return (
     <div>
       <button aria-pressed={mode === 'select'} onClick={() => draw.setMode('select')}>Select</button>
       <button disabled={selectedIds.length === 0} onClick={() => draw.deleteSelected()}>Delete</button>
       <button disabled={!canUndo} onClick={() => draw.undo()}>Undo</button>
+      <span>{editingVertices ? 'Editing vertices: tap the feature for the gizmo.' : 'Tap the feature again to edit its vertices.'}</span>
     </div>
   )
 }
@@ -255,35 +273,34 @@ draw.select([])
 ```
 
 Selected features use the style with `selected: true`. By default lines, fills, points and handle rings turn
-amber (`DEFAULT_SELECTED_STYLE`); a style function can pick its own colours from `state.selected`. The editing
-helpers (`moveVertex`, `insertVertex`, `removeVertex`, `translateFeature`, `featureVertices`, `hitFeature`) are
-exported for custom modes. `new SelectMode({ moveFeatures: false })` only edits vertices, and
-`new SelectMode({ editVertices: false })` only selects and moves.
+amber (`DEFAULT_SELECTED_STYLE`); a style function can pick its own colours from `state.selected`.
 
-### Transform gizmo: move, rotate, scale, extrude
-
-The `transform` mode selects like `select`, but shows a gizmo on the selected feature instead of vertex handles:
-
-- Drag the feature to move it.
-- Drag a corner of the box around it to scale it around its center.
-- Drag the knob beyond the box's top edge to turn it; hold Shift to snap to 15°. Circles and spheres have no turning knob.
-- Drag the knob in the middle of a line or polygon up to extrude it into a volume: a rectangle becomes a box, a circle a cylinder, a line a wall.
-  - On a solid, the knob sits on top; drag it up or down to change the height, or down to the ground to flatten it again.
-  - Seen from straight above, as on the flat map, dragging up the screen raises it.
-- Shapes keep their measurements: a scaled circle has a new `radiusMeters`, a turned rectangle a new `rotationDegrees`.
-- While a solid changes it is previewed in 3D. Each change fires one `update` on release, and `undo()` takes it back.
+Options turn parts off. `editVertices: false` keeps the gizmo (no vertex editing), `moveFeatures: false` leaves
+the body to the camera, and `rotate`, `scale`, `stretch`, `height` and `lift` remove those handles. To switch the
+vertex editing from a button, use `setEditingVertices` on the mode:
 
 ```ts
-import { CircleMode, Draw, featureCenter, rotateFeature, scaleFeature, setExtrusionHeight, StaticMode, TransformMode } from 'react-three-earth-draw'
+import { CircleMode, Draw, featureCenter, liftFeature, rotateFeature, scaleFeature, SelectMode, setExtrusionHeight, StaticMode, stretchFeature, transformFrame } from 'react-three-earth-draw'
 
-const draw = new Draw({ modes: [new StaticMode(), new CircleMode(), new TransformMode({ snapDegrees: 45 })] })
-draw.setMode('transform')
+const select = new SelectMode({ snapDegrees: 45, lift: false })
+const draw = new Draw({ modes: [new StaticMode(), new CircleMode(), select] })
+draw.select(['parcel-12'])
+select.setEditingVertices(true) // vertex handles; false: the gizmo
 
 // The same changes from code, on any feature:
 const feature = draw.getFeature('parcel-12')!
 const center = featureCenter(feature)
-draw.addFeatures([setExtrusionHeight(scaleFeature(rotateFeature(feature, center, 30), center, 2), 120)])
+const turned = setExtrusionHeight(scaleFeature(rotateFeature(feature, center, 30), center, 2), 120)
+// Twice as long, its bottom edge fixed (`sideHandles` are the edges' middles: bottom, right, top, left), then 500 m up.
+const frame = transformFrame(turned)
+const bottom = frame.sideHandles[0]!
+draw.addFeatures([liftFeature(stretchFeature(turned, frame, bottom.axis, bottom.sideMeters, 2), 500)])
 ```
+
+`liftFeature(feature, deltaMeters, groundHeightMeters)` raises positions that have an altitude by `deltaMeters`, and
+gives the others `groundHeightMeters + deltaMeters` (pass the terrain's height, `earth.queryTerrainElevation`).
+`placeOnTerrain` drops the altitudes again. The editing helpers (`moveVertex`, `insertVertex`, `removeVertex`,
+`translateFeature`, `featureVertices`, `hitFeature`) are exported for custom modes too.
 
 The extrusion height and the altitude are two different things. A position's third coordinate is where the feature
 sits (its base, above the ellipsoid). `properties.extrusionHeightMeters` is how tall it stands from there. GeoJSON
@@ -411,9 +428,9 @@ scale, split them into smaller features.
 - The toolbar switches modes, and `canFinish`/`canUndo` enable its buttons.
 - Taps place vertices on the globe and on the flat map, with a finger on a phone too; one finger still pans.
 - `getFeatures()` (or the `change` event) gives the GeoJSON to save, and `features`/`addFeatures` load it back.
-- In the select mode, a tap selects, handles drag vertices, midpoints add them, Delete removes the picked one, and a
-  drag inside moves the feature, while a drag elsewhere still pans.
-- In the transform mode, corners scale, the outer knob turns, and the middle knob extrudes flat shapes into volumes and
-  changes their height.
+- In the select mode, a tap selects and shows the gizmo: corners scale, edges stretch, the outer knob turns, the middle
+  knob extrudes and changes the height, and the knob under the base lifts. A drag inside moves the feature, while a
+  drag elsewhere still pans.
+- A second tap shows vertex handles: they drag vertices, midpoints add them, and Delete removes the picked one.
 - Shapes made in two taps or with the builders keep `properties.shape`; extruded ones and ones at an altitude stand as
   solids on the globe and the flat map.

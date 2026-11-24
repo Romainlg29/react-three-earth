@@ -17,7 +17,7 @@ describe('editing helpers', () => {
   it('lists vertices without the closing position, and the midpoints of every edge', () => {
     expect(featureVertices(square()).map(vertex => vertex.position)).toEqual([[0, 0], [1, 0], [1, 1], [0, 1]])
     expect(featureMidpoints(square()).map(midpoint => midpoint.position)).toEqual([[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]])
-    expect(featureMidpoints(line())).toEqual([{ path: { ring: 0, index: 1 }, position: [0.5, 0] }])
+    expect(featureMidpoints(line())).toEqual([{ path: { ring: 0, index: 1 }, position: [0.5, 0], heightMeters: 200 }])
   })
 
   it('moves the first vertex of a ring together with its closing position, keeping altitudes', () => {
@@ -162,6 +162,7 @@ describe('select mode', () => {
     const mode = new SelectMode()
     mode.enter(context)
     mode.setSelection(['square'])
+    mode.setEditingVertices(true)
     mode.pointerDown(pointer(50, 0)) // insert a vertex: one edit to undo
     mode.pointerUp(pointer(50, 0))
     mode.pointerDown(pointer(100, 100))
@@ -175,6 +176,7 @@ describe('select mode', () => {
     expect(store.has('square')).toBe(false)
     store.set([square()])
     mode.setSelection(['square'])
+    mode.setEditingVertices(true)
     mode.pointerDown(pointer(100, 100))
     store.set([{ ...square(), properties: { name: 'renamed' } }])
     mode.pointerMove(pointer(150, 150))
@@ -197,6 +199,7 @@ describe('select mode', () => {
     const mode = new SelectMode()
     mode.enter(context)
     mode.setSelection(['square'])
+    mode.setEditingVertices(true)
     expect(mode.pointerDown(pointer(100, 100))).toBe(true)
     mode.pointerMove(pointer(120, 110))
     mode.pointerMove(pointer(150, 150))
@@ -215,6 +218,7 @@ describe('select mode', () => {
     const mode = new SelectMode()
     mode.enter(context)
     mode.setSelection(['square'])
+    mode.setEditingVertices(true)
     mode.pointerDown(pointer(50, 0))
     mode.pointerUp(pointer(50, 0))
     expect(featureVertices(store.get('square')!)).toHaveLength(5)
@@ -230,9 +234,9 @@ describe('select mode', () => {
     const mode = new SelectMode()
     mode.enter(context)
     mode.setSelection(['square'])
-    expect(mode.pointerDown(pointer(50, 50))).toBe(true)
-    mode.pointerMove(pointer(250, 50))
-    mode.pointerUp(pointer(250, 50))
+    expect(mode.pointerDown(pointer(30, 40))).toBe(true) // inside, off the gizmo's knob in the middle
+    mode.pointerMove(pointer(230, 40))
+    mode.pointerUp(pointer(230, 40))
     const ring = (store.get('square')!.geometry as Polygon).coordinates[0]!
     expect(ring[0]![0]).toBeCloseTo(2, 2)
     expect(mode.deleteSelection()).toBe(true)
@@ -243,7 +247,7 @@ describe('select mode', () => {
     expect(events.at(-1)).toBe('create square')
   })
 
-  it('moves spheres and points whole, and gives shapes no vertex handles', () => {
+  it('moves spheres whole, with a gizmo of corners and a lift knob, and no vertex handles', () => {
     const sphere = { ...createSphere([0.5, 0.5], 20_000), id: 'ball' } as DrawFeature
     const { context, store } = createContext([sphere])
     const mode = new SelectMode()
@@ -252,7 +256,10 @@ describe('select mode', () => {
     expect(mode.selectedFeatureIds()).toEqual(['ball'])
     const content = { features: [], lines: [], handles: [] }
     mode.overlay(content)
-    expect(content.handles).toHaveLength(0)
+    expect(content.handles).toHaveLength(4 + 1) // scale corners and the lift knob: spheres neither turn nor stretch
+    // A second tap keeps the gizmo: a sphere has no vertices.
+    mode.click(pointer(52, 50))
+    expect(mode.editingVertices).toBe(false)
     expect(mode.pointerDown(pointer(52, 50))).toBe(true)
     mode.pointerMove(pointer(152, 50))
     mode.pointerUp(pointer(152, 50))
@@ -265,11 +272,120 @@ describe('select mode', () => {
     const mode = new SelectMode()
     mode.enter(context)
     mode.setSelection(['square'])
+    mode.setEditingVertices(true)
     mode.pointerDown(pointer(100, 100))
     mode.pointerMove(pointer(150, 150))
     mode.pointerCancel()
     mode.pointerUp(pointer(150, 150))
     expect(events).toEqual([])
     expect((store.get('square')!.geometry as Polygon).coordinates[0]![2]).toEqual([1, 1])
+  })
+
+  it('shows the gizmo first, swaps it for vertex handles with a second tap, and back with a third', () => {
+    const { context } = createContext([square(), { ...square(), id: 'other', geometry: { type: 'Polygon', coordinates: [[[2, 0], [3, 0], [3, 1], [2, 1], [2, 0]]] } }])
+    const mode = new SelectMode()
+    mode.enter(context)
+    const handles = () => {
+      const content = { features: [], lines: [], handles: [] as unknown[] }
+      mode.overlay(content as never)
+      return content.handles.length
+    }
+    mode.click(pointer(30, 70))
+    expect(mode.selectedFeatureIds()).toEqual(['square'])
+    expect(mode.editingVertices).toBe(false)
+    expect(handles()).toBe(4 + 4 + 1 + 1 + 1) // corners, sides, turning knob, height knob, lift knob
+    // A tap (no drag) on the selected feature: vertex handles and midpoints instead.
+    expect(mode.pointerDown(pointer(30, 70))).toBe(true)
+    mode.pointerUp(pointer(30, 70))
+    expect(mode.editingVertices).toBe(true)
+    expect(mode.status().editingVertices).toBe(true)
+    expect(handles()).toBe(4 + 4)
+    // Again: the gizmo.
+    mode.pointerDown(pointer(30, 70))
+    mode.pointerUp(pointer(30, 70))
+    expect(mode.editingVertices).toBe(false)
+    // Another feature, or the empty map, starts with the gizmo again.
+    mode.setEditingVertices(true)
+    mode.click(pointer(250, 50))
+    expect(mode.selectedFeatureIds()).toEqual(['other'])
+    expect(mode.editingVertices).toBe(false)
+    mode.setEditingVertices(true)
+    mode.click(pointer(500, 500))
+    expect(mode.selectedFeatureIds()).toEqual([])
+    expect(mode.editingVertices).toBe(false)
+    // A tap on the knob in the middle of a flat shape is a tap on the shape; Escape steps back to the gizmo first.
+    mode.setSelection(['square'])
+    expect(mode.pointerDown(pointer(50, 50))).toBe(true)
+    mode.pointerUp(pointer(50, 50))
+    expect(mode.editingVertices).toBe(true)
+    expect(mode.keyDown({ key: 'Escape' } as KeyboardEvent)).toBe(true)
+    expect(mode.editingVertices).toBe(false)
+    expect(mode.selectedFeatureIds()).toEqual(['square'])
+  })
+
+  it('keeps the gizmo with editVertices: false, and edits the vertices of shapes, which become plain polygons', () => {
+    const circle = { ...createCircle([0.5, 0.5], 20_000, { steps: 8 }), id: 'c' } as DrawFeature
+    const { context, store } = createContext([circle])
+    const locked = new SelectMode({ editVertices: false })
+    locked.enter(context)
+    locked.setSelection(['c'])
+    locked.setEditingVertices(true)
+    expect(locked.editingVertices).toBe(false)
+    locked.exit()
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['c'])
+    mode.setEditingVertices(true)
+    const first = (store.get('c')!.geometry as Polygon).coordinates[0]![0]!
+    const [x, y] = [first[0]! * 100, first[1]! * 100]
+    expect(mode.pointerDown(pointer(x, y))).toBe(true)
+    mode.pointerMove(pointer(x + 30, y))
+    mode.pointerUp(pointer(x + 30, y))
+    expect(shapeOf(store.get('c')!)).toBeNull()
+  })
+
+  it('draws, hits and drags the vertices of a feature in the air at their altitude, keeping it', () => {
+    // A slab 50 km up: drawn 50 px above its footprint.
+    const slab: DrawFeature = { ...square(), geometry: { type: 'Polygon', coordinates: [[[0, 0, 50_000], [1, 0, 50_000], [1, 1, 50_000], [0, 1, 50_000], [0, 0, 50_000]]] } }
+    const { context, store } = createContext([slab])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['square'])
+    mode.setEditingVertices(true)
+    const content = { features: [], lines: [], handles: [] as Array<{ heightMeters?: number }> }
+    mode.overlay(content as never)
+    expect(content.handles.every(handle => handle.heightMeters === 50_000)).toBe(true)
+    expect(mode.pointerDown(pointer(100, 100))).toBe(false) // its footprint's corner, where nothing is drawn
+    expect(mode.pointerDown(pointer(100, 50))).toBe(true)
+    // The pointer over the ground at (150, 80): the vertex goes where it is under it 50 km up.
+    mode.pointerMove(pointer(130, 60))
+    mode.pointerMove(pointer(150, 80))
+    mode.pointerUp(pointer(150, 80))
+    const moved = (store.get('square')!.geometry as Polygon).coordinates[0]![2]!
+    expect(moved[0]).toBeCloseTo(1.5, 6)
+    expect(moved[1]).toBeCloseTo(1.3, 6)
+    expect(moved[2]).toBe(50_000)
+    // A midpoint inserts a vertex at its altitude, under the pointer.
+    expect(mode.pointerDown(pointer(50, -50))).toBe(true)
+    mode.pointerMove(pointer(50, -80))
+    mode.pointerUp(pointer(50, -80))
+    const inserted = (store.get('square')!.geometry as Polygon).coordinates[0]![1]!
+    expect(inserted[1]).toBeCloseTo(-0.3, 6)
+    expect(inserted[2]).toBe(50_000)
+  })
+
+  it('ends the vertex editing when the selection empties, by deletion or elsewhere', () => {
+    const { context, store } = createContext([square(), { ...square(), id: 'other' }])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['square'])
+    mode.setEditingVertices(true)
+    expect(mode.deleteSelection()).toBe(true)
+    expect(mode.editingVertices).toBe(false)
+    mode.setSelection(['other'])
+    mode.setEditingVertices(true)
+    store.remove(['other'])
+    expect(mode.status().editingVertices).toBe(false)
+    expect(mode.editingVertices).toBe(false)
   })
 })

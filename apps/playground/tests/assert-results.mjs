@@ -469,7 +469,8 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
 
 for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
   expectations[`editing, ${name}`] = r => [
-    ['a tap selects the polygon', r.selected === 1],
+    ['a tap selects the polygon, with its gizmo', r.selected === 1 && r.gizmoFirst],
+    ['a second tap on it shows its vertex handles', r.editingVertices],
     ['a drag on a vertex handle moves that vertex only', r.vertexMoved],
     ['a tap on a midpoint inserts a vertex', r.verticesAfterInsert === 5],
     ['a drag inside the selection moves it whole, and the camera stays', r.movedWhole && r.cameraHeldDuringMove],
@@ -495,12 +496,14 @@ expectations['solids over the sky'] = r => [
 
 for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {
   expectations[`transforming, ${name}`] = r => [
-    ['a tap where the box stands in 3D selects it', r.selected],
+    ['a tap where the box stands in 3D selects it, with its gizmo', r.selected && r.gizmoShown],
     ['a corner scales it, keeping it a rectangle with its proportions', r.afterScale.widthMeters > r.before.widthMeters * 1.2 && Math.abs(r.afterScale.lengthMeters / r.afterScale.widthMeters - r.before.lengthMeters / r.before.widthMeters) < 0.01],
     ['the knob turns it', Math.abs(((r.afterRotate.rotationDegrees - r.before.rotationDegrees + 540) % 360) - 180) > 20],
     ...(height ? [['the top knob raises it', r.extrusion > 900 * 1.1]] : []),
-    ['each change fires one update', r.updates === (height ? 3 : 2)],
     ['the knob in the middle of a flat polygon extrudes it into a solid', r.flatSelected && r.flatExtrusion > 50],
+    ['the middle of an edge stretches it, a rectangle still, the opposite edge fixed', r.afterStretch.type === 'rectangle' && r.afterStretch.widthMeters > r.afterRotate.widthMeters * 1.2 && Math.abs(r.afterStretch.lengthMeters - r.afterRotate.lengthMeters) < 1e-6 && r.fixedSideMovedMeters < 1],
+    ['the knob under its base lifts it into the air, keeping its height', r.lifted.altitude !== null && r.lifted.altitude > r.lifted.groundMeters + 50 && r.lifted.extrusion === r.extrusion],
+    ['each change fires one update', r.updates === (height ? 6 : 5)],
     ['the previews leave once released: one solid per stored feature', r.solids.stored === 7 && r.solids.inScene === 7],
   ]
 }
