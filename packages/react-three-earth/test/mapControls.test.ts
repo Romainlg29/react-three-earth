@@ -2,6 +2,7 @@
 import { EventDispatcher } from 'three'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { AttributionControl, appendAttribution } from '../src/controls/AttributionControl.js'
 import { Controls } from '../src/controls/Controls.js'
 import { FullscreenControl } from '../src/controls/FullscreenControl.js'
 import { GeolocateControl } from '../src/controls/GeolocateControl.js'
@@ -434,5 +435,48 @@ describe('GeolocateControl', () => {
     geolocate.trigger()
     watchers[0]!.error({ code: 3, message: 'timeout' } as GeolocationPositionError)
     expect(geolocate.getState()).toMatchObject({ status: 'error', disabled: false, label: 'Your location could not be found, try again' })
+  })
+})
+
+describe('AttributionControl', () => {
+  function attributionSetup(credits: string[], widthPixels: number) {
+    const fake = setup()
+    Object.defineProperty(fake.container, 'clientWidth', { value: widthPixels, configurable: true })
+    const earth = fake.earth as unknown as Earth & { getAttributions: () => string[] }
+    earth.getAttributions = () => credits
+    return { ...fake, earth, credits }
+  }
+
+  it('parses the credits into text and safe links, and follows the earth', () => {
+    const { earth, container, credits } = attributionSetup(['© <a href="https://openstreetmap.org">OSM</a> <a href="javascript:alert(1)">x</a>'], 1000)
+    const attribution = new AttributionControl({ earth, container, customAttribution: 'Mine' })
+    attribution.subscribe(() => {})
+    const state = attribution.getState()
+    expect(state).toMatchObject({ visible: true, compact: false, textVisible: true, groupLabel: 'Map attribution' })
+    expect(state.entries).toHaveLength(2)
+    expect(state.entries[0]!.filter(segment => segment.href !== undefined)).toEqual([{ text: 'OSM', href: expect.stringMatching(/^https:\/\/openstreetmap\.org/) }])
+    credits.push('Terrain')
+    earth.dispatchEvent({ type: 'attributionchange' } as never)
+    expect(attribution.getState().entries).toHaveLength(3)
+    const element = document.createElement('div')
+    appendAttribution(element, attribution.getState().entries)
+    expect(element.querySelectorAll('a')).toHaveLength(1)
+    expect(element.querySelector('a')!.rel).toBe('noopener noreferrer')
+    expect(element.textContent).toBe('© OSM x | Terrain | Mine')
+  })
+
+  it('is compact on narrow containers, and toggle expands it', () => {
+    const { earth, container } = attributionSetup(['A'], 400)
+    const attribution = new AttributionControl({ earth, container, locale: { showAttribution: 'Crédits' } })
+    expect(attribution.getState()).toMatchObject({ compact: true, textVisible: false, toggleLabel: 'Crédits' })
+    attribution.toggle()
+    expect(attribution.getState()).toMatchObject({ expanded: true, textVisible: true, toggleLabel: 'Hide attribution' })
+    attribution.setCompact(false)
+    expect(attribution.getState().compact).toBe(false)
+  })
+
+  it('reports nothing to show without credits', () => {
+    const { earth, container } = attributionSetup([], 1000)
+    expect(new AttributionControl({ earth, container }).getState().visible).toBe(false)
   })
 })

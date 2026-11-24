@@ -61,7 +61,7 @@ export {
   type AttributionProvider,
   type AttributionSegment,
 } from './core/attribution.js'
-export { AttributionControl, type AttributionControlOptions } from './controls/AttributionControl.js'
+export { AttributionControl, appendAttribution, type AttributionControlOptions, type AttributionControlState } from './controls/AttributionControl.js'
 export {
   geographicToMercator,
   screenToMercatorQuery,

@@ -30,6 +30,10 @@ export interface ControlsLocale {
   userLocationAccuracy: string
   /** The accessible name of the scale bar. */
   scale: string
+  /** The attribution's toggle in compact mode, and the name of its group. */
+  showAttribution: string
+  hideAttribution: string
+  attribution: string
   /** Units of the scale bar: metres, kilometres, feet, miles and nautical miles. */
   unitMeters: string
   unitKilometers: string
@@ -60,6 +64,9 @@ export const DEFAULT_CONTROLS_LOCALE: ControlsLocale = {
   userLocation: 'Your location',
   userLocationAccuracy: 'Accuracy of your location',
   scale: 'Map scale',
+  showAttribution: 'Show attribution',
+  hideAttribution: 'Hide attribution',
+  attribution: 'Map attribution',
   unitMeters: 'm',
   unitKilometers: 'km',
   unitFeet: 'ft',

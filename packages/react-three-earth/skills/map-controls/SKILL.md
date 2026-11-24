@@ -36,8 +36,8 @@ requires:
 
 Read `getting-started` first. The controls are headless, like Base UI: the library gives each control's state, its
 actions and accessible props, and draws nothing; the app renders its own buttons and owns all the CSS. `<Controls>` is
-an unstyled `<div>` over the map for that HTML. `<AttributionControl>` (see `getting-started`) sits on its own in the
-bottom-right.
+an unstyled `<div>` over the map for that HTML. `<AttributionControl>` and `useAttributionControl` (see `getting-started`) work the same
+way for the credits.
 
 | MapLibre | react-three-earth (React) | Vanilla |
 | --- | --- | --- |

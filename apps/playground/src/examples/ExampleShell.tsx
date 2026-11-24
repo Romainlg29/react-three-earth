@@ -2,7 +2,6 @@ import { Canvas, useThree } from '@react-three/fiber'
 import { setCameraView, type CameraView, type Earth as EarthImpl } from 'react-three-earth'
 import {
   Atmosphere,
-  AttributionControl,
   Earth,
   EarthControls,
   QuantizedMeshSource,
@@ -65,7 +64,6 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
           {children}
           {withAtmosphere ? <Atmosphere /> : <PlainLights />}
           <EarthControls {...controls} />
-          <AttributionControl />
           <MapControls />
         </Earth>
       </Canvas>
