@@ -1892,6 +1892,104 @@ async function accessibility() {
   results.push({ ...result, errors: [...errors, ...reduced.errors] })
 }
 
+/**
+ * Box zoom and cooperative gestures. Shift + drag zooms to the box; with `?cooperative` the wheel zooms only with
+ * Ctrl and one finger leaves the map alone (with a hint) while two fingers pinch it. Without it, one finger still
+ * pans, as before.
+ */
+async function gestures() {
+  const result = { check: 'box zoom and cooperative gestures' }
+  const waitLoaded = page => page.waitForFunction(() => window.earth?.inspect().loaded === true, null, { timeout: 240_000, polling: 500 })
+  const settle = page => page.waitForFunction(() => !window.earth.camera.animating && !window.earth.view.transitioning, null, { timeout: 60_000 })
+  const view = page => page.evaluate(() => window.earth.camera.getView())
+
+  // Box zoom, on a desktop
+  const desktop = await open('/?fixtures&stats=0&atmosphere=0&camera=-90,0,0,60000,0,-80', { width: 1000, height: 640 })
+  await waitLoaded(desktop.page)
+  await settle(desktop.page)
+  const before = await view(desktop.page)
+  const boxCentre = await desktop.page.evaluate(() => window.earth.camera.unproject({ xPixels: 400, yPixels: 260 }))
+  await desktop.page.evaluate(() => { window.boxMapClicks = 0; window.earth.addEventListener('click', () => window.boxMapClicks++) })
+  await desktop.page.keyboard.down('Shift')
+  await desktop.page.mouse.move(300, 200)
+  await desktop.page.mouse.down()
+  await desktop.page.mouse.move(400, 260, { steps: 4 })
+  await desktop.page.mouse.move(500, 320, { steps: 4 })
+  result.boxShown = await desktop.page.evaluate(() => document.querySelector('.react-three-earth-box-zoom') !== null)
+  writeFileSync(new URL('box-zoom.png', OUT), await desktop.page.screenshot())
+  await desktop.page.mouse.up()
+  await desktop.page.keyboard.up('Shift')
+  await desktop.page.waitForTimeout(300)
+  await settle(desktop.page)
+  const after = await view(desktop.page)
+  result.boxZoomDelta = after.zoom - before.zoom
+  result.boxCentreOffsetDegrees = Math.hypot(after.longitudeDegrees - boxCentre.longitudeDegrees, after.latitudeDegrees - boxCentre.latitudeDegrees)
+  result.boxHeadingChange = after.headingDegrees - before.headingDegrees
+  result.boxRemoved = await desktop.page.evaluate(() => document.querySelector('.react-three-earth-box-zoom') === null)
+  result.boxMapClicks = await desktop.page.evaluate(() => window.boxMapClicks)
+  await desktop.page.close()
+
+  // Cooperative gestures, wheel
+  const wheel = await open('/?fixtures&stats=0&atmosphere=0&cooperative&camera=-90,0,0,60000,0,-80', { width: 1000, height: 640 })
+  await waitLoaded(wheel.page)
+  await settle(wheel.page)
+  const wheelStart = await view(wheel.page)
+  await wheel.page.mouse.move(500, 320)
+  await wheel.page.mouse.wheel(0, -400)
+  await wheel.page.waitForTimeout(500)
+  result.plainWheelZoomDelta = (await view(wheel.page)).zoom - wheelStart.zoom
+  result.wheelHint = await wheel.page.evaluate(() => {
+    const hint = document.querySelector('.react-three-earth-cooperative-hint')
+    return hint === null ? null : { text: hint.textContent, opacity: hint.style.opacity, role: hint.getAttribute('role') }
+  })
+  writeFileSync(new URL('cooperative-hint.png', OUT), await wheel.page.screenshot())
+  await wheel.page.keyboard.down('Control')
+  await wheel.page.mouse.wheel(0, -400)
+  await wheel.page.keyboard.up('Control')
+  await wheel.page.waitForTimeout(1000)
+  result.controlWheelZoomDelta = (await view(wheel.page)).zoom - wheelStart.zoom
+  await wheel.page.close()
+
+  // Touch, on a phone: CDP touch events, as a finger would send them
+  const touchRun = async query => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 700 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 })
+    const page = await context.newPage()
+    await page.goto(BASE + `/?fixtures&stats=0&atmosphere=0${query}&camera=-90,0,0,60000,0,-80`)
+    await waitLoaded(page)
+    await settle(page)
+    const cdp = await context.newCDPSession(page)
+    const touch = (type, points) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) })
+    const settleFrames = () => page.waitForTimeout(600)
+    const start = await view(page)
+    // One finger drags 150 pixels up
+    await touch('touchStart', [[195, 450]])
+    for (let step = 1; step <= 10; step++) await touch('touchMove', [[195, 450 - step * 15]])
+    await touch('touchEnd', [])
+    await settleFrames()
+    await settle(page)
+    const afterOne = await view(page)
+    const hint = await page.evaluate(() => document.querySelector('.react-three-earth-cooperative-hint')?.textContent ?? null)
+    // Two fingers spread apart: zoom in
+    await touch('touchStart', [[165, 350], [225, 350]])
+    for (let step = 1; step <= 10; step++) await touch('touchMove', [[165 - step * 8, 350], [225 + step * 8, 350]])
+    await touch('touchEnd', [])
+    await settleFrames()
+    await settle(page)
+    const afterTwo = await view(page)
+    await context.close()
+    return {
+      oneFingerMovedDegrees: Math.hypot(afterOne.longitudeDegrees - start.longitudeDegrees, afterOne.latitudeDegrees - start.latitudeDegrees),
+      hint,
+      pinchZoomDelta: afterTwo.zoom - afterOne.zoom,
+    }
+  }
+  result.touchCooperative = await touchRun('&cooperative')
+  result.touchDefault = await touchRun('')
+
+  results.push({ ...result, errors: [...desktop.errors, ...wheel.errors] })
+}
+
+const only = process.argv[2]
 try {
   if (want('precision')) {
     await precision(true)
@@ -1917,6 +2015,7 @@ try {
   if (want('attribution')) await attribution()
   if (want('controls')) await controls()
   if (want('accessibility')) await accessibility()
+  if (want('gestures')) await gestures()
   if (want('invalidate')) await vectorInvalidate()
   if (want('style')) await vectorStyleRuntime()
   if (want('geojson')) {

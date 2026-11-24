@@ -98,8 +98,8 @@ export class GeolocateControl extends MapControl {
 
   protected attach(controls: Controls): void {
     this.listeningTo = controls.earth
-    // The corner stops events from the buttons, so these come from the map itself
-    for (const type of USER_INPUT_EVENTS) controls.container.addEventListener(type, this.onUserInput, { passive: true })
+    // In the capture phase, so gestures that stop these events from the pointer controls (box zoom) still count
+    for (const type of USER_INPUT_EVENTS) controls.container.addEventListener(type, this.onUserInput, { passive: true, capture: true })
     controls.earth.addEventListener('zoom', this.updateCircle)
     controls.earth.addEventListener('moveend', this.updateCircle)
     void this.watchPermission()
@@ -107,7 +107,7 @@ export class GeolocateControl extends MapControl {
 
   protected detach(): void {
     this.stop()
-    for (const type of USER_INPUT_EVENTS) this.controls?.container.removeEventListener(type, this.onUserInput)
+    for (const type of USER_INPUT_EVENTS) this.controls?.container.removeEventListener(type, this.onUserInput, { capture: true })
     this.listeningTo?.removeEventListener('zoom', this.updateCircle)
     this.listeningTo?.removeEventListener('moveend', this.updateCircle)
     this.listeningTo = null
@@ -232,7 +232,10 @@ export class GeolocateControl extends MapControl {
   }
 
   /** The user touched the map while it followed: they took it, so following pauses (the dot stays). */
-  protected onUserInput = (): void => {
+  protected onUserInput = (event: Event): void => {
+    // A press on a control (this button among them) is not the user taking the map
+    const target = event.target as Element | null
+    if (typeof target?.closest === 'function' && target.closest('.react-three-earth-controls') !== null) return
     if (this.state === 'tracking') {
       this.flightToken++
       this.setState('background')

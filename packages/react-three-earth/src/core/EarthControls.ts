@@ -20,6 +20,8 @@ import { NodeMaterial } from 'three/webgpu'
 import type { ViewMorph } from '../view/ViewMorph.js'
 import { mercatorScaleFactor } from '../view/webMercator.js'
 import type { Earth } from './Earth.js'
+import { BoxZoom } from './BoxZoom.js'
+import { CooperativeGestures } from './CooperativeGestures.js'
 import { KeyboardControls } from './KeyboardControls.js'
 import {
   applyTwoFingerTilt,
@@ -168,6 +170,10 @@ export class EarthViewControls {
   readonly touchGestures = new TouchGestures()
   /** Arrows, `+` / `-` and `Shift` + arrows while the map has focus, like MapLibre. */
   readonly keyboard: KeyboardControls
+  /** `Shift` + drag zooms to the box drawn, like MapLibre. */
+  readonly boxZoom: BoxZoom
+  /** For a map inside a scrolling page: `Ctrl` + wheel and two fingers move the map. Off by default. */
+  readonly cooperativeGestures = new CooperativeGestures()
   /** Steepest tilt a two-finger drag or `Shift` + up reaches on the globe, in radians. Default: 80°. */
   maximumGlobeTiltRadians = MathUtils.degToRad(80)
   protected mapLabel = 'Map'
@@ -178,6 +184,7 @@ export class EarthViewControls {
   constructor(protected readonly earth: Earth) {
     this.globe.setScene(earth)
     this.keyboard = new KeyboardControls(earth)
+    this.boxZoom = new BoxZoom(earth)
     // User input takes over from a running camera animation (`earth.camera.flyTo` and the rest).
     const stopAnimation = () => earth.camera.stop()
     this.globe.addEventListener('start', stopAnimation)
@@ -208,6 +215,10 @@ export class EarthViewControls {
     this.globe.attach(domElement)
     this.flatMap.attach(domElement)
     this.keyboard.attach(domElement)
+    // Their capture listeners on the element run before the pointer controls' own, whatever the order. Cooperative
+    // gestures come last, to set `touch-action` over the pointer controls' 'none'.
+    this.boxZoom.attach(domElement)
+    this.cooperativeGestures.attach(domElement)
   }
 
   detach(): void {
@@ -215,6 +226,8 @@ export class EarthViewControls {
     this.globe.detach()
     this.flatMap.detach()
     this.keyboard.detach()
+    this.boxZoom.detach()
+    this.cooperativeGestures.detach()
     const domElement = this.domElement
     this.domElement = null
     if (domElement === null) return

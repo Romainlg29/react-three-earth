@@ -6,7 +6,7 @@
 import { execFileSync } from 'node:child_process'
 
 export const AREAS = [
-  'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'accessibility', 'invalidate', 'style', 'geojson', 'heatmap',
+  'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'accessibility', 'gestures', 'invalidate', 'style', 'geojson', 'heatmap',
   'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'scripts', 'symbol-effects', 'buildings',
   'roads', 'dem', 'exaggeration',
 ]
@@ -15,7 +15,7 @@ export const AREAS = [
 export const GROUPS = {
   map: ['map', '2d'],
   vector: ['vector', 'patterns', 'invalidate', 'style', 'geojson', 'heatmap', 'query', 'layers'],
-  controls: ['controls', 'accessibility'],
+  controls: ['controls', 'accessibility', 'gestures'],
   camera: ['camera', 'animations'],
   labels: ['labels', 'roads', 'scripts', 'symbol-effects'],
   dem: ['dem', 'exaggeration'],
@@ -41,10 +41,10 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}vector/`), VECTOR_CORE],
   [new RegExp(`^${LIBRARY}tiles/(dem/|RasterDemTerrainPlugin\\.ts$)`), ['dem', 'exaggeration', 'relief']],
   [new RegExp(`^${LIBRARY}(controls/AttributionControl\\.ts|react/AttributionControl\\.tsx)$`), ['attribution']],
-  [new RegExp(`^${LIBRARY}(controls/|react/controls\\.tsx$)`), ['controls', 'accessibility']],
+  [new RegExp(`^${LIBRARY}(controls/|react/controls\\.tsx$)`), ['controls', 'accessibility', 'gestures']],
   [new RegExp(`^${LIBRARY}(core/(Marker|Popup|markerLayout)\\.ts|react/(Marker|Popup|domRoot)\\.tsx)$`), ['markers']],
   [new RegExp(`^${LIBRARY}core/cameraAnimation\\.ts$`), ['animations', 'camera', 'controls', 'accessibility']],
-  [new RegExp(`^${LIBRARY}(core/(EarthControls|KeyboardControls|TouchGestures)\\.ts|react/EarthControls\\.tsx)$`), ['camera', 'animations', 'controls', 'accessibility']],
+  [new RegExp(`^${LIBRARY}(core/(EarthControls|KeyboardControls|TouchGestures|BoxZoom|CooperativeGestures)\\.ts|react/EarthControls\\.tsx)$`), ['camera', 'animations', 'controls', 'accessibility', 'gestures']],
   [new RegExp(`^${LIBRARY}core/(featureQuery|LayerEvents)\\.ts$`), ['query', 'labels', 'roads', 'scripts']],
   [new RegExp(`^${LIBRARY}(plugins/(drapedLayers|renderPasses)\\.ts|tiles/imagery/DrapedLayerOverlay\\.ts|core/ScreenOverlay\\.ts)$`), ['effects']],
   [new RegExp(`^${LIBRARY}tiles/imagery/GeoreferencedImageOverlay\\.ts$`), ['georef']],
