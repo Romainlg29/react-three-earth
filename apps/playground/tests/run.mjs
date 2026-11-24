@@ -1970,12 +1970,6 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   await drag(box.knob, { x: box.center.x + radius * Math.cos(angle), y: box.center.y + radius * Math.sin(angle) })
   box = await gizmo()
   result.afterRotate = box.shape
-  if (!flat) {
-    await drag(box.top, { x: box.top.x, y: box.top.y - 40 })
-    box = await gizmo()
-  }
-  result.extrusion = box.extrusion
-  result.updates = await page.evaluate(() => window.drawUpdates)
   // A flat polygon becomes a solid by dragging the knob in its middle up (on the flat map, up the screen).
   const flatCenter = await page.evaluate(() => {
     const corners = [[560, 470], [680, 470], [680, 540], [560, 540]].map(([xPixels, yPixels]) => {
@@ -1993,10 +1987,20 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   result.flatSelected = await page.evaluate(() => window.draw.getState().selectedIds.includes('flat'))
   await drag(flatCenter, { x: flatCenter.x, y: flatCenter.y - 40 })
   result.flatExtrusion = await page.evaluate(() => window.draw.getFeature('flat').properties.extrusionHeightMeters ?? 0)
-  // Back to the box: stretch it by the middle of its right edge, then lift it by the knob under its base.
+  // Back to the box, closer: seen pitched from 30 km it is only a few knobs deep on the screen, so its edge handles and
+  // top knob hide (a press inside moves it). The top knob raises it (on the globe, where the vertical shows), the middle
+  // of its right edge stretches it, and the knob under its base lifts it.
   await page.evaluate(id => window.draw.select([id]), box.id)
+  await page.evaluate(([longitudeDegrees, latitudeDegrees]) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 12_000, headingDegrees: 0, pitchDegrees: -60 }), box.shape.center)
   await page.waitForTimeout(500)
+  await idle()
+  await page.waitForTimeout(1000)
   box = await gizmo()
+  if (!flat) {
+    await drag(box.top, { x: box.top.x, y: box.top.y - 40 })
+    box = await gizmo()
+  }
+  result.extrusion = box.extrusion
   await drag(box.right, { x: box.right.x + (box.right.x - box.left.x) * 0.5, y: box.right.y + (box.right.y - box.left.y) * 0.5 })
   const leftBefore = box.leftPosition
   box = await gizmo()
