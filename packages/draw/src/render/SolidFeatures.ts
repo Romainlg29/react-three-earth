@@ -46,8 +46,10 @@ interface Solid {
   feature: DrawFeature
   style: DrawStyle
   anchor: GeographicAnchor
-  /** The geometries and materials to dispose with it. */
+  /** The geometries to dispose with it. */
   owned: Array<{ dispose(): void }>
+  /** The shared materials it uses (`acquireMaterials`), released with it. */
+  materialKey: string | null
   /** Stands on the terrain (no altitudes): the anchor follows the terrain's height. */
   onGround: boolean
   longitudeDegrees: number
@@ -56,6 +58,14 @@ interface Solid {
   groundCheckedMilliseconds: number
   /** The terrain's height has been found under it at least once. */
   groundFound: boolean
+}
+
+/** Materials shared by the solids of one style. */
+interface SharedMaterials {
+  key: string
+  material: MeshStandardNodeMaterial
+  edgeMaterial: LineBasicNodeMaterial
+  users: number
 }
 
 /** A point in a local east-north-up frame, in metres. */
@@ -375,6 +385,11 @@ export class SolidFeatures {
   /** Holds the anchors: add it under the earth (`context.addObject`). */
   readonly object = new Group()
   protected readonly solids = new Map<string, Solid>()
+  /** Features being dragged or transformed, shown in 3D while they change (`setPreviews`). */
+  protected readonly previews = new Map<string, Solid>()
+  /** The last terrain height found under each feature, so a rebuilt solid starts there rather than at 0 m. */
+  protected readonly lastGroundHeights = new Map<string, number>()
+  protected readonly materials = new Map<string, SharedMaterials>()
   /** The solids standing on the ground, checked in turn. */
   protected groundSolids: Solid[] = []
   /** The ground solid looked up first next frame, so every solid gets its turn. */
@@ -388,20 +403,41 @@ export class SolidFeatures {
 
   /** Replaces the solids. Unchanged features (same object, same colours) keep theirs. */
   setFeatures(features: Iterable<{ feature: DrawFeature; style: DrawStyle }>): void {
+    this.sync(this.solids, features)
+  }
+
+  /**
+   * Replaces the previews: features changing under the pointer (a drag, a gizmo), drawn as solids alongside the others
+   * and rebuilt only when their feature object changes. Pass none when the change ends.
+   */
+  setPreviews(features: Iterable<{ feature: DrawFeature; style: DrawStyle }>): void {
+    this.sync(this.previews, features, true)
+  }
+
+  /** `immediate`: ground solids look the terrain up now (a preview must not show at 0 m for a frame). */
+  protected sync(solids: Map<string, Solid>, features: Iterable<{ feature: DrawFeature; style: DrawStyle }>, immediate = false): void {
     const kept = new Set<string>()
+    let changed = false
     for (const { feature, style } of features) {
       kept.add(feature.id)
-      const existing = this.solids.get(feature.id)
+      const existing = solids.get(feature.id)
       if (existing !== undefined && existing.feature === feature && sameSolidStyle(existing.style, style)) continue
       if (existing !== undefined) this.removeSolid(existing)
-      this.solids.set(feature.id, this.createSolid(feature, style))
+      const solid = this.createSolid(feature, style)
+      if (immediate && solid.onGround) {
+        this.placeOnGround(solid)
+        solid.groundCheckedMilliseconds = performance.now()
+      }
+      solids.set(feature.id, solid)
+      changed = true
     }
-    for (const [id, solid] of this.solids) {
+    for (const [id, solid] of solids) {
       if (kept.has(id)) continue
       this.removeSolid(solid)
-      this.solids.delete(id)
+      solids.delete(id)
+      changed = true
     }
-    this.groundSolids = [...this.solids.values()].filter(solid => solid.onGround)
+    if (changed) this.groundSolids = [...this.solids.values(), ...this.previews.values()].filter(solid => solid.onGround)
   }
 
   /**
@@ -455,7 +491,9 @@ export class SolidFeatures {
     this.followUpTimer = null
     this.groundSolids = []
     for (const solid of this.solids.values()) this.removeSolid(solid)
+    for (const solid of this.previews.values()) this.removeSolid(solid)
     this.solids.clear()
+    this.previews.clear()
     this.object.removeFromParent()
   }
 
@@ -466,17 +504,15 @@ export class SolidFeatures {
     const shape = shapeOf(feature)
     // Standing on the ground: built at height 0 and lifted by the anchor; otherwise at the altitudes given.
     const anchorHeight = altitude ?? 0
-    const anchor = this.earth.createGeographicAnchor({ longitudeDegrees, latitudeDegrees, heightMeters: anchorHeight })
+    // A ground solid starts where its feature last stood, until the terrain under it answers.
+    const anchor = this.earth.createGeographicAnchor({ longitudeDegrees, latitudeDegrees, heightMeters: onGround ? (this.lastGroundHeights.get(feature.id) ?? 0) : anchorHeight })
     this.object.add(anchor)
-    const solid: Solid = { feature, style, anchor, owned: [], onGround, longitudeDegrees, latitudeDegrees, groundCheckedMilliseconds: -Infinity, groundFound: false }
-    const color = new Color(style.fillColor)
-    const colorNode = vec4(uniform(color), 1)
-    const material = new MeshStandardNodeMaterial({ side: FrontSide, transparent: style.solidOpacity < 1, opacity: style.solidOpacity, depthWrite: style.solidOpacity >= 1 })
-    material.colorNode = colorNode
-    // On the flat map the sun fades out: keep the colour, like the flat terrain.
-    material.emissiveNode = createFlatMapEmissionNode(colorNode, this.earth.view)
-    const edgeMaterial = new LineBasicNodeMaterial({ color: new Color(style.lineColor), transparent: style.lineOpacity < 1, opacity: style.lineOpacity })
-    solid.owned.push(material, edgeMaterial)
+    const solid: Solid = { feature, style, anchor, owned: [], materialKey: null, onGround, longitudeDegrees, latitudeDegrees, groundCheckedMilliseconds: -Infinity, groundFound: false }
+    const materials = (doubleSided: boolean) => {
+      const shared = this.acquireMaterials(style, doubleSided)
+      solid.materialKey = shared.key
+      return shared
+    }
     const add = (object: Object3D, geometry: BufferGeometry) => {
       solid.owned.push(geometry)
       anchor.add(object)
@@ -487,7 +523,7 @@ export class SolidFeatures {
         return solid
       }
       const sphere = new SphereGeometry(shape.radiusMeters, 48, 24)
-      const mesh = new Mesh(sphere, material)
+      const mesh = new Mesh(sphere, materials(false).material)
       // Resting on the ground; with an altitude, the altitude is the center.
       if (onGround) mesh.position.z = shape.radiusMeters
       add(mesh, sphere)
@@ -495,7 +531,7 @@ export class SolidFeatures {
       const frame = new LocalFrame(longitudeDegrees, latitudeDegrees, anchorHeight)
       const { faces, line, closed } = buildSolidGeometry(feature, frame, position => (position.length > 2 && Number.isFinite(position[2]) ? position[2]! : anchorHeight))
       // Closed solids show their outside only, so transparent faces never blend with the far side; open faces show both.
-      if (!closed) material.side = DoubleSide
+      const { material, edgeMaterial } = materials(!closed)
       if (faces !== null) {
         add(new Mesh(faces, material), faces)
         const edges = new EdgesGeometry(faces, EDGE_THRESHOLD_DEGREES)
@@ -522,7 +558,9 @@ export class SolidFeatures {
     const height = this.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })
     if (height === null) return false
     solid.groundFound = true
-    if ( Math.abs(height - solid.anchor.geographicPosition.heightMeters) < 0.25) return false
+    if (this.lastGroundHeights.size > 4096) this.lastGroundHeights.clear()
+    this.lastGroundHeights.set(solid.feature.id, height)
+    if (Math.abs(height - solid.anchor.geographicPosition.heightMeters) < 0.25) return false
     solid.anchor.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters: height })
     return true
   }
@@ -530,5 +568,36 @@ export class SolidFeatures {
   protected removeSolid(solid: Solid): void {
     solid.anchor.dispose()
     for (const owned of solid.owned) owned.dispose()
+    if (solid.materialKey !== null) this.releaseMaterials(solid.materialKey)
+    solid.materialKey = null
+  }
+
+  /**
+   * Materials for a style, shared by every solid in it: a solid rebuilt (an edit, a preview following the pointer)
+   * reuses them, so WebGPU never compiles a new node material mid-drag. Released with `releaseMaterials`.
+   */
+  protected acquireMaterials(style: DrawStyle, doubleSided: boolean): SharedMaterials {
+    const key = `${style.fillColor}|${style.solidOpacity}|${style.lineColor}|${style.lineOpacity}|${doubleSided ? 2 : 1}`
+    let shared = this.materials.get(key)
+    if (shared === undefined) {
+      const colorNode = vec4(uniform(new Color(style.fillColor)), 1)
+      const material = new MeshStandardNodeMaterial({ side: doubleSided ? DoubleSide : FrontSide, transparent: style.solidOpacity < 1, opacity: style.solidOpacity, depthWrite: style.solidOpacity >= 1 })
+      material.colorNode = colorNode
+      // On the flat map the sun fades out: keep the colour, like the flat terrain.
+      material.emissiveNode = createFlatMapEmissionNode(colorNode, this.earth.view)
+      const edgeMaterial = new LineBasicNodeMaterial({ color: new Color(style.lineColor), transparent: style.lineOpacity < 1, opacity: style.lineOpacity })
+      shared = { key, material, edgeMaterial, users: 0 }
+      this.materials.set(key, shared)
+    }
+    shared.users++
+    return shared
+  }
+
+  protected releaseMaterials(key: string): void {
+    const shared = this.materials.get(key)
+    if (shared === undefined || --shared.users > 0) return
+    shared.material.dispose()
+    shared.edgeMaterial.dispose()
+    this.materials.delete(key)
   }
 }

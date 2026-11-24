@@ -16,11 +16,15 @@ export interface OverlayHandle {
   outlineWidthPixels: number
   /** Drawn semi-transparent (a midpoint, an inactive knob). */
   faded?: boolean
+  /** Height above the WGS84 ellipsoid, in metres. Default: on the terrain. */
+  heightMeters?: number
 }
 
 /** A line drawn over the map in screen pixels: a guide, a gizmo ring. */
 export interface OverlayLine {
   positions: LongitudeLatitude[]
+  /** Height of each position above the WGS84 ellipsoid, in metres. Default: on the terrain. */
+  heightsMeters?: number[]
   color: string
   widthPixels: number
   opacity: number
@@ -139,7 +143,7 @@ export class LiveOverlay {
     cameraPosition.setFromMatrixPosition(camera.matrixWorld)
     this.heights.startFrame()
     for (const { feature, style } of content.features) this.drawFeature(feature, style)
-    for (const line of content.lines) this.drawLine(line.positions, line.widthPixels, linearColor(line.color), line.opacity)
+    for (const line of content.lines) this.drawLine(line.positions, line.widthPixels, linearColor(line.color), line.opacity, line.heightsMeters)
     for (const handle of content.handles) this.drawHandle(handle)
     batch.sizePixels.value.set(this.widthPixels, this.heightPixels)
     batch.upload()
@@ -197,7 +201,7 @@ export class LiveOverlay {
   }
 
   /** A line through positions, cut into pieces that follow the globe; pieces behind the camera or horizon are skipped. */
-  protected drawLine(positions: readonly LongitudeLatitude[], widthPixels: number, color: readonly [number, number, number], alpha: number): void {
+  protected drawLine(positions: readonly LongitudeLatitude[], widthPixels: number, color: readonly [number, number, number], alpha: number, heightsMeters?: readonly number[]): void {
     if (positions.length < 2 || widthPixels <= 0 || alpha <= 0) return
     const run: number[] = []
     const flush = () => {
@@ -205,12 +209,12 @@ export class LiveOverlay {
       run.length = 0
     }
     const point = { x: 0, y: 0 }
-    let previousHeight = this.heights.heightAt(positions[0]![0], positions[0]![1])
+    let previousHeight = heightsMeters?.[0] ?? this.heights.heightAt(positions[0]![0], positions[0]![1])
     for (let index = 0; index + 1 < positions.length; index++) {
       const from = positions[index]!
       const to: LongitudeLatitude = [unwrapLongitudeNear(positions[index + 1]![0], from[0]), positions[index + 1]![1]]
       const fromHeight = previousHeight
-      const toHeight = this.heights.heightAt(to[0], to[1], fromHeight)
+      const toHeight = heightsMeters?.[index + 1] ?? this.heights.heightAt(to[0], to[1], fromHeight)
       previousHeight = toHeight
       const pieces = this.onGlobe ? Math.min(MAXIMUM_SUBDIVISIONS, Math.max(1, Math.ceil(distanceMeters(from, to) / SUBDIVISION_METERS))) : 1
       for (let piece = index === 0 ? 0 : 1; piece <= pieces; piece++) {
@@ -231,7 +235,7 @@ export class LiveOverlay {
 
   protected drawHandle(handle: OverlayHandle): void {
     const [longitude, latitude] = handle.position
-    const point = this.project(longitude, latitude, this.heights.heightAt(longitude, latitude), { x: 0, y: 0 })
+    const point = this.project(longitude, latitude, handle.heightMeters ?? this.heights.heightAt(longitude, latitude), { x: 0, y: 0 })
     if (point === null) return
     const radius = handle.radiusPixels ?? 5
     const alpha = handle.faded === true ? 0.6 : 1

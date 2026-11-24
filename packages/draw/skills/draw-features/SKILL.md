@@ -7,7 +7,8 @@ description: >
   iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode. Also for circles,
   rectangles, ellipses, regular polygons and spheres in metres (createCircle, createRectangle…, like turf.circle), and
   for 3D: extruded cylinders, boxes, prisms and walls, and shapes at an altitude (the GeoJSON third coordinate). Also
-  for editing: selecting features, dragging vertices, adding and deleting vertices, moving features, undo.
+  for editing: selecting features, dragging vertices, adding and deleting vertices, moving features, undo; and for a
+  transform gizmo: move, rotate and scale features, and extrude flat shapes into volumes by dragging a height knob.
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -21,6 +22,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/ShapeModes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/SelectMode.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/editing.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/modes/TransformMode.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/transform.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/shapes.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/render/SolidFeatures.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/types.ts'
@@ -41,7 +44,7 @@ map, and nothing else. No buttons, no CSS. The app builds its toolbar from the s
 | maplibre-gl-draw / terra-draw | react-three-earth-draw |
 | --- | --- |
 | `new MapboxDraw()`, `map.addControl(draw)` | `new Draw()`, `earth.addPlugin(draw)` or `<Earth plugins={[draw]}>` |
-| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
+| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'transform'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
 | `draw.changeMode('simple_select', { featureIds })`, `draw.getSelectedIds()`, `draw.trash()` | `draw.select(ids)`, `draw.getSelectedIds()` (or `state.selectedIds`), `draw.deleteSelected()` |
 | `draw.getAll()` | `draw.getFeatures()` (a `FeatureCollection`) |
 | `draw.add(geojson)`, `draw.delete(ids)`, `draw.deleteAll()` | `draw.addFeatures(geojson)`, `draw.removeFeatures(ids)`, `draw.clear()` |
@@ -257,6 +260,37 @@ helpers (`moveVertex`, `insertVertex`, `removeVertex`, `translateFeature`, `feat
 exported for custom modes. `new SelectMode({ moveFeatures: false })` only edits vertices, and
 `new SelectMode({ editVertices: false })` only selects and moves.
 
+### Transform gizmo: move, rotate, scale, extrude
+
+The `transform` mode selects like `select`, but shows a gizmo on the selected feature instead of vertex handles:
+
+- Drag the feature to move it.
+- Drag a corner of the box around it to scale it around its center.
+- Drag the knob beyond the box's top edge to turn it; hold Shift to snap to 15°. Circles and spheres have no turning knob.
+- Drag the knob in the middle of a line or polygon up to extrude it into a volume: a rectangle becomes a box, a circle a cylinder, a line a wall.
+  - On a solid, the knob sits on top; drag it up or down to change the height, or down to the ground to flatten it again.
+  - Seen from straight above, as on the flat map, dragging up the screen raises it.
+- Shapes keep their measurements: a scaled circle has a new `radiusMeters`, a turned rectangle a new `rotationDegrees`.
+- While a solid changes it is previewed in 3D. Each change fires one `update` on release, and `undo()` takes it back.
+
+```ts
+import { CircleMode, Draw, featureCenter, rotateFeature, scaleFeature, setExtrusionHeight, StaticMode, TransformMode } from 'react-three-earth-draw'
+
+const draw = new Draw({ modes: [new StaticMode(), new CircleMode(), new TransformMode({ snapDegrees: 45 })] })
+draw.setMode('transform')
+
+// The same changes from code, on any feature:
+const feature = draw.getFeature('parcel-12')!
+const center = featureCenter(feature)
+draw.addFeatures([setExtrusionHeight(scaleFeature(rotateFeature(feature, center, 30), center, 2), 120)])
+```
+
+The extrusion height and the altitude are two different things. A position's third coordinate is where the feature
+sits (its base, above the ellipsoid). `properties.extrusionHeightMeters` is how tall it stands from there. GeoJSON
+has only one height per position, so a polygon cannot hold both its base and its top in its coordinates; a
+height property is how MapLibre (`fill-extrusion-height` over `fill-extrusion-base`) and Cesium (`extrudedHeight`)
+do it too. A slab floating at 2.5 km and 200 m thick has positions at `2500` and `extrusionHeightMeters: 200`.
+
 ### React hooks
 
 - `useDrawState(draw)`: the state (`mode`, `modes`, `features`, `selectedIds`, `drawing`, `vertexCount`, `canFinish`,
@@ -379,5 +413,7 @@ scale, split them into smaller features.
 - `getFeatures()` (or the `change` event) gives the GeoJSON to save, and `features`/`addFeatures` load it back.
 - In the select mode, a tap selects, handles drag vertices, midpoints add them, Delete removes the picked one, and a
   drag inside moves the feature, while a drag elsewhere still pans.
+- In the transform mode, corners scale, the outer knob turns, and the middle knob extrudes flat shapes into volumes and
+  changes their height.
 - Shapes made in two taps or with the builders keep `properties.shape`; extruded ones and ones at an altitude stand as
   solids on the globe and the flat map.

@@ -18,10 +18,16 @@ export interface SelectModeOptions {
 }
 
 /** What a press on the selection is doing. */
-/** `base` is the stored version the drag started from: if the store changes it meanwhile, the drag is dropped. */
-type Drag =
+/**
+ * What a press on the selection is doing. `base` is the stored version the drag started from: if the store changes it
+ * meanwhile, the drag is dropped. A `transform` drag (for subclasses: a gizmo) computes the feature from each move.
+ */
+export type SelectDrag =
   | { kind: 'vertex'; base: DrawFeature; feature: DrawFeature; path: VertexPath; inserted: boolean }
   | { kind: 'feature'; base: DrawFeature; feature: DrawFeature; origin: LongitudeLatitude }
+  | { kind: 'transform'; base: DrawFeature; feature: DrawFeature; handle: string; update: (event: DrawPointerEvent) => DrawFeature | null }
+
+type Drag = SelectDrag
 
 /** One edit, as what restores it: features to put back, and ids to remove (features the edit created). */
 interface UndoEntry {
@@ -176,6 +182,16 @@ export class SelectMode extends DrawMode {
     if (context === null || drag === null || start === null) return
     if (!this.dragging && Math.hypot(event.screen.xPixels - start.x, event.screen.yPixels - start.y) < DRAG_THRESHOLD_PIXELS) return
     this.dragging = true
+    if (drag.kind === 'transform') {
+      if (context.store.get(drag.feature.id) !== drag.base) {
+        this.pointerCancel()
+        return
+      }
+      const feature = drag.update(event)
+      if (feature !== null) this.drag = { ...drag, feature }
+      context.changed()
+      return
+    }
     const ground = event.geographic
     if (ground === null) return
     context.heights.remember(ground.longitudeDegrees, ground.latitudeDegrees, ground.heightMeters)
@@ -213,9 +229,19 @@ export class SelectMode extends DrawMode {
         context.changed()
         return
       }
+    } else if (drag.kind === 'transform') {
+      if (!this.dragging) {
+        context.changed()
+        return
+      }
     } else if (!this.dragging) {
       // A tap on the selected feature selects what is under it, as on the map: a point or line inside a polygon.
       this.click(event)
+      return
+    }
+    // A drag that ends where it started (a knob dragged and brought back) changes nothing: no update, no undo step.
+    if (drag.feature === original || (JSON.stringify(drag.feature.geometry) === JSON.stringify(original.geometry) && JSON.stringify(drag.feature.properties) === JSON.stringify(original.properties))) {
+      context.changed()
       return
     }
     this.commit([original], () => context.update([drag.feature]))
@@ -285,7 +311,7 @@ export class SelectMode extends DrawMode {
   override liveFeatureIds(): readonly string[] {
     const context = this.context
     if (context === null) return NO_FEATURE_IDS
-    // Draped features show live while selected; a solid only while it is dragged (then as its footprint).
+    // Draped features show live while selected; a solid only while it is dragged (then as a preview solid).
     const live = this.selectedFeatureIds().filter(id => {
       const feature = context.store.get(id)
       return feature !== undefined && (!isSolidFeature(feature) || (this.drag !== null && this.dragging && this.drag.feature.id === id))
@@ -307,10 +333,11 @@ export class SelectMode extends DrawMode {
       else if (feature.geometry.type !== 'Point') {
         // A solid: its footprint, over the map.
         for (const ring of feature.geometry.type === 'Polygon' ? feature.geometry.coordinates : [feature.geometry.coordinates]) {
-          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
+          const atAltitude = ring.every(position => position.length > 2 && Number.isFinite(position[2]))
+          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), heightsMeters: atAltitude ? ring.map(position => position[2]!) : undefined, color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
         }
       }
-      if (!this.showsVertexHandles(feature) || drag?.kind === 'feature') continue
+      if (!this.showsVertexHandles(feature) || drag?.kind === 'feature' || drag?.kind === 'transform') continue
       if (feature.geometry.type !== 'Point') {
         for (const midpoint of featureMidpoints(feature)) {
           content.handles.push({ position: midpoint.position, radiusPixels: style.vertexRadiusPixels - 1, color: style.vertexColor, outlineColor: style.vertexOutlineColor, outlineWidthPixels: style.vertexOutlineWidthPixels, faded: true })

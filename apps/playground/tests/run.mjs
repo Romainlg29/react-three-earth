@@ -1842,6 +1842,109 @@ async function shapes(name, { touch = false, flat = false } = {}) {
 }
 
 /**
+ * The gizmo (`?example=shapes`, the transform mode): a tap on the box where it stands in 3D selects it; a corner
+ * scales it, the knob beyond its top turns it, and the knob on top raises it (on the globe, where the vertical shows).
+ * Each change fires one update and keeps the shape's measurements; the preview solids go once released.
+ */
+async function transforming(name, { touch = false, flat = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=shapes`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  if (flat) {
+    await page.evaluate(() => window.earth.setView('2d', { durationSeconds: 0 }))
+    await page.waitForTimeout(500)
+    await idle()
+  }
+  await page.waitForTimeout(1500)
+  const client = touch ? await page.context().newCDPSession(page) : null
+  const tap = async ({ x, y }) => {
+    await (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
+    await page.waitForTimeout(300)
+  }
+  const drag = async (from, to) => {
+    const steps = 10
+    if (touch) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y, id: 1 }] })
+      for (let step = 1; step <= steps; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps, id: 1 }] })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    } else {
+      await page.mouse.move(from.x, from.y)
+      await page.mouse.down()
+      await page.mouse.move(to.x, to.y, { steps })
+      await page.mouse.up()
+    }
+    await page.waitForTimeout(500)
+  }
+  // Screen positions of the box's gizmo, from the stored feature (on the terrain, or `above` metres over it).
+  const gizmo = () => page.evaluate(() => {
+    const box = window.draw.getFeatures().features.find(feature => feature.properties.shape?.type === 'rectangle')
+    const frame = window.drawTransformFrame(box)
+    const ground = ([longitudeDegrees, latitudeDegrees], above = 0) => {
+      const heightMeters = (window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0) + above
+      const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
+      return { x: xPixels, y: yPixels }
+    }
+    return { id: box.id, shape: box.properties.shape, extrusion: box.properties.extrusionHeightMeters, center: ground(frame.center), top: ground(frame.center, frame.extrusionHeightMeters), corner: ground(frame.corners[2]), knob: ground(frame.rotationHandle) }
+  })
+  const result = { check: `transforming, ${name}`, errors }
+  await page.evaluate(() => {
+    window.drawUpdates = 0
+    window.draw.addEventListener('update', () => window.drawUpdates++)
+    window.draw.setMode('transform')
+  })
+  let box = await gizmo()
+  result.before = box.shape
+  // Where the box is drawn: its top, 900 m over the ground (on the flat map, seen from above, the same place).
+  await tap(box.top)
+  result.selected = await page.evaluate(id => window.draw.getState().selectedIds.includes(id), box.id)
+  await page.waitForTimeout(300)
+  box = await gizmo()
+  await drag(box.corner, { x: box.center.x + (box.corner.x - box.center.x) * 1.5, y: box.center.y + (box.corner.y - box.center.y) * 1.5 })
+  box = await gizmo()
+  result.afterScale = box.shape
+  const radius = Math.hypot(box.knob.x - box.center.x, box.knob.y - box.center.y)
+  const angle = Math.atan2(box.knob.y - box.center.y, box.knob.x - box.center.x) + Math.PI / 4
+  await drag(box.knob, { x: box.center.x + radius * Math.cos(angle), y: box.center.y + radius * Math.sin(angle) })
+  box = await gizmo()
+  result.afterRotate = box.shape
+  if (!flat) {
+    await drag(box.top, { x: box.top.x, y: box.top.y - 40 })
+    box = await gizmo()
+  }
+  result.extrusion = box.extrusion
+  result.updates = await page.evaluate(() => window.drawUpdates)
+  // A flat polygon becomes a solid by dragging the knob in its middle up (on the flat map, up the screen).
+  const flatCenter = await page.evaluate(() => {
+    const corners = [[560, 470], [680, 470], [680, 540], [560, 540]].map(([xPixels, yPixels]) => {
+      const { longitudeDegrees, latitudeDegrees } = window.earth.unproject({ xPixels, yPixels })
+      return [longitudeDegrees, latitudeDegrees]
+    })
+    window.draw.addFeatures([{ type: 'Feature', id: 'flat', properties: {}, geometry: { type: 'Polygon', coordinates: [[...corners, corners[0]]] } }])
+    const frame = window.drawTransformFrame(window.draw.getFeature('flat'))
+    const [longitudeDegrees, latitudeDegrees] = frame.center
+    const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0 })
+    return { x: xPixels, y: yPixels }
+  })
+  await page.waitForTimeout(500)
+  await tap({ x: flatCenter.x + 30, y: flatCenter.y + 15 })
+  result.flatSelected = await page.evaluate(() => window.draw.getState().selectedIds.includes('flat'))
+  await drag(flatCenter, { x: flatCenter.x, y: flatCenter.y - 40 })
+  result.flatExtrusion = await page.evaluate(() => window.draw.getFeature('flat').properties.extrusionHeightMeters ?? 0)
+  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
+  await page.waitForTimeout(500)
+  result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))
+  await page.close()
+  results.push(result)
+}
+
+/**
  * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
  * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
  */
@@ -2422,6 +2525,8 @@ try {
     await editing('globe, touch', { touch: true })
     await editing('flat map, touch', { touch: true, flat: true })
     await shapes('globe, mouse')
+    await transforming('globe, mouse')
+    await transforming('flat map, touch', { touch: true, flat: true })
     await shapes('flat map, touch', { touch: true, flat: true })
   }
   if (want('examples')) {
