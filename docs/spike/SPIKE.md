@@ -1118,7 +1118,7 @@ The map works with a keyboard and a screen reader (`src/core/KeyboardControls.ts
 Changed from the brief: double-click zoom was already there upstream, so it is a prop rather than new code. Cooperative
 gestures and box zoom move to part 2, to keep this pull request small and leave touch input untouched here.
 
-Not supported yet: cooperative gestures, box zoom (part 2); no live-region announcement of the view after a key press;
+Not supported yet (part 1): no live-region announcement of the view after a key press;
 keyboard zoom, like `NavigationControl`, is not clamped to the pointer controls' distance limits (camera zoom limits
 belong in `EarthCamera`); `<Earth>` has no prop for `essential` on the morph (use `useEarth().setView`).
 
@@ -1130,6 +1130,43 @@ belong in `EarthCamera`); `<Earth>` has no prop for `essential` on the morph (us
 | | a double click zooms in 1.7 levels |
 | | axe-core 4.10 (WCAG 2.2 A and AA) finds no violation with the controls and markers, nor with a popup opened from the keyboard; markers faded behind terrain are left out (their fade is the point) |
 | | with `prefers-reduced-motion`, the view button switches to 2D with no in-between morph frame |
+
+## Keyboard and accessibility (W15), part 2: box zoom and cooperative gestures
+
+`src/core/BoxZoom.ts`, `src/core/CooperativeGestures.ts`, both owned by `EarthViewControls` (`<EarthControls boxZoom
+cooperativeGestures>`), skill `map-controls`.
+
+- **Box zoom.** A capture `pointerdown` listener on the controls' element (it runs before 3DTilesRenderer's own
+  listener there, whatever the order of registration) takes `Shift` + left drag with a mouse or pen, draws a DOM box,
+  and on release unprojects nine points of the box (centre, corners, edge middles; sky points are dropped), takes
+  the longitude-latitude box around them (`boundsAroundPositions`, unwrapped around the centre, so a box over the
+  antimeridian comes back with west > east) and calls `camera.fitBounds(..., { linear: true })`, which keeps heading
+  and pitch and honours reduced motion. Under 3 pixels it is a click; `Escape` cancels. On by default, as in MapLibre.
+  It replaces 3DTilesRenderer's `Shift` + left drag rotation; the right button still rotates.
+- **Cooperative gestures.** Off by default. A capture `wheel` listener stops wheel turns without `Ctrl` / `⌘` before
+  the pointer controls see them, without `preventDefault`, so the page scrolls. For touch, `TouchGestures` already
+  listens on the window in the capture phase, sees every finger, and takes the gesture over at the second finger
+  (the controls get a synthetic `pointerup` for the first). So cooperative mode only stops every touch `pointerdown`
+  from reaching the pointer controls (one finger never drags, and the finger handed back after a pinch never drags
+  either), sets `touch-action: pan-x pan-y` (after the controls' `none`) so one finger scrolls the page, and cancels
+  `touchstart` / `touchmove` with two touches so the page neither pans nor zooms then. Two-finger gestures run
+  through the same `TouchGestures` code as before; with the option off nothing changes for touch.
+- **Hint.** A `role="status"` overlay with `aria-live="polite"`, created when the mode turns on (a live region must
+  exist before its text changes), shown for 1.5 s; texts in `CooperativeGesturesLocale`, `⌘` on Apple platforms.
+
+Changed from the brief: no pointer-move filtering for touch (the first idea); stopping `pointerdown` at the element is
+enough because `TouchGestures` sees fingers on the window first.
+
+Not supported yet: box zoom by touch (MapLibre has none either); one-finger double-tap zoom in cooperative mode; a
+finger that has already started scrolling the page keeps scrolling when the second lands (the browser owns it).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/gestures.test.ts`: bounds around points, across the antimeridian, too few points; sample points; box zoom fits the ground under the box and hides the drag from the pointer controls; plain, right-button and touch drags pass through; tiny box, `Escape`, disabled and mid-morph do nothing; wheel and touch decisions; plain wheel not prevented and hidden from the controls with a hint that fades; `Ctrl` + wheel passes; touch `pointerdown` stopped, mouse passes; one-finger `touchmove` not prevented (hint), two-finger prevented; off changes nothing and turning off restores `touch-action` |
+| Browser (`box zoom and cooperative gestures`, SwiftShader) | `Shift` + drag of a 200 × 120 px box on 1000 × 640 zooms +2.15 (ideal fit 2.32), centred 0.004° from the box centre, heading kept, box removed |
+| | cooperative: a plain wheel zooms 0 with the hint shown; `Ctrl` + wheel zooms +0.41 |
+| | cooperative on a 390 px phone (CDP touch events): one finger moves the map 0° with the hint; two fingers spreading zoom +1.78 |
+| | default on the phone: one finger still pans (0.13°), two fingers zoom +2.18, no hint |
 
 ## Attribution
 

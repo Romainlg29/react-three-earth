@@ -4,9 +4,10 @@ description: >
   Use when an app needs buttons and widgets over the react-three-earth map, like MapLibre's controls: zoom
   in and out, a compass that resets north, a scale bar, a "find my location" button, fullscreen, or a
   2D / 3D toggle, translated labels, styling them, or making them work on iPhone Safari. Also when the map
-  must work with a keyboard or a screen reader: arrow keys, zoom keys, the map's label, reduced motion.
+  must work with a keyboard or a screen reader (arrow keys, zoom keys, the map's label, reduced motion), box zoom,
+  or a map inside a scrolling page that should not catch the wheel or one finger (cooperative gestures).
 metadata:
-  purpose: 'Documents <Controls>, <NavigationControl>, <ScaleControl>, <GeolocateControl>, <FullscreenControl>, <ViewControl> and their vanilla classes: placement, options, events, locale, CSS variables, touch and accessibility; <EarthControls> keyboard, label and double-click zoom.'
+  purpose: 'Documents <Controls>, <NavigationControl>, <ScaleControl>, <GeolocateControl>, <FullscreenControl>, <ViewControl> and their vanilla classes: placement, options, events, locale, CSS variables, touch and accessibility; <EarthControls> keyboard, label, double-click zoom, box zoom and cooperative gestures.'
   type: framework
   framework: 'react'
   library: 'react-three-earth'
@@ -22,6 +23,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/controls.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/KeyboardControls.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/EarthControls.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/BoxZoom.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/CooperativeGestures.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/EarthControls.tsx'
   - 'Romainlg29/react-three-earth:apps/playground/src/MapDemo.tsx'
 requires:
@@ -172,6 +175,31 @@ export const accessibleControls = (
 `doubleClickZoom`, and `keyboard` (a `KeyboardControls`: `enabled`, `setOptions`, and a protected `actionFor` to
 override for other bindings); `keyboardAction(press, steps)` is the binding table on its own.
 
+### Box zoom and cooperative gestures
+
+`Shift` + drag with the mouse draws a box; releasing eases the camera to fit the ground inside it, keeping heading and
+pitch (`Escape` cancels). It takes `Shift` + drag over from rotating: rotate with the right button, as in MapLibre.
+`boxZoom={false}` gives `Shift` + drag back to rotation. The box is `.react-three-earth-box-zoom`, styled by
+`--react-three-earth-box-zoom-border` and `--react-three-earth-box-zoom-background`.
+
+For a map inside a page that scrolls, turn on `cooperativeGestures`: the wheel then zooms only with `Ctrl` (`⌘` on
+Apple systems), and one finger scrolls the page while two fingers pinch, twist, pan and tilt the map. A hint over the
+map says so, in a `role="status"` region screen readers announce. One-finger double-tap zoom is off in this mode.
+
+```tsx
+import { EarthControls } from 'react-three-earth/react'
+
+export const mapInArticle = (
+  <EarthControls
+    cooperativeGestures={{ locale: { wheel: 'Ctrl + molette pour zoomer', wheelApple: '⌘ + molette pour zoomer', touch: 'Deux doigts pour déplacer la carte' } }}
+  />
+)
+```
+
+The hint is `.react-three-earth-cooperative-hint`, styled by `--react-three-earth-cooperative-hint-font`, `-color` and
+`-background`. In vanilla: `controls.boxZoom` (`BoxZoom`: `enabled`, `durationSeconds`) and
+`controls.cooperativeGestures` (`CooperativeGestures`: `enabled`, `setLocale`, `hintDurationSeconds`, `showHint`).
+
 Users who ask the system to reduce motion (`prefers-reduced-motion`) get no animation: camera animations, key presses
 and the globe-to-map morph jump to their end. Pass `essential: true` to an animation, or to `earth.setView` (in React through
 `useEarth()`), for motion that carries meaning.
@@ -185,6 +213,8 @@ and the globe-to-map morph jump to their end. Pass `essential: true` to an anima
 - Mounting `<Controls>` outside `<Earth>`: it needs `useEarth`.
 - Giving the canvas's parent a `role` or `aria-label` of your own and expecting it to stay: `<EarthControls>` sets
   them while mounted (and puts yours back after); name the map with `label` instead.
+- Expecting `Shift` + left drag to rotate: with box zoom on (the default) it draws a box; rotate with the right button.
+- Turning on `cooperativeGestures` for a full-screen map: there is no page to scroll, so it only gets in the way.
 - Testing the keys without focusing the map first: they only work while the map's element has focus (a click or `Tab`).
 
 ## Completion

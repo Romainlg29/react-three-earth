@@ -123,6 +123,16 @@ export {
 } from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls, EarthViewControls, FlatMapControls } from './core/EarthControls.js'
+export { BoxZoom, boundsAroundPositions, boxSamplePoints } from './core/BoxZoom.js'
+export {
+  CooperativeGestures,
+  DEFAULT_COOPERATIVE_GESTURES_LOCALE,
+  touchDecision,
+  wheelDecision,
+  type CooperativeDecision,
+  type CooperativeGesturesLocale,
+  type CooperativeGesturesOptions,
+} from './core/CooperativeGestures.js'
 export {
   DEFAULT_KEYBOARD_OPTIONS,
   isEditableTarget,

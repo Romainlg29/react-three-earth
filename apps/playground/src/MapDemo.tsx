@@ -109,6 +109,8 @@ const atmosphereBudget = params.has('atmosphereBudget') ? Number(params.get('atm
 const showStatistics = params.get('stats') !== '0'
 // `?markers` adds markers and popups (on the fixture terrain's highest hill with `?fixtures`).
 const showMarkers = params.has('markers')
+// `?cooperative` turns on cooperative gestures: Ctrl + wheel and two fingers move the map, for a map in a scrolling page.
+const cooperativeGestures = params.has('cooperative')
 // `?sdf` installs the example plugin (src/sdf/) and puts a raymarched shape on the peak, half buried in it.
 const showSdfShapes = params.has('sdf')
 const sdfShapesPlugin = sdfShapes()
@@ -378,7 +380,7 @@ export function MapDemo() {
           ) : (
             <PlainLights />
           )}
-          <EarthControls />
+          <EarthControls cooperativeGestures={cooperativeGestures} />
           <AttributionControl />
           <Controls position="top-right">
             <NavigationControl visualizePitch />

@@ -63,6 +63,15 @@ const expectations = {
     ['nor with a popup open', r.popupViolations.length === 0],
     ['with prefers-reduced-motion the view switches without a morph', r.reducedMotionInBetweenFrames === 0],
   ],
+  'box zoom and cooperative gestures': r => [
+    ['Shift + drag draws the box and removes it on release', r.boxShown && r.boxRemoved],
+    ['the box zoom zooms in about two levels, centred on the box, heading kept', r.boxZoomDelta > 1.8 && r.boxZoomDelta < 2.6 && r.boxCentreOffsetDegrees < 0.02 && Math.abs(r.boxHeadingChange) < 0.01],
+    ['cooperative: a plain wheel leaves the zoom, with a hint', r.plainWheelZoomDelta === 0 && r.wheelHint?.opacity === '1' && /Ctrl \+ scroll/.test(r.wheelHint.text) && r.wheelHint.role === 'status'],
+    ['cooperative: Ctrl + wheel zooms', r.controlWheelZoomDelta > 0.1],
+    ['cooperative: one finger leaves the map, with a hint', r.touchCooperative.oneFingerMovedDegrees === 0 && r.touchCooperative.hint === 'Use two fingers to move the map'],
+    ['cooperative: two fingers pinch the map', r.touchCooperative.pinchZoomDelta > 0.5],
+    ['by default one finger still pans and two fingers pinch', r.touchDefault.oneFingerMovedDegrees > 0.05 && r.touchDefault.hint === null && r.touchDefault.pinchZoomDelta > 0.5],
+  ],
   'attribution control': r => [
     ['wide window shows the terrain and OpenStreetMap credits', r.wide.text === 'Synthetic test terrain | © OpenStreetMap contributors'],
     ['the OpenStreetMap credit is a safe link', r.wide.links.length === 1 && r.wide.links[0].href === 'https://www.openstreetmap.org/copyright' && r.wide.links[0].target === '_blank' && r.wide.links[0].rel === 'noopener noreferrer'],
