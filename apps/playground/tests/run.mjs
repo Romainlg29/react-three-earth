@@ -1722,6 +1722,97 @@ async function georeferenced(kind, query, label = kind) {
   results.push(result)
 }
 
+/**
+ * Keyboard and accessibility: the map is a labelled region in the tab order, keys move the camera, a double
+ * click zooms, `prefers-reduced-motion` switches the view at once, and axe-core finds no violation with the
+ * controls, markers and an open popup on the page.
+ */
+async function accessibility() {
+  const axePath = createRequire(import.meta.url).resolve('axe-core/axe.min.js')
+  const runAxe = async page => {
+    await page.addScriptTag({ path: axePath })
+    return page.evaluate(async () => {
+      // WCAG 2.2 A and AA rules. Markers faded behind terrain (`occludedOpacity`) are left out on purpose: the fade
+      // shows they are hidden, as MapLibre's `opacityWhenCovered` does, so their text is not meant to be read there.
+      const context = { exclude: [['[data-visibility="occluded"]']] }
+      const options = { resultTypes: ['violations'], runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] } }
+      const { violations } = await window.axe.run(context, options)
+      return violations.map(v => ({ id: v.id, impact: v.impact, targets: v.nodes.map(n => n.target.join(' ')).slice(0, 5) }))
+    })
+  }
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&markers&camera=-90,0,3900,40000,0,-60', { width: 1000, height: 640 })
+  await page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
+  const settle = () => page.waitForFunction(() => !window.earth.camera.animating && !window.earth.view.transitioning, null, { timeout: 60_000 })
+  const view = () => page.evaluate(() => window.earth.camera.getView())
+  const result = { check: 'keyboard and accessibility' }
+
+  result.region = await page.evaluate(() => {
+    const region = document.querySelector('[role="region"][aria-label="Map"]')
+    return region === null ? null : { tabIndex: region.tabIndex, holdsCanvas: region.querySelector('canvas') !== null }
+  })
+  // Tab from the page's start reaches the map (the "Examples" link comes first)
+  await page.evaluate(() => document.activeElement?.blur())
+  for (let press = 0; press < 3 && !(await page.evaluate(() => document.activeElement?.getAttribute('role') === 'region')); press++) await page.keyboard.press('Tab')
+  result.focusedByTab = await page.evaluate(() => document.activeElement?.getAttribute('role') === 'region')
+  await page.focus('[role="region"][aria-label="Map"]')
+
+  await settle()
+  const start = await view()
+  await page.keyboard.press('ArrowRight')
+  await settle()
+  const panned = await view()
+  result.panEastDegrees = panned.longitudeDegrees - start.longitudeDegrees
+  result.panLatitudeChange = panned.latitudeDegrees - start.latitudeDegrees
+  await page.keyboard.press('=')
+  await settle()
+  result.zoomInDelta = (await view()).zoom - panned.zoom
+  const beforeTurn = await view()
+  await page.keyboard.press('Shift+ArrowRight')
+  await settle()
+  const turned = await view()
+  result.turnDegrees = turned.headingDegrees - beforeTurn.headingDegrees
+  await page.keyboard.press('Shift+ArrowUp')
+  await settle()
+  result.tiltDegrees = (await view()).pitchDegrees - turned.pitchDegrees
+  const beforeZoomOut = await view()
+  await page.keyboard.press('-')
+  await page.keyboard.press('-')
+  await settle()
+  result.twoZoomOutsDelta = (await view()).zoom - beforeZoomOut.zoom
+  result.pageScrolled = await page.evaluate(() => scrollX !== 0 || scrollY !== 0)
+
+  // Double click zooms in on the point (away from the markers in the middle)
+  const beforeDoubleClick = await view()
+  await page.mouse.dblclick(250, 480)
+  await page.waitForTimeout(800)
+  await settle()
+  result.doubleClickZoomDelta = (await view()).zoom - beforeDoubleClick.zoom
+
+  // axe with the controls and markers, then with a popup open (opened from the keyboard)
+  result.violations = await runAxe(page)
+  await page.focus('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await page.keyboard.press('Enter')
+  await page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  result.popupViolations = await runAxe(page)
+  writeFileSync(new URL('accessibility.png', OUT), await page.screenshot())
+  await page.close()
+
+  // Reduced motion: the view button switches at once
+  const reduced = await open('/?fixtures&stats=0&atmosphere=0', { width: 1000, height: 640 })
+  await reduced.page.emulateMedia({ reducedMotion: 'reduce' })
+  await reduced.page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('button[aria-label="Switch to the flat map"]'), null, { timeout: 120_000 })
+  await reduced.page.evaluate(() => {
+    window.morphFrames = []
+    window.earth.addEventListener('update', () => window.morphFrames.push(window.earth.view.morph))
+  })
+  await reduced.page.click('button[aria-label="Switch to the flat map"]')
+  await reduced.page.waitForFunction(() => window.earth.view.mode === '2d' && !window.earth.view.transitioning, null, { timeout: 30_000 })
+  result.reducedMotionInBetweenFrames = await reduced.page.evaluate(() => window.morphFrames.filter(morph => morph > 0 && morph < 1).length)
+  await reduced.page.close()
+
+  results.push({ ...result, errors: [...errors, ...reduced.errors] })
+}
+
 const only = process.argv[2]
 try {
   if (!only || only === 'precision') {
@@ -1747,6 +1838,7 @@ try {
   }
   if (!only || only === 'attribution') await attribution()
   if (!only || only === 'controls') await controls()
+  if (!only || only === 'controls' || only === 'accessibility') await accessibility()
   if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
   if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
   if (!only || only === 'vector' || only === 'geojson') {
