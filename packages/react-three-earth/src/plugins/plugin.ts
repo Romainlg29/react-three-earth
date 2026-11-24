@@ -5,6 +5,7 @@ import type { EarthEventMap, EarthEventType } from '../core/events.js'
 import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
 import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
+import type { SymbolEffectDefinition } from './symbolEffects.js'
 
 /**
  * The version of the plugin API this react-three-earth implements. Additive changes keep it; a change that
@@ -87,6 +88,12 @@ export interface PluginContext {
    * layers appear without refetching tiles. Returns a function that removes it early.
    */
   registerStyleLayerType(definition: StyleLayerTypeDefinition): () => void
+  /**
+   * Adds a symbol effect: the text and SDF icons of `symbol` layers whose metadata names it
+   * (`"react-three-earth:symbol-effect": definition.name`) are shaded by it, in every map style source of this
+   * earth. Labels already drawn switch at once, without processing tiles again. Returns a function that removes it early.
+   */
+  registerSymbolEffect(definition: SymbolEffectDefinition): () => void
   /**
    * Adds a screen effect to the earth's render pipeline (`EarthRenderPipeline`), in a stage: `scene` (before
    * the atmosphere), `radiance` (after it, linear HDR) or `display` (tone-mapped). The pipeline's output is

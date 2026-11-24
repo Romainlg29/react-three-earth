@@ -14,6 +14,13 @@ export {
   type StyleLayerTypeDefinition,
   type StyleLayerWorkerModule,
 } from './plugins/styleLayerTypes.js'
+export {
+  getLayerSymbolEffect,
+  SYMBOL_EFFECT_METADATA_KEY,
+  SymbolEffectRegistry,
+  type SymbolEffectDefinition,
+  type SymbolEffectInputs,
+} from './plugins/symbolEffects.js'
 export type * from './plugins/pluginWorker.js'
 export {
   RenderPassRegistry,

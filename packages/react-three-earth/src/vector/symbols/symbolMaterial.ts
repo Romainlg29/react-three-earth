@@ -3,6 +3,7 @@ import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smooth
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
+import type { SymbolEffectDefinition } from '../../plugins/symbolEffects.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { GLYPH_EDGE } from '../worker/glyphs.js'
 import type { SymbolMesh } from '../worker/types.js'
@@ -147,11 +148,12 @@ function linearColor(name: string) {
  * angle (from the glyph state texture), so the CPU never touches vertices after a tile loads. SDF text
  * with a halo, as the draped text. Drawn in the scene pass without depth test, over the terrain, so the atmosphere
  * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
- * so labels keep their style colours under the exposure; `opacity` is the imagery layer's.
+ * so labels keep their style colours under the exposure; `opacity` is the imagery layer's. With `effect`, its
+ * `shade` turns the distance into colour for text and SDF icons instead of the fill over its halo.
  */
-export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: ImageAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }): MeshBasicNodeMaterial {
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: ImageAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }, effect: SymbolEffectDefinition | null = null): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
-  material.name = 'MapStyleSymbols'
+  material.name = effect === null ? 'MapStyleSymbols' : `MapStyleSymbols:${effect.name}`
   const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
   const slotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolSlotBase ?? 0) as unknown as Node<'float'>
   const glyphSlotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolGlyphSlotBase ?? 0) as unknown as Node<'float'>
@@ -184,6 +186,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
   material.vertexNode = vec4(select(labelState.w.greaterThan(0), ndc, vec2(4, 4)), 0, 1)
 
   const labelOpacity = varying(labelState.w)
+  const labelScale = varying(quadScale)
   const kind = varying(glyphIndex)
   const haloEdge = varying(max(float(GLYPH_EDGE).sub(attribute<'float'>('haloWidth', 'float').div(max(quadScale, float(1e-3)).mul(8))), float(0.05)))
   material.colorNode = Fn(() => {
@@ -201,7 +204,12 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
     const haloAlpha = halo.a.mul(smoothstep(haloEdge.sub(smoothing), haloEdge.add(smoothing), distance)).mul(fillAlpha.oneMinus())
     const alpha = fillAlpha.add(haloAlpha)
     const rgb = fill.rgb.mul(fillAlpha).add(halo.rgb.mul(haloAlpha)).div(max(alpha, float(1e-4)))
-    const sdfColor = vec4(rgb.mul(brightness), alpha.mul(labelOpacity).mul(layerOpacity))
+    const standardColor = vec4(rgb, alpha)
+    const shaded =
+      effect === null
+        ? standardColor
+        : effect.shade({ distance, edge, haloEdge, pixelWidth: max(fwidth(distance), float(1e-4)), fillColor: fill, haloColor: halo, isIcon: select(isIcon, float(1), float(0)), scale: labelScale, standardColor })
+    const sdfColor = vec4(shaded.rgb.mul(brightness), shaded.a.mul(labelOpacity).mul(layerOpacity))
     // A colour icon: its own colours (straight, linear), faded by icon-opacity (the fill colour's alpha).
     const straight = sRGBTransferEOTF(image.rgb.div(max(image.a, float(1 / 255)))) as unknown as Node<'vec3'>
     const colorIcon = vec4(straight.mul(brightness), image.a.mul(fill.a).mul(labelOpacity).mul(layerOpacity))

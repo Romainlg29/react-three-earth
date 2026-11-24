@@ -6,6 +6,7 @@ import type { MeshBasicNodeMaterial, NodeMaterial, WebGPURenderer } from 'three/
 import type { GeographicBounds } from '../core/camera.js'
 import type { ImageryCompositor } from '../tiles/imagery/ImageryCompositor.js'
 import type { StyleLayerTypeDefinition, StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import { createCompositeMaterial, createCustomLayerMaterial, setCustomLayerDrawValues } from './customLayerMaterials.js'
 import { HeatmapLayers } from './heatmap/HeatmapLayers.js'
@@ -490,6 +491,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.styleLayerTypes = registry
     if (registry !== null) this.unsubscribeLayerTypes = registry.subscribe(() => this.scheduleLayerTypes())
     this.scheduleLayerTypes()
+  }
+
+  /**
+   * The symbol effects (plugins) labels facing the viewer are drawn with, or null for none. `ImageOverlayPlugin`
+   * calls it with `earth.symbolEffects`. Draped labels (`symbols: 'draped'`) keep the standard look.
+   */
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void {
+    this.screenSymbols?.setSymbolEffects(registry)
   }
 
   /** Sends the layer types once per task: plugins installed together cost one recompile. */

@@ -5,10 +5,10 @@ description: >
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
-  (symbolFadeDurationSeconds), reading the labels on the screen in tests (earth.terrain.getScreenLabels), and what
-  labels do not do yet.
+  (symbolFadeDurationSeconds), reading the labels on the screen in tests (earth.terrain.getScreenLabels), custom
+  label looks from a plugin (registerSymbolEffect: neon, glow, outline, gradient text), and what labels do not do yet.
 metadata:
-  purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, and current limits.'
+  purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, symbol effects from plugins, and current limits.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -18,6 +18,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/SymbolPlacement.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/symbolEffects.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/symbolMaterial.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/symbolEffects/neonLabels.ts'
 requires:
   - map-styles
 ---
@@ -100,6 +103,51 @@ export function GroundLabels() {
 - `earth.queryRenderedFeatures`, layer events and hover hit them by their box on the screen
   (`query-features-and-layer-events`).
 
+### Give labels a custom look (symbol effects)
+
+A plugin registers a symbol effect: a TSL function from the glyph's signed distance to a colour. A `symbol`
+layer opts in through its `metadata`, so the style stays valid for MapLibre, which ignores it:
+
+```json
+{ "id": "town-label", "type": "symbol", "metadata": { "react-three-earth:symbol-effect": "neon" }, "layout": {}, "paint": {} }
+```
+
+```ts
+import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { Color } from 'three'
+import { max, min, mix, smoothstep, uniform, vec4 } from 'three/tsl'
+
+export function neonLabels(): EarthPlugin {
+  const core = uniform(new Color('#39ff14')) // a uniform: recolouring needs no new pipeline
+  const outline = uniform(new Color('#ff2bd6'))
+  return {
+    name: 'neon-labels',
+    apiVersion: PLUGIN_API_VERSION,
+    install(context) {
+      context.registerSymbolEffect({
+        name: 'neon',
+        // Linear RGB, straight alpha. The library applies fades, layer opacity and the flat map's luminance.
+        shade: ({ distance, edge, haloEdge, pixelWidth, fillColor }) => {
+          const smoothing = pixelWidth.mul(0.7)
+          const inside = smoothstep(edge.sub(smoothing), edge.add(smoothing), distance)
+          const outlineEdge = max(min(haloEdge, edge.sub(pixelWidth.mul(2))), 0.05) // the halo's band, or 2 px
+          const outlined = smoothstep(outlineEdge.sub(smoothing), outlineEdge.add(smoothing), distance)
+          return vec4(mix(outline, core, inside), max(inside, outlined).mul(fillColor.a))
+        },
+      })
+    },
+  }
+}
+```
+
+The inputs are `distance` (0 far outside, `edge` = 0.75 on the outline, 1 inside), `haloEdge` (where
+`text-halo-width` ends), `pixelWidth` (distance units per screen pixel), `fillColor` and `haloColor` (the
+style's data-driven colours, linear), `isIcon` (1 for SDF icons), `scale` (`text-size` / 24) and
+`standardColor` (the default fill over halo, to wrap rather than replace). Placement, collision and colour
+icons are unchanged. One material per effect per map style source; a tile mixing layers with and without
+effects draws in a few calls, in style order. Installing or removing the plugin restyles the labels on the
+screen without processing tiles again. The playground example is `?fixtures&map=labels&neon`.
+
 ### Read the labels on the screen (tests, devtools)
 
 ```ts
@@ -117,6 +165,17 @@ Each entry has `text`, `xPixels` / `yPixels` (anchor point), `box` (at the varia
 count; collided ones do not.
 
 ## Common Mistakes
+
+### HIGH: A glow wider than the glyph's padding
+
+An effect draws inside each glyph's quad, which reaches 3 pixels of a 24 px font past the glyph (the
+distance field's padding, 1.5 px at 12 px). A wider glow or outline is cut at the quad's edge, in a square.
+For a wide glow around roads or areas, register a style layer type with reach (write-a-plugin).
+
+### MEDIUM: Expecting a symbol effect on draped labels
+
+Effects apply to labels facing the viewer (the default). With `symbols="draped"`, labels keep the standard
+look; the layer's effect name is ignored.
 
 ### MEDIUM: Expecting a label to hide the instant a ridge covers it
 

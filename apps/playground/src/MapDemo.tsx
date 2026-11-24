@@ -49,6 +49,7 @@ import { selectionGlow } from './effects/selectionGlow'
 import { vignette } from './effects/vignette'
 import { sdfGlow } from './styleLayers/sdfGlow'
 import { stripedFill } from './styleLayers/stripedFill'
+import { neonLabels } from './symbolEffects/neonLabels'
 import { GeoJsonExample } from './geojson/GeoJsonExample'
 import { HeatmapExample } from './heatmap/HeatmapExample'
 
@@ -75,6 +76,12 @@ const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `window.styleImagesMissing` for the browser check, which adds one with `window.mapStyleSource.addImage`.
 // `?map=labels` (with `?fixtures`) adds a dense grid of town labels to the fixture style, for collision and fades.
 // `?symbols=draped` lays labels on the ground instead of facing the viewer.
+// `?neon` (with `?fixtures&map=labels`) installs the symbol effect example (src/symbolEffects/): the town labels name
+// it in their metadata and draw as neon. `?neon=late` names it but leaves the plugin out: the browser check installs
+// and removes it at runtime (window.neonLabelsPlugin).
+const showNeonLabels = params.has('neon')
+const neonLabelsPlugin = neonLabels()
+if (showNeonLabels) Object.assign(window, { neonLabelsPlugin })
 const liveFixtures = useFixtures && params.get('test') === 'invalidate'
 // `?map=relief` (with `?fixtures`) adds a raster layer, colour relief and hillshade from Terrarium elevation tiles;
 // `?map=hillshade` the hillshade alone on mid-grey, for the seam check. `?map=labels` adds a dense grid of towns.
@@ -82,7 +89,7 @@ const fixtureStyleUrl =
   params.get('map') === 'patterns'
     ? '/fixtures/style-patterns.json'
     : params.get('map') === 'labels'
-      ? '/fixtures/style-labels.json'
+      ? `/fixtures/style-labels.json${showNeonLabels ? '?effect=neon' : ''}`
       : params.get('map') === 'buildings'
         ? '/fixtures/style-buildings.json'
       : params.get('map') === 'relief'
@@ -136,6 +143,7 @@ const plugins = [
   ...(showSdfShapes ? [sdfShapesPlugin] : []),
   ...(showStyleLayerTypes && params.get('glow') !== 'late' ? styleLayerTypePlugins : []),
   ...(showEffects && params.get('effects') !== 'late' ? [effectPlugins.vignette, effectPlugins.selectionGlow] : []),
+  ...(showNeonLabels && params.get('neon') !== 'late' ? [neonLabelsPlugin] : []),
 ]
 if (showStyleLayerTypes) Object.assign(window, { styleLayerTypePlugins })
 if (showEffects) Object.assign(window, { effectPlugins })

@@ -11,7 +11,8 @@ import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureRe
  * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
  * no network.
  *
- * `/fixtures/style-labels.json` adds a dense grid of town labels (layer `towns`), for collision and fades.
+ * `/fixtures/style-labels.json` adds a dense grid of town labels (layer `towns`), for collision and fades; with
+ * `?effect=neon`, the town labels name that symbol effect in their metadata.
  *
  * `/fixtures/style-patterns.json` is the same style with patterns, from the sprite at /fixtures/sprite.json
  * (and `@2x`).
@@ -62,7 +63,7 @@ export function fixtureTiles(): Plugin {
         }
         if (url === '/fixtures/style-labels.json') {
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify(fixtureLabelStyle()))
+          res.end(JSON.stringify(fixtureLabelStyle({ symbolEffect: new URLSearchParams(req.url?.split('?')[1] ?? '').get('effect') })))
           return
         }
         if (url === '/fixtures/style-relief.json') {
