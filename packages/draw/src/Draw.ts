@@ -262,7 +262,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /**
    * Extrudes the picked face of the selected mesh along its normal (a polygon's face becomes a prism), as E does with
    * `keyboard`: one `update`, one undo step, the new face picked with its push and pull arrow. Without `distanceMeters`,
-   * half the arrow's length (about 40 px on the screen). Returns false when no face is picked (`state.canExtrude`).
+   * half the arrow's length (about 40 px on the screen). Returns false when no face is picked (`state.canExtrude`), and
+   * for a negative distance on a polygon's face (a mesh's face extrudes inwards).
    */
   extrude(distanceMeters?: number): boolean {
     return this.mode instanceof SelectMode ? this.mode.extrude(distanceMeters) : false

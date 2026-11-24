@@ -70,6 +70,18 @@ describe('mesh element editing', () => {
     expect(meshVolume(flat)).toBeGreaterThan(0)
   })
 
+  it('never turns a push in into a pull, even when the face is already within the gap', () => {
+    // A box 5 mm tall, under the 1 cm gap: pushed in, the top stays; pulled out, it goes the whole way.
+    const frame = new LocalFrame(6.6, 46.45, 0)
+    const corner = (east: number, north: number) => frame.toGeographic(east, north, 0).slice(0, 2)
+    const thin = indexMesh(prismMesh([[corner(0, 0), corner(10, 0), corner(10, 10), corner(0, 10)]], 400, 0.005))
+    const top = (mesh: IndexedMesh) => Math.max(...mesh.vertices.map(position => position[2]!))
+    expect(top(pushMeshFace(thin, 0, -1))).toBeCloseTo(400.005, 6)
+    expect(top(pushMeshFace(thin, 0, 1))).toBeCloseTo(401.005, 4)
+    // A box 30 m tall pushed in 5 m goes the whole 5 m.
+    expect(top(pushMeshFace(box(), 0, -5))).toBeCloseTo(425, 2)
+  })
+
   it('moves a shared vertex in every face, splitting the faces it bends into triangles', () => {
     const mesh = box()
     // A top corner, raised 10 m.

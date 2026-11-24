@@ -18,6 +18,27 @@ const PLANAR_TOLERANCE_SHARE = 1e-6
 /** Neighbours closer than this to a face's plane (metres) do not limit how far it is pushed in: they lie beside it. */
 const BESIDE_FACE_METERS = 1e-3
 
+/** The faces using each vertex, per faces array (kept while edits leave the faces alone, as moves mostly do). */
+const vertexFacesCache = new WeakMap<number[][][], number[][]>()
+
+/** The indices of the faces using each vertex of a mesh, computed once per faces array. */
+export function meshVertexFaces(mesh: IndexedMesh): readonly (readonly number[])[] {
+  let map = vertexFacesCache.get(mesh.faces)
+  if (map === undefined || map.length < mesh.vertices.length) {
+    map = Array.from({ length: mesh.vertices.length }, () => [] as number[])
+    mesh.faces.forEach((face, faceIndex) => {
+      for (const ring of face) {
+        for (const index of ring) {
+          const list = map![index]!
+          if (list[list.length - 1] !== faceIndex) list.push(faceIndex)
+        }
+      }
+    })
+    vertexFacesCache.set(mesh.faces, map)
+  }
+  return map
+}
+
 /** Each vertex index of a face once: its exterior ring, then its holes. */
 export function meshFaceVertices(mesh: IndexedMesh, faceIndex: number): number[] {
   const face = mesh.faces[faceIndex]
@@ -158,7 +179,8 @@ function triangulateFace(vertices: readonly Position[], face: readonly number[][
  * those vertices): moving a vertex shared by several faces moves it in each, so the faces stay joined. A face moved
  * whole stays planar; a face only partly moved that is no longer planar (a box's top with one corner raised) is split
  * into triangles, the first in its place and the others after the last face, so face indices hold. Vertex indices hold
- * too.
+ * too, and when no face is split the result shares the input's `faces` array. Only the faces using the moved vertices
+ * are visited.
  */
 export function moveMeshVertices(mesh: IndexedMesh, vertexIndices: readonly number[], offset: readonly [number, number, number], frame?: LocalFrame): IndexedMesh {
   if (!offset.every(Number.isFinite)) throw new Error(`moveMeshVertices: the offset is ${offset.join(', ')}; give finite metres east, north and up.`)
@@ -173,9 +195,13 @@ export function moveMeshVertices(mesh: IndexedMesh, vertexIndices: readonly numb
     const local = toLocal(measure, vertices[index]!)
     vertices[index] = measure.toGeographic(local[0] + offset[0], local[1] + offset[1], local[2] + offset[2])
   }
-  const faces = mesh.faces.slice()
+  let faces = mesh.faces
   const extra: number[][][] = []
-  mesh.faces.forEach((face, faceIndex) => {
+  const touched = new Set<number>()
+  const vertexFaces = meshVertexFaces(mesh)
+  for (const index of moved) for (const faceIndex of vertexFaces[index]!) touched.add(faceIndex)
+  for (const faceIndex of touched) {
+    const face = mesh.faces[faceIndex]!
     let count = 0
     let total = 0
     for (const ring of face) {
@@ -184,16 +210,17 @@ export function moveMeshVertices(mesh: IndexedMesh, vertexIndices: readonly numb
         if (moved.has(index)) count++
       }
     }
-    if (count === 0 || count === total) return
+    if (count === total) continue
     const before = facePoints(mesh.vertices, face, measure)
     const after = facePoints(vertices, face, measure)
     const tolerance = Math.max(PLANAR_TOLERANCE_METERS, faceSize(after) * PLANAR_TOLERANCE_SHARE)
-    if (planarityDeviation(after) <= planarityDeviation(before) + tolerance) return
+    if (planarityDeviation(after) <= planarityDeviation(before) + tolerance) continue
     const triangles = triangulateFace(vertices, face, measure)
-    if (triangles.length === 0) return
+    if (triangles.length === 0) continue
+    if (faces === mesh.faces) faces = mesh.faces.slice()
     faces[faceIndex] = [triangles[0]!]
     for (const triangle of triangles.slice(1)) extra.push([triangle])
-  })
+  }
   return { vertices, faces: extra.length > 0 ? [...faces, ...extra] : faces }
 }
 
@@ -201,8 +228,11 @@ export function moveMeshVertices(mesh: IndexedMesh, vertexIndices: readonly numb
 function neighboursOfFace(mesh: IndexedMesh, faceIndex: number): Set<number> {
   const inFace = new Set(meshFaceVertices(mesh, faceIndex))
   const neighbours = new Set<number>()
-  for (const face of mesh.faces) {
-    for (const ring of face) {
+  const faces = new Set<number>()
+  const vertexFaces = meshVertexFaces(mesh)
+  for (const index of inFace) for (const each of vertexFaces[index]!) faces.add(each)
+  for (const each of faces) {
+    for (const ring of mesh.faces[each]!) {
       for (let index = 0; index < ring.length; index++) {
         const a = ring[index]!
         const b = ring[(index + 1) % ring.length]!
@@ -217,7 +247,8 @@ function neighboursOfFace(mesh: IndexedMesh, faceIndex: number): Set<number> {
 /**
  * The mesh with a face moved `distanceMeters` along its outward normal (negative: inwards): the faces around it stretch,
  * as a box grows when its top is pulled. Pushed in, the face stops `minimumGapMeters` short of the nearest vertex joined
- * to it behind it (a box's bottom), so the solid never turns inside out.
+ * to it behind it (a box's bottom), so the solid never turns inside out; already that close, it stays. Pulled out, it
+ * goes the whole way.
  */
 export function pushMeshFace(mesh: IndexedMesh, faceIndex: number, distanceMeters: number, minimumGapMeters = 0.01): IndexedMesh {
   if (!Number.isFinite(distanceMeters)) throw new Error(`pushMeshFace: distanceMeters is ${distanceMeters}; give a finite number of metres.`)
@@ -236,7 +267,9 @@ export function pushMeshFace(mesh: IndexedMesh, faceIndex: number, distanceMeter
     const along = (point[0] - center[0]!) * normal[0] + (point[1] - center[1]!) * normal[1] + (point[2] - center[2]!) * normal[2]
     if (along < -BESIDE_FACE_METERS) nearestBehind = Math.max(nearestBehind, along)
   }
-  const distance = Number.isFinite(nearestBehind) ? Math.max(distanceMeters, nearestBehind + minimumGapMeters) : distanceMeters
+  // Only a push in is held back, never turned into a pull (a face already within the gap stays where it is).
+  const distance = distanceMeters < 0 && Number.isFinite(nearestBehind) ? Math.max(distanceMeters, Math.min(0, nearestBehind + minimumGapMeters)) : distanceMeters
+  if (distance === 0) return mesh
   return moveMeshVertices(mesh, indices, [normal[0] * distance, normal[1] * distance, normal[2] * distance], frame)
 }
 

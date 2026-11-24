@@ -77,6 +77,7 @@ Start in faces with `new SelectMode({ elementMode: 'face' })`; `editVertices: fa
 - A **double tap** (or double click) on a feature selects it and enters edit mode at once; on a mesh it switches to
   faces and picks the face under the pointer. Double tap a box's wall and its arrow is ready to drag.
 - A tap on the empty map leaves edit mode and keeps the selection; another clears it. Escape (and Tab) leave too.
+- Once something is selected, the camera's double-tap zoom is held off until the select mode is left.
   Selecting another feature starts with its gizmo.
 - Points have no edit mode. Flat multipolygons (several draped polygons) neither: they keep the gizmo.
 
@@ -98,7 +99,7 @@ Start in faces with `new SelectMode({ elementMode: 'face' })`; `editVertices: fa
 A picked face shows an arrow along its outward normal from its middle, `gizmoSizePixels` (80) long at any zoom. Drag
 it to move the face along its normal: the faces around it stretch, so dragging a box's top makes it taller and dragging
 a wall makes it wider that way only. Pushed in, the face stops just short of the vertices behind it (a box's bottom),
-so the solid never turns inside out. A top seen straight from above shows a knob up the screen instead of the arrow.
+so the solid never turns inside out. A face seen squarely (a top from above, a wall from in front) shows a knob up the screen instead, to drag up.
 
 On a picked polygon face the arrow pulls the polygon up into a prism that tall (`prismMesh`), its top then picked.
 
@@ -114,7 +115,7 @@ console.log(select.pushPullHandle())
 
 `draw.extrude(distanceMeters?)` extrudes the picked face along its normal, as Blender's E: the face moves out on new
 vertices and a wall joins each of its edges to where it was. The new face keeps the index and stays picked, so its
-arrow pushes it further. A negative distance extrudes into the solid (a dent). Without a distance it goes half the
+arrow pushes it further. A negative distance extrudes into the solid (a dent); on a polygon it returns false. Without a distance it goes half the
 arrow's length, about 40 px on the screen. A picked polygon face becomes a prism. One `update`, one undo step; false
 when nothing is picked (`state.canExtrude`).
 
@@ -173,8 +174,8 @@ Taps on the selected feature pick elements; they never leave edit mode. A tap on
 
 ### MEDIUM: Expecting Delete to remove a mesh's vertex, edge or face
 
-Only the picked vertex of a line or polygon is deleted. With an edge, a face or a mesh vertex picked, `deleteSelected()`
-returns false and deletes nothing (not the feature either). Leave edit mode to delete the feature.
+In edit mode only the picked vertex of a line or polygon is deleted. Otherwise `deleteSelected()` returns false and
+deletes nothing, not the feature either: leave edit mode to delete the feature.
 
 ### MEDIUM: Dragging a vertex up or down
 

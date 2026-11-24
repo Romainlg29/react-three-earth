@@ -1,9 +1,9 @@
-import type { Position } from 'geojson'
+import type { MultiPolygon, Position } from 'geojson'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, moveVertices, removeVertex, translateFeature, type VertexPath } from '../editing.js'
 import { distanceToSegment, hasAltitude, lowestAltitude, storedLines, storedPositions } from '../geometry.js'
 import { LocalFrame, type LocalPoint } from '../localFrame.js'
-import { indexMesh, isClosedMesh, isMeshGeometry, meshEdges, meshFromIndexed, meshSharpEdges, prismMesh, type IndexedMesh } from '../mesh.js'
+import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshSharpEdges, prismMesh, type IndexedMesh } from '../mesh.js'
 import { extrudeMeshFace, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from '../meshEditing.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import { isSolidFeature } from '../render/SolidFeatures.js'
@@ -67,6 +67,10 @@ export interface FeatureElements {
   mesh: IndexedMesh | null
   /** Where each vertex of a line or polygon is in its coordinates. */
   paths: VertexPath[] | null
+  /** The edges of each face, as indices into `edges`: a closed mesh shows only those of faces turned to the camera. */
+  faceEdges: number[][]
+  /** The stored version a drag moved these elements from, with the same faces: its screen pixels are reused. */
+  origin?: { feature: DrawFeature; elements: FeatureElements }
 }
 
 /** A transform the keyboard starts (G, R, S) or `startTransform`. */
@@ -200,6 +204,8 @@ interface ElementScreens {
   visible: Uint8Array
   /** 1 for a face turned to the camera (every face of an open mesh or a polygon). */
   frontFaces: Uint8Array
+  /** 1 for an edge of a face turned to the camera (every edge of an open mesh, a line or a polygon). */
+  visibleEdges: Uint8Array
 }
 
 /** The push and pull arrow of a picked face, for one view. */
@@ -421,6 +427,9 @@ export class SelectMode extends DrawMode {
       this.undoStack.length = 0
       if (this.selectedVertex !== null && context.store.get(this.selectedVertex.feature.id) !== this.selectedVertex.feature) this.selectedVertex = null
       if (this.picked !== null && context.store.get(this.picked.feature.id) !== this.picked.feature) this.picked = null
+      // The feature may have fewer vertices now: what was under the mouse is found again on the next move.
+      this.hoveredElement = null
+      this.hoveredArrow = false
       if (this.keyboardTransform !== null && context.store.get(this.keyboardTransform.base.id) !== this.keyboardTransform.base) this.keyboardTransform = null
     })
   }
@@ -482,6 +491,9 @@ export class SelectMode extends DrawMode {
     this.selectedVertex = null
     this.hoveredElement = null
     this.hoveredArrow = false
+    // A drag in progress picked its element in the old mode: dropped, its release does nothing.
+    this.drag = null
+    this.pressStart = null
     this.context?.changed()
   }
 
@@ -495,6 +507,8 @@ export class SelectMode extends DrawMode {
       this.selection = remaining.length === 0 ? NO_FEATURE_IDS : remaining
       if (this.selectedVertex !== null && !store.has(this.selectedVertex.feature.id)) this.selectedVertex = null
       if (this.picked !== null && !store.has(this.picked.feature.id)) this.picked = null
+      this.hoveredElement = null
+      this.hoveredArrow = false
       if (remaining.length === 0) this.vertexEditing = false
     }
     return this.selection
@@ -504,6 +518,9 @@ export class SelectMode extends DrawMode {
     const store = this.context?.store
     const next = store === undefined ? [...ids] : ids.filter(id => store.has(id))
     const same = next.length === this.selection.length && next.every((id, index) => id === this.selection[index])
+    // From the first selection on, a double tap enters edit mode rather than zooming, even on presses nobody takes
+    // (`moveFeatures: false`). Released when the mode exits.
+    if (next.length > 0) this.context?.holdDoubleClickZoom()
     if (!same) {
       this.selection = next.length === 0 ? NO_FEATURE_IDS : next
       this.selectedVertex = null
@@ -548,8 +565,6 @@ export class SelectMode extends DrawMode {
   override deleteSelection(): boolean {
     const context = this.context
     if (context === null) return false
-    // A picked edge, face or mesh vertex is not deleted (nor the feature holding it).
-    if (this.vertexEditing && this.picked !== null) return false
     const vertex = this.selectedVertex
     if (vertex !== null) {
       const feature = context.store.get(vertex.feature.id)
@@ -560,6 +575,8 @@ export class SelectMode extends DrawMode {
       this.commit([feature], () => context.update([edited]))
       return true
     }
+    // Edit mode deletes a picked vertex of a line or polygon, never the feature (nor a mesh's elements).
+    if (this.vertexEditing) return false
     const features = this.selectedFeatureIds()
       .map(id => context.store.get(id))
       .filter((feature): feature is DrawFeature => feature !== undefined)
@@ -905,6 +922,8 @@ export class SelectMode extends DrawMode {
     const removed = entry.restore.filter(feature => !context.store.has(feature.id))
     this.selectedVertex = null
     this.picked = null
+    this.hoveredElement = null
+    this.hoveredArrow = false
     this.keyboardTransform = null
     this.committing = true
     try {
@@ -1198,7 +1217,8 @@ export class SelectMode extends DrawMode {
    * Extrudes the picked face along its outward normal (`extrudeMeshFace`), as E does with the `keyboard` option: new
    * walls join it to where it was, and it stays picked, its arrow ready to push it further. A picked polygon becomes a
    * prism (`prismMesh`) that tall, its top picked. Without `distanceMeters`, half the arrow's length (about 40 px on
-   * the screen). One `update`, one undo step. Returns false when no face is picked (`canExtrude`).
+   * the screen). One `update`, one undo step. Returns false when no face is picked (`canExtrude`), and for a negative
+   * distance on a polygon (a prism only grows up; a mesh's face extrudes inwards).
    */
   extrude(distanceMeters?: number): boolean {
     const context = this.context
@@ -1279,6 +1299,7 @@ export class SelectMode extends DrawMode {
         closed: false,
         mesh: null,
         paths: vertices.map(vertex => vertex.path),
+        faceEdges: geometry.type === 'Polygon' ? [edges.map((_, index) => index)] : [],
       }
     }
     this.elementsCache.set(feature, elements)
@@ -1287,8 +1308,24 @@ export class SelectMode extends DrawMode {
 
   /** A feature version with a new mesh, its elements known (so indices picked on the mesh hold). */
   protected withMesh(feature: DrawFeature, mesh: IndexedMesh): DrawFeature {
-    const edited: DrawFeature = { ...feature, geometry: meshFromIndexed(mesh) }
-    this.elementsCache.set(edited, elementsOfMesh(mesh))
+    const base = this.elementsOf(feature)
+    const sameFaces = base?.mesh != null && base.mesh.faces === mesh.faces && feature.geometry.type === 'MultiPolygon'
+    let geometry: MultiPolygon
+    if (sameFaces) {
+      // A move: faces whose vertices all stayed keep their coordinates (features are never changed in place).
+      const baseVertices = base.mesh!.vertices
+      const baseCoordinates = (feature.geometry as MultiPolygon).coordinates
+      geometry = {
+        type: 'MultiPolygon',
+        coordinates: mesh.faces.map((face, faceIndex) =>
+          face.every(ring => ring.every(index => mesh.vertices[index] === baseVertices[index])) ? baseCoordinates[faceIndex]! : face.map(ring => closeIndexedRing(mesh.vertices, ring)),
+        ),
+      }
+    } else geometry = meshFromIndexed(mesh)
+    const edited: DrawFeature = { ...feature, geometry }
+    const elements = elementsOfMesh(mesh, sameFaces ? base : null)
+    if (sameFaces) elements.origin = { feature, elements: base }
+    this.elementsCache.set(edited, elements)
     return edited
   }
 
@@ -1306,10 +1343,15 @@ export class SelectMode extends DrawMode {
     const cached = this.elementScreens.get(feature)
     if (cached !== undefined && view !== undefined && cached.view === view) return cached
     const count = elements.positions.length
-    const x = new Float64Array(count)
-    const y = new Float64Array(count)
+    // A drag's step: the stored version's pixels for this view, only the moved vertices projected again.
+    const origin = elements.origin
+    const originScreens = origin === undefined ? undefined : this.elementScreens.get(origin.feature)
+    const reuse = originScreens !== undefined && origin!.elements.positions.length === count && view !== undefined && originScreens.view === view
+    const x = reuse ? originScreens.x.slice() : new Float64Array(count)
+    const y = reuse ? originScreens.y.slice() : new Float64Array(count)
     for (let index = 0; index < count; index++) {
       const position = elements.positions[index]!
+      if (reuse && position === origin!.elements.positions[index]) continue
       const height = elements.heights[index]!
       const screen = height === null ? context.project([position[0]!, position[1]!], this.groundFallbackMeters) : context.projectAtHeight([position[0]!, position[1]!], height)
       x[index] = screen?.x ?? Number.NaN
@@ -1317,6 +1359,7 @@ export class SelectMode extends DrawMode {
     }
     const frontFaces = new Uint8Array(elements.faces.length)
     const visible = new Uint8Array(count)
+    const visibleEdges = new Uint8Array(elements.edges.length)
     elements.faces.forEach((face, faceIndex) => {
       // Counter-clockwise seen from outside is clockwise on the screen (y down): a negative area.
       const ring = face[0] ?? []
@@ -1328,11 +1371,17 @@ export class SelectMode extends DrawMode {
       }
       if (!elements.closed || area < 0) {
         frontFaces[faceIndex] = 1
-        if (elements.closed) for (const each of face) for (const index of each) visible[index] = 1
+        if (elements.closed) {
+          for (const each of face) for (const index of each) visible[index] = 1
+          for (const edge of elements.faceEdges[faceIndex] ?? []) visibleEdges[edge] = 1
+        }
       }
     })
-    if (!elements.closed) visible.fill(1)
-    const screens: ElementScreens = { view, x, y, visible, frontFaces }
+    if (!elements.closed) {
+      visible.fill(1)
+      visibleEdges.fill(1)
+    }
+    const screens: ElementScreens = { view, x, y, visible, frontFaces, visibleEdges }
     if (view !== undefined) this.elementScreens.set(feature, screens)
     return screens
   }
@@ -1345,7 +1394,7 @@ export class SelectMode extends DrawMode {
   protected elementAt(event: DrawPointerEvent, feature: DrawFeature): PickedElement | null {
     const elements = this.elementsOf(feature)
     if (elements === null) return null
-    const { x, y, visible, frontFaces } = this.screensOf(feature, elements)
+    const { x, y, visible, frontFaces, visibleEdges } = this.screensOf(feature, elements)
     const pointerX = event.screen.xPixels
     const pointerY = event.screen.yPixels
     const reach = hitTolerancePixels(event.pointerType)
@@ -1365,9 +1414,10 @@ export class SelectMode extends DrawMode {
     if (this.element === 'edge') {
       let best: [number, number] | null = null
       let bestDistance = reach
-      for (const edge of elements.edges) {
+      for (let edgeIndex = 0; edgeIndex < elements.edges.length; edgeIndex++) {
+        if (visibleEdges[edgeIndex] !== 1) continue
+        const edge = elements.edges[edgeIndex]!
         const [a, b] = edge
-        if (visible[a] !== 1 || visible[b] !== 1) continue
         const distance = distanceToSegment(pointerX, pointerY, x[a]!, y[a]!, x[b]!, y[b]!)
         if (distance <= bestDistance) {
           best = edge
@@ -1470,8 +1520,8 @@ export class SelectMode extends DrawMode {
 
   /**
    * The push and pull arrow of a feature version's picked face for the current view: from the face's middle along its
-   * outward normal (up, for a polygon), `gizmoSizePixels` long. Null without a picked face, or with the face turned
-   * edge on to the camera.
+   * outward normal (up, for a polygon), `gizmoSizePixels` long, or a knob up the screen when the normal points at the
+   * camera. Null without a picked face, or with the face turned away from the camera along the line of sight.
    */
   protected arrowOf(feature: DrawFeature): PushArrow | null {
     const context = this.context
@@ -1515,8 +1565,18 @@ export class SelectMode extends DrawMode {
     const along = this.screenOffset(frame, normal[0] * lengthMeters, normal[1] * lengthMeters, normal[2] * lengthMeters, from)
     if (along === null) return null
     if (Math.hypot(along.x, along.y) >= this.gizmoSizePixels * MINIMUM_AXIS_SHARE) return { feature, face, frame, normal, lengthMeters, from, along, knob: false }
-    // Pointing at the camera: a face seen straight on from above pulls up the screen, as the gizmo's up knob.
-    if (normal[2] < 0.999) return null
+    // Along the line of sight: a face seen squarely (a top from above, a wall from in front) pulls up the screen, as the
+    // gizmo's up knob, when it faces the camera; a face turned away shows none.
+    const depthAtHeight = this.context!.depthAtHeight
+    let facesCamera = normal[2] > 0
+    if (depthAtHeight !== undefined) {
+      const center = frame.toGeographic(0, 0, 0)
+      const tip = frame.toGeographic(normal[0] * lengthMeters, normal[1] * lengthMeters, normal[2] * lengthMeters)
+      const centerDepth = depthAtHeight([center[0], center[1]], center[2])
+      const tipDepth = depthAtHeight([tip[0], tip[1]], tip[2])
+      if (centerDepth !== null && tipDepth !== null) facesCamera = tipDepth < centerDepth
+    }
+    if (!facesCamera) return null
     return { feature, face, frame, normal, lengthMeters, from, along: { x: 0, y: -this.gizmoSizePixels }, knob: true }
   }
 
@@ -1561,14 +1621,16 @@ export class SelectMode extends DrawMode {
   protected elementsOverlay(feature: DrawFeature, content: OverlayContent, style: DrawStyle, drag: Extract<SelectDrag, { kind: 'element' }> | null): void {
     const elements = this.elementsOf(feature)
     if (elements === null) return
-    const { visible } = this.screensOf(feature, elements)
+    const { visible, visibleEdges } = this.screensOf(feature, elements)
     const { positions } = elements
     const heightOf = (index: number) => elements.heights[index] ?? this.context!.heights.heightAt(positions[index]![0]!, positions[index]![1]!, this.groundFallbackMeters)
     const line = (indices: readonly number[], color: string, widthPixels: number, opacity: number) =>
       content.lines.push({ positions: indices.map(index => [positions[index]![0]!, positions[index]![1]!]), heightsMeters: indices.map(heightOf), color, widthPixels, opacity })
-    if (elements.mesh !== null) for (const [a, b] of elements.edges) if (visible[a] === 1 && visible[b] === 1) line([a, b], style.vertexOutlineColor, 1.5, 0.9)
-    const picked = drag?.element ?? (this.picked?.feature.id === feature.id ? this.picked.element : null)
-    const hovered = drag === null ? this.hoveredElement : null
+    if (elements.mesh !== null) elements.edges.forEach(([a, b], edgeIndex) => visibleEdges[edgeIndex] === 1 && line([a, b], style.vertexOutlineColor, 1.5, 0.9))
+    // Elements of another version (the feature changed since) may name vertices or faces it no longer has: skipped.
+    const fits = (element: PickedElement | null): PickedElement | null => (element !== null && elementFits(elements, element) ? element : null)
+    const picked = fits(drag?.element ?? (this.picked?.feature.id === feature.id ? this.picked.element : null))
+    const hovered = drag === null ? fits(this.hoveredElement) : null
     if (this.element === 'vertex') {
       positions.forEach((position, index) => {
         if (visible[index] !== 1) return
@@ -2322,9 +2384,47 @@ function insideConvex(x: number, y: number, ring: readonly Screen[]): boolean {
   return true
 }
 
-/** The elements of an indexed mesh. */
-function elementsOfMesh(mesh: IndexedMesh): FeatureElements {
-  return { positions: mesh.vertices, heights: mesh.vertices.map(position => position[2] ?? 0), edges: meshEdges(mesh), faces: mesh.faces, closed: isClosedMesh(mesh), mesh, paths: null }
+/** The elements of an indexed mesh; its edges and whether it is closed taken from `sameFaces`, elements with the same faces. */
+function elementsOfMesh(mesh: IndexedMesh, sameFaces: FeatureElements | null = null): FeatureElements {
+  const heights = mesh.vertices.map(position => position[2] ?? 0)
+  if (sameFaces !== null) return { positions: mesh.vertices, heights, edges: sameFaces.edges, faces: mesh.faces, closed: sameFaces.closed, mesh, paths: null, faceEdges: sameFaces.faceEdges }
+  // Each edge once (the smaller vertex first), and the edges of each face.
+  const edges: Array<[number, number]> = []
+  const edgeIndices = new Map<number, number>()
+  const count = mesh.vertices.length
+  const faceEdges = mesh.faces.map(face => {
+    const list: number[] = []
+    for (const ring of face) {
+      for (let index = 0; index < ring.length; index++) {
+        const a = ring[index]!
+        const b = ring[(index + 1) % ring.length]!
+        if (a === b) continue
+        const key = a < b ? a * count + b : b * count + a
+        let edge = edgeIndices.get(key)
+        if (edge === undefined) {
+          edge = edges.push(a < b ? [a, b] : [b, a]) - 1
+          edgeIndices.set(key, edge)
+        }
+        list.push(edge)
+      }
+    }
+    return list
+  })
+  return { positions: mesh.vertices, heights, edges, faces: mesh.faces, closed: isClosedMesh(mesh), mesh, paths: null, faceEdges }
+}
+
+/** Whether an element's vertices or face exist in some elements. */
+function elementFits(elements: FeatureElements, element: PickedElement): boolean {
+  if (element.kind === 'face') return element.index < elements.faces.length
+  const count = elements.positions.length
+  return element.kind === 'vertex' ? element.index < count : element.from < count && element.to < count
+}
+
+/** A ring of an indexed mesh as positions, closed, each its own array. */
+function closeIndexedRing(vertices: readonly Position[], ring: readonly number[]): Position[] {
+  const positions = ring.map(index => [...vertices[index]!])
+  if (positions.length > 0) positions.push([...positions[0]!])
+  return positions
 }
 
 /** Whether two elements are the same (both null too). */
