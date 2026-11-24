@@ -19,17 +19,17 @@ export interface SymbolEffectInputs {
   /** Where the halo ends (`text-halo-width`), below `edge`; equal to `edge` without a halo. */
   haloEdge: Node<'float'>
   /**
-   * Distance units across one screen pixel, for antialiasing. One unit is 8 pixels of a 24 px font, so a
-   * 16 px label has `pixelWidth` about 0.19.
+   * Distance units across one screen pixel, for antialiasing and widths in pixels. One unit is 8 pixels of a
+   * 24 px font, so a 16 px label has about 0.19.
    */
-  pixelWidth: Node<'float'>
+  distancePerPixel: Node<'float'>
   /** `text-color` (or `icon-color`), `text-opacity` included. */
   fillColor: Node<'vec4'>
   /** `text-halo-color` (or `icon-halo-color`). */
   haloColor: Node<'vec4'>
   /** 1 for an SDF icon, 0 for text. */
   isIcon: Node<'float'>
-  /** The label's size on the screen over 24 px (`text-size` / 24). */
+  /** The quad's size on the screen over its atlas size: `text-size` / 24 for text, the icon's own scale for an icon. */
   scale: Node<'float'>
   /** What the library draws without an effect: the fill over its halo. Wrap it to add to it. */
   standardColor: Node<'vec4'>
@@ -44,7 +44,10 @@ export interface SymbolEffectInputs {
  * distance field's padding): a glow or outline wider than that is cut at the quad's edge.
  */
 export interface SymbolEffectDefinition {
-  /** The name style layers give in `metadata["react-three-earth:symbol-effect"]`. */
+  /**
+   * The name style layers give in `metadata["react-three-earth:symbol-effect"]`. Only a string is read there
+   * today; other value types are reserved for later forms (per-feature choice, parameters).
+   */
   name: string
   /**
    * The colour of a fragment (linear RGB, straight alpha), built once per effect per map style source. The

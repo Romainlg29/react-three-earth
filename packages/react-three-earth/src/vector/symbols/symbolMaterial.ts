@@ -3,7 +3,7 @@ import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smooth
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
-import type { SymbolEffectDefinition } from '../../plugins/symbolEffects.js'
+import type { SymbolEffectDefinition, SymbolEffectInputs } from '../../plugins/symbolEffects.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { GLYPH_EDGE } from '../worker/glyphs.js'
 import type { SymbolMesh } from '../worker/types.js'
@@ -143,6 +143,21 @@ function linearColor(name: string) {
 }
 
 /**
+ * Runs a plugin's `shade` when the renderer builds the shader. One that throws or returns no colour node falls back
+ * to the standard look with an error naming the effect, rather than failing the frame for the whole map.
+ */
+function shadeWithEffect(effect: SymbolEffectDefinition, inputs: SymbolEffectInputs): Node<'vec4'> {
+  try {
+    const color = effect.shade(inputs) as unknown
+    if (color !== null && typeof color === 'object' && (color as { isNode?: boolean }).isNode === true) return color as Node<'vec4'>
+    console.error(`Symbol effect "${effect.name}": \`shade\` returned ${String(color)}, not a node; return a vec4 colour such as \`vec4(rgb, alpha)\`. Drawing the standard look.`)
+  } catch (error) {
+    console.error(`Symbol effect "${effect.name}": \`shade\` threw; fix it in the plugin that registers it. Drawing the standard look.`, error)
+  }
+  return inputs.standardColor
+}
+
+/**
  * The material of every label mesh of one style source: each glyph corner is moved to its label's anchor on the
  * screen (from the state texture) at the label's scale, or for a label along a line to its glyph's own place and
  * angle (from the glyph state texture), so the CPU never touches vertices after a tile loads. SDF text
@@ -205,10 +220,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
     const alpha = fillAlpha.add(haloAlpha)
     const rgb = fill.rgb.mul(fillAlpha).add(halo.rgb.mul(haloAlpha)).div(max(alpha, float(1e-4)))
     const standardColor = vec4(rgb, alpha)
-    const shaded =
-      effect === null
-        ? standardColor
-        : effect.shade({ distance, edge, haloEdge, pixelWidth: max(fwidth(distance), float(1e-4)), fillColor: fill, haloColor: halo, isIcon: select(isIcon, float(1), float(0)), scale: labelScale, standardColor })
+    const shaded = effect === null ? standardColor : shadeWithEffect(effect, { distance, edge, haloEdge, distancePerPixel: max(fwidth(distance), float(1e-4)), fillColor: fill, haloColor: halo, isIcon: select(isIcon, float(1), float(0)), scale: labelScale, standardColor })
     const sdfColor = vec4(shaded.rgb.mul(brightness), shaded.a.mul(labelOpacity).mul(layerOpacity))
     // A colour icon: its own colours (straight, linear), faded by icon-opacity (the fill colour's alpha).
     const straight = sRGBTransferEOTF(image.rgb.div(max(image.a, float(1 / 255)))) as unknown as Node<'vec3'>

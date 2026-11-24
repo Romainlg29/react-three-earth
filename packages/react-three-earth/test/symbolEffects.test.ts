@@ -91,7 +91,7 @@ describe('symbol effects on labels facing the viewer', () => {
       acquireSymbolTile: () => {
         throw new Error('not in this test')
       },
-      mapStyle: { getLayer: id => (id in metadata ? { id, metadata: { [SYMBOL_EFFECT_METADATA_KEY]: metadata[id] } } : { id }) },
+      mapStyle: { getLayerMetadata: id => (id in metadata ? { [SYMBOL_EFFECT_METADATA_KEY]: metadata[id] } : undefined) },
     }
     const symbols = new ScreenSymbols(host)
     const apply = (mesh: Mesh, meshSymbols: SymbolMesh) => (symbols as unknown as { applySymbolEffects(mesh: Mesh, symbols: SymbolMesh): void }).applySymbolEffects(mesh, meshSymbols)
@@ -146,6 +146,27 @@ describe('symbol effects on labels facing the viewer', () => {
     registry.register({ ...neon })
     apply(second, createSymbols(['rivers']))
     expect((second.material as MeshBasicNodeMaterial[])[1]).not.toBe(neonMaterial)
+    symbols.dispose()
+  })
+
+  it('stays quiet and keeps its materials while detached from the earth (terrain swaps, StrictMode)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const registry = new SymbolEffectRegistry()
+    registry.register(neon)
+    const { symbols, apply } = createScreenSymbols({ roads: 'neon' })
+    const mesh = createMesh()
+    apply(mesh, createSymbols(['roads']))
+    expect(Array.isArray(mesh.material)).toBe(false)
+    symbols.setSymbolEffects(registry)
+    apply(mesh, createSymbols(['roads']))
+    const material = (mesh.material as MeshBasicNodeMaterial[])[1]!
+    const dispose = vi.spyOn(material, 'dispose')
+    symbols.setSymbolEffects(null)
+    symbols.setSymbolEffects(registry)
+    apply(mesh, createSymbols(['roads']))
+    expect((mesh.material as MeshBasicNodeMaterial[])[1]).toBe(material)
+    expect(dispose).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
     symbols.dispose()
   })
 

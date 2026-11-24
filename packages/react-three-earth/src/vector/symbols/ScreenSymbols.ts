@@ -50,7 +50,7 @@ export interface ScreenSymbolsHost {
   /** Locks a processed symbol tile in the overlay's tile cache. */
   acquireSymbolTile(request: TileRequest): Lease<{ bucket: TileBucket }>
   /** The style's layers by id, for the symbol effect a layer names in its metadata. */
-  readonly mapStyle?: { getLayer(layerId: string): object | undefined }
+  readonly mapStyle?: { getLayerMetadata(layerId: string): unknown }
 }
 
 export interface ScreenSymbolsInspection {
@@ -516,15 +516,28 @@ export class ScreenSymbols {
     this.symbolEffectsChanged()
   }
 
+  /** The style changed: a layer's metadata may name another effect. Free without effects installed. */
+  styleChanged(): void {
+    if (this.symbolEffects === null || (this.symbolEffects.size === 0 && this.effectMaterials.size === 0)) return
+    this.regroupTiles()
+  }
+
   protected symbolEffectsChanged(): void {
     if (this.disposed) return
-    // A material whose effect was removed or registered again is rebuilt on its next use.
-    for (const [name, entry] of this.effectMaterials) {
-      if (this.symbolEffects?.get(name) === entry.definition) continue
-      entry.material.dispose()
-      this.effectMaterials.delete(name)
+    // Detached from the earth (a terrain swap, StrictMode): keep the materials for when it comes back.
+    if (this.symbolEffects !== null) {
+      // A material whose effect was removed or registered again is rebuilt on its next use.
+      for (const [name, entry] of this.effectMaterials) {
+        if (this.symbolEffects.get(name) === entry.definition) continue
+        entry.material.dispose()
+        this.effectMaterials.delete(name)
+      }
     }
     this.missingEffects.clear()
+    this.regroupTiles()
+  }
+
+  protected regroupTiles(): void {
     for (const tile of this.tiles.values()) {
       if (tile.mesh !== null && tile.symbols !== null) this.applySymbolEffects(tile.mesh, tile.symbols)
     }
@@ -533,9 +546,11 @@ export class ScreenSymbols {
 
   /** The material of the effect a layer names, or null for the standard look (none named, or not installed). */
   protected getEffectMaterial(layerId: string): MeshBasicNodeMaterial | null {
-    const name = getLayerSymbolEffect(this.host.mapStyle?.getLayer(layerId))
+    // Not attached to an earth yet: no registry to look in, and nothing to warn about.
+    if (this.symbolEffects === null) return null
+    const name = getLayerSymbolEffect({ metadata: this.host.mapStyle?.getLayerMetadata(layerId) })
     if (name === null) return null
-    const definition = this.symbolEffects?.get(name)
+    const definition = this.symbolEffects.get(name)
     if (definition === undefined) {
       if (!this.missingEffects.has(name)) {
         this.missingEffects.add(name)
@@ -1317,7 +1332,6 @@ function meetsBox(left: number, top: number, right: number, bottom: number, box:
   return right >= box[0] - tolerancePixels && left <= box[2] + tolerancePixels && bottom >= box[1] - tolerancePixels && top <= box[3] + tolerancePixels
 }
 
-/** Same labels at the same anchors, in the same order. */
 /**
  * Splits a label mesh's triangles into consecutive runs whose labels share a material index (`materialOf`, per
  * label index), as geometry groups: `start` and `count` in indices. Draw order is unchanged.
@@ -1333,6 +1347,7 @@ export function splitSymbolDrawRuns(indices: ArrayLike<number>, labelIndices: Ar
   return runs
 }
 
+/** Same labels at the same anchors, in the same order. */
 function sameLabels(a: SymbolMesh, b: SymbolMesh): boolean {
   if (a.keys.length !== b.keys.length) return false
   for (let index = 0; index < a.keys.length; index++) if (a.keys[index] !== b.keys[index]) return false

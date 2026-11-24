@@ -23,11 +23,12 @@ export function neonLabels({ coreColor = '#39ff14', outlineColor = '#ff2bd6' }: 
     install(context) {
       context.registerSymbolEffect({
         name: 'neon',
-        shade: ({ distance, edge, haloEdge, pixelWidth, fillColor }) => {
-          const smoothing = pixelWidth.mul(0.7)
+        shade: ({ distance, edge, haloEdge, distancePerPixel, fillColor }) => {
+          const smoothing = distancePerPixel.mul(0.7)
           const inside = smoothstep(edge.sub(smoothing), edge.add(smoothing), distance)
-          // The halo's band (text-halo-width), or two pixels of outline when the layer has no halo.
-          const outlineEdge = max(min(haloEdge, edge.sub(pixelWidth.mul(2))), 0.05)
+          // The halo's band (text-halo-width), or one pixel of outline when the layer has no halo (the quad's padding
+          // is only 3 px of a 24 px font).
+          const outlineEdge = max(min(haloEdge, edge.sub(distancePerPixel)), 0.05)
           const outlined = smoothstep(outlineEdge.sub(smoothing), outlineEdge.add(smoothing), distance)
           return vec4(mix(outline, core, inside), max(inside, outlined).mul(fillColor.a))
         },

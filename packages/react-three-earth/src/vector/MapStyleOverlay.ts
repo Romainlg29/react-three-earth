@@ -265,6 +265,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected disposed = false
   /** Custom style layer types from plugins (`earth.styleLayerTypes`), handed over by `ImageOverlayPlugin`. */
   protected styleLayerTypes: StyleLayerTypeRegistry | null = null
+  protected removeStyleDataListener: (() => void) | null = null
   protected unsubscribeLayerTypes: (() => void) | null = null
   protected layerTypesScheduled = false
   protected readonly customLayerTypes = new Map<string, CustomLayerType>()
@@ -402,6 +403,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     await this.mapStyle.load(typeof this.fetch === 'function' ? (url, init) => this.fetch(String(url), init) : undefined)
     if (this.disposed) return
     this.unsubscribe = this.mapStyle.subscribe(this.receiveStyleChanges)
+    // A layer's metadata can name another symbol effect (after `setStyle`): the labels drawn pick it up.
+    const onStyleData = () => this.screenSymbols?.styleChanged()
+    this.mapStyle.addEventListener('styledata', onStyleData)
+    this.removeStyleDataListener = () => this.mapStyle.removeEventListener('styledata', onStyleData)
     const host: MapStyleBackendHost = {
       onAtlasUpdate: update => this.atlas.apply(update),
       onFeatureColorUpdate: update => this.featureColors.apply(update),
@@ -1101,6 +1106,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.screenSymbols?.dispose()
     this.extrusions?.dispose()
     this.unsubscribe?.()
+    this.removeStyleDataListener?.()
+    this.removeStyleDataListener = null
     this.unsubscribe = null
     this.detachSourceQueries?.()
     this.detachSourceQueries = null

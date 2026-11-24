@@ -226,6 +226,11 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
     return clone(this.document?.layers.find(layer => layer.id === layerId))
   }
 
+  /** A copy of a layer's `metadata`, or undefined: cheaper than `getLayer` for renderers reading it per tile. */
+  getLayerMetadata(layerId: string): unknown {
+    return clone(this.document?.layers.find(layer => layer.id === layerId)?.metadata)
+  }
+
   /** The ids of the style's layers, bottom first. */
   getLayerIds(): string[] {
     return this.document?.layers.map(layer => layer.id) ?? []
@@ -430,7 +435,16 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
       this.emit({ type: 'reload' })
       for (const id of Object.keys(current.sources)) if (target.sources[id] === undefined) this.queueEvent('sourcedata', { sourceId: id, change: 'remove' })
       for (const id of Object.keys(target.sources)) if (current.sources[id] === undefined) this.queueEvent('sourcedata', { sourceId: id, change: 'add' })
-    } else for (const command of commands) this.applyLocally(command)
+    } else {
+      for (const command of commands) this.applyLocally(command)
+      // MapLibre's diff ignores `metadata`, which the renderer reads too (symbol effects): take the new values.
+      const targetLayers = new Map(target.layers.map(layer => [layer.id, layer]))
+      for (const layer of this.document!.layers) {
+        const metadata = targetLayers.get(layer.id)?.metadata
+        if (metadata === undefined) delete layer.metadata
+        else layer.metadata = clone(metadata)
+      }
+    }
     this.queueEvent('styledata', {})
   }
 

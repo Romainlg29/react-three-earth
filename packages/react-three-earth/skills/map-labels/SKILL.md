@@ -127,10 +127,10 @@ export function neonLabels(): EarthPlugin {
       context.registerSymbolEffect({
         name: 'neon',
         // Linear RGB, straight alpha. The library applies fades, layer opacity and the flat map's luminance.
-        shade: ({ distance, edge, haloEdge, pixelWidth, fillColor }) => {
-          const smoothing = pixelWidth.mul(0.7)
+        shade: ({ distance, edge, haloEdge, distancePerPixel, fillColor }) => {
+          const smoothing = distancePerPixel.mul(0.7)
           const inside = smoothstep(edge.sub(smoothing), edge.add(smoothing), distance)
-          const outlineEdge = max(min(haloEdge, edge.sub(pixelWidth.mul(2))), 0.05) // the halo's band, or 2 px
+          const outlineEdge = max(min(haloEdge, edge.sub(distancePerPixel)), 0.05) // the halo's band, or 1 px
           const outlined = smoothstep(outlineEdge.sub(smoothing), outlineEdge.add(smoothing), distance)
           return vec4(mix(outline, core, inside), max(inside, outlined).mul(fillColor.a))
         },
@@ -141,12 +141,14 @@ export function neonLabels(): EarthPlugin {
 ```
 
 The inputs are `distance` (0 far outside, `edge` = 0.75 on the outline, 1 inside), `haloEdge` (where
-`text-halo-width` ends), `pixelWidth` (distance units per screen pixel), `fillColor` and `haloColor` (the
-style's data-driven colours, linear), `isIcon` (1 for SDF icons), `scale` (`text-size` / 24) and
-`standardColor` (the default fill over halo, to wrap rather than replace). Placement, collision and colour
-icons are unchanged. One material per effect per map style source; a tile mixing layers with and without
-effects draws in a few calls, in style order. Installing or removing the plugin restyles the labels on the
-screen without processing tiles again. The playground example is `?fixtures&map=labels&neon`.
+`text-halo-width` ends), `distancePerPixel` (distance units per screen pixel), `fillColor` and `haloColor`
+(the style's data-driven colours, linear), `isIcon` (1 for SDF icons), `scale` (`text-size` / 24, or the
+icon's scale) and `standardColor` (the default fill over halo, to wrap rather than replace). Placement,
+collision and colour icons are unchanged. One material per effect per map style source; a tile mixing
+layers with and without effects draws in a few calls, in style order. Installing or removing the plugin,
+or a `setStyle` that changes a layer's metadata, restyles the labels on the screen without processing
+tiles again. A `shade` that throws draws the standard look and logs an error naming the effect. The
+playground example is `?fixtures&map=labels&neon`.
 
 ### Read the labels on the screen (tests, devtools)
 
