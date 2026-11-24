@@ -43,7 +43,8 @@ function nightStyle(glowColor: string): object {
         type: 'line',
         source: 'map',
         'source-layer': roads,
-        filter: ['!', majorRoads],
+        // Streets only: no rail, ferry or path lines.
+        filter: ['match', ['get', 'class'], ['secondary', 'tertiary', 'minor', 'service', 'street', 'residential'], true, false],
         paint: { 'line-color': '#1f2a48', 'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 10, 0.4, 16, 4] },
       },
       {

@@ -2224,20 +2224,26 @@ try {
     await galleryExample('night', '', async (page, idle) => {
       // Glow pixels by hue, before and after the glow colour changes.
       const glow = async () => analyse(page, await page.screenshot(), `
-        let amber = 0, cyan = 0
+        let amber = 0, cyan = 0, magenta = 0
         for (let i = 0; i < px.length; i += 4) {
           const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
           if (r > 80 && r > g * 1.5 && r > b * 2) amber++
           if (b > 80 && g > 60 && b > r * 2) cyan++
+          // The neon outline (#ff2bd6) around the place names.
+          if (r > 170 && b > 150 && g < 110) magenta++
         }
-        return { amber: amber / (width * height), cyan: cyan / (width * height) }
+        return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
       `)
       const before = await glow()
       await page.getByRole('button', { name: 'Cyan glow' }).click()
-      await page.waitForTimeout(500)
-      await idle()
-      await page.waitForTimeout(1500)
-      return { glow: { before, after: await glow() } }
+      // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
+      let after = null
+      for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
+        await page.waitForTimeout(1000)
+        await idle()
+        after = await glow()
+      }
+      return { glow: { before, after } }
     })
     await galleryExample('embedded', '', async page => {
       // A plain wheel over the map scrolls the page and leaves the camera where it was.
