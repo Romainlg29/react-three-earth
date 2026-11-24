@@ -3,6 +3,11 @@
 import { readFileSync } from 'node:fs'
 
 const results = JSON.parse(readFileSync(new URL('../test-results/results.json', import.meta.url), 'utf8'))
+// A run of some areas (run.mjs labels, run.mjs --changed) skips the other checks: only a full run reports them missing.
+let selection = { every: true }
+try {
+  selection = JSON.parse(readFileSync(new URL('../test-results/selection.json', import.meta.url), 'utf8'))
+} catch {}
 
 /** check name → assertions on its result, each [description, passes]. */
 const expectations = {
@@ -363,8 +368,13 @@ expectations['3d buildings, draped'] = r => [
 ]
 
 let failures = 0
+let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)
+  if (result === undefined && !selection.every) {
+    skipped++
+    continue
+  }
   if (result === undefined) {
     console.error(`✗ ${check}: missing from results.json`)
     failures++
@@ -377,6 +387,8 @@ for (const [check, assertions] of Object.entries(expectations)) {
   }
   if (result.errors.length > 0) console.error(result.errors.join('\n'))
 }
+
+if (skipped > 0) console.log(`\n${skipped} check(s) outside ${selection.areas.join(', ') || 'the selected areas'} skipped: run the full suite before merging.`)
 
 if (failures > 0) {
   console.error(`\n${failures} browser check assertion(s) failed.`)

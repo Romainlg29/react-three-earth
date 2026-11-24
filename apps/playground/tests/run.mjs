@@ -2,6 +2,7 @@
 // Frame times here measure a CPU rasteriser, not a GPU: correctness only.
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { AREAS, selectAreas } from './areas.mjs'
 
 // The pre-installed Playwright resolves through require (NODE_PATH), not ESM import.
 const { chromium } = createRequire(import.meta.url)('playwright')
@@ -9,6 +10,17 @@ const { chromium } = createRequire(import.meta.url)('playwright')
 const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
 const OUT = new URL('../test-results/', import.meta.url)
 mkdirSync(OUT, { recursive: true })
+
+// Areas: all by default, named ones (`labels buildings`), or those the branch's changes reach (`--changed`). See areas.mjs.
+const selected = new Set(selectAreas(process.argv.slice(2)))
+const want = area => selected.has(area)
+console.error(selected.size === AREAS.length ? 'Browser checks: every area' : `Browser checks: ${[...selected].join(', ') || 'none, no change reaches the playground'}`)
+// assert-results.mjs reads this to tell the checks a partial run skipped from missing ones.
+writeFileSync(new URL('selection.json', OUT), JSON.stringify({ areas: [...selected], every: selected.size === AREAS.length }, null, 2))
+if (selected.size === 0) {
+  writeFileSync(new URL('results.json', OUT), '[]')
+  process.exit(0)
+}
 
 // WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
 // canvas drops the GPU instance. Run under xvfb-run on machines without a display.
@@ -1599,50 +1611,49 @@ async function terrainExaggeration(name, query) {
   results.push({ check: `terrain exaggeration, ${name}`, exaggerated, plain, changedShare, sameTerrain, errors })
 }
 
-const only = process.argv[2]
 try {
-  if (!only || only === 'precision') {
+  if (want('precision')) {
     await precision(true)
     await precision(false)
   }
-  if (!only || only === 'map') {
+  if (want('map')) {
     await map(false)
     await map(true)
   }
-  if (!only || only === 'map' || only === '2d') {
+  if (want('2d')) {
     await map(false, '2d')
     await map(true, '2d')
   }
-  if (!only || only === 'vector') {
+  if (want('vector')) {
     await vectorMap('overview', '')
     await vectorMap('close', '&camera=,,,9000,,-50')
     await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
   }
-  if (!only || only === 'vector' || only === 'patterns') {
+  if (want('patterns')) {
     await vectorPatterns('webgpu', '')
     await vectorPatterns('webgl2', '&webgl')
   }
-  if (!only || only === 'attribution') await attribution()
-  if (!only || only === 'controls') await controls()
-  if (!only || only === 'vector' || only === 'invalidate') await vectorInvalidate()
-  if (!only || only === 'vector' || only === 'style') await vectorStyleRuntime()
-  if (!only || only === 'vector' || only === 'geojson') {
+  if (want('attribution')) await attribution()
+  if (want('controls')) await controls()
+  if (want('invalidate')) await vectorInvalidate()
+  if (want('style')) await vectorStyleRuntime()
+  if (want('geojson')) {
     await geoJsonSources('webgpu', '')
     await geoJsonSources('webgl2', '&webgl')
     await geoJsonSources('strict mode', '&strict')
   }
-  if (!only || only === 'vector' || only === 'heatmap') {
+  if (want('heatmap')) {
     const view = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
     await heatmaps('2d', view)
     await heatmaps('2d webgl2', `${view}&webgl`)
     await heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')
   }
-  if (!only || only === 'vector' || only === 'query') await featureQueries()
-  if (!only || only === 'afterburner') await afterburnerChecks()
-  if (!only || only === 'camera') await cameraAndEvents()
-  if (!only || only === 'markers') await markers()
-  if (!only || only === 'camera' || only === 'animations') await cameraAnimations()
-  if (!only || only === 'sdf') {
+  if (want('query')) await featureQueries()
+  if (want('afterburner')) await afterburnerChecks()
+  if (want('camera')) await cameraAndEvents()
+  if (want('markers')) await markers()
+  if (want('animations')) await cameraAnimations()
+  if (want('sdf')) {
     await sdfShapes('near, atmosphere off', '&atmosphere=0')
     await sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })
     await sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })
@@ -1650,12 +1661,12 @@ try {
     await sdfShapes('webgl2', '&atmosphere=0&webgl')
     await sdfShapes('strict mode', '&atmosphere=0&strict')
   }
-  if (!only || only === 'vector' || only === 'layers') {
+  if (want('layers')) {
     await styleLayerTypes('webgpu', '')
     await styleLayerTypes('webgl2', '&webgl')
     await styleLayerTypes('registered late', '', { late: true })
   }
-  if (!only || only === 'relief') {
+  if (want('relief')) {
     const fuji = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
     await reliefMap('2d', `&map=relief${fuji}`)
     await reliefMap('2d webgl2', `&map=relief${fuji}&webgl`)
@@ -1664,12 +1675,12 @@ try {
     await reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)
     await reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)
   }
-  if (!only || only === 'effects') {
+  if (want('effects')) {
     await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
     await renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')
     await renderPassesAndDrapedLayers('atmosphere on', '')
   }
-  if (!only || only === 'labels') {
+  if (want('labels')) {
     await screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')
     await screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')
@@ -1678,7 +1689,7 @@ try {
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
   }
-  if (!only || only === 'buildings') {
+  if (want('buildings')) {
     // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
     const pitched = '&camera=-90,0,3900,700,20,-25'
     await buildings('pitched', `&atmosphere=0${pitched}`)
@@ -1690,12 +1701,12 @@ try {
     await buildings('strict mode', `&atmosphere=0&strict${pitched}`)
     await buildings('draped', `&atmosphere=0&extrusions=draped${pitched}`)
   }
-  if (!only || only === 'labels' || only === 'roads') {
+  if (want('roads')) {
     // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
     await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
     await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
   }
-  if (!only || only === 'dem') {
+  if (want('dem')) {
     await rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })
     await rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })
     await rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')
@@ -1703,7 +1714,7 @@ try {
     await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
     await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
   }
-  if (!only || only === 'dem' || only === 'exaggeration') {
+  if (want('exaggeration')) {
     await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
     await terrainExaggeration('quantized-mesh', '&exaggeration=2')
     await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
