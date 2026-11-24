@@ -2188,6 +2188,49 @@ try {
       return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
     })
     await galleryExample('heatmap')
+    await galleryExample('terrain', '', async (page, idle) => {
+      await page.locator('input[type=range]').fill('3')
+      await page.getByRole('button', { name: 'Map and hillshade' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+    })
+    await galleryExample('overlay', '', async (page, idle) => {
+      const radarShare = async () => {
+        await idle()
+        await page.waitForTimeout(1000)
+        return analyse(page, await page.screenshot(), `
+          // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
+          // of the rain moves between frames.
+          let radar = 0, sumX = 0
+          for (let y = Math.floor(height / 3); y < height - 40; y++) {
+            for (let x = 0; x < width; x++) {
+              const i = (y * width + x) * 4
+              if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
+            }
+          }
+          return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
+        `)
+      }
+      const shown = await radarShare()
+      await page.getByRole('button', { name: 'Play' }).click()
+      await page.waitForTimeout(2000)
+      await page.getByRole('button', { name: 'Pause' }).click()
+      const played = await radarShare()
+      await page.locator('input[type=range]').fill('0')
+      const hidden = await radarShare()
+      return { radar: { shown, played, hidden } }
+    })
+    await galleryExample('embedded', '', async page => {
+      // A plain wheel over the map scrolls the page and leaves the camera where it was.
+      const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      const box = await page.locator('.example-embedded canvas').boundingBox()
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.wheel(0, 400)
+      await page.waitForTimeout(1500)
+      const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      return { wheel: { before, after } }
+    })
   }
 } finally {
   await browser.close()

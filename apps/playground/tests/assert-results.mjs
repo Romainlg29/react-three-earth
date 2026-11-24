@@ -443,6 +443,15 @@ expectations['gallery example, geojson'] = r => [
   ['a click on a peak opens its popup', /Manaslu.*8,163 m/.test(r.popup ?? '')],
 ]
 expectations['gallery example, heatmap'] = r => [['the heat draws', r.heatShare > 0.007]]
+expectations['gallery example, terrain'] = r => [['the slider exaggerates the terrain', r.exaggeration === 3]]
+expectations['gallery example, overlay'] = r => [
+  ['the radar picture draws', r.radar.shown.share > 0.003],
+  ['playing steps to other frames: the rain moves', r.radar.played.share > 0.003 && Math.abs(r.radar.played.centreX - r.radar.shown.centreX) > 4],
+  ['the opacity slider hides it', r.radar.hidden.share < r.radar.shown.share * 0.1],
+]
+expectations['gallery example, embedded'] = r => [
+  ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],
+]
 
 let failures = 0
 let skipped = 0
