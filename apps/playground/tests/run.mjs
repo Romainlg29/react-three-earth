@@ -1790,10 +1790,15 @@ async function terrainExaggeration(name, query) {
  */
 async function georeferenced(kind, query, label = kind) {
   const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&georef=${kind}&camera=-90,0,0,8000,0,-90${query}`)
-  await page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 4 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
-  }, null, { timeout: 240_000, polling: 500 })
+  // Tile counts can read settled for a moment between two levels of the terrain: wait for `idle`, which also covers
+  // queued tiles and redraws. A playing video redraws without end and never goes idle: it waits for the tiles only.
+  await page.waitForFunction(kind => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    if (!t || t.tilesLoaded <= 4) return false
+    return kind === 'video' ? t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && window.earth.terrain.tiles.stats.queued === 0 && !window.earth.terrain.tiles.isLoading : inspection.idle
+  }, kind, { timeout: 240_000, polling: 500 })
+  // `idle` does not cover the picture's own download: give it time to arrive and redraw.
   await page.waitForTimeout(3000)
   // Where picture coordinates (u right, v up) land on the screen.
   const locate = () => page.evaluate(() => {

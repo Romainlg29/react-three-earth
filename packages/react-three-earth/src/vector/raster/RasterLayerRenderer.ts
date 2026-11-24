@@ -186,6 +186,9 @@ function sampleElevationField(object: (object: Object3D | null | undefined) => R
   const field = texture(emptyTexture).onObjectUpdate(({ object: mesh }, self) => {
     self.value = object(mesh).elevation?.texture ?? emptyTexture
   })
+  // Not mergeable: `color-relief` samples it beside its ramp, and both start on the same placeholder texture, which
+  // three would merge into one when it builds the shader (see `wrapOverlaysNodeMaterial`).
+  field.mergeable = false
   const mapping = uniform(new Vector4()).onObjectUpdate(({ object: mesh }, self) => self.value.copy(object(mesh).elevation?.mapping ?? self.value.set(0, 0, 0, 0)))
   const size = uniform(1).onObjectUpdate(({ object: mesh }) => object(mesh).elevation?.size ?? 1)
   // The region quad's uv is the region coordinate (y up, north).
@@ -289,6 +292,7 @@ function createColorReliefMaterial(): MeshBasicNodeMaterial {
   const ramp = texture(emptyTexture).onObjectUpdate(({ object }, self) => {
     self.value = valuesOf(object).ramp?.texture ?? emptyTexture
   })
+  ramp.mergeable = false
   const count = uniform(1, 'int').onObjectUpdate(({ object }) => valuesOf(object).ramp?.count ?? 1)
   const material = createLayerMaterial()
   material.colorNode = Fn(() => {

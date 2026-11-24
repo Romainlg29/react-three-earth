@@ -39,12 +39,17 @@ const emptyColor = new Color()
 export const MAXIMUM_TERRAIN_LAYERS = 10
 const MAX_LAYER_COUNT = MAXIMUM_TERRAIN_LAYERS
 
-const layerMap = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
-  texture().onObjectUpdate(({ material }, self) => {
+// Not mergeable: three merges texture nodes that hold the same texture when it builds a shader, and these hold
+// whatever the last object set (all the same placeholder before any tile has textures). A shader built then
+// would sample one layer's texture for every layer: an imagery layer above the first would never show.
+const layerMap = Array.from({ length: MAX_LAYER_COUNT }, (_, index) => {
+  const node = texture(emptyTexture).onObjectUpdate(({ material }, self) => {
     const { [OVERLAY_PARAMS]: params } = material as OverlayNodeMaterial
     self.value = params?.layerMaps.value[index] ?? emptyTexture
   })
-)
+  node.mergeable = false
+  return node
+})
 
 // Layer UVs have v = 0 at the south edge. three r187 samples two kinds of layer texture with v = 0 at the
 // image top (north) on both backends, so flip v for them: an ImageBitmap tile decoded with
