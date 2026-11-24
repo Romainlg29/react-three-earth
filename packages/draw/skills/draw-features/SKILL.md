@@ -8,8 +8,8 @@ description: >
   rectangles, ellipses, regular polygons and spheres in metres (createCircle, createRectangle…, like turf.circle), and
   for 3D: solids stored as meshes of faces (MultiPolygon with altitudes, like Blender): boxes, cylinders, prisms,
   walls, spheres, imported solids, and shapes at an altitude (the GeoJSON third coordinate). Also for editing:
-  selecting features, a gizmo to move, rotate, scale, stretch, extrude, raise the top of and lift them (up and down,
-  into the air), dragging, adding and deleting vertices, undo.
+  selecting features, a Blender-style gizmo (arrows, planes, arcs, scale cubes, tools, local axes) to move, raise,
+  tilt and scale them, G / R / S keys, dragging, adding and deleting vertices, undo.
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -126,7 +126,8 @@ draw.subscribe(state => (finishButton.disabled = !state.canFinish))
 - `point`: each tap places a point.
 - `linestring` and `polygon`: each tap places a vertex. A tap on the last vertex finishes (a double click or double tap
   does the same); a polygon also closes on a tap on its first vertex. `finish()`, `undo()` and `cancel()` do it from
-  buttons, and Enter, Backspace and Escape while the map has focus (`keyboard: false` turns the keys off).
+  buttons. Keys are opt-in: with `new Draw({ keyboard: true })`, Enter, Backspace and Escape do it while the map has
+  focus (and the select mode's G, R, S keys work, see below).
 - Between taps, one finger still pans and two fingers still pinch and rotate. While a drawing mode is active,
   double-tap zoom is held off (`earth.interactions.holdDoubleClickZoom`), so two quick taps place two vertices.
 - With a mouse, the next segment follows the pointer. Touch screens have no hover: segments appear on each tap.
@@ -177,8 +178,7 @@ draw.setStyle({ lineColor: '#000000' }) // redraws every feature
 Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixels`, `pointColor`, `pointRadiusPixels`,
 `pointOutlineColor`, `pointOutlineWidthPixels`, `solidOpacity` (3D solids, default 0.85; their edges use `lineColor`),
 and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
-With an atmosphere, see-through solids are drawn after it (`TRANSLUCENT_LAYER`), hazed at their own distance, whenever
-the render pipeline runs the translucent pass (`<Atmosphere>` hosts one); otherwise they are drawn with the scene.
+See-through solids are drawn after the atmosphere (`TRANSLUCENT_LAYER`, hazed at their own distance) when the pipeline runs that pass (`<Atmosphere>` does).
 
 ### Shapes and 3D solids
 
@@ -248,23 +248,25 @@ circle.heightMeters = 2000 // the next circles are 2 km tall; undefined draws fl
 
 The `select` mode selects and edits finished features. A tap selects the feature under it: points and lines win over
 the polygon under them, and a tap on the empty map clears the selection. A selected line, polygon or mesh shows a
-gizmo:
+gizmo at its center (the middle of its altitudes, or on the terrain), about 80 px on the screen at any zoom
+(`gizmoSizePixels`). Its axes are x east (red), y north (green) and z up (blue); an axis pointing away from the camera
+is drawn the other way, so arrows never lie on each other:
 
-- Drag the feature to move it whole. Each position keeps its distance and bearing in metres, so shapes keep their size.
-- Drag a corner of the box around it to scale it around its center. A mesh scales in 3D from its base, so a sphere
-  stays round and a box grows taller.
-- Drag the middle of an edge to stretch it along that axis; the opposite edge stays put and cannot be crossed.
-- Drag the knob beyond the box's top edge to turn it around the vertical through its center; hold Shift to snap to 15°.
-  The box turns with the feature: it is the tightest rectangle around its footprint (facing north when nearly as tight).
-- Drag the knob in the middle of a flat line, polygon or multipolygon up to extrude it into a mesh: a rectangle becomes a box, a
-  circle a cylinder, a line a wall, standing on the terrain under each vertex (or on the altitudes it has). On a mesh
-  with a level top face (a prism) the knob sits on top: drag it to move that face up or down, never lower than 1 m
-  above the rest. Spheres and walls have no height knob.
-- Drag the knob on a short stem under the feature's base up or down to move it vertically. Every position gets an
-  altitude (the GeoJSON third coordinate); positions on the terrain start from its height under each, so the shape
-  keeps the relief's offsets. A mesh moves whole. A flat feature in the air keeps its altitudes when lowered; use
-  `placeOnTerrain` to drape it again.
-- Seen from straight above, as on the flat map, dragging the height or lift knob up the screen raises it.
+- Drag an **arrow** to move along that axis only; up gives positions altitudes, as `liftFeature` does (seen from
+  above, up is a knob up the screen). A **square** moves in its plane, the white **center ring** on the ground.
+- Drag an **arc** to turn around that axis through the center: around up is the heading; around east or north tilts
+  the feature, straight into its vertex positions (a flat polygon or line gets altitudes). An arc seen edge on hides
+  (turn the camera a little). With `snapping: true`, Shift snaps turns to `snapDegrees` (15).
+- Drag a **cube** on an axis to scale along it (along up from the base, so it stays standing); drag the outer ring
+  (or, with the scale tool, the center ring) to scale uniformly, a mesh in 3D from its base.
+- A press within reach of a handle (10 px with a mouse, 22 px with a finger) takes the nearest one, over the feature
+  too; anywhere else on the feature it moves it on the ground. Small on the screen: zoom in or lower `gizmoSizePixels`.
+
+`draw.setGizmoTool('all' | 'move' | 'rotate' | 'scale')` shows every handle (default) or one tool's;
+`draw.setGizmoSpace('world' | 'local')` turns the axes to the feature's own (`featureAxes`: z a box's or prism's
+first face normal, so it follows any tilt, straight up for a sphere; x and y its tightest rectangle's edges); both are in the state. With `keyboard: true`, G, R or S moves, turns or
+scales under the mouse with no press (on the ground, around up, uniformly), X, Y or Z locks a gizmo axis, a click or
+Enter confirms, Escape or a right click cancels (`select.startTransform('move')` from a button).
 
 Tap the selected line or polygon again to edit its vertices instead of the gizmo (`state.editingVertices` is then true):
 
@@ -276,14 +278,10 @@ Tap the selected line or polygon again to edit its vertices instead of the gizmo
 - Tap the feature again, or press Escape, for the gizmo. Selecting another feature always starts with the gizmo.
 
 Points have no gizmo and no vertices: they move whole. For all features:
-
 - Presses off the selection still pan, with one finger too, and two fingers cancel a drag and pinch.
 - Each edit fires `update` once, on release (`delete` for a deletion). A drag that changes nothing records nothing. `undo()` takes edits back.
-- Solids are picked where they are drawn: inside any face at its altitudes, or near an edge.
-- A solid stays in 3D while selected and while it changes, with its sharp edges outlined.
+- Solids are picked where they are drawn (inside a face at its altitudes, or near an edge) and stay 3D while they change.
 - A tap inside a selected polygon still selects a point or line under it. Among polygons, the one containing the tap wins over a neighbour whose edge is near.
-- Inside a feature, a knob takes a press only where it is drawn; elsewhere the press moves the feature. A feature only a
-  few knobs wide on the screen hides its edge handles and middle knob, so it can always be moved (zoom in to use them).
 - Changes made elsewhere (`addFeatures`, `clear`, another tool) clear the undo history, drop a picked vertex, and cancel a drag on that feature.
 
 ```tsx
@@ -298,58 +296,66 @@ function EditBar({ draw }: { draw: Draw }) {
       <button aria-pressed={mode === 'select'} onClick={() => draw.setMode('select')}>Select</button>
       <button disabled={selectedIds.length === 0} onClick={() => draw.deleteSelected()}>Delete</button>
       <button disabled={!canUndo} onClick={() => draw.undo()}>Undo</button>
-      <span>{editingVertices ? 'Editing vertices: tap the feature for the gizmo.' : 'Tap the feature again to edit its vertices.'}</span>
+      <span>{editingVertices ? 'Tap the feature for the gizmo.' : 'Tap it again to edit its vertices.'}</span>
     </div>
   )
 }
 
-// From code: selects (switching to the select mode when needed) and clears.
 declare const draw: Draw
-draw.select(['parcel-12'])
-draw.select([])
+draw.select(['parcel-12']) // switches to the select mode when needed; [] clears
 ```
 
 Selected features use the style with `selected: true`. By default lines, fills, points and handle rings turn
 amber (`DEFAULT_SELECTED_STYLE`); a style function can pick its own colours from `state.selected`.
 
-Options turn parts off. `editVertices: false` keeps the gizmo (no vertex editing), `moveFeatures: false` leaves
-the body to the camera, and `rotate`, `scale`, `stretch`, `height` and `lift` remove those handles. To switch the
-vertex editing from a button, use `setEditingVertices` on the mode:
+Options turn parts off: `editVertices: false` keeps the gizmo (`select.setEditingVertices(true)` switches from a
+button), `moveFeatures: false` leaves the body to the camera, `move`, `rotate` and `scale` remove handle groups:
 
-```ts
-import { CircleMode, Draw, extrudeFeature, featureCenter, liftFeature, moveMeshTop, rotateFeature, scaleFeature, SelectMode, StaticMode, stretchFeature, transformFrame } from 'react-three-earth-draw'
+```tsx
+import { Draw, featureCenter, offsetFeature, rotateFeature, rotateFeatureAroundAxis, scaleFeatureAlongAxis, SelectMode, StaticMode } from 'react-three-earth-draw'
+import { useDrawState } from 'react-three-earth-draw/react'
 
-const select = new SelectMode({ snapDegrees: 45, lift: false })
-const draw = new Draw({ modes: [new StaticMode(), new CircleMode(), select] })
-draw.select(['parcel-12'])
-select.setEditingVertices(true) // vertex handles; false: the gizmo
+const select = new SelectMode({ snapping: true, rotate: true, scale: false })
+const draw = new Draw({ modes: [new StaticMode(), select], keyboard: true })
 
-// The same changes from code, on any feature:
+function GizmoBar() {
+  const { gizmoTool, gizmoSpace } = useDrawState(draw)
+  return (
+    <div>
+      {(['all', 'move', 'rotate', 'scale'] as const).map(tool => (
+        <button key={tool} aria-pressed={gizmoTool === tool} onClick={() => draw.setGizmoTool(tool)}>{tool}</button>
+      ))}
+      <button onClick={() => draw.setGizmoSpace(gizmoSpace === 'world' ? 'local' : 'world')}>{gizmoSpace} axes</button>
+    </div>
+  )
+}
+
+// The same changes from code. Axes are [east, north, up]; turns are right-handed (counter-clockwise from the tip).
 const feature = draw.getFeature('parcel-12')!
-const center = featureCenter(feature)
-// A flat polygon into a prism 120 m tall on the ground at 400 m, its top then 30 m higher, turned, scaled.
-const turned = scaleFeature(rotateFeature(moveMeshTop(extrudeFeature(feature, 120, 400), 30), center, 30), center, 2)
-// Twice as long, its bottom edge fixed (`sideHandles` are the edges' middles: bottom, right, top, left), then 500 m up.
-const frame = transformFrame(turned)
-const bottom = frame.sideHandles[0]!
-draw.addFeatures([liftFeature(stretchFeature(turned, frame, bottom.axis, bottom.sideMeters, 2), 500)])
+const [longitude, latitude] = featureCenter(feature)
+const raised = offsetFeature(feature, [200, 0, 50], 400) // 200 m east, 50 m up from the terrain (400 m) under it
+const tilted = rotateFeatureAroundAxis(raised, [longitude, latitude, 450], [1, 0, 0], 20, 400) // 20° around east
+const wider = scaleFeatureAlongAxis(tilted, [longitude, latitude, 450], [1, 0, 0], 2) // twice as wide east-west
+draw.addFeatures([rotateFeature(wider, [longitude, latitude], 30)]) // heading: 30° clockwise from north
 ```
 
-`liftFeature(feature, deltaMeters, groundHeightMeters)` raises positions that have an altitude by `deltaMeters`, and
-gives the others the terrain's height plus `deltaMeters`. `groundHeightMeters` is one height, or a function of
-longitude and latitude, such as one calling `earth.queryTerrainElevation`. `placeOnTerrain` drops the altitudes again. The editing helpers (`moveVertex`, `insertVertex`, `removeVertex`,
-`translateFeature`, `featureVertices`, `hitFeature`) are exported for custom modes too.
+`liftFeature(feature, deltaMeters, groundHeightMeters)` raises positions with an altitude by `deltaMeters`, the others
+from the terrain's height (`groundHeightMeters`, here and in the 3D helpers: one height or a function of longitude and
+latitude, such as one calling `earth.queryTerrainElevation`); `placeOnTerrain` drops altitudes again. Tilts (`rotateFeatureAroundAxis` around a horizontal axis) and `scaleFeatureAlongAxis` along
+a slanted one work in the pivot's east-north-up frame (`LocalFrame`), so distances and flat faces are kept exactly;
+around up and along horizontal axes they are `rotateFeature` and `stretchFeature`, which keep altitudes. Also exported:
+`scaleFeature`, `stretchFeature`, `extrudeFeature`, `moveMeshTop`, and the editing helpers (`moveVertex`,
+`insertVertex`, `removeVertex`, `translateFeature`, `featureVertices`, `hitFeature`) for custom modes.
 
-Every transform maps vertex positions: a slab floating at 2.5 km and 200 m thick is a mesh whose bottom vertices are at
-`2500` and top vertices at `2700`; lifting it 100 m makes them `2600` and `2800`. `transformFrame(feature)` gives the
-gizmo's geometry, with `baseHeightMeters` and `topHeightMeters` (the lowest and highest altitudes; null on the
-terrain); `meshTopOf(feature)` the level top face's altitude.
+Every transform maps vertex positions (lifting a slab at 2500–2700 m by 100 m makes them 2600–2800).
+`altitudeRangeOf(feature)` gives its lowest and highest altitudes (null on the terrain), `meshTopOf` a level top face's
+altitude, and `select.gizmoHandles()` where each gizmo handle is on the screen (for tests and tutorials).
 
 ### React hooks
 
 - `useDrawState(draw)`: the state (`mode`, `modes`, `features`, `selectedIds`, `drawing`, `vertexCount`, `canFinish`,
-  `canUndo`),
-  re-rendering on change. `useDrawState(draw, state => state.mode)` re-renders only when the selected part changes.
+  `canUndo`, `editingVertices`, `gizmoTool`, `gizmoSpace`), re-rendering on change; `useDrawState(draw, state =>
+  state.mode)` only when that part changes.
 - `useDrawEvent(draw, 'create', ({ features }) => …)`: an event listener for the component's lifetime.
 - Install with `<Earth plugins={[draw]}>` (a stable array) or `usePlugin(draw)` from `react-three-earth/react` inside
   `<Earth>`.
@@ -471,18 +477,23 @@ altitudes), which `placeOnTerrain` drapes again and `extrudeFeature` turns into 
 
 ### MEDIUM: Expecting scaling to keep a mesh's height
 
-`scaleFeature` (and the gizmo's corners) scales a mesh in 3D, its altitudes around its base too: a box twice as wide
-is twice as tall. To change only the footprint use `stretchFeature` (the gizmo's sides), or set the top back with
-`moveMeshTop`.
+`scaleFeature` (and the gizmo's outer ring) scales anything with altitudes in 3D, around its base: a box twice as wide
+is twice as tall, a tilted polygon keeps its slope; draped positions stay draped. To change only the footprint use a cube (`scaleFeatureAlongAxis` along east or north), or set the top
+back with `moveMeshTop`.
+
+### MEDIUM: Expecting the keys without opting in
+
+`keyboard` defaults to false: Escape, Enter, Delete and G / R / S do nothing until `new Draw({ keyboard: true })`, and
+then only while the map has focus. Shift snaps turns only with `new SelectMode({ snapping: true })`.
 
 ## Completion
 
 - The toolbar switches modes, and `canFinish`/`canUndo` enable its buttons.
 - Taps place vertices on the globe and on the flat map, with a finger on a phone too; one finger still pans.
 - `getFeatures()` (or the `change` event) gives the GeoJSON to save, and `features`/`addFeatures` load it back.
-- In the select mode, a tap selects and shows the gizmo: corners scale, edges stretch, the outer knob turns, the middle
-  knob extrudes a flat feature into a mesh and moves a prism's top, and the knob under the base lifts. A drag inside
-  moves the feature, while a drag elsewhere still pans.
+- In the select mode, a tap selects and shows the gizmo: arrows and squares move, the ring moves on the ground, arcs
+  turn and tilt, cubes and the outer ring scale; tool and axes buttons call `setGizmoTool` and `setGizmoSpace`. A drag
+  on the feature off the handles moves it, while a drag elsewhere still pans.
 - A second tap shows vertex handles: they drag vertices, midpoints add them, and Delete removes the picked one.
 - Shapes made in two taps or with the builders are plain GeoJSON; those with a height are meshes (faces with
   altitudes) and stand as solids on the globe and the flat map, as do features at an altitude.

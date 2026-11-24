@@ -22,6 +22,13 @@ export interface DrawModeContext {
   project(position: LongitudeLatitude, fallbackHeightMeters?: number): { x: number; y: number } | null
   /** Screen pixels of a position at a height above the WGS84 ellipsoid, or null when hidden. */
   projectAtHeight(position: LongitudeLatitude, heightMeters: number): { x: number; y: number } | null
+  /**
+   * How far in front of the camera a position at a height is, in scene units (larger is farther), or null. Optional:
+   * the select mode turns gizmo axes pointing away from the camera around with it.
+   */
+  depthAtHeight?(position: LongitudeLatitude, heightMeters: number): number | null
+  /** A number that changes whenever the view (camera, viewport, morph) changes, to cache screen work. Optional. */
+  viewVersion?(): number
   /** The mode's state or overlay changed: redraw the overlay and tell subscribers. */
   changed(): void
   /** Adds finished features to the store and fires `create`. */
@@ -108,6 +115,17 @@ export abstract class DrawMode {
   keyDown(_event: KeyboardEvent): boolean {
     return false
   }
+
+  /**
+   * A press of the mouse's secondary (right) button on the map, while the `Draw`'s `keyboard` option is on: return true
+   * to take it (the camera controls and the context menu then ignore it). The select mode cancels a keyboard move.
+   */
+  secondaryPress(): boolean {
+    return false
+  }
+
+  /** The map lost the keyboard focus (or the window its focus): drop what keys started. */
+  focusLost(): void {}
 
   /** Completes the feature being drawn, if it can be. */
   finish(): void {}

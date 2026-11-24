@@ -1,18 +1,36 @@
 export { Draw, type DrawEventMap, type DrawFeatureInput, type DrawOptions, type DrawState, type DrawStateListener } from './Draw.js'
 export { DrawMode, StaticMode, hitTolerancePixels, IDLE_STATUS, NO_FEATURE_IDS, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
-export { SelectMode, type GizmoHandle, type SelectDrag, type SelectModeOptions } from './modes/SelectMode.js'
 export {
+  GIZMO_SPACES,
+  GIZMO_TOOLS,
+  SelectMode,
+  type GizmoBasis,
+  type GizmoHandle,
+  type GizmoHandleOnScreen,
+  type GizmoSpace,
+  type GizmoTool,
+  type SelectDrag,
+  type SelectModeOptions,
+  type TransformKind,
+} from './modes/SelectMode.js'
+export {
+  altitudeRangeOf,
   baseAltitudeOf,
   extrudeFeature,
+  featureAxes,
   featureCenter,
   featureRotationDegrees,
   liftFeature,
   meshTopOf,
   moveMeshTop,
+  offsetFeature,
   placeOnTerrain,
   rotateFeature,
+  rotateFeatureAroundAxis,
   scaleFeature,
+  scaleFeatureAlongAxis,
   stretchFeature,
+  WORLD_AXES,
   transformFrame,
   type TransformAxis,
   type TransformFrame,
@@ -96,7 +114,7 @@ export {
   type MercatorCoordinate,
 } from './geometry.js'
 export { DrapedFeatures } from './render/DrapedFeatures.js'
-export { HeightSampler, LiveOverlay, type OverlayContent, type OverlayHandle, type OverlayLine } from './render/LiveOverlay.js'
+export { HeightSampler, LiveOverlay, type OverlayContent, type OverlayHandle, type OverlayLine, type OverlayPolygon } from './render/LiveOverlay.js'
 export { ShapeBatch } from './render/ShapeBatch.js'
 export { buildSolidGeometry, isSolidFeature, refineTriangles, SolidFeatures, type SolidGeometry } from './render/SolidFeatures.js'
 export type { DrawFeature, DrawGeometry, DrawPointerEvent, DrawStyle, DrawStyleInput, DrawStyleState, GroundHeight, LongitudeLatitude } from './types.js'

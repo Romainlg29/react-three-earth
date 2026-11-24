@@ -78,7 +78,8 @@ the selection is the safety. Name a check only when you need it to run regardles
 Outside the dev sandbox, install Playwright once with `npm i -g playwright@1.63.0 && npx playwright@1.63.0 install chromium`
 and run the checks with `NODE_PATH="$(npm root -g)"` in front. The browser checks need a headed Chromium (headless drops the WebGPU device);
 the sandbox cannot reach tile hosts, so they use `?fixtures`. They run on SwiftShader, a CPU
-rasteriser: they prove correctness, never frame times. Screenshots land in `apps/playground/test-results/`.
+rasteriser: they prove correctness, never frame times. On a machine with a GPU (Windows included, no xvfb), set
+`BROWSER_CHECKS_GPU=1` to run them on it, about four times faster. Screenshots land in `apps/playground/test-results/`.
 
 ## Keeping the skills current
 

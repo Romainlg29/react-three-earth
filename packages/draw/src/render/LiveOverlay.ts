@@ -22,6 +22,11 @@ export interface OverlayHandle {
   offsetYPixels?: number
   /** With an offset, a line this many pixels wide joins the handle to its position, in `outlineColor`. Default: none. */
   stemWidthPixels?: number
+  /**
+   * `'circle'` (the default) and `'square'` are filled in `color` with an `outlineColor` ring; `'ring'` is hollow: a
+   * circle `outlineWidthPixels` wide in `color`, edged in `outlineColor`.
+   */
+  shape?: 'circle' | 'square' | 'ring'
 }
 
 /** A line drawn over the map in screen pixels: a guide, a gizmo ring. */
@@ -32,6 +37,17 @@ export interface OverlayLine {
   color: string
   widthPixels: number
   opacity: number
+  /** An arrowhead this many pixels long at the line's last position, pointing along its last piece. Default: none. */
+  arrowheadPixels?: number
+}
+
+/** A filled convex polygon drawn over the map: a gizmo's plane handle. */
+export interface OverlayPolygon {
+  positions: LongitudeLatitude[]
+  /** Height of each position above the WGS84 ellipsoid, in metres. */
+  heightsMeters: number[]
+  color: string
+  opacity: number
 }
 
 /** What the overlay draws this frame. */
@@ -39,6 +55,8 @@ export interface OverlayContent {
   features: Array<{ feature: DrawFeature; style: DrawStyle }>
   lines: OverlayLine[]
   handles: OverlayHandle[]
+  /** Filled polygons, drawn over the lines and under the handles. Default: none. */
+  polygons?: OverlayPolygon[]
 }
 
 /** Longest piece a line is cut into on the globe, so it follows the curve of the Earth. */
@@ -47,7 +65,11 @@ const MAXIMUM_SUBDIVISIONS = 64
 /** New terrain heights sampled per frame (each is a raycast); the rest wait for the next frames. */
 const HEIGHT_SAMPLES_PER_FRAME = 24
 
+/** Pieces of a ring handle's circle. */
+const RING_SEGMENTS = 32
+
 const scenePoint = new Vector3()
+const ringPoints = new Float64Array((RING_SEGMENTS + 1) * 2)
 const viewPoint = new Vector3()
 const cameraPosition = new Vector3()
 
@@ -144,26 +166,40 @@ export class LiveOverlay {
    * Redraws `content` for the camera. Returns true when heights are still being sampled (draw again next frame).
    */
   draw(camera: Camera, content: OverlayContent): boolean {
-    const earth = this.earth
     const batch = this.batch
     batch.clear()
-    this.widthPixels = earth.camera.viewportWidthPixels
-    this.heightPixels = earth.camera.viewportHeightPixels
-    if (this.widthPixels <= 0 || this.heightPixels <= 0 || !earth.camera.ready) {
+    if (!this.prepare(camera)) {
       batch.upload()
       return false
     }
-    camera.updateMatrixWorld()
-    this.camera = camera
-    this.onGlobe = earth.view.morph < 0.5
-    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
     this.heights.startFrame()
     for (const { feature, style } of content.features) this.drawFeature(feature, style)
-    for (const line of content.lines) this.drawLine(line.positions, line.widthPixels, linearColor(line.color), line.opacity, line.heightsMeters)
+    for (const line of content.lines) {
+      const color = linearColor(line.color)
+      this.drawLine(line.positions, line.widthPixels, color, line.opacity, line.heightsMeters)
+      if (line.arrowheadPixels !== undefined && line.arrowheadPixels > 0) this.drawArrowhead(line, color)
+    }
+    if (content.polygons !== undefined) for (const polygon of content.polygons) this.drawPolygon(polygon)
     for (const handle of content.handles) this.drawHandle(handle)
     batch.sizePixels.value.set(this.widthPixels, this.heightPixels)
     batch.upload()
     return this.heights.pending
+  }
+
+  /**
+   * Takes the camera and the viewport for `project`, before `draw`: modes then measure the screen (a gizmo's size) with
+   * this frame's camera. Returns false while nothing can be drawn (no viewport, the camera not ready).
+   */
+  prepare(camera: Camera): boolean {
+    const earth = this.earth
+    this.widthPixels = earth.camera.viewportWidthPixels
+    this.heightPixels = earth.camera.viewportHeightPixels
+    if (this.widthPixels <= 0 || this.heightPixels <= 0 || !earth.camera.ready) return false
+    camera.updateMatrixWorld()
+    this.camera = camera
+    this.onGlobe = earth.view.morph < 0.5
+    cameraPosition.setFromMatrixPosition(camera.matrixWorld)
+    return true
   }
 
   /** Screen pixels of a position (written to `target`), or null behind the camera or the horizon. */
@@ -178,6 +214,15 @@ export class LiveOverlay {
     target.x = ((viewPoint.x + 1) / 2) * this.widthPixels
     target.y = ((1 - viewPoint.y) / 2) * this.heightPixels
     return target
+  }
+
+  /** How far in front of the camera a position is (its view-space depth, in scene units), or null without a camera. */
+  depth(longitude: number, latitude: number, heightMeters: number): number | null {
+    const camera = this.camera
+    if (camera === null) return null
+    this.earth.camera.toScenePosition({ longitudeDegrees: longitude, latitudeDegrees: latitude, heightMeters }, scenePoint)
+    viewPoint.copy(scenePoint).applyMatrix4(camera.matrixWorldInverse)
+    return -viewPoint.z
   }
 
   protected drawFeature(feature: DrawFeature, style: DrawStyle): void {
@@ -249,6 +294,43 @@ export class LiveOverlay {
     flush()
   }
 
+  /** A triangle at the line's last position, pointing along its last piece on the screen. */
+  protected drawArrowhead(line: OverlayLine, color: readonly [number, number, number]): void {
+    const count = line.positions.length
+    if (count < 2) return
+    const tipPosition = line.positions[count - 1]!
+    const backPosition = line.positions[count - 2]!
+    const tip = this.project(tipPosition[0], tipPosition[1], line.heightsMeters?.[count - 1] ?? this.heights.heightAt(tipPosition[0], tipPosition[1]), { x: 0, y: 0 })
+    const back = this.project(backPosition[0], backPosition[1], line.heightsMeters?.[count - 2] ?? this.heights.heightAt(backPosition[0], backPosition[1]), { x: 0, y: 0 })
+    if (tip === null || back === null) return
+    const dx = tip.x - back.x
+    const dy = tip.y - back.y
+    const length = Math.hypot(dx, dy)
+    if (length < 1) return
+    const along = line.arrowheadPixels! / length
+    const half = 0.45 * along
+    const baseX = tip.x - dx * along
+    const baseY = tip.y - dy * along
+    this.batch.triangle(tip.x, tip.y, baseX - dy * half, baseY + dx * half, baseX + dy * half, baseY - dx * half, color, line.opacity)
+  }
+
+  /** A convex polygon, filled as a fan on the screen; left out when a corner is hidden. */
+  protected drawPolygon(polygon: OverlayPolygon): void {
+    const { positions, heightsMeters } = polygon
+    if (positions.length < 3 || polygon.opacity <= 0) return
+    const color = linearColor(polygon.color)
+    const first = this.project(positions[0]![0], positions[0]![1], heightsMeters[0]!, { x: 0, y: 0 })
+    const previous = { x: 0, y: 0 }
+    const current = { x: 0, y: 0 }
+    if (first === null || this.project(positions[1]![0], positions[1]![1], heightsMeters[1]!, previous) === null) return
+    for (let index = 2; index < positions.length; index++) {
+      if (this.project(positions[index]![0], positions[index]![1], heightsMeters[index]!, current) === null) return
+      this.batch.triangle(first.x, first.y, previous.x, previous.y, current.x, current.y, color, polygon.opacity)
+      previous.x = current.x
+      previous.y = current.y
+    }
+  }
+
   protected drawHandle(handle: OverlayHandle): void {
     const [longitude, latitude] = handle.position
     const point = this.project(longitude, latitude, handle.heightMeters ?? this.heights.heightAt(longitude, latitude), { x: 0, y: 0 })
@@ -260,8 +342,29 @@ export class LiveOverlay {
       if (handle.stemWidthPixels !== undefined && handle.stemWidthPixels > 0) this.batch.segment(point.x, point.y, point.x, point.y + offset, handle.stemWidthPixels, linearColor(handle.outlineColor), alpha)
       point.y += offset
     }
+    if (handle.shape === 'ring') {
+      for (let index = 0; index <= RING_SEGMENTS; index++) {
+        const angle = (index / RING_SEGMENTS) * Math.PI * 2
+        ringPoints[index * 2] = point.x + Math.cos(angle) * radius
+        ringPoints[index * 2 + 1] = point.y + Math.sin(angle) * radius
+      }
+      this.batch.polyline(ringPoints, handle.outlineWidthPixels + 2, linearColor(handle.outlineColor), alpha * 0.6)
+      this.batch.polyline(ringPoints, handle.outlineWidthPixels, linearColor(handle.color), alpha)
+      return
+    }
+    if (handle.shape === 'square') {
+      this.square(point.x, point.y, radius + handle.outlineWidthPixels, linearColor(handle.outlineColor), alpha)
+      this.square(point.x, point.y, radius, linearColor(handle.color), alpha)
+      return
+    }
     this.batch.circle(point.x, point.y, radius + handle.outlineWidthPixels, linearColor(handle.outlineColor), alpha)
     this.batch.circle(point.x, point.y, radius, linearColor(handle.color), alpha)
+  }
+
+  /** A filled square `half` pixels from its middle to each side. */
+  protected square(x: number, y: number, half: number, color: readonly [number, number, number], alpha: number): void {
+    this.batch.triangle(x - half, y - half, x + half, y - half, x + half, y + half, color, alpha)
+    this.batch.triangle(x - half, y - half, x + half, y + half, x - half, y + half, color, alpha)
   }
 
   dispose(): void {

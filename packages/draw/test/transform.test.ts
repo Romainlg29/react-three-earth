@@ -1,24 +1,31 @@
 import type { LineString, MultiPolygon, Polygon, Position } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
+import { Draw } from '../src/Draw.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
+import { LocalFrame } from '../src/localFrame.js'
 import { indexMesh, isClosedMesh, meshVolume } from '../src/mesh.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
-import { SelectMode } from '../src/modes/SelectMode.js'
+import { SelectMode, type GizmoHandle } from '../src/modes/SelectMode.js'
+import type { OverlayContent } from '../src/render/LiveOverlay.js'
 import { bearingDegrees, createCircle, createRectangle, createRegularPolygon, createSphere, destination } from '../src/shapes.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
 import {
   baseAltitudeOf,
   extrudeFeature,
+  featureAxes,
   featureCenter,
   featureRotationDegrees,
   liftFeature,
   meshTopOf,
   moveMeshTop,
+  offsetFeature,
   placeOnTerrain,
   rotateFeature,
+  rotateFeatureAroundAxis,
   scaleFeature,
+  scaleFeatureAlongAxis,
   stretchFeature,
   transformFrame,
 } from '../src/transform.js'
@@ -218,11 +225,12 @@ describe('stretching and lifting', () => {
  * A context projecting longitude, latitude to x = (longitude - 6.6) × 10 000, y = (46.45 - latitude) × 10 000 pixels
  * (north up), heights 1 px per 10 m up the screen.
  */
-function createContext(features: DrawFeature[]) {
+function createContext(features: DrawFeature[], { oblique = false }: { oblique?: boolean } = {}) {
   const store = new FeatureStore()
   store.set(features)
   const updates: DrawFeature[][] = []
-  const toScreen = ([longitude, latitude]: [number, number], heightMeters: number) => ({ x: (longitude - CENTER[0]) * 10_000, y: (CENTER[1] - latitude) * 10_000 - heightMeters / 10 })
+  // Oblique: up also goes right on the screen, 1 px per 20 m, as seen from the south-west.
+  const toScreen = ([longitude, latitude]: [number, number], heightMeters: number) => ({ x: (longitude - CENTER[0]) * 10_000 + (oblique ? heightMeters / 20 : 0), y: (CENTER[1] - latitude) * 10_000 - heightMeters / 10 })
   const context: DrawModeContext = {
     earth: null as never,
     store,
@@ -231,6 +239,8 @@ function createContext(features: DrawFeature[]) {
     createId: () => 'new',
     project: position => toScreen(position, 0),
     projectAtHeight: toScreen,
+    // Seen from the south and above: farther to the north, nearer upwards.
+    depthAtHeight: ([, latitude], heightMeters) => (latitude - CENTER[1]) * 111_000 - heightMeters,
     changed: vi.fn(),
     create: created => store.set(created),
     update: updated => {
@@ -249,338 +259,555 @@ function pointerAt(context: ReturnType<typeof createContext>, position: [number,
   return { screen: { xPixels: screen.x, yPixels: screen.y }, geographic: { longitudeDegrees: position[0], latitudeDegrees: position[1], heightMeters: 0 }, pointerType: 'mouse', originalEvent: { shiftKey: options.shiftKey ?? false } as MouseEvent }
 }
 
+/** A pointer event at screen pixels of the fake context, its ground under it at 0 m. */
+function screenEvent(x: number, y: number, options: { shiftKey?: boolean; pointerType?: string } = {}): DrawPointerEvent {
+  return {
+    screen: { xPixels: x, yPixels: y },
+    geographic: { longitudeDegrees: CENTER[0] + x / 10_000, latitudeDegrees: CENTER[1] - y / 10_000, heightMeters: 0 },
+    pointerType: options.pointerType ?? 'mouse',
+    originalEvent: { shiftKey: options.shiftKey ?? false } as MouseEvent,
+  }
+}
+
+/** Where a gizmo handle is drawn (the first piece of that handle). */
+function handleOnScreen(mode: SelectMode, handle: GizmoHandle): { x: number; y: number } {
+  const found = mode.gizmoHandles().find(each => each.handle === handle)
+  if (found === undefined) throw new Error(`no ${handle} handle among ${mode.gizmoHandles().map(each => each.handle).join(', ')}`)
+  return found
+}
+
+/** Presses at a screen point, drags through `path` (offsets from the press) and releases at the last one. */
+function dragOnScreen(mode: SelectMode, from: { x: number; y: number }, path: Array<[number, number]>, options: { shiftKey?: boolean } = {}): boolean {
+  const taken = mode.pointerDown(screenEvent(from.x, from.y))
+  for (const [dx, dy] of path) mode.pointerMove(screenEvent(from.x + dx, from.y + dy, options))
+  const [dx, dy] = path[path.length - 1]!
+  mode.pointerUp(screenEvent(from.x + dx, from.y + dy, options))
+  return taken
+}
+
+function selectIn(features: DrawFeature[], options: ConstructorParameters<typeof SelectMode>[0] = {}, oblique = false) {
+  const setup = createContext(features, { oblique })
+  const mode = new SelectMode(options)
+  mode.enter(setup.context)
+  mode.setSelection([features[0]!.id])
+  return { setup, mode }
+}
+
+/** Distances between every pair of a mesh's vertices, in metres, in one east-north-up frame. */
+function vertexDistances(feature: DrawFeature): number[] {
+  const { vertices } = indexMesh(feature.geometry as MultiPolygon)
+  const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
+  const local = vertices.map(position => frame.toLocal(position[0]!, position[1]!, position[2]!))
+  const distances: number[] = []
+  for (let a = 0; a < local.length; a++) for (let b = a + 1; b < local.length; b++) distances.push(Math.hypot(local[a]![0] - local[b]![0], local[a]![1] - local[b]![1], local[a]![2] - local[b]![2]))
+  return distances
+}
+
+/** The altitudes of a box mesh's top face (its first). */
+const topFace = (feature: DrawFeature) => (feature.geometry as MultiPolygon).coordinates[0]![0]!.map(position => position[2]!)
+
+describe('3D transforms', () => {
+  it('tilts a box around an axis through its middle, keeping every distance and its faces', () => {
+    const box = rectangle()
+    const tilted = rotateFeatureAroundAxis(box, [...CENTER, 150], [1, 0, 0], 30)
+    expectBox(tilted)
+    const before = vertexDistances(box)
+    vertexDistances(tilted).forEach((distance, index) => expect(distance).toBeCloseTo(before[index]!, 3))
+    // Its top face is no longer level: the north edge rose.
+    const top = topFace(tilted)
+    expect(Math.max(...top) - Math.min(...top)).toBeGreaterThan(900)
+    // Around up it is `rotateFeature`, counter-clockwise from above.
+    expect(rotateFeatureAroundAxis(box, [...CENTER, 0], [0, 0, 1], 30)).toEqual(rotateFeature(box, CENTER, -30))
+    expect(() => rotateFeatureAroundAxis(box, CENTER, [0, 0, 0], 10)).toThrow(/no length/)
+  })
+
+  it('gives a flat polygon altitudes when tilted, from the terrain under it', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 1000), id: 'f' } as DrawFeature
+    const tilted = rotateFeatureAroundAxis(flat, [...CENTER, 400], [0, 1, 0], 20, 400)
+    const heights = (tilted.geometry as Polygon).coordinates[0]!.map(position => position[2]!)
+    expect(heights.every(Number.isFinite)).toBe(true)
+    expect(Math.max(...heights) - Math.min(...heights)).toBeCloseTo(1000 * Math.sin((20 * Math.PI) / 180), -1)
+  })
+
+  it('scales along one axis: east keeps the length and the height, up from the base keeps the footprint', () => {
+    const box = rectangle()
+    const wider = scaleFeatureAlongAxis(box, [...CENTER, 150], [1, 0, 0], 2)
+    expectBox(wider)
+    expect(measure(wider)).toMatchObject({ widthMeters: expect.closeTo(2000, 0), lengthMeters: expect.closeTo(2000, 0) })
+    expect(altitudes(wider)).toEqual(altitudes(box))
+    const taller = scaleFeatureAlongAxis(box, [...CENTER, 0], [0, 0, 1], 2)
+    expect(Math.min(...altitudes(taller))).toBeCloseTo(0, 3)
+    expect(Math.max(...altitudes(taller))).toBeCloseTo(600, 3)
+    expect(measure(taller).widthMeters).toBeCloseTo(1000, 0)
+    expect(() => scaleFeatureAlongAxis(box, CENTER, [1, 0, 0], 0)).toThrow(/positive number/)
+  })
+
+  it('offsets a feature east, north and up, giving one on the terrain altitudes only when it rises', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 1000), id: 'f' } as DrawFeature
+    const moved = offsetFeature(flat, [500, 0, 0])
+    expect(featureCenter(moved)[0]).toBeGreaterThan(CENTER[0])
+    expect(featureCenter(moved)[1]).toBeCloseTo(CENTER[1], 6)
+    expect(baseAltitudeOf(moved)).toBeNull()
+    expect(baseAltitudeOf(offsetFeature(flat, [0, 0, 50], 100))).toBe(150)
+  })
+
+  it("finds a feature's own axes: a turned box's edges, a tilted box's top", () => {
+    const turned = { ...createRectangle(CENTER, 1000, 2000, { rotationDegrees: 30, baseHeightMeters: 0, heightMeters: 10 }), id: 't' } as DrawFeature
+    const [x, y, z] = featureAxes(turned)
+    const radians = (30 * Math.PI) / 180
+    expect(x[0]).toBeCloseTo(Math.cos(radians), 2)
+    expect(x[1]).toBeCloseTo(-Math.sin(radians), 2)
+    expect(y[0]).toBeCloseTo(Math.sin(radians), 2)
+    expect(z).toEqual([0, 0, 1])
+    const tilted = rotateFeatureAroundAxis(rectangle(), [...CENTER, 150], [1, 0, 0], 20)
+    expect(featureAxes(tilted)[2][2]).toBeCloseTo(Math.cos((20 * Math.PI) / 180), 3)
+    expect(featureAxes({ ...createCircle(CENTER, 100), id: 'c' } as DrawFeature)).toEqual([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+  })
+
+  it('keeps a tilted box’s axes on its own edges through any tilt, and a sphere’s z straight up', () => {
+    for (const [axis, degrees] of [[[1, 0, 0], 20], [[1, 0, 0], 50], [[1, 0, 0], 60], [[1, 0, 0], 85], [[0, 1, 0], 60], [[0, 1, 0], -70]] as Array<[[number, number, number], number]>) {
+      const tilted = rotateFeatureAroundAxis(rectangle(), [...CENTER, 150], axis, degrees)
+      const [x, y, z] = featureAxes(tilted)
+      // The box's top normal and its width edge, turned with it.
+      expect(dot(z, rotateVector([0, 0, 1], axis, degrees))).toBeGreaterThan(0.999)
+      expect(Math.abs(dot(x, rotateVector([1, 0, 0], axis, degrees)))).toBeGreaterThan(0.999)
+      expect(Math.abs(dot(y, rotateVector([0, 1, 0], axis, degrees)))).toBeGreaterThan(0.999)
+    }
+    const ball = { ...createSphere(CENTER, 100, { baseHeightMeters: 50 }), id: 'b' } as DrawFeature
+    expect(featureAxes(ball)[2][2]).toBeGreaterThan(0.9999)
+    // A polygon in the air: its own normal, facing up.
+    const slab = rotateFeatureAroundAxis({ ...createRectangle(CENTER, 1000, 1000, { baseHeightMeters: 400 }), id: 's' } as DrawFeature, [...CENTER, 400], [0, 1, 0], 30)
+    expect(dot(featureAxes(slab)[2], rotateVector([0, 0, 1], [0, 1, 0], 30))).toBeGreaterThan(0.999)
+  })
+
+  it('scales the altitudes of any feature with altitudes, so a tilted polygon keeps its slope, and keeps draped ones draped', () => {
+    const slab = rotateFeatureAroundAxis({ ...createRectangle(CENTER, 1000, 1000, { baseHeightMeters: 400 }), id: 's' } as DrawFeature, [...CENTER, 400], [0, 1, 0], 20)
+    const before = altitudes(slab)
+    const scaled = scaleFeature(slab, featureCenter(slab), 2)
+    const after = altitudes(scaled)
+    expect(Math.min(...after)).toBeCloseTo(Math.min(...before), 6)
+    expect(Math.max(...after) - Math.min(...after)).toBeCloseTo(2 * (Math.max(...before) - Math.min(...before)), 3)
+    const flat = { ...createRectangle(CENTER, 1000, 1000), id: 'f' } as DrawFeature
+    expect((scaleFeature(flat, CENTER, 2).geometry as Polygon).coordinates[0]!.every(position => position.length === 2)).toBe(true)
+  })
+})
+
 describe('the gizmo of the select mode', () => {
-  it('turns a selected box with its knob, snapping with Shift, in one update', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const knob = transformFrame(rectangle()).rotationHandle!
-    expect(mode.pointerDown(pointerAt(setup, knob))).toBe(true)
-    mode.pointerMove(pointerAt(setup, destination(CENTER, 1500, 50), { shiftKey: true }))
-    mode.pointerMove(pointerAt(setup, destination(CENTER, 1500, 88), { shiftKey: true }))
-    expect(setup.updates).toHaveLength(0)
-    mode.pointerUp(pointerAt(setup, destination(CENTER, 1500, 88)))
+  it('draws arrows, plane squares, the center ring, arcs, cubes and the outer ring, the same size at any zoom', () => {
+    const { setup, mode } = selectIn([rectangle()], {}, true)
+    const names = mode.gizmoHandles().map(each => each.handle)
+    for (const handle of ['move-x', 'move-y', 'move-z', 'move-xy', 'move-free', 'rotate-x', 'rotate-y', 'rotate-z', 'scale-x', 'scale-y', 'scale-z', 'scale-uniform'] as const) expect(names).toContain(handle)
+    const content: OverlayContent = { features: [], lines: [], handles: [], polygons: [] }
+    mode.overlay(content)
+    expect(content.lines.filter(line => line.arrowheadPixels !== undefined)).toHaveLength(3)
+    expect(content.handles.filter(handle => handle.shape === 'square')).toHaveLength(3)
+    expect(content.handles.filter(handle => handle.shape === 'ring')).toHaveLength(2)
+    expect(content.polygons!.length).toBeGreaterThanOrEqual(1)
+    // The east arrow is 80 px long on the screen; zoomed in twice as close, still 80 px.
+    const center = mode.gizmoHandles().find(each => each.handle === 'move-free')!
+    const east = handleOnScreen(mode, 'move-x')
+    expect(Math.hypot(east.x - center.x, east.y - center.y) / 0.6).toBeLessThan(81)
+    const project = setup.context.projectAtHeight
+    setup.context.projectAtHeight = (position, height) => {
+      const screen = project(position, height)
+      return { x: screen!.x * 2, y: screen!.y * 2 }
+    }
+    const zoomedCenter = handleOnScreen(mode, 'move-free')
+    const zoomedEast = handleOnScreen(mode, 'move-x')
+    expect(Math.hypot(zoomedEast.x - zoomedCenter.x, zoomedEast.y - zoomedCenter.y)).toBeCloseTo(Math.hypot(east.x - center.x, east.y - center.y), 3)
+  })
+
+  it('moves along the east arrow only, in one update, and undoes it', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    const arrow = handleOnScreen(mode, 'move-x')
+    expect(dragOnScreen(mode, arrow, [[10, 3], [40, 12]])).toBe(true)
     expect(setup.updates).toHaveLength(1)
-    // Turned a quarter: its length runs east-west.
-    const turned = setup.store.get('box')!
-    expect(Math.abs(measure(turned).rotationDegrees)).toBeCloseTo(90, 1)
-    expectBox(turned)
+    const moved = setup.store.get('box')!
+    expect(featureCenter(moved)[0]).toBeGreaterThan(CENTER[0] + 0.003)
+    // East along a great circle: a few centimetres south of the parallel.
+    expect(featureCenter(moved)[1]).toBeCloseTo(CENTER[1], 5)
+    expect(altitudes(moved)).toEqual(altitudes(rectangle()))
+    expectBox(moved)
     mode.undo()
-    expect(measure(setup.store.get('box')!).rotationDegrees).toBeCloseTo(0, 1)
+    expect(featureCenter(setup.store.get('box')!)[0]).toBeCloseTo(CENTER[0], 9)
   })
 
-  it('scales with a corner, and raises the top face with the knob on top', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const corner = transformFrame(rectangle()).corners[2]!
-    expect(mode.pointerDown(pointerAt(setup, corner))).toBe(true)
-    const far = destination(CENTER, distanceMeters(CENTER, corner) * 1.5, 26.565)
-    mode.pointerMove(pointerAt(setup, far))
-    mode.pointerUp(pointerAt(setup, far))
-    const scaled = setup.store.get('box')!
-    expect(measure(scaled)).toMatchObject({ widthMeters: expect.closeTo(1500, 0), lengthMeters: expect.closeTo(3000, 0) })
-    // Scaled in 3D from its base: 450 m tall now.
-    expect(Math.max(...altitudes(scaled))).toBeCloseTo(450, 0)
-    // The height knob is drawn on its top, 45 px above the center; dragging it 50 px up raises the top 500 m.
-    const top = pointerAt(setup, CENTER, { heightMeters: Math.max(...altitudes(scaled)) })
-    expect(mode.pointerDown(top)).toBe(true)
-    mode.pointerMove({ ...top, screen: { xPixels: top.screen.xPixels, yPixels: top.screen.yPixels - 50 } })
-    mode.pointerUp(top)
+  it('raises a box with the up arrow, and gives a flat polygon altitudes', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    // 1 px up the screen is 10 m up: 30 px raise it 300 m.
+    dragOnScreen(mode, handleOnScreen(mode, 'move-z'), [[0, -10], [0, -30]])
     const raised = setup.store.get('box')!
-    expectBox(raised)
-    expect(Math.max(...altitudes(raised))).toBeCloseTo(Math.max(...altitudes(scaled)) + 500, 6)
-    expect(Math.min(...altitudes(raised))).toBe(0)
+    expect(Math.min(...altitudes(raised))).toBeCloseTo(300, 3)
+    expect(Math.max(...altitudes(raised))).toBeCloseTo(600, 3)
+    expect(featureCenter(raised)[0]).toBeCloseTo(CENTER[0], 9)
+    const flat = selectIn([{ ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature])
+    dragOnScreen(flat.mode, handleOnScreen(flat.mode, 'move-z'), [[0, -20]])
+    expect(baseAltitudeOf(flat.setup.store.get('flat')!)).toBeCloseTo(200, 3)
   })
 
-  it('extrudes a flat rectangle into a box with the knob in its middle, whose top then goes no lower than 1 m', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'box' } as DrawFeature
-    const setup = createContext([flat])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const middle = pointerAt(setup, CENTER)
-    expect(mode.pointerDown(middle)).toBe(true) // the knob, not the body
-    mode.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - 30 } })
-    mode.pointerUp(middle)
-    const box = setup.store.get('box')!
-    expectBox(box)
-    expect(box.properties).toEqual({})
-    expect(Math.max(...altitudes(box))).toBeCloseTo(300, 6)
-    expect(Math.min(...altitudes(box))).toBe(0)
+  it('moves on the ground with the center ring and the east-north square, the center under the pointer', () => {
+    for (const handle of ['move-free', 'move-xy'] as const) {
+      const { setup, mode } = selectIn([rectangle()])
+      const grab = handleOnScreen(mode, handle)
+      dragOnScreen(mode, grab, [[30, 0], [100, -50]])
+      const center = featureCenter(setup.store.get('box')!)
+      expect(center[0]).toBeCloseTo(CENTER[0] + 0.01, 4)
+      expect(center[1]).toBeCloseTo(CENTER[1] + 0.005, 4)
+      expect(altitudes(setup.store.get('box')!)).toEqual(altitudes(rectangle()))
+    }
+  })
+
+  it('turns the heading with the arc around up, and snaps with Shift only when snapping is on', () => {
+    const turnBy = (options: ConstructorParameters<typeof SelectMode>[0], shiftKey: boolean) => {
+      const { setup, mode } = selectIn([rectangle()], options)
+      const center = handleOnScreen(mode, 'move-free')
+      const grab = handleOnScreen(mode, 'rotate-z')
+      const radius = Math.hypot(grab.x - center.x, grab.y - center.y)
+      const start = Math.atan2(grab.y - center.y, grab.x - center.x)
+      const path: Array<[number, number]> = [0.2, 0.5, 0.7].map(turn => [center.x + radius * Math.cos(start + turn) - grab.x, center.y + radius * Math.sin(start + turn) - grab.y])
+      dragOnScreen(mode, grab, path, { shiftKey })
+      expect(setup.updates).toHaveLength(1)
+      const turned = setup.store.get('box')!
+      expectBox(turned)
+      expect(altitudes(turned)).toEqual(altitudes(rectangle()))
+      return featureRotationDegrees(turned)
+    }
+    // 0.7 rad clockwise on the screen (north up) is clockwise seen from above.
+    const free = turnBy({}, true)
+    expect(free).toBeGreaterThan(20)
+    expect(Math.abs(free - Math.round(free / 15) * 15)).toBeGreaterThan(0.01)
+    const snapped = turnBy({ snapping: true }, true)
+    expect(Math.abs(snapped - Math.round(snapped / 15) * 15)).toBeLessThan(1e-6)
+    expect(snapped).not.toBe(0)
+  })
+
+  it('tilts with the arc around east: the top face is no longer level, distances are kept', () => {
+    // Seen looking north the arc around east is edge on, on the arrows: it hides.
+    expect(selectIn([rectangle()]).mode.gizmoHandles().map(each => each.handle)).not.toContain('rotate-x')
+    const { setup, mode } = selectIn([rectangle()], {}, true)
+    dragOnScreen(mode, handleOnScreen(mode, 'rotate-x'), [[3, -5], [10, -20]])
     expect(setup.updates).toHaveLength(1)
-    const top = pointerAt(setup, CENTER, { heightMeters: 300 })
-    expect(mode.pointerDown(top)).toBe(true)
-    mode.pointerMove({ ...top, screen: { xPixels: top.screen.xPixels, yPixels: top.screen.yPixels + 40 } })
-    mode.pointerUp(top)
-    expect(Math.max(...altitudes(setup.store.get('box')!))).toBeCloseTo(1, 6)
-    // A drag that stays under a metre leaves a flat feature flat.
-    const other = createContext([{ ...flat, id: 'other' }])
-    const second = new SelectMode()
-    second.enter(other.context)
-    second.setSelection(['other'])
-    expect(second.pointerDown(middle)).toBe(true)
-    second.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - 0.05 } })
-    second.pointerUp(middle)
-    expect(other.store.get('other')!.geometry.type).toBe('Polygon')
+    const tilted = setup.store.get('box')!
+    expectBox(tilted)
+    const top = topFace(tilted)
+    expect(Math.max(...top) - Math.min(...top)).toBeGreaterThan(10)
+    const before = vertexDistances(rectangle())
+    vertexDistances(tilted).forEach((distance, index) => expect(distance).toBeCloseTo(before[index]!, 2))
   })
 
-  it('extrudes by dragging up the screen when seen from straight above', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'box' } as DrawFeature
-    const setup = createContext([flat])
-    // From above, heights do not move anything on the screen.
-    setup.context.projectAtHeight = position => setup.toScreen(position, 0)
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const middle = pointerAt(setup, CENTER)
-    // 1 km of ground is (1000 / 111 320 / cos 46.45°) × 10 000 px, about 130 px.
-    const pixelsPerKilometre = distanceMeters(CENTER, destination(CENTER, 1000, 90)) > 0 ? Math.hypot(setup.toScreen(destination(CENTER, 1000, 90), 0).x - middle.screen.xPixels, 0) : 0
-    expect(mode.pointerDown(middle)).toBe(true)
-    mode.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - pixelsPerKilometre / 2 } })
-    mode.pointerUp(middle)
-    expect(Math.max(...altitudes(setup.store.get('box')!))).toBeCloseTo(500, 3)
+  it('scales along one axis with its cube, and uniformly with the outer ring', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    const cube = handleOnScreen(mode, 'scale-x')
+    const center = handleOnScreen(mode, 'move-free')
+    // Dragged as far again from the center: twice as wide.
+    dragOnScreen(mode, cube, [[10, 0], [cube.x - center.x, 0]])
+    const wider = setup.store.get('box')!
+    expect(measure(wider)).toMatchObject({ widthMeters: expect.closeTo(2000, -1), lengthMeters: expect.closeTo(2000, 0) })
+    expect(altitudes(wider)).toEqual(altitudes(rectangle()))
+    const ring = mode.gizmoHandles().filter(each => each.handle === 'scale-uniform').at(-1)!
+    dragOnScreen(mode, ring, [[10, 0], [ring.x - center.x, 0]])
+    const bigger = setup.store.get('box')!
+    expect(measure(bigger).lengthMeters).toBeCloseTo(4000, -1)
+    expect(Math.max(...altitudes(bigger))).toBeCloseTo(600, 0)
+    expect(setup.updates).toHaveLength(2)
   })
 
-  it('still moves the feature by its body, and leaves presses elsewhere to the camera', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    expect(mode.pointerDown(pointerAt(setup, destination(CENTER, 5000, 90)))).toBe(false)
-    const inside = destination(CENTER, 200, 200)
-    expect(mode.pointerDown(pointerAt(setup, inside))).toBe(true)
-    const moved = destination(inside, 3000, 90)
-    mode.pointerMove(pointerAt(setup, moved))
-    mode.pointerUp(pointerAt(setup, moved))
-    expect(distanceMeters(featureCenter(setup.store.get('box')!), destination(CENTER, 3000, 90))).toBeLessThan(1)
-    // No vertex handles: the gizmo instead.
-    const content = { features: [], lines: [], handles: [] as unknown[] }
-    mode.overlay(content as never)
-    expect(content.handles).toHaveLength(4 + 4 + 1 + 1 + 1) // corners, sides, the turning knob, the height knob, the lift knob
-  })
-
-  it('moves a flat feature when a finger lands inside it near, but not on, the middle knob', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'box' } as DrawFeature
-    const setup = createContext([flat])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const near = pointerAt(setup, CENTER)
-    const press: DrawPointerEvent = { ...near, pointerType: 'touch', screen: { xPixels: near.screen.xPixels + 15, yPixels: near.screen.yPixels } }
-    expect(mode.pointerDown(press)).toBe(true)
-    const moved = { ...press, screen: { xPixels: press.screen.xPixels + 100, yPixels: press.screen.yPixels }, geographic: { ...press.geographic!, longitudeDegrees: press.geographic!.longitudeDegrees + 0.01 } }
-    mode.pointerMove(moved)
-    mode.pointerUp(moved)
-    expect(setup.store.get('box')!.geometry.type).toBe('Polygon')
-    expect(featureCenter(setup.store.get('box')!)[0]).toBeCloseTo(CENTER[0] + 0.01, 6)
-  })
-
-  it('records nothing when a knob is dragged back where it started', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const knob = transformFrame(rectangle()).rotationHandle!
-    expect(mode.pointerDown(pointerAt(setup, knob))).toBe(true)
-    mode.pointerMove(pointerAt(setup, destination(CENTER, 1500, 40)))
-    mode.pointerMove(pointerAt(setup, knob))
-    mode.pointerUp(pointerAt(setup, knob))
+  it('records nothing for a handle dragged back where it started, and still moves the body away from the handles', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    const arrow = handleOnScreen(mode, 'move-x')
+    dragOnScreen(mode, arrow, [[30, 0], [0, 0]])
     expect(setup.updates).toHaveLength(0)
     expect(mode.status().canUndo).toBe(false)
-  })
-
-  it('snaps to absolute multiples of the step, from a shape already turned', () => {
-    const turned = { ...createRectangle(CENTER, 1000, 2000, { rotationDegrees: 7 }), id: 'box' } as DrawFeature
-    const setup = createContext([turned])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const knob = transformFrame(turned).rotationHandle!
-    expect(mode.pointerDown(pointerAt(setup, knob))).toBe(true)
-    mode.pointerMove(pointerAt(setup, destination(CENTER, 1500, 40), { shiftKey: true }))
-    mode.pointerUp(pointerAt(setup, destination(CENTER, 1500, 40), { shiftKey: true }))
-    const rotation = featureRotationDegrees(setup.store.get('box')!)
-    expect(rotation).not.toBeCloseTo(7, 1)
-    expect(Math.abs(rotation - Math.round(rotation / 15) * 15)).toBeLessThan(1e-4)
-  })
-
-  it('stretches the box by the middle of an edge, the opposite edge fixed, in one update', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const frame = transformFrame(rectangle())
-    const right = frame.sideHandles[1]!
-    expect(mode.pointerDown(pointerAt(setup, right.position))).toBe(true)
-    const pulled = destination(right.position, 500, 90)
-    mode.pointerMove(pointerAt(setup, destination(right.position, 200, 90)))
-    mode.pointerMove(pointerAt(setup, pulled))
-    expect(setup.updates).toHaveLength(0)
-    mode.pointerUp(pointerAt(setup, pulled))
-    expect(setup.updates).toHaveLength(1)
-    const box = setup.store.get('box')!
-    expectBox(box)
-    expect(measure(box)).toMatchObject({ widthMeters: expect.closeTo(1500, -1), lengthMeters: expect.closeTo(2000, 2) })
-    // The west edge stayed.
-    expect(distanceMeters(transformFrame(box).sideHandles[3]!.position, frame.sideHandles[3]!.position)).toBeLessThan(5)
-    // It cannot cross the opposite edge: pulled far past it, the box keeps a sliver.
-    mode.pointerDown(pointerAt(setup, transformFrame(box).sideHandles[1]!.position))
-    const past = destination(CENTER, 5000, 270)
-    mode.pointerMove(pointerAt(setup, past))
-    mode.pointerUp(pointerAt(setup, past))
-    expect(measure(setup.store.get('box')!).widthMeters).toBeCloseTo(15, 0)
-  })
-
-  it('lifts a box with the knob under its base, keeping its height, and lowers it keeping its altitudes', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    // The lift knob is drawn 24 px under the base's middle (here on the ground, at 0 m).
-    const base = pointerAt(setup, CENTER)
-    const knob: DrawPointerEvent = { ...base, screen: { xPixels: base.screen.xPixels, yPixels: base.screen.yPixels + 24 } }
-    expect(mode.pointerDown(knob)).toBe(true)
-    // 50 px up the screen is 500 m up (1 px per 10 m).
-    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 20 } })
-    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 50 } })
-    expect(setup.updates).toHaveLength(0)
-    mode.pointerUp(knob)
-    expect(setup.updates).toHaveLength(1)
-    const lifted = setup.store.get('box')!
-    expectBox(lifted)
-    expect(Math.min(...altitudes(lifted))).toBeCloseTo(500, 6)
-    expect(Math.max(...altitudes(lifted))).toBeCloseTo(800, 6)
-    expect(measure(lifted).widthMeters).toBeCloseTo(1000, 3)
-    // Its knob follows it up; lowered near (even under) the ground, a box in the air keeps its altitudes.
-    const raised: DrawPointerEvent = { ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 50 } }
-    expect(mode.pointerDown(raised)).toBe(true)
-    mode.pointerMove({ ...raised, screen: { xPixels: raised.screen.xPixels, yPixels: raised.screen.yPixels + 50.05 } })
-    mode.pointerUp(raised)
-    expect(setup.updates).toHaveLength(2)
-    expect(baseAltitudeOf(setup.store.get('box')!)).toBeCloseTo(-0.5, 6)
-    mode.undo()
-    expect(baseAltitudeOf(setup.store.get('box')!)).toBeCloseTo(500, 6)
-  })
-
-  it('lifts a flat shape by the knob under its middle, apart from the height knob on it, and lifts a ball mesh whole', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature
-    const ball = { ...createSphere(destination(CENTER, 5000, 90), 100), id: 'ball' } as DrawFeature
-    const setup = createContext([flat, ball])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['flat'])
-    const middle = pointerAt(setup, CENTER)
-    const knob: DrawPointerEvent = { ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels + 24 } }
-    // A small lift that ends on the ground changes nothing.
-    expect(mode.pointerDown(knob)).toBe(true)
-    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels + 10 } })
-    mode.pointerUp(knob)
-    expect(setup.updates).toHaveLength(0)
-    expect(mode.pointerDown(knob)).toBe(true)
-    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 30 } })
-    mode.pointerUp(knob)
-    const lifted = setup.store.get('flat')!
-    expect(baseAltitudeOf(lifted)).toBeCloseTo(300, 6)
-    expect(lifted.geometry.type).toBe('Polygon')
-    // The ball rests at 0 m: its knob hangs under its foot.
-    mode.setSelection(['ball'])
-    const foot = pointerAt(setup, featureCenter(ball))
-    const ballKnob: DrawPointerEvent = { ...foot, screen: { xPixels: foot.screen.xPixels, yPixels: foot.screen.yPixels + 24 } }
-    expect(mode.pointerDown(ballKnob)).toBe(true)
-    mode.pointerMove({ ...ballKnob, screen: { xPixels: ballKnob.screen.xPixels, yPixels: ballKnob.screen.yPixels - 20 } })
-    mode.pointerUp(ballKnob)
-    const raised = setup.store.get('ball')!
-    expect(Math.min(...altitudes(raised))).toBeCloseTo(200, 6)
-    expect(Math.max(...altitudes(raised))).toBeCloseTo(400, 6)
-    expect(setup.updates).toHaveLength(2)
-  })
-
-  it('lifts each position from the terrain under it, or the height under the press while the terrain is not known', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature
-    const setup = createContext([flat])
-    const relief = (longitude: number, latitude: number) => 300 + (longitude - CENTER[0]) * 10_000
-    setup.context.heights.heightAt = relief as never
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['flat'])
-    // The base's middle is drawn at its terrain height (300 m: 30 px up), the knob 24 px below.
-    const base = pointerAt(setup, CENTER, { heightMeters: 300 })
-    const knob: DrawPointerEvent = { ...base, screen: { xPixels: base.screen.xPixels, yPixels: base.screen.yPixels + 24 } }
-    expect(mode.pointerDown(knob)).toBe(true)
-    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 20 } })
-    mode.pointerUp(knob)
-    for (const position of (setup.store.get('flat')!.geometry as Polygon).coordinates[0]!) expect(position[2]).toBeCloseTo(relief(position[0]!, position[1]!) + 200, 6)
-    // Unknown terrain: the press's ground height stands in, not 0.
-    const other = createContext([{ ...flat, id: 'other' }])
-    other.context.heights.heightAt = ((_longitude: number, _latitude: number, fallback = 0) => fallback) as never
-    const second = new SelectMode()
-    second.enter(other.context)
-    second.setSelection(['other'])
-    const ground = pointerAt(other, CENTER, { heightMeters: 700 })
-    const press: DrawPointerEvent = { ...ground, screen: { xPixels: ground.screen.xPixels, yPixels: ground.screen.yPixels + 24 }, geographic: { ...ground.geographic!, heightMeters: 700 } }
-    expect(second.pointerDown(press)).toBe(true)
-    second.pointerMove({ ...press, screen: { xPixels: press.screen.xPixels, yPixels: press.screen.yPixels - 20 } })
-    second.pointerUp(press)
-    expect(baseAltitudeOf(other.store.get('other')!)).toBeCloseTo(900, 6)
-  })
-
-  it('leaves the body to moving: knobs inside grab only where drawn, and a small feature hides its side and middle knobs', () => {
-    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature
-    const setup = createContext([flat])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['flat'])
-    // 9 px from the middle knob (drawn 8 px wide with its outline): the body.
-    const middle = pointerAt(setup, CENTER)
-    expect(mode.pointerDown({ ...middle, screen: { xPixels: middle.screen.xPixels + 9, yPixels: middle.screen.yPixels } })).toBe(true)
+    // Inside the box, south of the gizmo and out of reach of its handles: the body.
+    expect(mode.pointerDown(screenEvent(-30, 95))).toBe(true)
     expect(mode.inspect()).toMatchObject({ drag: { kind: 'feature' } })
     mode.pointerCancel()
-    // 300 m square: about 39 × 27 px, under three knob diameters. A drag from its very middle moves it.
-    const small = { ...createRectangle(CENTER, 300, 300), id: 'small' } as DrawFeature
-    const tiny = createContext([small])
-    const smallMode = new SelectMode()
-    smallMode.enter(tiny.context)
-    smallMode.setSelection(['small'])
-    const content = { features: [], lines: [], handles: [] as unknown[] }
-    smallMode.overlay(content as never)
-    expect(content.handles).toHaveLength(4 + 1 + 1) // corners, the turning knob, the lift knob
-    const press = pointerAt(tiny, CENTER)
-    expect(smallMode.pointerDown(press)).toBe(true)
-    const moved = destination(CENTER, 2000, 90)
-    smallMode.pointerMove(pointerAt(tiny, moved))
-    smallMode.pointerUp(pointerAt(tiny, moved))
-    expect(distanceMeters(featureCenter(tiny.store.get('small')!), moved)).toBeLessThan(1)
+    expect(mode.pointerDown(screenEvent(5000, 0))).toBe(false)
   })
 
-  it('stretches a straight line by its end rather than scaling it, where the handles meet', () => {
-    const line: DrawFeature = { type: 'Feature', id: 'line', properties: {}, geometry: { type: 'LineString', coordinates: [[6.6, 46.45], [6.62, 46.45]] } }
-    const setup = createContext([line])
-    const mode = new SelectMode()
-    mode.enter(setup.context)
-    mode.setSelection(['line'])
-    const end = pointerAt(setup, [6.62, 46.45])
-    expect(mode.pointerDown(end)).toBe(true)
-    mode.pointerMove({ ...end, screen: { xPixels: end.screen.xPixels + 100, yPixels: end.screen.yPixels } })
-    mode.pointerUp(end)
-    const coordinates = (setup.store.get('line')!.geometry as LineString).coordinates
-    expect(distanceMeters(coordinates[0]!, [6.6, 46.45])).toBeLessThan(0.5) // the far end stayed
-    expect(coordinates[1]![0]).toBeCloseTo(6.63, 4)
+  it('shows only the picked tool, and turns handle groups off with options', () => {
+    const { mode } = selectIn([rectangle()])
+    const kinds = () => [...new Set(mode.gizmoHandles().map(each => each.handle.split('-')[0]))].sort()
+    expect(kinds()).toEqual(['move', 'rotate', 'scale'])
+    mode.setGizmoTool('move')
+    expect(kinds()).toEqual(['move'])
+    mode.setGizmoTool('rotate')
+    expect(kinds()).toEqual(['rotate'])
+    mode.setGizmoTool('scale')
+    expect(kinds()).toEqual(['scale'])
+    // With the scale tool the center ring scales too.
+    expect(mode.gizmoHandles().filter(each => each.handle === 'scale-uniform')).toHaveLength(2)
+    expect(() => mode.setGizmoTool('stretch' as never)).toThrow(/pick one of all, move, rotate, scale/)
+    const limited = selectIn([rectangle()], { rotate: false, scale: false })
+    expect([...new Set(limited.mode.gizmoHandles().map(each => each.handle.split('-')[0]))]).toEqual(['move'])
   })
 
-  it('turns handles off with options', () => {
-    const setup = createContext([rectangle()])
-    const mode = new SelectMode({ rotate: false, stretch: false, lift: false })
-    mode.enter(setup.context)
-    mode.setSelection(['box'])
-    const content = { features: [], lines: [], handles: [] as unknown[] }
-    mode.overlay(content as never)
-    expect(content.handles).toHaveLength(4 + 1) // corners and the height knob
-    // The middle of an edge only grabs the outline: the whole box moves.
-    expect(mode.pointerDown(pointerAt(setup, transformFrame(rectangle()).sideHandles[1]!.position))).toBe(true)
+  it('moves along the feature’s own axes in local space', () => {
+    const turned = { ...createRectangle(CENTER, 1000, 2000, { rotationDegrees: 30, baseHeightMeters: 0, heightMeters: 10 }), id: 'box' } as DrawFeature
+    const { setup, mode } = selectIn([turned], { gizmoSpace: 'local' })
+    expect(mode.gizmoSpace).toBe('local')
+    dragOnScreen(mode, handleOnScreen(mode, 'move-x'), [[5, 5], [30, 20]])
+    const moved = featureCenter(setup.store.get('box')!)
+    // Along its width: 120° from north.
+    expect(bearingDegrees(featureCenter(turned), moved)).toBeCloseTo(120, 0)
+  })
+
+  it('flips the horizontal arrows that point away from the camera, never a tilted local up', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    const center = handleOnScreen(mode, 'move-free')
+    // North runs away from this camera: its arrow points south, down the screen; up stays up.
+    expect(handleOnScreen(mode, 'move-y').y).toBeGreaterThan(center.y)
+    expect(handleOnScreen(mode, 'move-z').y).toBeLessThan(center.y)
+    delete setup.context.depthAtHeight
+    expect(selectIn([rectangle()]).mode.gizmoHandles().length).toBeGreaterThan(0)
+    const tilted = rotateFeatureAroundAxis(rectangle(), [...CENTER, 150], [1, 0, 0], 5)
+    const local = selectIn([tilted], { gizmoSpace: 'local' })
+    expect(handleOnScreen(local.mode, 'move-z').y).toBeLessThan(handleOnScreen(local.mode, 'move-free').y)
+    // Dragged up the screen it rises.
+    dragOnScreen(local.mode, handleOnScreen(local.mode, 'move-z'), [[0, -10], [0, -20]])
+    expect(Math.min(...altitudes(local.setup.store.get('box')!))).toBeGreaterThan(Math.min(...altitudes(tilted)) + 100)
+  })
+
+  it('gives a finger the handles within its reach, inside the body too, and the body elsewhere', () => {
+    const { mode } = selectIn([rectangle()], { gizmoTool: 'move' })
+    const arrow = handleOnScreen(mode, 'move-x')
+    // 12 px off the east arrow, over the box: within a finger's 22 px reach, so the arrow (a mouse's 10 px miss it).
+    expect(mode.pointerDown(screenEvent(arrow.x + 5, arrow.y + 12))).toBe(true)
     expect(mode.inspect()).toMatchObject({ drag: { kind: 'feature' } })
+    mode.pointerCancel()
+    expect(mode.pointerDown(screenEvent(arrow.x + 5, arrow.y + 12, { pointerType: 'touch' }))).toBe(true)
+    expect(mode.inspect()).toMatchObject({ drag: { kind: 'transform', handle: 'move-x' } })
+    mode.pointerCancel()
+    const small = selectIn([rectangle()], { gizmoSizePixels: 40 }).mode
+    expect(small.pointerDown(screenEvent(-30, 90, { pointerType: 'touch' }))).toBe(true)
+    expect(small.inspect()).toMatchObject({ drag: { kind: 'feature' } })
+  })
+
+  it('samples the terrain under a draped feature once per drag, not on every move', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature
+    const { setup, mode } = selectIn([flat])
+    const immediate = vi.fn()
+    const heights = setup.context.heights as unknown as { heightAt: (...parameters: unknown[]) => number }
+    heights.heightAt = (...parameters: unknown[]) => {
+      if ((parameters[3] as { immediate?: boolean } | undefined)?.immediate === true) immediate()
+      return 0
+    }
+    const knob = handleOnScreen(mode, 'move-z')
+    mode.pointerDown(screenEvent(knob.x, knob.y))
+    mode.pointerMove(screenEvent(knob.x, knob.y - 5))
+    const sampled = immediate.mock.calls.length
+    // The four corners (the ring closes on the first), each sampled once.
+    expect(sampled).toBeGreaterThan(0)
+    expect(sampled).toBeLessThanOrEqual(4)
+    for (let step = 2; step <= 6; step++) mode.pointerMove(screenEvent(knob.x, knob.y - 5 * step))
+    mode.pointerUp(screenEvent(knob.x, knob.y - 30))
+    expect(setup.updates).toHaveLength(1)
+    expect(immediate.mock.calls.length).toBe(sampled)
+  })
+
+  it('keeps the gizmo per view and feature version, and clears the hovered handle with the selection', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    let view = 1
+    setup.context.viewVersion = () => view
+    const basisOf = () => (mode as unknown as { gizmoBasis(feature: DrawFeature): unknown }).gizmoBasis(setup.store.get('box')!)
+    const first = basisOf()
+    expect(first).not.toBeNull()
+    expect(basisOf()).toBe(first)
+    view = 2
+    expect(basisOf()).not.toBe(first)
+    const arrow = handleOnScreen(mode, 'move-x')
+    mode.hover(screenEvent(arrow.x, arrow.y))
+    expect((mode as unknown as { hoveredHandle: string | null }).hoveredHandle).toBe('move-x')
+    mode.setSelection([])
+    expect((mode as unknown as { hoveredHandle: string | null }).hoveredHandle).toBeNull()
+  })
+
+  it('raises with a knob up the screen when seen from straight above', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    setup.context.projectAtHeight = position => setup.toScreen(position, 0)
+    const knob = handleOnScreen(mode, 'move-z')
+    const center = handleOnScreen(mode, 'move-free')
+    expect(knob.x).toBeCloseTo(center.x, 6)
+    expect(center.y - knob.y).toBeCloseTo(68, 0)
+    dragOnScreen(mode, knob, [[0, -10], [0, -40]])
+    expect(Math.min(...altitudes(setup.store.get('box')!))).toBeGreaterThan(100)
+  })
+})
+
+describe('gizmo settings of a Draw', () => {
+  it('sets the tool and the space on its select modes, in its state', () => {
+    const select = new SelectMode({ gizmoTool: 'rotate' })
+    const draw = new Draw({ modes: [select], mode: 'select' })
+    expect(draw.getState().gizmoTool).toBe('rotate')
+    const states: string[] = []
+    draw.subscribe(state => states.push(`${state.gizmoTool} ${state.gizmoSpace}`))
+    draw.setGizmoTool('scale')
+    draw.setGizmoSpace('local')
+    expect(states).toEqual(['scale world', 'scale local'])
+    expect([select.gizmoTool, select.gizmoSpace]).toEqual(['scale', 'local'])
+    expect(() => draw.setGizmoTool('stretch' as never)).toThrow(/Draw.setGizmoTool: "stretch" is no gizmo tool/)
+    expect(() => draw.setGizmoSpace('screen' as never)).toThrow(/pick 'world' or 'local'/)
+  })
+})
+
+describe('keyboard transforms', () => {
+  it('is off by default in a Draw', () => {
+    expect(new Draw().keyboard).toBe(false)
+    expect(new Draw({ keyboard: true }).keyboard).toBe(true)
+    expect(new Draw().getState()).toMatchObject({ gizmoTool: 'all', gizmoSpace: 'world' })
+  })
+
+  it('moves with G under the pointer, locks to east with X, and confirms with Enter in one update', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    mode.hover(screenEvent(0, 0))
+    expect(mode.keyDown(key('g'))).toBe(true)
+    expect(mode.transforming).toBe('move')
+    mode.hover(screenEvent(50, -40))
+    expect(setup.updates).toHaveLength(0)
+    expect(mode.keyDown(key('x'))).toBe(true)
+    expect(mode.keyDown(key('Enter'))).toBe(true)
+    expect(setup.updates).toHaveLength(1)
+    const moved = featureCenter(setup.store.get('box')!)
+    expect(moved[0]).toBeCloseTo(CENTER[0] + 0.005, 4)
+    expect(moved[1]).toBeCloseTo(CENTER[1], 5)
+    expect(mode.transforming).toBeNull()
+  })
+
+  it('turns with R and scales up with S then Z; Escape and a right click cancel, a click confirms', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    mode.hover(screenEvent(60, 0))
+    mode.keyDown(key('r'))
+    mode.hover(screenEvent(0, 60))
+    expect(mode.keyDown(key('Escape'))).toBe(true)
+    expect(setup.updates).toHaveLength(0)
+    mode.hover(screenEvent(60, 0))
+    mode.keyDown(key('r'))
+    mode.hover(screenEvent(0, 60))
+    expect(mode.secondaryPress()).toBe(true)
+    expect(setup.updates).toHaveLength(0)
+    expect(mode.secondaryPress()).toBe(false)
+    mode.hover(screenEvent(60, 0))
+    mode.keyDown(key('r'))
+    mode.hover(screenEvent(0, 60))
+    mode.click(screenEvent(0, 60))
+    expect(setup.updates).toHaveLength(1)
+    expect(Math.abs(featureRotationDegrees(setup.store.get('box')!))).toBeGreaterThan(1)
+    // Twice as far from the gizmo's center: twice as tall.
+    const center = handleOnScreen(mode, 'move-free')
+    mode.hover(screenEvent(center.x + 30, center.y))
+    mode.keyDown(key('s'))
+    mode.keyDown(key('z'))
+    expect(mode.pointerDown(screenEvent(center.x + 60, center.y))).toBe(true)
+    mode.pointerUp(screenEvent(center.x + 60, center.y))
+    expect(setup.updates).toHaveLength(2)
+    const scaled = setup.store.get('box')!
+    expect(Math.max(...altitudes(scaled))).toBeCloseTo(600, 0)
+    expect(Math.min(...altitudes(scaled))).toBeCloseTo(0, 3)
+  })
+})
+
+describe('keyboard transform edge cases', () => {
+  it('starts from where the last drag left the pointer', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    // A body drag 100 px east, then G without moving the pointer.
+    mode.pointerDown(screenEvent(-30, 95))
+    mode.pointerMove(screenEvent(20, 95))
+    mode.pointerMove(screenEvent(70, 95))
+    mode.pointerUp(screenEvent(70, 95))
+    const after = featureCenter(setup.store.get('box')!)
+    expect(after[0]).toBeCloseTo(CENTER[0] + 0.01, 4)
+    mode.keyDown(key('g'))
+    mode.keyDown(key('x'))
+    mode.hover(screenEvent(120, 95))
+    mode.keyDown(key('Enter'))
+    expect(featureCenter(setup.store.get('box')!)[0]).toBeCloseTo(after[0] + 0.005, 4)
+  })
+
+  it('follows the pointer on the new view after a zoom', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    let view = 1
+    let zoom = 1
+    setup.context.viewVersion = () => view
+    setup.context.projectAtHeight = (position, heightMeters) => {
+      const screen = setup.toScreen(position, heightMeters)
+      return { x: screen.x * zoom, y: screen.y * zoom }
+    }
+    const center = handleOnScreen(mode, 'move-free')
+    mode.hover(screenEvent(center.x, center.y))
+    mode.keyDown(key('g'))
+    mode.hover(screenEvent(center.x + 50, center.y))
+    zoom = 2
+    view = 2
+    mode.overlay({ features: [], lines: [], handles: [], polygons: [] } as OverlayContent)
+    mode.keyDown(key('Enter'))
+    // 50 px is half as far on the zoomed view.
+    expect(featureCenter(setup.store.get('box')!)[0]).toBeCloseTo(CENTER[0] + 0.0025, 4)
+  })
+
+  it('cancels when the focus leaves, leaves Ctrl and Cmd shortcuts alone, and refuses an axis pointing at the camera', () => {
+    const { setup, mode } = selectIn([rectangle()])
+    mode.hover(screenEvent(0, 0))
+    expect(mode.keyDown({ key: 'g', ctrlKey: true } as KeyboardEvent)).toBe(false)
+    expect(mode.keyDown({ key: 's', metaKey: true } as KeyboardEvent)).toBe(false)
+    expect(mode.transforming).toBeNull()
+    mode.keyDown(key('g'))
+    mode.hover(screenEvent(40, 0))
+    mode.focusLost()
+    expect(mode.transforming).toBeNull()
+    expect(setup.updates).toHaveLength(0)
+    // Seen along east (east collapses on the screen): X cannot lock a move, which stays free.
+    setup.context.projectAtHeight = ([, latitude], heightMeters) => ({ x: heightMeters / 20, y: (CENTER[1] - latitude) * 10_000 - heightMeters / 10 })
+    mode.keyDown(key('g'))
+    expect(mode.keyDown(key('x'))).toBe(true)
+    expect(mode.inspect()).toMatchObject({ keyboardTransform: { kind: 'move', axis: null } })
+    expect(mode.keyDown(key('y'))).toBe(true)
+    expect(mode.inspect()).toMatchObject({ keyboardTransform: { axis: 'y' } })
+    mode.keyDown(key('Escape'))
+    // Seen from straight above, up points at the camera: Z locks it as the knob does, up the screen raising it.
+    setup.context.projectAtHeight = position => setup.toScreen(position, 0)
+    mode.hover(screenEvent(0, 0))
+    mode.keyDown(key('g'))
+    mode.keyDown(key('z'))
+    mode.hover(screenEvent(0, -20))
+    mode.keyDown(key('Enter'))
+    expect(Math.min(...altitudes(setup.store.get('box')!))).toBeGreaterThan(10)
+  })
+})
+
+describe('right-click cancel in a Draw', () => {
+  it('swallows the release and the menu of the press that cancelled, until the next press or a second', () => {
+    type Handlers = { swallowContextMenu: boolean; swallowContextMenuUntil: number; onSecondaryPress(event: unknown): void; onSecondaryRelease(event: unknown): void; onContextMenu(event: unknown): void }
+    const draw = new Draw({ keyboard: true }) as unknown as Handlers
+    const event = (button = 2) => ({ button, stopPropagation: vi.fn(), preventDefault: vi.fn() })
+    const swallow = () => {
+      draw.swallowContextMenu = true
+      draw.swallowContextMenuUntil = performance.now() + 1000
+    }
+    swallow()
+    const release = event()
+    draw.onSecondaryRelease(release)
+    expect(release.preventDefault).toHaveBeenCalled()
+    expect(release.stopPropagation).toHaveBeenCalled()
+    const menu = event()
+    draw.onContextMenu(menu)
+    expect(menu.preventDefault).toHaveBeenCalled()
+    // Only once: the next menu is the browser's.
+    const next = event()
+    draw.onContextMenu(next)
+    expect(next.preventDefault).not.toHaveBeenCalled()
+    // No menu came (a touch pad, another browser): the next press ends the swallowing.
+    swallow()
+    draw.onSecondaryPress(event(0))
+    const later = event()
+    draw.onContextMenu(later)
+    expect(later.preventDefault).not.toHaveBeenCalled()
+    // Nor after a second.
+    swallow()
+    draw.swallowContextMenuUntil = performance.now() - 1
+    const stale = event()
+    draw.onSecondaryRelease(stale)
+    draw.onContextMenu(stale)
+    expect(stale.preventDefault).not.toHaveBeenCalled()
   })
 })
 
@@ -594,3 +821,21 @@ describe('free-form pivots', () => {
     expect(distanceMeters(center, after)).toBeLessThan(5)
   })
 })
+
+function key(name: string): KeyboardEvent {
+  return { key: name } as KeyboardEvent
+}
+
+function dot(a: readonly number[], b: readonly number[]): number {
+  return a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!
+}
+
+/** A vector turned around a unit axis, counter-clockwise seen from the axis's tip (Rodrigues). */
+function rotateVector(vector: [number, number, number], axis: [number, number, number], degrees: number): [number, number, number] {
+  const radians = (degrees * Math.PI) / 180
+  const cosine = Math.cos(radians)
+  const sine = Math.sin(radians)
+  const cross = [axis[1] * vector[2] - axis[2] * vector[1], axis[2] * vector[0] - axis[0] * vector[2], axis[0] * vector[1] - axis[1] * vector[0]]
+  const along = dot(axis, vector) * (1 - cosine)
+  return [0, 1, 2].map(index => vector[index]! * cosine + cross[index]! * sine + axis[index]! * along) as [number, number, number]
+}
