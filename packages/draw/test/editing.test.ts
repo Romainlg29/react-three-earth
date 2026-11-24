@@ -1,12 +1,14 @@
-import type { LineString, Point, Polygon } from 'geojson'
+import type { LineString, MultiPolygon, Point, Polygon, Position } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature } from '../src/editing.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
+import { prismMesh } from '../src/mesh.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
 import { SelectMode } from '../src/modes/SelectMode.js'
-import { createCircle, createSphere, shapeOf } from '../src/shapes.js'
+import { createCircle, createRectangle, createSphere } from '../src/shapes.js'
+import { featureCenter } from '../src/transform.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
 import type { DrawFeature, DrawPointerEvent } from '../src/types.js'
 
@@ -38,15 +40,23 @@ describe('editing helpers', () => {
     expect(removeVertex(triangle, { ring: 0, index: 0 })).toBeNull()
   })
 
-  it('drops the shape of an edited outline, and keeps it (moved) when the feature moves whole', () => {
+  it('moves a feature whole keeping its size in metres, and a mesh keeping its altitudes and faces', () => {
     const circle = { ...createCircle([6.6, 46.45], 1000, { steps: 16 }), id: 'c' } as DrawFeature
-    expect(shapeOf(moveVertex(circle, { ring: 0, index: 0 }, [6.7, 46.5]))).toBeNull()
     const moved = translateFeature(circle, [6.6, 46.45], [8, 60])
-    const shape = shapeOf(moved)!
-    expect(shape.center[0]).toBeCloseTo(8, 9)
-    expect(shape.center[1]).toBeCloseTo(60, 9)
+    const center = featureCenter(moved)
+    // The average of its vertices: within centimetres of where its center went.
+    expect(center[0]).toBeCloseTo(8, 5)
+    expect(center[1]).toBeCloseTo(60, 5)
     // Still 1 km round, though longitude degrees are much shorter at 60° N.
-    for (const position of (moved.geometry as Polygon).coordinates[0]!) expect(distanceMeters(shape.center, position)).toBeCloseTo(1000, 0)
+    for (const position of (moved.geometry as Polygon).coordinates[0]!) expect(distanceMeters(center, position)).toBeCloseTo(1000, 0)
+    const box = { ...createRectangle([6.6, 46.45], 100, 200, { baseHeightMeters: 400, heightMeters: 30 }), id: 'b' } as DrawFeature<MultiPolygon>
+    const carried = translateFeature(box, [6.6, 46.45], [7, 46]) as DrawFeature<MultiPolygon>
+    expect(carried.geometry.coordinates).toHaveLength(6)
+    expect(carried.geometry.coordinates.flat(2).map(position => position[2])).toEqual(box.geometry.coordinates.flat(2).map(position => position[2]))
+    // Its vertices are shared by its faces, so they are not edited one by one here.
+    expect(featureVertices(box)).toEqual([])
+    expect(moveVertex(box, { ring: 0, index: 0 }, [7, 46])).toBe(box)
+    expect(removeVertex(box, { ring: 0, index: 0 })).toBeNull()
   })
 
   it('hits solids where they are drawn: a slab at an altitude, and the walls of a box', () => {
@@ -56,10 +66,18 @@ describe('editing helpers', () => {
     const slab: DrawFeature = { ...square(), geometry: { type: 'Polygon', coordinates: [[[0, 0, 50_000], [1, 0, 50_000], [1, 1, 50_000], [0, 1, 50_000], [0, 0, 50_000]]] } }
     expect(hitFeature(slab, at(50, 0))).toBe(0)
     expect(hitFeature(slab, at(50, 90))).toBeNull() // its footprint on the ground is not where it is drawn
-    // A box 30 km tall: its front wall spans y 100 down to 70.
-    const box: DrawFeature = { ...square(), properties: { extrusionHeightMeters: 30_000 } }
+    // A position without an altitude stands at the lowest given, where it is drawn, not on the ground.
+    const partial: DrawFeature = { ...square(), geometry: { type: 'Polygon', coordinates: [[[0, 0, 50_000], [1, 0, 50_000], [1, 1], [0, 1, 50_000], [0, 0, 50_000]]] } }
+    expect(hitFeature(partial, at(95, 45))).toBe(0)
+    expect(hitFeature(partial, at(95, 95))).toBeNull()
+    // A box mesh 30 km tall: its front wall spans y 100 down to 70.
+    const box: DrawFeature = { ...square(), geometry: prismMesh(square().geometry.coordinates as Position[][], 0, 30_000) }
     expect(hitFeature(box, at(50, 105 - 30))).toBe(0)
     expect(hitFeature(box, at(50, -25))).toBe(0) // the top, 30 px above the far edge
+    expect(hitFeature(box, at(50, 50))).toBe(0)
+    expect(hitFeature(box, at(105, 50))).toBeCloseTo(5) // near its right edges
+    expect(hitFeature(box, at(150, 50))).toBeNull()
+    expect(hitFeature(box, at(50, 120))).toBeNull() // below its foot
   })
 
   it('moves vertices over the antimeridian without wrapping them to the other side', () => {
@@ -68,7 +86,7 @@ describe('editing helpers', () => {
     expect((insertVertex(crossing, { ring: 0, index: 1 }, [-179.9, 0]).geometry as LineString).coordinates[1]).toEqual([180.1, 0])
   })
 
-  it('hits points and lines within the tolerance, polygons inside, spheres within their radius', () => {
+  it('hits points and lines within the tolerance, polygons inside, sphere meshes inside their faces', () => {
     // Heights rise up the screen, 1 px per kilometre; positions without an altitude stand on terrain at 0 m.
     const project = (position: number[], above = 0) => ({ x: position[0]! * 100, y: position[1]! * 100 - ((position[2] ?? 0) + above) / 1000 })
     const at = (x: number, y: number) => ({ ground: [x / 100, y / 100] as [number, number], screen: { x, y }, tolerancePixels: 10, project })
@@ -76,7 +94,7 @@ describe('editing helpers', () => {
     expect(hitFeature(square(), at(105, 50))).toBeCloseTo(5)
     expect(hitFeature(square(), at(150, 50))).toBeNull()
     expect(hitFeature(line(), at(50, 8))).toBeCloseTo(8, 0) // the line is 100 to 300 m up: a fraction of a pixel
-    // A 20 km ball resting on the ground: its center is drawn 20 px up, its outline 20 px around it.
+    // A 20 km ball resting on the ground: its center is drawn 20 px up, its outline about 18 px around it.
     const sphere = { ...createSphere([0, 0], 20_000), id: 's' } as DrawFeature
     expect(hitFeature(sphere, at(0, -20))).toBe(0)
     expect(hitFeature(sphere, at(15, -20))).toBe(0)
@@ -247,24 +265,27 @@ describe('select mode', () => {
     expect(events.at(-1)).toBe('create square')
   })
 
-  it('moves spheres whole, with a gizmo of corners and a lift knob, and no vertex handles', () => {
+  it('moves sphere meshes whole, with a gizmo of corners, a turning knob and a lift knob, and no vertex handles', () => {
     const sphere = { ...createSphere([0.5, 0.5], 20_000), id: 'ball' } as DrawFeature
     const { context, store } = createContext([sphere])
     const mode = new SelectMode()
     mode.enter(context)
-    mode.click(pointer(52, 50))
+    // Drawn where it stands: its center 20 km up, 20 px above its foot.
+    mode.click(pointer(50, 30))
     expect(mode.selectedFeatureIds()).toEqual(['ball'])
     const content = { features: [], lines: [], handles: [] }
     mode.overlay(content)
-    expect(content.handles).toHaveLength(4 + 1) // scale corners and the lift knob: spheres neither turn nor stretch
-    // A second tap keeps the gizmo: a sphere has no vertices.
-    mode.click(pointer(52, 50))
+    // Scale corners, the turning knob and the lift knob: no height knob (no level top), no side handles (small on screen).
+    expect(content.handles).toHaveLength(4 + 1 + 1)
+    // A second tap keeps the gizmo: a mesh's vertices are not edited one by one.
+    mode.click(pointer(50, 30))
     expect(mode.editingVertices).toBe(false)
-    expect(mode.pointerDown(pointer(52, 50))).toBe(true)
-    mode.pointerMove(pointer(152, 50))
-    mode.pointerUp(pointer(152, 50))
-    expect((store.get('ball')!.geometry as Point).coordinates[0]).toBeCloseTo(1.5, 2)
-    expect(shapeOf(store.get('ball')!)?.center[0]).toBeCloseTo(1.5, 2)
+    expect(mode.pointerDown(pointer(50, 30))).toBe(true)
+    mode.pointerMove(pointer(150, 30))
+    mode.pointerUp(pointer(150, 30))
+    const moved = store.get('ball')!
+    expect(featureCenter(moved)[0]).toBeCloseTo(1.5, 2)
+    expect((moved.geometry as MultiPolygon).coordinates).toHaveLength((sphere.geometry as MultiPolygon).coordinates.length)
   })
 
   it('cancels a drag with pointerCancel (a second finger) without changing the feature', () => {
@@ -323,7 +344,7 @@ describe('select mode', () => {
     expect(mode.selectedFeatureIds()).toEqual(['square'])
   })
 
-  it('keeps the gizmo with editVertices: false, and edits the vertices of shapes, which become plain polygons', () => {
+  it('keeps the gizmo with editVertices: false, and edits the vertices of shapes, which are plain polygons', () => {
     const circle = { ...createCircle([0.5, 0.5], 20_000, { steps: 8 }), id: 'c' } as DrawFeature
     const { context, store } = createContext([circle])
     const locked = new SelectMode({ editVertices: false })
@@ -341,7 +362,7 @@ describe('select mode', () => {
     expect(mode.pointerDown(pointer(x, y))).toBe(true)
     mode.pointerMove(pointer(x + 30, y))
     mode.pointerUp(pointer(x + 30, y))
-    expect(shapeOf(store.get('c')!)).toBeNull()
+    expect((store.get('c')!.geometry as Polygon).coordinates[0]![0]![0]).toBeCloseTo(first[0]! + 0.3, 6)
   })
 
   it('draws, hits and drags the vertices of a feature in the air at their altitude, keeping it', () => {

@@ -1,16 +1,19 @@
 import type { Position } from 'geojson'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature, type VertexPath } from '../editing.js'
+import { hasAltitude, lowestAltitude, storedLines } from '../geometry.js'
+import { indexMesh, isMeshGeometry, meshSharpEdges } from '../mesh.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import { isSolidFeature } from '../render/SolidFeatures.js'
-import { destination, shapeOf } from '../shapes.js'
+import { destination } from '../shapes.js'
 import {
   baseAltitudeOf,
-  firstAltitudeOf,
+  extrudeFeature,
   liftFeature,
+  meshTopOf,
+  moveMeshTop,
   rotateFeature,
   scaleFeature,
-  setExtrusionHeight,
   stretchFeature,
   transformFrame,
   type TransformFrame,
@@ -25,7 +28,7 @@ export interface SelectModeOptions {
   moveFeatures?: boolean
   /**
    * A second tap on the selected line or polygon swaps its gizmo for vertex handles (drag a vertex, tap or drag a
-   * midpoint to add one); another tap swaps back. Default: true.
+   * midpoint to add one); another tap swaps back. Meshes keep their gizmo. Default: true.
    */
   editVertices?: boolean
   /** A knob beyond the gizmo's top edge turns the selected feature. Default: true. */
@@ -35,8 +38,9 @@ export interface SelectModeOptions {
   /** Handles in the middle of the gizmo's edges stretch the selected feature along one axis, the opposite edge fixed. Default: true. */
   stretch?: boolean
   /**
-   * A knob in the middle of a line or polygon extrudes it: drag it up to turn a flat shape into a solid (a rectangle
-   * into a box, a line into a wall), down to the ground to flatten it again. Default: true.
+   * A knob in the middle of a flat line or polygon extrudes it: drag it up to turn it into a mesh (a polygon into a
+   * prism, a line into a wall). On a mesh with a level top face (a prism, a box) the knob sits on top: drag it to move
+   * the top face up or down, never closer than 1 m to the rest. Default: true.
    */
   height?: boolean
   /**
@@ -101,7 +105,7 @@ const SMALL_GIZMO_KNOB_DIAMETERS = 3
 const SELECTED_STATE: DrawStyleState = Object.freeze({ selected: true, drawing: false })
 /** The vertical drags measure the vertical over a step about this many pixels of ground long. */
 const HEIGHT_STEP_PIXELS = 100
-/** A height drag ending below this many metres flattens the feature (removes its extrusion). */
+/** A height drag on a flat feature makes a mesh once it rises at least this many metres. */
 const MINIMUM_EXTRUSION_METERS = 1
 /** The lift knob is drawn this many pixels below the feature's base, on a stem, so it never covers the height knob. */
 const LIFT_OFFSET_PIXELS = 24
@@ -114,15 +118,15 @@ const STATUS_VERTICES_UNDO: DrawModeStatus = Object.freeze({ ...IDLE_STATUS, can
 
 /**
  * Selects and edits finished features. A tap selects the feature under it (points and lines before the polygons under
- * them); a tap on the empty map clears the selection. A selected line, polygon or sphere shows a gizmo:
+ * them); a tap on the empty map clears the selection. A selected line, polygon or mesh shows a gizmo:
  *
  * - drag the feature to move it (shapes keep their size in metres);
- * - drag a corner of the box around it to scale it around its center;
- * - drag the middle of an edge to stretch it along that axis, the opposite edge fixed (a circle becomes an ellipse);
- * - drag the knob beyond its top edge to turn it (Shift snaps to 15°);
- * - drag the knob in the middle of a flat line or polygon up to extrude it into a solid (a rectangle into a box, a
- *   circle into a cylinder, a line into a wall); on a solid it sits on top: drag it up or down to change the height,
- *   down to the ground to flatten it again;
+ * - drag a corner of the box around it to scale it around its center (a mesh in 3D, from its base);
+ * - drag the middle of an edge to stretch it along that axis, the opposite edge fixed;
+ * - drag the knob beyond its top edge to turn it around the vertical through its center (Shift snaps to 15°);
+ * - drag the knob in the middle of a flat line or polygon up to extrude it into a mesh (a rectangle into a box, a
+ *   circle into a cylinder, a line into a wall); on a mesh with a level top face it sits on top: drag it up or down to
+ *   move that face;
  * - drag the knob on a stem under its base up or down to move it vertically: its positions get altitudes (those on the
  *   terrain start from its height under each, so the shape keeps the relief's offsets).
  *
@@ -131,8 +135,7 @@ const STATUS_VERTICES_UNDO: DrawModeStatus = Object.freeze({ ...IDLE_STATUS, can
  * vertex there. Another tap (or Escape) goes back to the gizmo; selecting another feature starts with the gizmo again.
  * Points have no gizmo: they move whole.
  *
- * Shapes keep their measurements in `properties.shape`: a scaled circle is a circle with a new radius, a turned
- * rectangle has a new `rotationDegrees`; an edited outline is a plain polygon. A press anywhere else still pans the map,
+ * Every edit writes new positions: nothing else describes a shape. A press anywhere else still pans the map,
  * so one finger pans between edits. Each edit fires `update` (`delete` for deletions) once, on release; `undo()` takes
  * edits back.
  */
@@ -488,11 +491,21 @@ export class SelectMode extends DrawMode {
       const feature = drag?.feature ?? stored
       const style = context.style(feature, SELECTED_STATE)
       if (live.has(id)) content.features.push({ feature, style })
-      else if (feature.geometry.type !== 'Point') {
-        // A solid: its footprint, over the map.
-        for (const ring of feature.geometry.type === 'Polygon' ? feature.geometry.coordinates : [feature.geometry.coordinates]) {
-          const atAltitude = ring.every(position => position.length > 2 && Number.isFinite(position[2]))
-          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), heightsMeters: atAltitude ? ring.map(position => position[2]!) : undefined, color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
+      else if (isMeshGeometry(feature.geometry)) {
+        // A mesh: its sharp edges, over the map.
+        const { vertices, edges } = this.outlineOf(feature)
+        for (const [a, b] of edges) {
+          const from = vertices[a]!
+          const to = vertices[b]!
+          content.lines.push({ positions: [[from[0]!, from[1]!], [to[0]!, to[1]!]], heightsMeters: [from[2]!, to[2]!], color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
+        }
+      } else if (feature.geometry.type !== 'Point') {
+        // Lines and flat polygons at their altitudes: their rings, over the map, where they are drawn (positions without
+        // an altitude at the lowest, as `isSolidFeature` says).
+        const lowest = lowestAltitude(feature.geometry)
+        for (const ring of storedLines(feature.geometry)) {
+          const heightsMeters = lowest === null ? undefined : ring.map(position => (hasAltitude(position) ? position[2]! : lowest))
+          content.lines.push({ positions: ring.map(position => [position[0]!, position[1]!]), heightsMeters, color: style.vertexOutlineColor, widthPixels: 2, opacity: 1 })
         }
       }
       // Moving whole: the handles wait for the release.
@@ -536,9 +549,23 @@ export class SelectMode extends DrawMode {
 
   // ---- Internals ----
 
-  /** Whether a feature can show vertex handles: lines and polygons, shapes too (an edited one is a plain polygon). */
+  /** Whether a feature can show vertex handles: lines and polygons (not points, nor meshes, whose faces share vertices). */
   protected canEditVertices(feature: DrawFeature): boolean {
-    return this.editVertices && feature.geometry.type !== 'Point'
+    return this.editVertices && (feature.geometry.type === 'LineString' || feature.geometry.type === 'Polygon')
+  }
+
+  /** Outlines of mesh versions: their vertices and sharp edges, computed once. */
+  protected readonly outlines = new WeakMap<DrawFeature, { vertices: Position[]; edges: Array<[number, number]> }>()
+
+  /** The vertices and sharp edges of a mesh feature version (see `meshSharpEdges`). */
+  protected outlineOf(feature: DrawFeature): { vertices: Position[]; edges: Array<[number, number]> } {
+    let outline = this.outlines.get(feature)
+    if (outline === undefined) {
+      const mesh = feature.geometry.type === 'MultiPolygon' ? indexMesh(feature.geometry) : { vertices: [], faces: [] }
+      outline = { vertices: mesh.vertices, edges: meshSharpEdges(mesh) }
+      this.outlines.set(feature, outline)
+    }
+    return outline
   }
 
   /** A selected line or polygon shows vertex handles while the vertex editing is on. */
@@ -546,10 +573,10 @@ export class SelectMode extends DrawMode {
     return this.vertexEditing && this.canEditVertices(feature)
   }
 
-  /** A selected line, polygon or sphere shows the gizmo, unless it shows vertex handles. Points move whole. */
+  /** A selected line, polygon or mesh shows the gizmo, unless it shows vertex handles. Points move whole. */
   protected showsGizmo(feature: DrawFeature): boolean {
     if (this.showsVertexHandles(feature)) return false
-    return feature.geometry.type !== 'Point' || shapeOf(feature)?.type === 'sphere'
+    return feature.geometry.type !== 'Point'
   }
 
   /** Records what restores an edit, then makes it. */
@@ -594,8 +621,8 @@ export class SelectMode extends DrawMode {
     for (const feature of context.store.values()) {
       const distance = hitFeature(feature, input)
       if (distance === null) continue
-      // 0: points and lines, 1: polygons containing the tap, 2: polygons whose outline is near it.
-      const rank = feature.geometry.type !== 'Polygon' ? 0 : distance === 0 ? 1 : 2
+      // 0: points and lines, 1: polygons and meshes containing the tap, 2: those whose outline is near it.
+      const rank = feature.geometry.type === 'Point' || feature.geometry.type === 'LineString' ? 0 : distance === 0 ? 1 : 2
       const better = best === null || rank < best.rank || (rank === best.rank && (rank === 1 ? true : distance <= best.distance))
       if (better) best = { feature, rank, distance }
     }
@@ -723,8 +750,8 @@ export class SelectMode extends DrawMode {
     const small = this.gizmoIsSmall(feature, frame, style, 0)
     const knob = { radiusPixels: style.vertexRadiusPixels + 1, color: style.vertexColor, outlineColor: style.vertexOutlineColor, outlineWidthPixels: style.vertexOutlineWidthPixels }
     const inverted = { ...knob, color: style.vertexOutlineColor, outlineColor: style.vertexColor }
-    // A feature at an altitude has its gizmo there; one on the ground, on the terrain.
-    const altitude = firstAltitudeOf(feature) ?? undefined
+    // A feature at an altitude has its gizmo there (a mesh's at its base); one on the ground, on the terrain.
+    const altitude = frame.baseHeightMeters ?? undefined
     if ((this.scale || this.stretch) && frame.corners.length === 4) {
       const corners = frame.corners
       content.lines.push({ positions: [corners[0]!, corners[1]!, corners[2]!, corners[3]!, corners[0]!], heightsMeters: altitude === undefined ? undefined : [altitude, altitude, altitude, altitude, altitude], color: style.vertexOutlineColor, widthPixels: 1.5, opacity: 0.8 })
@@ -750,31 +777,37 @@ export class SelectMode extends DrawMode {
   }
 
   /**
-   * The height knob of a line or polygon: its base and its top above the ellipsoid (the same for a flat feature, whose
-   * knob sits in its middle on the ground). Null for points and spheres.
+   * The height knob: on a flat line, polygon or multipolygon, in its middle at its altitude or on the ground (base and
+   * top the same); on a mesh with a level top face, on that face over the mesh's base. Null for points and other meshes.
    */
   protected heightKnob(feature: DrawFeature, frame: TransformFrame, fallbackHeightMeters: number): { baseMeters: number; topMeters: number } | null {
     const context = this.context
-    if (!this.height || context === null || feature.geometry.type === 'Point') return null
-    const baseMeters = baseAltitudeOf(feature) ?? context.heights.heightAt(frame.center[0], frame.center[1], fallbackHeightMeters)
-    return { baseMeters, topMeters: baseMeters + frame.extrusionHeightMeters }
+    if (!this.height || context === null) return null
+    const geometry = feature.geometry
+    if (geometry.type === 'Point') return null
+    if (isMeshGeometry(geometry)) {
+      const top = meshTopOf(feature)
+      return top === null || frame.baseHeightMeters === null ? null : { baseMeters: frame.baseHeightMeters, topMeters: top.topMeters }
+    }
+    const baseMeters = frame.baseHeightMeters ?? context.heights.heightAt(frame.center[0], frame.center[1], fallbackHeightMeters)
+    return { baseMeters, topMeters: baseMeters }
   }
 
   /**
-   * The lift knob of a line, polygon or sphere: the terrain's height under its center and the altitude of its base (a
-   * sphere's bottom), where the knob's stem starts. Null for points.
+   * The lift knob of a line, polygon or mesh: the terrain's height under its center and the altitude of its base (a
+   * mesh's lowest), where the knob's stem starts. Null for points.
    */
   protected liftKnob(feature: DrawFeature, frame: TransformFrame, fallbackHeightMeters: number): { groundMeters: number; baseMeters: number } | null {
     const context = this.context
-    if (!this.lift || context === null || (feature.geometry.type === 'Point' && shapeOf(feature)?.type !== 'sphere')) return null
+    if (!this.lift || context === null || feature.geometry.type === 'Point') return null
     const groundMeters = context.heights.heightAt(frame.center[0], frame.center[1], fallbackHeightMeters)
-    return { groundMeters, baseMeters: baseAltitudeOf(feature) ?? groundMeters }
+    return { groundMeters, baseMeters: frame.baseHeightMeters ?? groundMeters }
   }
 
-  /** Screen pixels of a gizmo position: at the feature's altitude, or on the terrain. */
+  /** Screen pixels of a gizmo position: at the feature's base altitude, or on the terrain. */
   protected gizmoOnScreen(feature: DrawFeature, position: LongitudeLatitude, fallbackHeightMeters: number): { x: number; y: number } | null {
     const context = this.context!
-    const altitude = firstAltitudeOf(feature)
+    const altitude = this.frameOf(feature).baseHeightMeters
     return altitude === null ? context.project(position, fallbackHeightMeters) : context.projectAtHeight(position, altitude)
   }
 
@@ -876,11 +909,23 @@ export class SelectMode extends DrawMode {
       if (top === null) return null
       const rise = this.verticalDrag(center, top.baseMeters, top.topMeters, press)
       if (rise === null) return null
-      const startExtrusion = frame.extrusionHeightMeters
+      // A mesh: its top face moves.
+      if (isMeshGeometry(feature.geometry)) return event => moveMeshTop(feature, rise(event))
+      // A flat feature: a mesh standing on its altitudes or on the terrain under each vertex, sampled once.
+      const heights = context.heights
+      const ground = new Map<string, number>()
+      const groundAt = (longitude: number, latitude: number) => {
+        const key = `${longitude},${latitude}`
+        let height = ground.get(key)
+        if (height === undefined) {
+          height = heights.heightAt(longitude, latitude, top.baseMeters, { immediate: true })
+          ground.set(key, height)
+        }
+        return height
+      }
       return event => {
-        const height = startExtrusion + rise(event)
-        // Down to the ground: flat again.
-        return setExtrusionHeight(feature, height < MINIMUM_EXTRUSION_METERS ? 0 : height)
+        const height = rise(event)
+        return height < MINIMUM_EXTRUSION_METERS ? feature : extrudeFeature(feature, height, groundAt)
       }
     }
     const lift = this.liftKnob(feature, frame, fallback)

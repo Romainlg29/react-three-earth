@@ -1,37 +1,28 @@
-import type { Point, Polygon, Position } from 'geojson'
+import type { MultiPolygon, Polygon, Position } from 'geojson'
 
 import { closeRing, EARTH_RADIUS_METERS } from './geometry.js'
-import type { DrawFeature, LongitudeLatitude } from './types.js'
+import { prismMesh, sphereMesh, type SphereMeshOptions } from './mesh.js'
+import type { DrawFeature, GroundHeight, LongitudeLatitude } from './types.js'
 
 const DEGREES = Math.PI / 180
 
-/**
- * What a shape was made from, kept in `feature.properties.shape` so a shape can be rebuilt (resized, edited) from its
- * measurements rather than from its outline. Lengths are metres on the ground, angles degrees clockwise from north.
- */
-export type ShapeDescription =
-  | { type: 'circle'; center: LongitudeLatitude; radiusMeters: number }
-  /**
-   * `semiMajorAxisMeters` is the semi-axis along `rotationDegrees` and `semiMinorAxisMeters` the one across it; either
-   * may be the longer (a circle stretched across has the longer one across).
-   */
-  | { type: 'ellipse'; center: LongitudeLatitude; semiMajorAxisMeters: number; semiMinorAxisMeters: number; rotationDegrees: number }
-  | { type: 'rectangle'; center: LongitudeLatitude; widthMeters: number; lengthMeters: number; rotationDegrees: number }
-  | { type: 'regular-polygon'; center: LongitudeLatitude; radiusMeters: number; sides: number; rotationDegrees: number }
-  | { type: 'sphere'; center: LongitudeLatitude; radiusMeters: number }
-
 /** A feature made by a shape builder, ready for `draw.addFeatures`: its id is optional. */
-export type ShapeFeature<G extends Polygon | Point = Polygon> = Omit<DrawFeature<G>, 'id'> & { id?: string }
+export type ShapeFeature<G extends Polygon | MultiPolygon = Polygon | MultiPolygon> = Omit<DrawFeature<G>, 'id'> & { id?: string }
 
 /** Options shared by the shape builders. */
 export interface ShapeOptions {
   /**
-   * Height of the shape's base above the WGS84 ellipsoid, in metres: written as the third coordinate of every position
-   * (GeoJSON altitude). Default: none, so the shape sits on the terrain.
+   * Altitude of the shape's base above the WGS84 ellipsoid, in metres: one for every vertex, or the terrain's height
+   * under each (a function of longitude and latitude). Without `heightMeters` it is written as the third coordinate of
+   * every position, a flat polygon at that altitude. Default: none, a flat polygon draped on the terrain (with
+   * `heightMeters`: 0).
    */
-  baseHeightMeters?: number
-  /** Extrudes the shape into a solid this many metres tall (a circle into a cylinder, a rectangle into a box). Default: none. */
-  extrusionHeightMeters?: number
+  baseHeightMeters?: number | GroundHeight
+  /**
+   * Makes the shape a closed prism mesh (a circle a cylinder, a rectangle a box): its bottom at the base, its level top
+   * this many metres above the highest base vertex. Default: none, a flat polygon.
+   */
+  heightMeters?: number
   /** Other properties of the feature. */
   properties?: Record<string, unknown>
   /** The feature's id. Default: none (`draw.addFeatures` gives one). */
@@ -80,14 +71,26 @@ function rotate(x: number, y: number, rotationDegrees: number): [east: number, n
   return [x * cos + y * sin, -x * sin + y * cos]
 }
 
-function withHeight(ring: LongitudeLatitude[], baseHeightMeters: number | undefined): Position[] {
-  return baseHeightMeters === undefined ? ring : ring.map(([longitude, latitude]) => [longitude, latitude, baseHeightMeters])
+/** The altitude `baseHeightMeters` gives a position (0 without one). */
+function baseHeightOf(baseHeightMeters: number | GroundHeight | undefined): (position: Position) => number {
+  if (baseHeightMeters === undefined) return () => 0
+  if (typeof baseHeightMeters === 'number') return () => baseHeightMeters
+  return position => baseHeightMeters(position[0]!, position[1]!)
 }
 
-function polygonFeature(ring: LongitudeLatitude[], shape: ShapeDescription, options: ShapeOptions): ShapeFeature {
-  const properties: Record<string, unknown> = { ...options.properties, shape }
-  if (options.extrusionHeightMeters !== undefined) properties.extrusionHeightMeters = options.extrusionHeightMeters
-  const feature = { type: 'Feature' as const, properties, geometry: { type: 'Polygon' as const, coordinates: [withHeight(closeRing(ring), options.baseHeightMeters)] } }
+/**
+ * The feature of a ring: a flat polygon (draped, or at the base altitude when one is given) or, with `heightMeters`, a
+ * prism mesh.
+ */
+function polygonFeature(ring: LongitudeLatitude[], options: ShapeOptions): ShapeFeature {
+  const properties: Record<string, unknown> = { ...options.properties }
+  let geometry: Polygon | MultiPolygon
+  if (options.heightMeters !== undefined) geometry = prismMesh([ring], baseHeightOf(options.baseHeightMeters), options.heightMeters)
+  else if (options.baseHeightMeters !== undefined) {
+    const base = baseHeightOf(options.baseHeightMeters)
+    geometry = { type: 'Polygon', coordinates: [closeRing(ring).map(position => [position[0], position[1], base(position)])] }
+  } else geometry = { type: 'Polygon', coordinates: [closeRing(ring)] }
+  const feature = { type: 'Feature' as const, properties, geometry }
   return options.id === undefined ? feature : { ...feature, id: options.id }
 }
 
@@ -103,11 +106,11 @@ export function ellipseRing(center: LongitudeLatitude, semiMajorAxisMeters: numb
   return ring
 }
 
-/** A circle on the ground, as a polygon with `steps` vertices. */
+/** A circle on the ground, as a polygon with `steps` vertices; with `heightMeters`, a cylinder mesh. */
 export function createCircle(center: LongitudeLatitude, radiusMeters: number, options: RoundShapeOptions = {}): ShapeFeature {
   requirePositive('createCircle', 'radiusMeters', radiusMeters)
   const ring = ellipseRing(center, radiusMeters, radiusMeters, 0, options.steps ?? 64)
-  return polygonFeature(ring, { type: 'circle', center: [center[0], center[1]], radiusMeters }, options)
+  return polygonFeature(ring, options)
 }
 
 /**
@@ -123,10 +126,10 @@ export function createEllipse(
   requirePositive('createEllipse', 'semiMajorAxisMeters', semiMajorAxisMeters)
   requirePositive('createEllipse', 'semiMinorAxisMeters', semiMinorAxisMeters)
   const ring = ellipseRing(center, semiMajorAxisMeters, semiMinorAxisMeters, rotationDegrees, options.steps ?? 64)
-  return polygonFeature(ring, { type: 'ellipse', center: [center[0], center[1]], semiMajorAxisMeters, semiMinorAxisMeters, rotationDegrees }, options)
+  return polygonFeature(ring, options)
 }
 
-/** A rectangle on the ground, `widthMeters` across and `lengthMeters` along `rotationDegrees` (0: north). */
+/** A rectangle on the ground, `widthMeters` across and `lengthMeters` along `rotationDegrees` (0: north); with `heightMeters`, a box mesh. */
 export function createRectangle(
   center: LongitudeLatitude,
   widthMeters: number,
@@ -140,7 +143,7 @@ export function createRectangle(
   // Counter-clockwise from the south-west corner.
   const corners: Array<[number, number]> = [[-halfWidth, -halfLength], [halfWidth, -halfLength], [halfWidth, halfLength], [-halfWidth, halfLength]]
   const ring = corners.map(([x, y]) => offset(center, ...rotate(x, y, rotationDegrees)))
-  return polygonFeature(ring, { type: 'rectangle', center: [center[0], center[1]], widthMeters, lengthMeters, rotationDegrees }, options)
+  return polygonFeature(ring, options)
 }
 
 /** A regular polygon (triangle, hexagon…) whose vertices are `radiusMeters` from the center, the first towards `rotationDegrees`. */
@@ -155,31 +158,28 @@ export function createRegularPolygon(
   const ring: LongitudeLatitude[] = []
   // Counter-clockwise: bearings decrease.
   for (let side = 0; side < sides; side++) ring.push(destination(center, radiusMeters, rotationDegrees - (side / sides) * 360))
-  return polygonFeature(ring, { type: 'regular-polygon', center: [center[0], center[1]], radiusMeters, sides, rotationDegrees }, options)
+  return polygonFeature(ring, options)
 }
 
-/**
- * A sphere: a point feature drawn as a 3D ball of `radiusMeters`. Its center is `baseHeightMeters` above the ellipsoid
- * when given; without it the ball rests on the terrain.
- */
-export function createSphere(center: LongitudeLatitude, radiusMeters: number, options: Omit<ShapeOptions, 'extrusionHeightMeters'> = {}): ShapeFeature<Point> {
+/** Options of `createSphere`. */
+export interface SphereOptions extends SphereMeshOptions {
+  /**
+   * Altitude of the sphere's lowest point above the WGS84 ellipsoid, in metres, or the terrain's height under its center
+   * (a function of longitude and latitude): it rests there. Default: 0.
+   */
+  baseHeightMeters?: number | GroundHeight
+  /** Other properties of the feature. */
+  properties?: Record<string, unknown>
+  /** The feature's id. Default: none (`draw.addFeatures` gives one). */
+  id?: string
+}
+
+/** A sphere of `radiusMeters` resting on its base altitude: a closed UV sphere mesh (see `sphereMesh`). */
+export function createSphere(center: LongitudeLatitude, radiusMeters: number, { baseHeightMeters, properties, id, ...mesh }: SphereOptions = {}): ShapeFeature<MultiPolygon> {
   requirePositive('createSphere', 'radiusMeters', radiusMeters)
-  const shape: ShapeDescription = { type: 'sphere', center: [center[0], center[1]], radiusMeters }
-  const coordinates: Position = options.baseHeightMeters === undefined ? [center[0], center[1]] : [center[0], center[1], options.baseHeightMeters]
-  const feature = { type: 'Feature' as const, properties: { ...options.properties, shape }, geometry: { type: 'Point' as const, coordinates } }
-  return options.id === undefined ? feature : { ...feature, id: options.id }
-}
-
-/** The shape a feature was made from, or null for a plain feature. */
-export function shapeOf(feature: Pick<DrawFeature, 'properties'>): ShapeDescription | null {
-  const shape = feature.properties?.shape as ShapeDescription | undefined
-  return shape !== undefined && shape !== null && typeof shape === 'object' && typeof shape.type === 'string' ? shape : null
-}
-
-/** A feature's extrusion height (`properties.extrusionHeightMeters`), or 0. */
-export function extrusionHeightOf(feature: Pick<DrawFeature, 'properties'>): number {
-  const height = feature.properties?.extrusionHeightMeters
-  return typeof height === 'number' && Number.isFinite(height) && height > 0 ? height : 0
+  const base = baseHeightOf(baseHeightMeters)(center)
+  const feature = { type: 'Feature' as const, properties: { ...properties }, geometry: sphereMesh(center, radiusMeters, base + radiusMeters, mesh) }
+  return id === undefined ? feature : { ...feature, id }
 }
 
 function requirePositive(name: string, parameter: string, value: number): void {

@@ -1,14 +1,17 @@
-import type { Point, Polygon } from 'geojson'
-import { Object3D } from 'three'
+import type { MultiPolygon, Polygon, Position } from 'geojson'
+import { Object3D, type Mesh } from 'three'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
+import { indexMesh, isClosedMesh, isMeshFeature, meshAltitudeRange, meshEdges, meshFaces, meshFromIndexed, meshSharpEdges, meshTop, meshVolume, prismMesh, setMeshTop, sphereMesh, wallMesh } from '../src/mesh.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
-import { PolygonMode } from '../src/modes/PathModes.js'
+import { LineStringMode, PolygonMode } from '../src/modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from '../src/modes/ShapeModes.js'
+import { HeightSampler, type OverlayContent } from '../src/render/LiveOverlay.js'
 import { buildSolidGeometry, isSolidFeature, LocalFrame, refineTriangles, SolidFeatures } from '../src/render/SolidFeatures.js'
-import { bearingDegrees, createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, destination, shapeOf } from '../src/shapes.js'
+import { extrudeFeature, liftFeature, placeOnTerrain } from '../src/transform.js'
+import { bearingDegrees, createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, destination } from '../src/shapes.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
 import type { DrawFeature, DrawPointerEvent } from '../src/types.js'
 
@@ -21,6 +24,17 @@ function signedArea(ring: number[][]): number {
   return area
 }
 
+/** Expects a mesh closed, wound outwards (counter-clockwise seen from outside), every ring closed and every position with an altitude. */
+function expectClosedOutwards(geometry: MultiPolygon): void {
+  for (const face of geometry.coordinates) for (const ring of face) {
+    expect(ring[0]).toEqual(ring[ring.length - 1])
+    for (const position of ring) expect(position).toHaveLength(3)
+  }
+  const mesh = indexMesh(geometry)
+  expect(isClosedMesh(mesh)).toBe(true)
+  expect(meshVolume(mesh)).toBeGreaterThan(0)
+}
+
 describe('shape builders', () => {
   it('moves along the ground by distance and bearing, and back', () => {
     const east = destination(CENTER, 10_000, 90)
@@ -29,38 +43,138 @@ describe('shape builders', () => {
     expect(destination(CENTER, 5000, 0)[0]).toBeCloseTo(CENTER[0], 9)
   })
 
-  it('builds circles whose vertices are the radius from the center, counter-clockwise and closed, with their shape', () => {
-    const circle = createCircle(CENTER, 2500, { steps: 32, extrusionHeightMeters: 300, properties: { name: 'tank' } })
-    const ring = circle.geometry.coordinates[0]!
+  it('builds flat circles whose vertices are the radius from the center, counter-clockwise and closed, with plain properties', () => {
+    const circle = createCircle(CENTER, 2500, { steps: 32, properties: { name: 'tank' } })
+    const ring = (circle.geometry as Polygon).coordinates[0]!
+    expect(circle.geometry.type).toBe('Polygon')
     expect(ring).toHaveLength(33)
     expect(ring[0]).toEqual(ring[32])
     for (const position of ring) expect(distanceMeters(CENTER, position)).toBeCloseTo(2500, 3)
     expect(signedArea(ring)).toBeGreaterThan(0)
-    expect(circle.properties).toEqual({ name: 'tank', shape: { type: 'circle', center: CENTER, radiusMeters: 2500 }, extrusionHeightMeters: 300 })
+    expect(circle.properties).toEqual({ name: 'tank' })
   })
 
   it('builds rectangles, ellipses and regular polygons in metres, turned clockwise from north', () => {
     const rectangle = createRectangle(CENTER, 1000, 4000, { rotationDegrees: 90 })
-    const corners = rectangle.geometry.coordinates[0]!
+    const corners = (rectangle.geometry as Polygon).coordinates[0]!
     // Turned a quarter: 4000 m east-west, 1000 m north-south.
     expect(distanceMeters(corners[0]!, corners[1]!)).toBeCloseTo(1000, 0)
     expect(distanceMeters(corners[1]!, corners[2]!)).toBeCloseTo(4000, 0)
     expect(Math.abs(corners[1]![1]! - corners[2]![1]!)).toBeLessThan(1e-3)
     expect(signedArea(corners)).toBeGreaterThan(0)
     const ellipse = createEllipse(CENTER, 3000, 1000, { steps: 4 })
-    expect(distanceMeters(CENTER, ellipse.geometry.coordinates[0]![1]!)).toBeCloseTo(3000, 0) // the major axis points north
+    expect(distanceMeters(CENTER, (ellipse.geometry as Polygon).coordinates[0]![1]!)).toBeCloseTo(3000, 0) // the major axis points north
     const hexagon = createRegularPolygon(CENTER, 500, 6)
-    expect(hexagon.geometry.coordinates[0]).toHaveLength(7)
+    expect((hexagon.geometry as Polygon).coordinates[0]).toHaveLength(7)
     expect(() => createRegularPolygon(CENTER, 500, 2)).toThrow(/3 or more/)
     expect(() => createCircle(CENTER, 0)).toThrow(/positive number of metres/)
   })
 
-  it('writes the base height as the third coordinate, and keeps the shape', () => {
+  it('writes a base height as the third coordinate of a flat polygon, from a number or the terrain under each vertex', () => {
     const floating = createRectangle(CENTER, 100, 100, { baseHeightMeters: 1200 })
-    expect(floating.geometry.coordinates[0]!.every(position => position[2] === 1200)).toBe(true)
-    const sphere = createSphere(CENTER, 80, { id: 'ball' })
-    expect(sphere).toMatchObject({ id: 'ball', geometry: { type: 'Point', coordinates: CENTER } })
-    expect(shapeOf(sphere)).toEqual({ type: 'sphere', center: CENTER, radiusMeters: 80 })
+    expect((floating.geometry as Polygon).coordinates[0]!.every(position => position[2] === 1200)).toBe(true)
+    const relief = (longitude: number) => (longitude - CENTER[0]) * 10_000
+    const draped = createRectangle(CENTER, 1000, 1000, { baseHeightMeters: relief })
+    for (const position of (draped.geometry as Polygon).coordinates[0]!) expect(position[2]).toBeCloseTo(relief(position[0]!), 9)
+  })
+
+  it('makes a box mesh with a height: six faces, closed, wound outwards, its top level above the highest base vertex', () => {
+    const relief = (longitude: number) => 400 + (longitude - CENTER[0]) * 10_000
+    const box = createRectangle(CENTER, 1000, 2000, { rotationDegrees: 30, baseHeightMeters: relief, heightMeters: 300, id: 'box', properties: { name: 'hall' } })
+    expect(box).toMatchObject({ id: 'box', properties: { name: 'hall' }, geometry: { type: 'MultiPolygon' } })
+    expect(box.properties).not.toHaveProperty('shape')
+    expect(box.properties).not.toHaveProperty('extrusionHeightMeters')
+    const geometry = box.geometry as MultiPolygon
+    expect(geometry.coordinates).toHaveLength(6)
+    expectClosedOutwards(geometry)
+    const mesh = indexMesh(geometry)
+    expect(mesh.vertices).toHaveLength(8)
+    expect(meshEdges(mesh)).toHaveLength(12)
+    // The top first, counter-clockwise from above; the bottom clockwise from above (facing down), on the terrain.
+    const [top, bottom] = geometry.coordinates
+    expect(signedArea(top![0]!)).toBeGreaterThan(0)
+    expect(signedArea(bottom![0]!)).toBeLessThan(0)
+    for (const position of bottom![0]!) expect(position[2]).toBeCloseTo(relief(position[0]!), 9)
+    const highestBase = Math.max(...bottom![0]!.map(position => position[2]!))
+    for (const position of top![0]!) expect(position[2]).toBeCloseTo(highestBase + 300, 9)
+    expect(isMeshFeature(box)).toBe(true)
+    expect(meshTop(geometry)).toEqual({ topMeters: highestBase + 300, belowMeters: highestBase })
+    // Measured from its vertices: 1000 m by 2000 m.
+    const corners = top![0]!
+    expect(distanceMeters(corners[0]!, corners[1]!)).toBeCloseTo(1000, 0)
+    expect(distanceMeters(corners[1]!, corners[2]!)).toBeCloseTo(2000, 0)
+    // Without a base, the base is 0.
+    expect(Math.min(...(createCircle(CENTER, 100, { heightMeters: 10 }).geometry as MultiPolygon).coordinates.flat(2).map(position => position[2]!))).toBe(0)
+  })
+
+  it('makes a resting sphere mesh: closed, wound outwards, its vertices the radius from its center', () => {
+    const sphere = createSphere(CENTER, 80, { id: 'ball', baseHeightMeters: 500, segments: 16, rings: 8 })
+    expect(sphere).toMatchObject({ id: 'ball', geometry: { type: 'MultiPolygon' } })
+    const geometry = sphere.geometry
+    expect(geometry.coordinates).toHaveLength(16 * 8)
+    expectClosedOutwards(geometry)
+    const mesh = indexMesh(geometry)
+    expect(mesh.vertices).toHaveLength(2 + 16 * 7)
+    const frame = new LocalFrame(CENTER[0], CENTER[1], 580)
+    for (const position of mesh.vertices) expect(Math.hypot(...frame.toLocal(position[0]!, position[1]!, position[2]!))).toBeCloseTo(80, 6)
+    const altitudes = mesh.vertices.map(position => position[2]!)
+    expect(Math.min(...altitudes)).toBeCloseTo(500, 6)
+    expect(Math.max(...altitudes)).toBeCloseTo(660, 6)
+    // Smooth all round: no level top face, no sharp edges.
+    expect(meshTop(geometry)).toBeNull()
+    expect(meshSharpEdges(mesh, 30)).toHaveLength(0)
+    expect(() => sphereMesh(CENTER, 10, 0, { segments: 2 })).toThrow(/at least 3 segments/)
+  })
+})
+
+describe('meshes', () => {
+  const square: Position[] = [[0, 0], [0.01, 0], [0.01, 0.01], [0, 0.01]]
+
+  it('builds prisms facing outwards whatever the winding, with holes as inner walls', () => {
+    for (const ring of [square, [...square].reverse()]) {
+      const prism = prismMesh([ring], 100, 50)
+      expect(prism.coordinates).toHaveLength(2 + 4)
+      expectClosedOutwards(prism)
+    }
+    const hole: Position[] = [[0.004, 0.004], [0.006, 0.004], [0.006, 0.006], [0.004, 0.006]]
+    const ringed = prismMesh([square, hole], 0, 20)
+    // The top and bottom each with their hole, four outer and four inner walls.
+    expect(ringed.coordinates).toHaveLength(2 + 4 + 4)
+    expect(ringed.coordinates[0]).toHaveLength(2)
+    expectClosedOutwards(ringed)
+    expect(() => prismMesh([square], 0, 0)).toThrow(/positive number of metres/)
+  })
+
+  it('builds walls along a line, their top following the base', () => {
+    const wall = wallMesh([[0, 0], [0.01, 0], [0.01, 0.01]], position => 100 + position[0]! * 1000, 5)
+    expect(wall.coordinates).toHaveLength(2)
+    const mesh = indexMesh(wall)
+    expect(mesh.vertices).toHaveLength(6)
+    expect(isClosedMesh(mesh)).toBe(false)
+    expect(wall.coordinates[0]![0]!.map(position => position[2])).toEqual([100, 110, 115, 105, 100])
+    expect(meshTop(wall)).toBeNull()
+  })
+
+  it('shares vertices between faces by equal coordinates, and rebuilds the multipolygon from them', () => {
+    const prism = prismMesh([square], 0, 10)
+    const mesh = indexMesh(prism)
+    expect(mesh.faces.map(face => face[0]!.length)).toEqual([4, 4, 4, 4, 4, 4])
+    expect(meshFromIndexed(mesh)).toEqual(prism)
+    expect(meshFaces(prism)[0]![0]).toHaveLength(4)
+    // A box's twelve edges are sharp; a mesh with a face turned inside out is no longer consistently closed.
+    expect(meshSharpEdges(mesh)).toHaveLength(12)
+    const flipped = { ...mesh, faces: mesh.faces.map((face, index) => (index === 0 ? face.map(ring => [...ring].reverse()) : face)) }
+    expect(isClosedMesh(flipped)).toBe(false)
+  })
+
+  it('moves the top face of a prism, never closer than the gap to the rest', () => {
+    const prism = prismMesh([square], position => (position[0] === 0 ? 100 : 120), 30)
+    expect(meshTop(prism)).toEqual({ topMeters: 150, belowMeters: 120 })
+    const raised = setMeshTop(prism, 400)
+    expect(meshTop(raised)!.topMeters).toBe(400)
+    expect(raised.coordinates[1]![0]!.map(position => position[2])).toEqual(prism.coordinates[1]![0]!.map(position => position[2]))
+    expect(meshTop(setMeshTop(prism, 0))!.topMeters).toBe(121)
+    expectClosedOutwards(setMeshTop(prism, 0))
   })
 })
 
@@ -69,10 +183,12 @@ describe('solids', () => {
 
   it('tells 3D features from draped ones', () => {
     expect(isSolidFeature(feature(createCircle(CENTER, 100).geometry))).toBe(false)
-    expect(isSolidFeature(feature(createCircle(CENTER, 100).geometry, { extrusionHeightMeters: 20 }))).toBe(true)
+    expect(isSolidFeature(feature(createCircle(CENTER, 100, { heightMeters: 20 }).geometry))).toBe(true)
     expect(isSolidFeature(feature(createRectangle(CENTER, 100, 100, { baseHeightMeters: 50 }).geometry))).toBe(true)
     expect(isSolidFeature({ ...createSphere(CENTER, 10), id: 's' } as DrawFeature)).toBe(true)
     expect(isSolidFeature(feature({ type: 'Point', coordinates: [6, 46, 300] }))).toBe(false)
+    // A multipolygon without altitudes is draped, polygon by polygon.
+    expect(isSolidFeature(feature({ type: 'MultiPolygon', coordinates: [[square2D()]] }))).toBe(false)
   })
 
   it('converts positions to the east-north-up frame, following the curve of the Earth', () => {
@@ -86,41 +202,57 @@ describe('solids', () => {
     expect(frame.toLocal(CENTER[0], CENTER[1], 250)[2]).toBeCloseTo(250, 6)
   })
 
-  it('extrudes a polygon into a closed prism: top, bottom and walls', () => {
-    const square = createRectangle(CENTER, 1000, 1000).geometry as Polygon
-    const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
-    const { faces, line } = buildSolidGeometry(feature(square, { extrusionHeightMeters: 200 }), frame, () => 0)
-    expect(line).toBeNull()
-    const positions = faces!.getAttribute('position')
-    // 2 triangles on top, 2 at the bottom, 2 per wall.
-    expect(positions.count).toBe((2 + 2 + 4 * 2) * 3)
-    let highest = -Infinity
-    for (let index = 0; index < positions.count; index++) highest = Math.max(highest, positions.getZ(index))
-    expect(highest).toBeCloseTo(200, 0)
+  it('converts back from the east-north-up frame to positions', () => {
+    const frame = new LocalFrame(CENTER[0], CENTER[1], 300)
+    const [longitude, latitude, height] = frame.toGeographic(...frame.toLocal(6.7, 46.5, 1234.5))
+    expect(longitude).toBeCloseTo(6.7, 10)
+    expect(latitude).toBeCloseTo(46.5, 10)
+    expect(height).toBeCloseTo(1234.5, 5)
   })
 
-  it('faces every triangle of an extruded polygon outwards, whatever the winding of its ring', () => {
+  it('builds a box mesh into a closed solid: two triangles per face, every one facing outwards', () => {
+    const box = createRectangle(CENTER, 1000, 1000, { baseHeightMeters: 0, heightMeters: 200 }).geometry
     const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
-    const counterClockwise = (createRectangle(CENTER, 1000, 1000).geometry as Polygon).coordinates[0]!
-    for (const ring of [counterClockwise, [...counterClockwise].reverse()]) {
-      const { faces, closed } = buildSolidGeometry(feature({ type: 'Polygon', coordinates: [ring] }, { extrusionHeightMeters: 200 }), frame, () => 0)
-      expect(closed).toBe(true)
-      const positions = faces!.getAttribute('position')
-      for (let index = 0; index < positions.count; index += 3) {
-        const [a, b, c] = [0, 1, 2].map(corner => [positions.getX(index + corner), positions.getY(index + corner), positions.getZ(index + corner)])
-        const u = [b![0]! - a![0]!, b![1]! - a![1]!, b![2]! - a![2]!]
-        const v = [c![0]! - a![0]!, c![1]! - a![1]!, c![2]! - a![2]!]
-        const normal = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!]
-        // From the middle of the box (100 m up) to the triangle's centroid.
-        const outwards = [0, 1, 2].map(axis => (a![axis]! + b![axis]! + c![axis]!) / 3 - (axis === 2 ? 100 : 0))
-        expect(normal[0]! * outwards[0]! + normal[1]! * outwards[1]! + normal[2]! * outwards[2]!).toBeGreaterThan(0)
-      }
+    const { faces, line, closed } = buildSolidGeometry(feature(box), frame)
+    expect(line).toBeNull()
+    expect(closed).toBe(true)
+    const positions = faces!.getAttribute('position')
+    expect(positions.count).toBe(6 * 2 * 3)
+    for (let index = 0; index < positions.count; index += 3) {
+      const [a, b, c] = [0, 1, 2].map(corner => [positions.getX(index + corner), positions.getY(index + corner), positions.getZ(index + corner)])
+      const u = [b![0]! - a![0]!, b![1]! - a![1]!, b![2]! - a![2]!]
+      const v = [c![0]! - a![0]!, c![1]! - a![1]!, c![2]! - a![2]!]
+      const normal = [u[1]! * v[2]! - u[2]! * v[1]!, u[2]! * v[0]! - u[0]! * v[2]!, u[0]! * v[1]! - u[1]! * v[0]!]
+      // From the middle of the box (100 m up) to the triangle's centroid.
+      const outwards = [0, 1, 2].map(axis => (a![axis]! + b![axis]! + c![axis]!) / 3 - (axis === 2 ? 100 : 0))
+      expect(normal[0]! * outwards[0]! + normal[1]! * outwards[1]! + normal[2]! * outwards[2]!).toBeGreaterThan(0)
+    }
+    // Sharp edges keep flat normals: the top's point straight up.
+    const normals = faces!.getAttribute('normal')
+    let up = 0
+    for (let index = 0; index < normals.count; index++) if (normals.getZ(index) > 0.999) up++
+    expect(up).toBe(6)
+    // An open mesh (a wall) is drawn from both sides.
+    expect(buildSolidGeometry(feature(wallMesh([CENTER, destination(CENTER, 100, 90)], 0, 10)), frame).closed).toBe(false)
+  })
+
+  it('shades a sphere mesh smoothly: normals point away from its center', () => {
+    const sphere = createSphere(CENTER, 100, { baseHeightMeters: 0 }).geometry
+    const frame = new LocalFrame(CENTER[0], CENTER[1], 100)
+    const { faces, closed } = buildSolidGeometry(feature(sphere), frame)
+    expect(closed).toBe(true)
+    const positions = faces!.getAttribute('position')
+    const normals = faces!.getAttribute('normal')
+    for (let index = 0; index < positions.count; index++) {
+      const length = Math.hypot(positions.getX(index), positions.getY(index), positions.getZ(index))
+      const alignment = (positions.getX(index) * normals.getX(index) + positions.getY(index) * normals.getY(index) + positions.getZ(index) * normals.getZ(index)) / length
+      expect(alignment).toBeGreaterThan(0.99)
     }
   })
 
   it('splits wide faces into small triangles, so they bend with the Earth instead of cutting under it', () => {
     const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
-    const { faces } = buildSolidGeometry(feature(createRectangle(CENTER, 100_000, 100_000).geometry, { extrusionHeightMeters: 500 }), frame, () => 0)
+    const { faces } = buildSolidGeometry(feature(createRectangle(CENTER, 100_000, 100_000, { baseHeightMeters: 0, heightMeters: 500 }).geometry), frame)
     const positions = faces!.getAttribute('position')
     let longest = 0
     for (let index = 0; index < positions.count; index += 3) {
@@ -131,11 +263,50 @@ describe('solids', () => {
     }
     // Triangles about 2 km wide sag a few centimetres; one triangle across 100 km would sag 200 m.
     expect(longest).toBeLessThan(4000)
-    // Every vertex is on the ground or 500 m above it, the ground falling away from the tangent plane with the curve.
+    // Every vertex is between the ground and 500 m above it (on the walls), the ground falling away from the tangent
+    // plane with the curve; those of the top and bottom faces exactly on them.
+    let level = 0
+    let lowest = Infinity
+    let highest = -Infinity
     for (let index = 0; index < positions.count; index++) {
       const [east, north, up] = [positions.getX(index), positions.getY(index), positions.getZ(index)]
       const aboveGround = up + (east * east + north * north) / (2 * 6_378_137)
-      expect(Math.min(Math.abs(aboveGround), Math.abs(aboveGround - 500))).toBeLessThan(5)
+      lowest = Math.min(lowest, aboveGround)
+      highest = Math.max(highest, aboveGround)
+      if (Math.min(Math.abs(aboveGround), Math.abs(aboveGround - 500)) < 5) level++
+    }
+    expect(lowest).toBeGreaterThan(-5)
+    expect(highest).toBeLessThan(505)
+    expect(level / positions.count).toBeGreaterThan(0.5)
+  })
+
+  it('builds wide solids watertight with about as many triangles as their size needs, coarser for previews', () => {
+    const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
+    const cylinder = feature(createCircle(CENTER, 40_000, { baseHeightMeters: 0, heightMeters: 500 }).geometry)
+    for (const coarseness of [1, 4]) {
+      const { faces, edges, closed } = buildSolidGeometry(cylinder, frame, 0, { coarseness })
+      expect(closed).toBe(true)
+      const positions = faces!.getAttribute('position')
+      // Every triangle edge (by its ends, to the millimetre) is used once each way: no cracks, no T-junctions.
+      const key = (index: number) => [positions.getX(index), positions.getY(index), positions.getZ(index)].map(value => Math.round(value * 1000)).join(',')
+      const directed = new Map<string, number>()
+      for (let index = 0; index < positions.count; index += 3) {
+        for (let corner = 0; corner < 3; corner++) {
+          const edge = `${key(index + corner)}|${key(index + ((corner + 1) % 3))}`
+          directed.set(edge, (directed.get(edge) ?? 0) + 1)
+        }
+      }
+      for (const [edge, count] of directed) {
+        expect(count).toBe(1)
+        const [from, to] = edge.split('|')
+        expect(directed.get(`${to}|${from}`)).toBe(1)
+      }
+      // Two caps of 5000 km² in triangles of about 2 km (8 km for a preview), and the walls.
+      const triangles = positions.count / 3
+      if (coarseness === 1) expect(triangles).toBeLessThan(7000)
+      else expect(triangles).toBeLessThan(1000)
+      // The outline: both rims of 64 edges (3.9 km long: in halves at 2 km), no seams down the wall.
+      expect(edges!.getAttribute('position').count).toBe(2 * 2 * 64 * (coarseness === 1 ? 2 : 1))
     }
   })
 
@@ -159,51 +330,60 @@ describe('solids', () => {
     expect(triangles.length / 3).toBeGreaterThan(16)
   })
 
-  it('lifts ground solids onto the terrain a few lookups per frame, and asks for frames until the terrain answers', () => {
-    vi.useFakeTimers()
-    let terrain: number | null = null
-    const lookups = vi.fn(() => terrain)
-    const requestFrame = vi.fn()
+  it('stands each solid on an anchor at its lowest altitude, shares materials, and rebuilds only changed features', () => {
+    const anchors: Array<{ heightMeters: number }> = []
     const earth = {
       view: { morph: 0, flatMapLuminance: 1 },
-      queryTerrainElevation: lookups,
-      requestFrame,
-      createGeographicAnchor: (position: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }) =>
-        Object.assign(new Object3D(), {
-          geographicPosition: { ...position },
-          setPosition(next: typeof position) { this.geographicPosition = { ...next } },
-          dispose() { (this as unknown as Object3D).removeFromParent() },
-        }),
+      createGeographicAnchor: (position: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }) => {
+        anchors.push(position)
+        return Object.assign(new Object3D(), { geographicPosition: { ...position }, dispose() { (this as unknown as Object3D).removeFromParent() } })
+      },
     }
     const solids = new SolidFeatures(earth as never)
-    solids.setFeatures(Array.from({ length: 10 }, (_, index) => ({ feature: { ...createCircle(destination(CENTER, index * 1000, 90), 100, { extrusionHeightMeters: 50 }), id: `c${index}` } as DrawFeature, style: DEFAULT_DRAW_STYLE })))
-    expect(lookups).not.toHaveBeenCalled() // nothing raycast while features change
-    expect(solids.update(0)).toBe(false)
-    expect(lookups).toHaveBeenCalledTimes(4)
-    vi.runAllTimers()
-    expect(requestFrame).toHaveBeenCalled() // the terrain had no answer: try again soon
-    solids.update(16)
-    expect(lookups).toHaveBeenCalledTimes(8)
-    solids.update(32)
-    expect(lookups).toHaveBeenCalledTimes(10)
-    terrain = 420
-    expect(solids.update(100)).toBe(false) // each solid waits 500 ms between lookups
-    expect(solids.update(600)).toBe(true)
-    const anchors = solids.object.children as unknown as Array<{ geographicPosition: { heightMeters: number } }>
-    expect(anchors.filter(anchor => anchor.geographicPosition.heightMeters === 420)).toHaveLength(4)
+    const box = { ...createRectangle(CENTER, 100, 100, { baseHeightMeters: 420, heightMeters: 30 }), id: 'box' } as DrawFeature
+    const ball = { ...createSphere(destination(CENTER, 500, 90), 40, { baseHeightMeters: 380 }), id: 'ball' } as DrawFeature
+    solids.setFeatures([{ feature: box, style: DEFAULT_DRAW_STYLE }, { feature: ball, style: DEFAULT_DRAW_STYLE }])
+    expect(solids.size).toBe(2)
+    expect(anchors.map(anchor => Math.round(anchor.heightMeters))).toEqual([420, 380])
+    // Mesh and edges on each anchor, one shared pair of materials (both closed).
+    const [boxAnchor, ballAnchor] = solids.object.children as Object3D[]
+    expect(boxAnchor!.children).toHaveLength(2)
+    expect((boxAnchor!.children[0] as Mesh).material).toBe((ballAnchor!.children[0] as Mesh).material)
+    solids.setFeatures([{ feature: box, style: DEFAULT_DRAW_STYLE }, { feature: ball, style: DEFAULT_DRAW_STYLE }])
+    expect(anchors).toHaveLength(2)
+    solids.setPreviews([{ feature: { ...box }, style: DEFAULT_DRAW_STYLE }])
+    expect(solids.object.children).toHaveLength(3)
+    solids.setPreviews([])
+    solids.setFeatures([{ feature: ball, style: DEFAULT_DRAW_STYLE }])
+    expect(solids.object.children).toHaveLength(1)
     solids.dispose()
     expect(solids.object.children).toHaveLength(0)
-    vi.useRealTimers()
   })
 
   it('splits long edges so walls follow the ground, and draws lines at an altitude as lines', () => {
     const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
-    const wall = buildSolidGeometry(feature({ type: 'LineString', coordinates: [CENTER, destination(CENTER, 10_000, 90)] }, { extrusionHeightMeters: 50 }), frame, () => 0)
-    // 10 km in pieces of at most 2 km: 5 quads.
-    expect(wall.faces!.getAttribute('position').count).toBe(5 * 6)
-    const line = buildSolidGeometry(feature({ type: 'LineString', coordinates: [[6.6, 46.45, 900], [6.61, 46.45, 900]] }), frame, position => position[2]!)
+    const wall = buildSolidGeometry(feature(wallMesh([CENTER, destination(CENTER, 10_000, 90)], 0, 50)), frame)
+    // 10 km (10.03 km across in the frame: the destination is on a sphere) split into pieces no longer than 2 km across:
+    // its foot in 6 pieces, on the ground.
+    const positions = wall.faces!.getAttribute('position')
+    const foot = new Set<number>()
+    for (let index = 0; index < positions.count; index++) {
+      const [east, north, up] = [positions.getX(index), positions.getY(index), positions.getZ(index)]
+      const aboveGround = up + (east * east + north * north) / (2 * 6_378_137)
+      if (Math.abs(aboveGround) < 0.5) foot.add(Math.round(east) + 0)
+    }
+    expect(foot.size).toBe(7)
+    const steps = [...foot].sort((a, b) => a - b)
+    for (let index = 1; index < steps.length; index++) expect(steps[index]! - steps[index - 1]!).toBeLessThanOrEqual(2001)
+    // Its outline: the quad's four edges, the long ones split at the same points.
+    expect(wall.edges!.getAttribute('position').count).toBe(2 * (6 + 6 + 1 + 1))
+    const line = buildSolidGeometry(feature({ type: 'LineString', coordinates: [[6.6, 46.45, 900], [6.61, 46.45, 900]] }), frame)
     expect(line.faces).toBeNull()
     expect(line.line!.getAttribute('position').getZ(0)).toBeCloseTo(900, 3)
+    // A polygon at an altitude: one flat face, seen from both sides.
+    const slab = buildSolidGeometry(feature(createRectangle(CENTER, 100, 100, { baseHeightMeters: 300 }).geometry), frame)
+    expect(slab.closed).toBe(false)
+    expect(slab.faces!.getAttribute('position').getZ(0)).toBeCloseTo(300, 1)
   })
 })
 
@@ -236,7 +416,7 @@ function tap(longitude: number, latitude: number): DrawPointerEvent {
 describe('shape modes', () => {
   it('draws a circle from its center and a point on its edge, ignoring a second tap on the center', () => {
     const { context, created } = createContext()
-    const mode = new CircleMode({ extrusionHeightMeters: 120 })
+    const mode = new CircleMode({ heightMeters: 120 })
     mode.enter(context)
     mode.click(tap(6.6, 46.45))
     expect(mode.status()).toMatchObject({ drawing: true, canUndo: true })
@@ -245,14 +425,21 @@ describe('shape modes', () => {
     mode.click(tap(6.62, 46.45))
     expect(created).toHaveLength(1)
     expect(created[0]!.id).toBe('feature-1')
-    const shape = shapeOf(created[0]!)
-    expect(shape?.type).toBe('circle')
-    expect(shape?.type === 'circle' && shape.radiusMeters).toBeCloseTo(distanceMeters([6.6, 46.45], [6.62, 46.45]), 3)
-    expect(created[0]!.properties?.extrusionHeightMeters).toBe(120)
+    // A cylinder mesh: 64 walls, a top and a bottom, on the terrain (0 m here), its top 120 m up.
+    const cylinder = created[0]!.geometry as MultiPolygon
+    expect(cylinder.type).toBe('MultiPolygon')
+    expect(cylinder.coordinates).toHaveLength(66)
+    expectClosedOutwards(cylinder)
+    const radius = distanceMeters([6.6, 46.45], [6.62, 46.45])
+    for (const position of cylinder.coordinates[0]![0]!) {
+      expect(distanceMeters([6.6, 46.45], position)).toBeCloseTo(radius, 3)
+      expect(position[2]).toBe(120)
+    }
+    expect(created[0]!.properties).toEqual({})
     expect(mode.status().drawing).toBe(false)
   })
 
-  it('draws rectangles between two corners and spheres from a center and radius, and cancels with Escape', () => {
+  it('draws flat rectangles between two corners and sphere meshes from a center and radius, and cancels with Escape', () => {
     const { context, created } = createContext()
     const rectangle = new RectangleMode()
     rectangle.enter(context)
@@ -268,8 +455,10 @@ describe('shape modes', () => {
     sphere.enter(context)
     sphere.click(tap(6.6, 46.45))
     sphere.click(tap(6.6, 46.47))
-    expect((created[1]!.geometry as Point).type).toBe('Point')
+    expect(created[0]!.geometry.type).toBe('Polygon')
+    expect(created[1]!.geometry.type).toBe('MultiPolygon')
     expect(isSolidFeature(created[1]!)).toBe(true)
+    expectClosedOutwards(created[1]!.geometry as MultiPolygon)
   })
 
   it('draws a rectangle across the antimeridian where it was tapped', () => {
@@ -283,12 +472,171 @@ describe('shape modes', () => {
     for (const [longitude] of ring) expect(Math.abs(Math.abs(longitude!) - 180)).toBeLessThan(0.2)
   })
 
-  it('extrudes polygons drawn with extrusionHeightMeters', () => {
+  it('draws a box resting on the terrain under each corner, the tap heights standing in where it is not known', () => {
     const { context, created } = createContext()
-    const mode = new PolygonMode({ extrusionHeightMeters: 40 })
+    const relief = (longitude: number) => 400 + (longitude - 6.6) * 10_000
+    context.heights.heightAt = ((longitude: number, _latitude: number, fallback = 0, options?: { immediate?: boolean }) => (options?.immediate === true ? relief(longitude) : fallback)) as never
+    const mode = new RectangleMode({ heightMeters: 50, properties: { kind: 'shed' } })
     mode.enter(context)
-    for (const [longitude, latitude] of [[6.6, 46.45], [6.62, 46.45], [6.62, 46.47]] as const) mode.click(tap(longitude, latitude))
-    mode.finish()
-    expect(created[0]!.properties).toEqual({ extrusionHeightMeters: 40 })
+    mode.click(tap(6.6, 46.45))
+    mode.click(tap(6.61, 46.46))
+    const box = created[0]!
+    expect(box.properties).toEqual({ kind: 'shed' })
+    const geometry = box.geometry as MultiPolygon
+    expect(geometry.coordinates).toHaveLength(6)
+    expectClosedOutwards(geometry)
+    for (const position of geometry.coordinates[1]![0]!) expect(position[2]).toBeCloseTo(relief(position[0]!), 6)
+    expect(meshTop(geometry)!.topMeters).toBeCloseTo(relief(6.61) + 50, 1)
+  })
+
+  it('keeps a preview while nothing changes, and builds it again while the terrain under it is loading', () => {
+    const { context } = createContext()
+    let loaded = false
+    const sampler = new HeightSampler({ queryTerrainElevation: () => (loaded ? 700 : null) } as never)
+    ;(context as { heights: HeightSampler }).heights = sampler
+    const mode = new CircleMode({ heightMeters: 50 })
+    mode.enter(context)
+    mode.click(tap(6.6, 46.45))
+    mode.hover(tap(6.61, 46.45))
+    const draw = () => {
+      sampler.startFrame()
+      const content: OverlayContent = { features: [], lines: [], handles: [] }
+      mode.overlay(content)
+      return { feature: content.features[0]!.feature as DrawFeature<MultiPolygon>, pending: sampler.pending }
+    }
+    const first = draw()
+    // The terrain is not loaded: the base stands at the tap's height, and the overlay asks to be drawn again.
+    expect(first.pending).toBe(true)
+    expect(meshAltitudeRange(first.feature.geometry).maximumMeters).toBe(50)
+    loaded = true
+    // Loaded: drawn again until every height is sampled (24 a frame), the base then on the terrain (but under the
+    // hovered point, whose height is remembered from the pointer).
+    let second = draw()
+    expect(second.feature).not.toBe(first.feature)
+    for (let frame = 0; frame < 5 && second.pending; frame++) second = draw()
+    expect(second.pending).toBe(false)
+    expect(meshAltitudeRange(second.feature.geometry).maximumMeters).toBe(750)
+    // Settled: the camera moving redraws the overlay with the same preview, so its solid is not rebuilt.
+    expect(draw().feature).toBe(second.feature)
+    mode.heightMeters = 80
+    expect(draw().feature).not.toBe(second.feature)
+  })
+
+  it('makes prisms of polygons and walls of lines drawn with heightMeters, flat features without', () => {
+    const { context, created } = createContext()
+    const prisms = new PolygonMode({ heightMeters: 40 })
+    prisms.enter(context)
+    for (const [longitude, latitude] of [[6.6, 46.45], [6.62, 46.45], [6.62, 46.47]] as const) prisms.click(tap(longitude, latitude))
+    prisms.finish()
+    expect(created[0]!.properties).toEqual({})
+    expect((created[0]!.geometry as MultiPolygon).coordinates).toHaveLength(2 + 3)
+    expectClosedOutwards(created[0]!.geometry as MultiPolygon)
+    const walls = new LineStringMode({ heightMeters: 3 })
+    walls.enter(context)
+    for (const [longitude, latitude] of [[6.6, 46.45], [6.62, 46.45], [6.62, 46.47]] as const) walls.click(tap(longitude, latitude))
+    walls.finish()
+    expect((created[1]!.geometry as MultiPolygon).coordinates).toHaveLength(2)
+    walls.heightMeters = undefined
+    for (const [longitude, latitude] of [[6.6, 46.45], [6.62, 46.45]] as const) walls.click(tap(longitude, latitude))
+    walls.finish()
+    expect(created[2]!.geometry.type).toBe('LineString')
+  })
+})
+
+function square2D(): Position[] {
+  return [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
+}
+
+describe('mesh detection and validation', () => {
+  const store = new FeatureStore()
+  const feature = (geometry: DrawFeature['geometry']): DrawFeature => ({ type: 'Feature', id: 'f', properties: {}, geometry })
+  const flatPair = (): DrawFeature => ({
+    type: 'Feature',
+    id: 'pair',
+    properties: {},
+    geometry: {
+      type: 'MultiPolygon',
+      coordinates: [(createRectangle(CENTER, 1000, 1000).geometry as Polygon).coordinates, (createRectangle(destination(CENTER, 3000, 90), 1000, 1000).geometry as Polygon).coordinates],
+    },
+  })
+
+  it('keeps flat multipolygons flat when lifted over relief, and drapes them again', () => {
+    const pair = flatPair()
+    expect(isMeshFeature(pair)).toBe(false)
+    expect(isSolidFeature(pair)).toBe(false)
+    // Lifted over relief, every position gets an altitude, but no face is steep: still flat polygons, now in the air.
+    const lifted = liftFeature(pair, 100, longitude => 400 + (longitude - CENTER[0]) * 20_000)
+    expect(isMeshFeature(lifted)).toBe(false)
+    expect(isSolidFeature(lifted)).toBe(true)
+    expect(placeOnTerrain(lifted).geometry).toEqual(pair.geometry)
+    // Imported footprints at z = 0: flat polygons at the ellipsoid, not a mesh.
+    expect(isMeshFeature(liftFeature(pair, 0, 0))).toBe(false)
+    // Some positions without an altitude: flat polygons, drawn where the hit test and gizmo find them (at the lowest).
+    const partial = { ...pair, geometry: { ...(pair.geometry as MultiPolygon), coordinates: [(lifted.geometry as MultiPolygon).coordinates[0]!, (pair.geometry as MultiPolygon).coordinates[1]!] } } as DrawFeature
+    expect(isMeshFeature(partial)).toBe(false)
+    expect(isSolidFeature(partial)).toBe(true)
+    // Walls, prisms and spheres are meshes; so is a closed mesh without steep faces (a flat octahedron).
+    expect(isMeshFeature(feature(wallMesh([CENTER, destination(CENTER, 100, 90)], 0, 10)))).toBe(true)
+    expect(isMeshFeature(feature(prismMesh((createRectangle(CENTER, 100, 100).geometry as Polygon).coordinates, 0, 1)))).toBe(true)
+    const [east, north, west, south] = [90, 0, 270, 180].map(bearing => [...destination(CENTER, 1000, bearing), 0])
+    const [top, bottom] = [[...CENTER, 100], [...CENTER, -100]]
+    const ring = (...positions: number[][]) => [[...positions, positions[0]!]]
+    const octahedron: MultiPolygon = {
+      type: 'MultiPolygon',
+      coordinates: [ring(top!, east!, north!), ring(top!, north!, west!), ring(top!, west!, south!), ring(top!, south!, east!), ring(bottom!, north!, east!), ring(bottom!, west!, north!), ring(bottom!, south!, west!), ring(bottom!, east!, south!)],
+    }
+    expect(isMeshFeature(feature(octahedron))).toBe(true)
+  })
+
+  it('extrudes a flat multipolygon into one prism per polygon under one level top', () => {
+    const relief = (longitude: number) => 400 + (longitude - CENTER[0]) * 20_000
+    const extruded = extrudeFeature(flatPair(), 50, relief)
+    const geometry = extruded.geometry as MultiPolygon
+    expect(geometry.coordinates).toHaveLength(12)
+    expect(isMeshFeature(extruded)).toBe(true)
+    const top = meshTop(geometry)!
+    expect(top.topMeters).toBeCloseTo(Math.max(...geometry.coordinates.flat(2).map(position => relief(position[0]!))) + 50, 6)
+    // Both tops at that altitude, so moving the top moves both.
+    expect(geometry.coordinates.filter(face => face[0]!.every(position => Math.abs(position[2]! - top.topMeters) < 1e-6))).toHaveLength(2)
+  })
+
+  it('winds prisms outwards around a pole and across the antimeridian, whatever the rings winding', () => {
+    for (const ring of [
+      [[0, 89.9], [90, 89.9], [180, 89.9], [-90, 89.9]],
+      [[45, -89.5], [-45, -89.5], [-135, -89.5], [135, -89.5]],
+      [[179.9, 10], [-179.9, 10], [-179.9, 10.1], [179.9, 10.1]],
+    ]) {
+      expectClosedOutwards(prismMesh([ring], 0, 100))
+      expectClosedOutwards(prismMesh([[...ring].reverse()], 0, 100))
+    }
+  })
+
+  it('rejects malformed coordinates with an error that says the fix', () => {
+    const polygon = (coordinates: unknown): DrawFeature => ({ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'Polygon', coordinates } as Polygon })
+    expect(() => store.set([polygon([[[0, 0], [1, 0], [0, 0]]])])).toThrow(/give each ring 4 or more positions/)
+    expect(() => store.set([polygon([[[0, 0], [1, Number.NaN], [1, 1], [0, 0]]])])).toThrow(/finite numbers of degrees/)
+    expect(() => store.set([polygon([[[46, 6], [46, 95], [47, 95], [46, 6]]])])).toThrow(/between -90 and 90 degrees/)
+    expect(() => store.set([polygon([[[0, 0, null], [1, 0, 0], [1, 1, 0], [0, 0, 0]]])])).toThrow(/finite number of metres.*leave it out/)
+    expect(() => store.set([{ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'MultiPolygon', coordinates: [] } }])).toThrow(/array of polygons/)
+    expect(() => store.set([{ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'LineString', coordinates: [[0, 0]] } }])).toThrow(/coordinates; give a line string 2 or more positions/)
+    expect(store.size).toBe(0)
+  })
+})
+
+describe('height sampler', () => {
+  it('reads the terrain now when asked for an immediate height, falling back to the remembered one', () => {
+    let terrain: number | null = 120
+    const sampler = new HeightSampler({ queryTerrainElevation: () => terrain } as never)
+    sampler.remember(6.6, 46.45, 100)
+    expect(sampler.heightAt(6.6, 46.45)).toBe(100)
+    // Finer tiles loaded since the tap: the immediate read sees them, and remembers them.
+    expect(sampler.heightAt(6.6, 46.45, 0, { immediate: true })).toBe(120)
+    expect(sampler.heightAt(6.6, 46.45)).toBe(120)
+    terrain = null
+    expect(sampler.heightAt(6.6, 46.45, 0, { immediate: true })).toBe(120)
+    expect(sampler.heightAt(7, 46, 55, { immediate: true })).toBe(55)
+    expect(sampler.pending).toBe(false)
+    expect(sampler.heightAt(7, 46, 55)).toBe(55)
+    expect(sampler.pending).toBe(true)
   })
 })

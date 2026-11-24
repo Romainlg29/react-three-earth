@@ -1,10 +1,13 @@
-import type { Feature, LineString, Point, Polygon } from 'geojson'
+import type { Feature, LineString, MultiPolygon, Point, Polygon } from 'geojson'
 
 /** A longitude and a latitude, in degrees: a GeoJSON position. */
 export type LongitudeLatitude = [longitudeDegrees: number, latitudeDegrees: number]
 
-/** The geometries a `Draw` holds. */
-export type DrawGeometry = Point | LineString | Polygon
+/**
+ * The geometries a `Draw` holds. A `MultiPolygon` whose every position has an altitude (a third coordinate) is a mesh: a
+ * solid made of planar faces, one polygon per face (see `isMeshFeature`).
+ */
+export type DrawGeometry = Point | LineString | Polygon | MultiPolygon
 
 /** A feature a `Draw` holds: a GeoJSON feature with a string id. */
 export type DrawFeature<G extends DrawGeometry = DrawGeometry> = Feature<G> & { id: string }
@@ -33,8 +36,8 @@ export interface DrawStyle {
   /** Default: 2. */
   pointOutlineWidthPixels: number
   /**
-   * 3D features (extruded shapes, spheres, polygons at an altitude) are drawn as solids in `fillColor` at this opacity,
-   * with edges in `lineColor`. Default: 0.85.
+   * 3D features (meshes, polygons at an altitude) are drawn as solids in `fillColor` at this opacity, with their sharp
+   * edges in `lineColor`. Default: 0.85.
    */
   solidOpacity: number
   /** Vertex handles of the feature being drawn or edited. Default: '#ffffff'. */
@@ -46,6 +49,9 @@ export interface DrawStyle {
   /** Default: 2. */
   vertexOutlineWidthPixels: number
 }
+
+/** The terrain's height under a position, in metres above the WGS84 ellipsoid. */
+export type GroundHeight = (longitudeDegrees: number, latitudeDegrees: number) => number
 
 /** What a style function knows about the feature it styles. */
 export interface DrawStyleState {
