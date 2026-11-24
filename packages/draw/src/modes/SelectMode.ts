@@ -1,7 +1,7 @@
 import type { Position } from 'geojson'
 
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature, type VertexPath } from '../editing.js'
-import { distanceToSegment, hasAltitude, lowestAltitude, storedLines } from '../geometry.js'
+import { distanceToSegment, hasAltitude, lowestAltitude, storedLines, storedPositions } from '../geometry.js'
 import { LocalFrame, type LocalPoint } from '../localFrame.js'
 import { indexMesh, isMeshGeometry, meshSharpEdges } from '../mesh.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
@@ -124,6 +124,8 @@ export interface GizmoBasis {
   axes: readonly [LocalPoint, LocalPoint, LocalPoint]
   /** Metres that `gizmoSizePixels` covers at the center. */
   sizeMeters: number
+  /** The terrain under the feature's positions, sampled once per feature version (for those getting altitudes). */
+  ground: GroundHeight
   centerScreen: Screen
   /** Screen pixels of `sizeMeters` along each axis, from the center. */
   axisScreen: readonly [Screen, Screen, Screen]
@@ -143,6 +145,8 @@ interface GizmoPart {
   grab: LocalPoint
   /** The center ring with the scale tool: scales by the travel, not the distance from the center. */
   fromCenter?: boolean
+  /** Screen pixels of `local`, projected once per view (null where hidden). */
+  screens?: Array<Screen | null>
 }
 
 /** A gizmo handle under a press. */
@@ -168,6 +172,10 @@ interface KeyboardTransform {
   basis: GizmoBasis
   /** The pointer when it started. */
   start: Screen
+  /** Pixels from the pointer to the gizmo center when it started: a free move keeps them. */
+  grabOffset: Screen
+  /** The view its feature was computed for (`viewVersion`), to follow the camera. */
+  view: number | undefined
   /** The pointer now, and Shift. */
   pointer: Screen
   shiftKey: boolean
@@ -281,6 +289,14 @@ export class SelectMode extends DrawMode {
   /** Where the mouse last was over the map, for keyboard transforms. */
   protected lastPointer: Screen | null = null
   protected keyboardTransform: KeyboardTransform | null = null
+  /** The ground's height under the last pointer event: where the terrain is not known yet, gizmos stand at it. */
+  protected groundFallbackMeters = 0
+  /** Centers, altitudes and terrain samplers of feature versions. */
+  protected readonly featureGeometry = new WeakMap<DrawFeature, { center: LongitudeLatitude; range: { minimumMeters: number; maximumMeters: number } | null; ground: GroundHeight | null }>()
+  /** The last gizmo of each feature version, valid while the view (`viewVersion`), the space and its height stay. */
+  protected readonly gizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; heightMeters: number; basis: GizmoBasis }>()
+  /** The pieces of each gizmo, for a tool. */
+  protected readonly partsCache = new WeakMap<GizmoBasis, { tool: GizmoTool; parts: GizmoPart[] }>()
 
   constructor({
     moveFeatures = true,
@@ -325,6 +341,7 @@ export class SelectMode extends DrawMode {
     this.drag = null
     this.pressStart = null
     this.keyboardTransform = null
+    this.hoveredHandle = null
     this.setSelection([])
     this.unsubscribeStore?.()
     this.unsubscribeStore = null
@@ -385,6 +402,7 @@ export class SelectMode extends DrawMode {
       this.vertexEditing = false
       this.drag = null
       this.keyboardTransform = null
+      this.hoveredHandle = null
       this.context?.changed()
     } else if (next.length === 0 && this.vertexEditing) {
       this.vertexEditing = false
@@ -439,9 +457,16 @@ export class SelectMode extends DrawMode {
 
   // ---- Pointer ----
 
+  /** Remembers where the pointer is, and the ground's height under it. */
+  protected notePointer(event: DrawPointerEvent): void {
+    this.lastPointer = { x: event.screen.xPixels, y: event.screen.yPixels }
+    if (event.geographic !== null && Number.isFinite(event.geographic.heightMeters)) this.groundFallbackMeters = event.geographic.heightMeters
+  }
+
   override click(event: DrawPointerEvent): void {
     const context = this.context
     if (context === null) return
+    this.notePointer(event)
     // A keyboard transform is confirmed by its press (see `pointerUp`); a click without one confirms it too.
     if (this.keyboardTransform !== null) {
       this.confirmKeyboardTransform()
@@ -459,6 +484,7 @@ export class SelectMode extends DrawMode {
   override pointerDown(event: DrawPointerEvent): boolean {
     const context = this.context
     if (context === null || this.selection.length === 0) return false
+    this.notePointer(event)
     // A keyboard transform: the press confirms it on release, and never pans.
     if (this.keyboardTransform !== null) {
       this.pressStart = { x: event.screen.xPixels, y: event.screen.yPixels }
@@ -494,6 +520,7 @@ export class SelectMode extends DrawMode {
   override pointerMove(event: DrawPointerEvent): void {
     const context = this.context
     if (context === null) return
+    this.notePointer(event)
     if (this.keyboardTransform !== null) {
       this.updateKeyboardTransform(event)
       return
@@ -592,7 +619,7 @@ export class SelectMode extends DrawMode {
   override hover(event: DrawPointerEvent): void {
     const context = this.context
     if (context === null) return
-    this.lastPointer = { x: event.screen.xPixels, y: event.screen.yPixels }
+    this.notePointer(event)
     if (this.keyboardTransform !== null) {
       this.updateKeyboardTransform(event)
       return
@@ -612,6 +639,8 @@ export class SelectMode extends DrawMode {
   }
 
   override keyDown(event: KeyboardEvent): boolean {
+    // Shortcuts of the browser and the system (Ctrl+R, Cmd+S…) are theirs.
+    if (event.ctrlKey === true || event.metaKey === true || event.altKey === true) return false
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key
     const transform = this.keyboardTransform
     if (transform !== null) {
@@ -619,6 +648,9 @@ export class SelectMode extends DrawMode {
       else if (key === 'Enter') this.confirmKeyboardTransform()
       else if (key === 'x' || key === 'y' || key === 'z') {
         const axis = key === 'x' ? 0 : key === 'y' ? 1 : 2
+        // An axis pointing at the camera cannot follow the pointer along it: a move or scale keeps its lock.
+        const basis = this.gizmoBasis(transform.base) ?? transform.basis
+        if (transform.axis !== axis && transform.kind !== 'rotate' && this.axisScreen(basis, axis) === null) return true
         // The same key again unlocks.
         this.keyboardTransform = { ...transform, axis: transform.axis === axis ? null : axis }
         this.refreshKeyboardTransform()
@@ -635,6 +667,10 @@ export class SelectMode extends DrawMode {
     if ((event.key === 'Delete' || event.key === 'Backspace') && this.selection.length > 0) return this.deleteSelection()
     if ((key === 'g' || key === 'r' || key === 's') && !event.ctrlKey && !event.metaKey && !event.altKey) return this.startTransform(key === 'g' ? 'move' : key === 'r' ? 'rotate' : 'scale')
     return false
+  }
+
+  override focusLost(): void {
+    this.cancelKeyboardTransform()
   }
 
   override secondaryPress(): boolean {
@@ -702,6 +738,12 @@ export class SelectMode extends DrawMode {
   override overlay(content: OverlayContent): void {
     const context = this.context
     if (context === null) return
+    // The camera moved (a wheel zoom) during a keyboard transform: the feature follows the pointer on the new view.
+    const transform = this.keyboardTransform
+    const view = context.viewVersion?.()
+    if (transform !== null && view !== undefined && view !== transform.view) {
+      this.keyboardTransform = { ...transform, view, feature: this.keyboardFeature(transform) ?? transform.feature }
+    }
     const live = new Set(this.liveFeatureIds())
     for (const id of this.selectedFeatureIds()) {
       const stored = context.store.get(id)
@@ -793,11 +835,12 @@ export class SelectMode extends DrawMode {
     if (context === null || this.drag !== null || this.vertexEditing) return false
     const feature = this.selection.map(id => context.store.get(id)).find(each => each !== undefined && this.showsGizmo(each))
     if (feature === undefined) return false
-    const basis = this.gizmoBasis(feature, 0)
+    const basis = this.gizmoBasis(feature)
     if (basis === null) return false
     // Without a mouse over the map yet, from a gizmo's length to the right of the center.
     const start = this.lastPointer ?? { x: basis.centerScreen.x + this.gizmoSizePixels, y: basis.centerScreen.y }
-    this.keyboardTransform = { kind, axis: null, base: feature, feature, basis, start, pointer: start, shiftKey: false }
+    const grabOffset = { x: basis.centerScreen.x - start.x, y: basis.centerScreen.y - start.y }
+    this.keyboardTransform = { kind, axis: null, base: feature, feature, basis, start, grabOffset, view: context.viewVersion?.(), pointer: start, shiftKey: false }
     context.changed()
     return true
   }
@@ -805,8 +848,8 @@ export class SelectMode extends DrawMode {
   protected updateKeyboardTransform(event: DrawPointerEvent): void {
     const transform = this.keyboardTransform
     if (transform === null) return
-    this.lastPointer = { x: event.screen.xPixels, y: event.screen.yPixels }
-    this.keyboardTransform = { ...transform, pointer: this.lastPointer, shiftKey: event.originalEvent?.shiftKey === true }
+    this.notePointer(event)
+    this.keyboardTransform = { ...transform, pointer: { x: event.screen.xPixels, y: event.screen.yPixels }, shiftKey: event.originalEvent?.shiftKey === true }
     this.refreshKeyboardTransform()
   }
 
@@ -819,28 +862,32 @@ export class SelectMode extends DrawMode {
       this.cancelKeyboardTransform()
       return
     }
-    const { basis, start, pointer, axis } = transform
-    const base = transform.base
+    const feature = this.keyboardFeature(transform)
+    // A locked move or scale that cannot be computed (over the horizon) shows and commits the feature unchanged.
+    this.keyboardTransform = { ...transform, view: context.viewVersion?.(), feature: feature ?? (transform.axis === null ? transform.feature : transform.base) }
+    context.changed()
+  }
+
+  /** The keyboard transform's feature for the pointer, on the current view; null when it cannot be computed. */
+  protected keyboardFeature(transform: KeyboardTransform): DrawFeature | null {
+    const { start, pointer, axis } = transform
+    // On the current view: the camera may have zoomed since it started.
+    const basis = this.gizmoBasis(transform.base) ?? transform.basis
     const center = basis.centerScreen
     const deltaX = pointer.x - start.x
     const deltaY = pointer.y - start.y
-    let feature: DrawFeature | null = null
     if (transform.kind === 'move') {
-      if (axis === null) feature = this.freeMove(basis, pointer.x + center.x - start.x, pointer.y + center.y - start.y)
-      else {
-        const along = this.axisScreen(basis, axis)
-        if (along !== null) feature = this.moveAlong(basis, axis, ((deltaX * along.x + deltaY * along.y) / (along.x * along.x + along.y * along.y)) * basis.sizeMeters)
-      }
-    } else if (transform.kind === 'rotate') {
+      if (axis === null) return this.freeMove(basis, pointer.x + transform.grabOffset.x, pointer.y + transform.grabOffset.y)
+      const along = this.axisScreen(basis, axis)
+      return along === null ? null : this.moveAlong(basis, axis, ((deltaX * along.x + deltaY * along.y) / (along.x * along.x + along.y * along.y)) * basis.sizeMeters)
+    }
+    if (transform.kind === 'rotate') {
       const rotationAxis = axis ?? 2
       const turn = angleBetween(start.x - center.x, start.y - center.y, pointer.x - center.x, pointer.y - center.y)
-      feature = this.turn(basis, rotationAxis, (this.screenTurnSign(basis, rotationAxis) * turn * 180) / Math.PI, transform.shiftKey)
-    } else {
-      const factor = Math.max(MINIMUM_SCALE_FACTOR, Math.hypot(pointer.x - center.x, pointer.y - center.y) / Math.max(10, Math.hypot(start.x - center.x, start.y - center.y)))
-      feature = axis === null ? this.scaleUniformly(basis, factor) : this.scaleAlong(basis, axis, factor)
+      return this.turn(basis, rotationAxis, (this.screenTurnSign(basis, rotationAxis) * turn * 180) / Math.PI, transform.shiftKey)
     }
-    if (feature !== null) this.keyboardTransform = { ...transform, feature }
-    context.changed()
+    const factor = Math.max(MINIMUM_SCALE_FACTOR, Math.hypot(pointer.x - center.x, pointer.y - center.y) / Math.max(10, Math.hypot(start.x - center.x, start.y - center.y)))
+    return axis === null ? this.scaleUniformly(basis, factor) : this.scaleAlong(basis, axis, factor)
   }
 
   protected confirmKeyboardTransform(): void {
@@ -1058,48 +1105,86 @@ export class SelectMode extends DrawMode {
     return axes
   }
 
+  /** The center, altitudes and terrain sampler of a feature version, computed once. */
+  protected geometryOf(feature: DrawFeature): { center: LongitudeLatitude; range: { minimumMeters: number; maximumMeters: number } | null; ground: GroundHeight | null } {
+    let geometry = this.featureGeometry.get(feature)
+    if (geometry === undefined) {
+      geometry = { center: featureCenter(feature), range: altitudeRangeOf(feature), ground: null }
+      this.featureGeometry.set(feature, geometry)
+    }
+    return geometry
+  }
+
+  /**
+   * The terrain under a feature version's positions that have no altitude, sampled once (at the first drag that needs
+   * it, as loaded then) and reused for every move of every drag: positions not sampled stand at `fallbackMeters`.
+   */
+  protected groundOf(feature: DrawFeature, fallbackMeters: number): GroundHeight {
+    const geometry = this.geometryOf(feature)
+    if (geometry.ground !== null) return geometry.ground
+    const heights = this.context!.heights
+    let sampled: Map<number, Map<number, number>> | null = null
+    const ground: GroundHeight = (longitude, latitude) => {
+      if (sampled === null) {
+        sampled = new Map()
+        for (const position of storedPositions(feature.geometry)) {
+          if (hasAltitude(position)) continue
+          let row = sampled.get(position[0]!)
+          if (row === undefined) sampled.set(position[0]!, (row = new Map()))
+          if (!row.has(position[1]!)) row.set(position[1]!, heights.heightAt(position[0]!, position[1]!, fallbackMeters, { immediate: true }))
+        }
+      }
+      return sampled.get(longitude)?.get(latitude) ?? fallbackMeters
+    }
+    geometry.ground = ground
+    return ground
+  }
+
   /**
    * The gizmo of a feature for the current camera, or null when its center is hidden. Its size in metres comes from the
    * screen: the pixels one metre spans at the center along east, north and up (their squares add up to twice the
-   * squared scale, whatever the view), so the gizmo keeps its size on the screen at any zoom.
+   * squared scale, whatever the view), so the gizmo keeps its size on the screen at any zoom. A feature on the terrain
+   * has it at the terrain's height under its center (`groundFallbackMeters` where not known yet). Kept per feature version
+   * while the view (`viewVersion`) stays.
    */
-  protected gizmoBasis(feature: DrawFeature, fallbackHeightMeters: number): GizmoBasis | null {
+  protected gizmoBasis(feature: DrawFeature): GizmoBasis | null {
     const context = this.context
     if (context === null) return null
-    const center = featureCenter(feature)
-    const range = altitudeRangeOf(feature)
-    const groundMeters = range === null ? context.heights.heightAt(center[0], center[1], fallbackHeightMeters) : 0
+    const { center, range } = this.geometryOf(feature)
+    const groundMeters = range === null ? context.heights.heightAt(center[0], center[1], this.groundFallbackMeters) : 0
     const heightMeters = range === null ? groundMeters : (range.minimumMeters + range.maximumMeters) / 2
+    const view = context.viewVersion?.()
+    const cached = this.gizmoCache.get(feature)
+    if (view !== undefined && cached !== undefined && cached.view === view && cached.space === this.space && cached.heightMeters === heightMeters) return cached.basis
     const frame = new LocalFrame(center[0], center[1], heightMeters)
     const centerScreen = context.projectAtHeight(center, heightMeters)
     if (centerScreen === null) return null
     let squares = 0
-    let upScreen: Screen = { x: 0, y: 0 }
     for (const axis of WORLD_AXES) {
       const offset = this.screenOffset(frame, axis[0], axis[1], axis[2], centerScreen)
       if (offset === null) return null
       squares += offset.x * offset.x + offset.y * offset.y
-      upScreen = offset
     }
     const pixelsPerMetre = Math.sqrt(squares / 2)
     if (!(pixelsPerMetre > 0) || !Number.isFinite(pixelsPerMetre)) return null
     const sizeMeters = this.gizmoSizePixels / pixelsPerMetre
+    const centerDepth = context.depthAtHeight?.(center, heightMeters) ?? null
     const axes: LocalPoint[] = []
     const axisScreen: Screen[] = []
-    for (const axis of this.axesOf(feature)) {
+    this.axesOf(feature).forEach((axis, index) => {
       const offset = this.screenOffset(frame, axis[0] * sizeMeters, axis[1] * sizeMeters, axis[2] * sizeMeters, centerScreen)
-      if (offset === null) return null
-      // An axis pointing away from the camera goes up the screen with up (north, seen looking north): it is drawn the
-      // other way, towards the camera, so no two arrows lie on each other (as Blender's gizmo flips).
-      if (!this.isVertical(axis) && offset.x * upScreen.x + offset.y * upScreen.y > 0) {
-        axes.push([-axis[0], -axis[1], -axis[2]])
-        axisScreen.push({ x: -offset.x, y: -offset.y })
-      } else {
-        axes.push(axis)
-        axisScreen.push(offset)
+      // An x or y axis pointing away from the camera is drawn the other way, towards it (as Blender's gizmo flips), so
+      // no two arrows lie on each other (north and up, seen looking north). z never turns: it would point into the feature.
+      let away = false
+      if (index < 2 && centerDepth !== null) {
+        const [longitude, latitude, height] = frame.toGeographic(axis[0] * sizeMeters, axis[1] * sizeMeters, axis[2] * sizeMeters)
+        const depth = context.depthAtHeight!([longitude, latitude], height)
+        away = depth !== null && depth > centerDepth
       }
-    }
-    return {
+      axes.push(away ? [-axis[0], -axis[1], -axis[2]] : axis)
+      axisScreen.push(offset === null ? { x: 0, y: 0 } : away ? { x: -offset.x, y: -offset.y } : offset)
+    })
+    const basis: GizmoBasis = {
       feature,
       center,
       heightMeters,
@@ -1108,9 +1193,12 @@ export class SelectMode extends DrawMode {
       frame,
       axes: axes as [LocalPoint, LocalPoint, LocalPoint],
       sizeMeters,
+      ground: this.groundOf(feature, range?.minimumMeters ?? groundMeters),
       centerScreen,
       axisScreen: axisScreen as [Screen, Screen, Screen],
     }
+    if (view !== undefined) this.gizmoCache.set(feature, { view, space: this.space, heightMeters, basis })
+    return basis
   }
 
   /** Screen pixels from the gizmo center to a point of its frame, or null when it is hidden. */
@@ -1140,8 +1228,22 @@ export class SelectMode extends DrawMode {
     return this.isVertical(basis.axes[index]!) ? { x: 0, y: -this.gizmoSizePixels } : null
   }
 
-  /** The pieces of a gizmo for the current camera and tool. */
+  /** The pieces of a gizmo for the current camera and tool (kept per gizmo and tool). */
   protected gizmoParts(basis: GizmoBasis): GizmoPart[] {
+    const cached = this.partsCache.get(basis)
+    if (cached !== undefined && cached.tool === this.tool) return cached.parts
+    const parts = this.buildGizmoParts(basis)
+    this.partsCache.set(basis, { tool: this.tool, parts })
+    return parts
+  }
+
+  /** The screen pixels of a part's points, projected once per gizmo. */
+  protected partScreens(basis: GizmoBasis, part: GizmoPart): Array<Screen | null> {
+    part.screens ??= part.local.map(local => this.gizmoScreen(basis, local))
+    return part.screens
+  }
+
+  protected buildGizmoParts(basis: GizmoBasis): GizmoPart[] {
     const parts: GizmoPart[] = []
     const { axes, sizeMeters } = basis
     const tool = this.tool
@@ -1260,7 +1362,7 @@ export class SelectMode extends DrawMode {
     for (const id of this.selection) {
       const feature = context.store.get(id)
       if (feature === undefined || !this.showsGizmo(feature)) continue
-      const basis = this.gizmoBasis(feature, 0)
+      const basis = this.gizmoBasis(feature)
       if (basis === null) return []
       const handles: GizmoHandleOnScreen[] = []
       for (const part of this.gizmoParts(basis)) {
@@ -1274,7 +1376,7 @@ export class SelectMode extends DrawMode {
 
   /** Adds the gizmo of a selected feature (as changed so far) to the overlay, `active` highlighted. */
   protected gizmoOverlay(feature: DrawFeature, content: OverlayContent, active: GizmoHandle | null): void {
-    const basis = this.gizmoBasis(feature, 0)
+    const basis = this.gizmoBasis(feature)
     if (basis === null) return
     const geographic = (local: LocalPoint) => basis.frame.toGeographic(local[0], local[1], local[2])
     const centerPosition: LongitudeLatitude = [basis.center[0], basis.center[1]]
@@ -1306,9 +1408,9 @@ export class SelectMode extends DrawMode {
   }
 
   /**
-   * The gizmo handle of the selected features under a press, nearest first. Over the feature a handle takes the press
-   * only where it is drawn (a few pixels around it), so the body stays draggable between handles even when the gizmo
-   * covers a small feature; elsewhere it takes it within a finger's reach (`hitTolerancePixels`).
+   * The gizmo handle of the selected features under a press, nearest first: a handle takes a press within reach
+   * (`hitTolerancePixels`: 10 px with a mouse, 22 with a finger), on the feature or off it; the body takes the presses
+   * no handle reaches.
    */
   protected gizmoHandleAt(event: DrawPointerEvent): GizmoHit | null {
     const context = this.context
@@ -1316,15 +1418,13 @@ export class SelectMode extends DrawMode {
     const pointerX = event.screen.xPixels
     const pointerY = event.screen.yPixels
     const reach = hitTolerancePixels(event.pointerType)
-    const fallback = event.geographic?.heightMeters ?? 0
     let best: GizmoHit | null = null
     let bestRank = Infinity
     for (const id of this.selection) {
       const feature = context.store.get(id)
       if (feature === undefined || !this.showsGizmo(feature)) continue
-      const basis = this.gizmoBasis(feature, fallback)
+      const basis = this.gizmoBasis(feature)
       if (basis === null) continue
-      const inside = hitFeature(feature, this.hitInput(event)) === 0
       const center = basis.centerScreen
       for (const part of this.gizmoParts(basis)) {
         let distance = Infinity
@@ -1340,19 +1440,20 @@ export class SelectMode extends DrawMode {
           distance = Math.hypot(pointerX - center.x, pointerY - (center.y - this.gizmoSizePixels * 0.85))
           drawn = part.sizePixels
         } else if (part.kind === 'dot') {
-          const screen = this.gizmoScreen(basis, part.local[0]!)
+          const screen = this.partScreens(basis, part)[0]!
           if (screen !== null) distance = Math.max(Math.abs(pointerX - screen.x), Math.abs(pointerY - screen.y))
           drawn = part.sizePixels + 1
         } else if (part.kind === 'plane') {
-          const corners = part.local.map(local => this.gizmoScreen(basis, local))
+          const corners = this.partScreens(basis, part)
           if (corners.every(corner => corner !== null)) {
             const ring = corners as Screen[]
             distance = insideConvex(pointerX, pointerY, ring) ? 0 : Math.min(...ring.map((corner, index) => distanceToSegment(pointerX, pointerY, corner.x, corner.y, ring[(index + 1) % ring.length]!.x, ring[(index + 1) % ring.length]!.y)))
           }
         } else {
           let previous: Screen | null = null
+          const screens = this.partScreens(basis, part)
           part.local.forEach((local, index) => {
-            const screen = this.gizmoScreen(basis, local)
+            const screen = screens[index]!
             if (screen !== null && previous !== null) {
               const segment = distanceToSegment(pointerX, pointerY, previous.x, previous.y, screen.x, screen.y)
               if (segment < distance) {
@@ -1365,7 +1466,7 @@ export class SelectMode extends DrawMode {
           })
           drawn = part.sizePixels / 2 + (part.arrowhead === true ? 1 : 0)
         }
-        const tolerance = inside ? drawn + 3 : Math.max(drawn, reach)
+        const tolerance = Math.max(drawn, reach)
         if (distance > tolerance) continue
         // Small pieces win ties over the lines they sit on (a cube on its shaft, a plane square across an arc).
         // Arrows win over the arcs that cross them.
@@ -1377,21 +1478,6 @@ export class SelectMode extends DrawMode {
       }
     }
     return best
-  }
-
-  /** Terrain heights under positions, sampled once each (for features on the terrain getting altitudes). */
-  protected groundSampler(fallbackHeightMeters: number): GroundHeight {
-    const heights = this.context!.heights
-    const known = new Map<string, number>()
-    return (longitude, latitude) => {
-      const key = `${longitude},${latitude}`
-      let height = known.get(key)
-      if (height === undefined) {
-        height = heights.heightAt(longitude, latitude, fallbackHeightMeters, { immediate: true })
-        known.set(key, height)
-      }
-      return height
-    }
   }
 
   /** The feature moved on the ground (level, at its altitude) so that its center is under screen pixels `x`, `y`. */
@@ -1409,13 +1495,13 @@ export class SelectMode extends DrawMode {
   protected moveBy(basis: GizmoBasis, offset: LocalPoint): DrawFeature {
     const up = basis.onTerrain && Math.abs(offset[2]) < MINIMUM_LIFT_METERS ? 0 : offset[2]
     if (offset[0] === 0 && offset[1] === 0 && up === 0) return basis.feature
-    return offsetFeature(basis.feature, [offset[0], offset[1], up], this.groundSampler(basis.baseMeters))
+    return offsetFeature(basis.feature, [offset[0], offset[1], up], basis.ground)
   }
 
   /** The feature turned `angleDegrees` (right-handed) around a gizmo axis through its center, snapped with Shift. */
   protected turn(basis: GizmoBasis, index: number, angleDegrees: number, shiftKey: boolean): DrawFeature {
     const angle = this.snapping && shiftKey && this.snapDegrees > 0 ? Math.round(angleDegrees / this.snapDegrees) * this.snapDegrees : angleDegrees
-    return rotateFeatureAroundAxis(basis.feature, [basis.center[0], basis.center[1], basis.heightMeters], basis.axes[index]!, angle, this.groundSampler(basis.baseMeters))
+    return rotateFeatureAroundAxis(basis.feature, [basis.center[0], basis.center[1], basis.heightMeters], basis.axes[index]!, angle, basis.ground)
   }
 
   /**
@@ -1427,7 +1513,7 @@ export class SelectMode extends DrawMode {
     const vertical = this.isVertical(axis)
     if (basis.onTerrain && Math.abs(axis[2]) > 1e-9) return basis.feature
     const pivotHeight = vertical ? basis.baseMeters : basis.heightMeters
-    return scaleFeatureAlongAxis(basis.feature, [basis.center[0], basis.center[1], pivotHeight], axis, factor, this.groundSampler(basis.baseMeters))
+    return scaleFeatureAlongAxis(basis.feature, [basis.center[0], basis.center[1], pivotHeight], axis, factor, basis.ground)
   }
 
   /** The feature scaled uniformly around its center (a mesh from its base, `scaleFeature`). */

@@ -3,7 +3,7 @@ import type { Position } from 'geojson'
 import { translateFeature } from './editing.js'
 import { distanceMeters, hasAltitude, mapGeometryPositions, storedPositions, unwrapLongitudeNear } from './geometry.js'
 import { LocalFrame, type LocalPoint } from './localFrame.js'
-import { isMeshGeometry, meshAltitudeRange, meshTop, newellNormal, openRing, prismMesh, setMeshTop, wallMesh } from './mesh.js'
+import { indexMesh, isClosedMesh, isMeshGeometry, meshAltitudeRange, meshTop, newellNormal, openRing, prismMesh, setMeshTop, wallMesh } from './mesh.js'
 import { bearingDegrees, destination } from './shapes.js'
 import type { DrawFeature, GroundHeight, LongitudeLatitude } from './types.js'
 
@@ -157,20 +157,21 @@ export function rotateFeature(feature: DrawFeature, center: LongitudeLatitude, a
 
 /**
  * The feature scaled by `factor` around `center`: every position's distance in metres from the center is multiplied.
- * A mesh scales in 3D, around the point on its base (its lowest altitude) under the center: its altitudes above the base
- * are multiplied too, so a sphere stays round and resting where it was. Other features keep their altitudes.
+ * A feature with altitudes (a mesh, a polygon in the air) scales in 3D, around the point on its base (its lowest
+ * altitude) under the center: its altitudes above the base are multiplied too, so a sphere stays round and resting where
+ * it was, and a tilted polygon keeps its slope. Positions without an altitude stay on the terrain.
  */
 export function scaleFeature(feature: DrawFeature, center: LongitudeLatitude, factor: number): DrawFeature {
   if (!(factor > 0) || !Number.isFinite(factor)) throw new Error(`scaleFeature: factor is ${factor}; give a positive number.`)
   if (factor === 1) return feature
   const geometry = feature.geometry
-  const base = isMeshGeometry(geometry) ? meshAltitudeRange(geometry).minimumMeters : null
+  const base = isMeshGeometry(geometry) ? meshAltitudeRange(geometry).minimumMeters : (altitudeRangeOf(feature)?.minimumMeters ?? null)
   return {
     ...feature,
     geometry: mapGeometryPositions(geometry, position => {
       const distance = distanceMeters(center, position)
       const [longitude, latitude] = distance === 0 ? [position[0]!, position[1]!] : destination(center, distance * factor, bearingDegrees(center, position))
-      if (position.length <= 2) return [longitude, latitude]
+      if (!hasAltitude(position)) return position.length > 2 ? [longitude, latitude, position[2]!] : [longitude, latitude]
       return [longitude, latitude, base === null ? position[2]! : base + (position[2]! - base) * factor]
     }),
   }
@@ -428,19 +429,19 @@ function groundFunction(groundHeightMeters: number | GroundHeight): GroundHeight
 }
 
 /**
- * The feature moved by an offset in metres east, north and up. The horizontal part keeps each position's distance and
- * bearing from the feature's center (`translateFeature`), and altitudes; the vertical part is `liftFeature`: positions
- * on the terrain get an altitude, the terrain's height under them (`groundHeightMeters`) plus `up`.
+ * The feature moved by an offset in metres east, north and up. The vertical part is `liftFeature`: positions on the
+ * terrain get an altitude, the terrain's height under them where they were (`groundHeightMeters`) plus `up`. The
+ * horizontal part keeps each position's distance and bearing from the feature's center (`translateFeature`), and
+ * altitudes.
  */
 export function offsetFeature(feature: DrawFeature, [east, north, up]: readonly [number, number, number], groundHeightMeters: number | GroundHeight = 0): DrawFeature {
   if (!Number.isFinite(east) || !Number.isFinite(north) || !Number.isFinite(up)) throw new Error(`offsetFeature: the offset is ${east}, ${north}, ${up}; give finite metres.`)
-  let result = feature
+  // Lifted first, so the terrain is read under the positions as they were (a drag samples it once, at the press).
+  const result = up === 0 ? feature : liftFeature(feature, up, groundHeightMeters)
   const horizontal = Math.hypot(east, north)
-  if (horizontal > 0) {
-    const center = featureCenter(feature)
-    result = translateFeature(result, center, destination(center, horizontal, (Math.atan2(east, north) * 180) / Math.PI))
-  }
-  return up === 0 ? result : liftFeature(result, up, groundHeightMeters)
+  if (horizontal === 0) return result
+  const center = featureCenter(feature)
+  return translateFeature(result, center, destination(center, horizontal, (Math.atan2(east, north) * 180) / Math.PI))
 }
 
 /**
@@ -532,15 +533,19 @@ export function scaleFeatureAlongAxis(feature: DrawFeature, center: readonly num
   }
 }
 
-/** A face counts for a feature's own up axis only when it faces up at least this much (the cosine of its tilt). */
-const MINIMUM_UP_FACING = 0.1
+/** Normals within this angle (its cosine), either way, count as one direction of a feature's faces. */
+const SAME_DIRECTION_COSINE = Math.cos((5 * Math.PI) / 180)
+/** A closed mesh whose first face's direction covers less than this share of its area is curved (a sphere). */
+const MINIMUM_FIRST_DIRECTION_SHARE = 0.1
 
 /**
  * A feature's own axes, for a gizmo in local space: three unit vectors in the east-north-up frame at its center, x, y
  * and z (right-handed).
  *
- * - z: the normal of the face that faces up the most (largest area × cos² of its tilt) of a mesh or a polygon at an
- *   altitude, so a tilted box gets its tilted top's normal; straight up for everything else (features on the terrain,
+ * - z: on a closed mesh with flat sides (a box, a prism, a cylinder), the outward normal of its first face (a prism's
+ *   top), so the axes follow it through any tilt; on a polygon in the air, its normal, facing up; on a curved closed mesh
+ *   (a sphere: its first face's direction covers under a tenth of its area) and on open meshes, the area-weighted sum
+ *   of its upward-facing normals (straight up for a sphere); straight up for everything else (features on the terrain,
  *   lines, walls).
  * - x and y: the edges of the smallest rectangle around the vertices seen along z (as `featureRotationDegrees` finds on
  *   the ground), x the one closest to east; east and north when nearly as tight (a circle).
@@ -554,30 +559,34 @@ export function featureAxes(feature: DrawFeature): [LocalPoint, LocalPoint, Loca
   const toLocal = (position: Position): LocalPoint => frame.toLocal(position[0]!, position[1]!, hasAltitude(position) ? position[2]! : (range?.minimumMeters ?? 0))
   let z: LocalPoint = [0, 0, 1]
   if (range !== null && (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon')) {
-    const faces = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates
-    let bestScore = 0
-    for (const face of faces) {
-      const ring = openRing(face[0] ?? [])
+    const faces: Array<{ normal: LocalPoint; area: number }> = []
+    for (const polygon of geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates) {
+      const ring = openRing(polygon[0] ?? [])
       if (ring.length < 3 || !ring.every(hasAltitude)) continue
       const normal = newellNormal(ring.map(toLocal))
-      const area = Math.hypot(normal[0], normal[1], normal[2]) / 2
       const unit = unitVector(normal)
-      if (unit === null) continue
-      // Up or down alike: a flat polygon wound clockwise faces up too.
-      const facing = Math.abs(unit[2])
-      const score = area * facing * facing
-      if (facing >= MINIMUM_UP_FACING && score > bestScore * (1 + 1e-9)) {
-        bestScore = score
-        z = unit[2] < 0 ? [-unit[0], -unit[1], -unit[2]] : unit
-      }
+      if (unit !== null) faces.push({ normal: unit, area: Math.hypot(normal[0], normal[1], normal[2]) / 2 })
     }
+    const mesh = isMeshGeometry(geometry) ? indexMesh(geometry) : null
+    const first = faces[0]
+    if (first !== undefined && mesh !== null && isClosedMesh(mesh)) {
+      let total = 0
+      let along = 0
+      for (const face of faces) {
+        total += face.area
+        if (Math.abs(dot(face.normal, first.normal)) >= SAME_DIRECTION_COSINE) along += face.area
+      }
+      z = along >= total * MINIMUM_FIRST_DIRECTION_SHARE ? first.normal : upwardNormal(faces)
+    } else if (first !== undefined && mesh === null && faces.length === 1) {
+      z = first.normal[2] < 0 ? [-first.normal[0], -first.normal[1], -first.normal[2]] : first.normal
+    } else if (first !== undefined) z = upwardNormal(faces)
   }
   // Level within a millionth: straight up, so turns around it keep features on the terrain there.
-  if (Math.abs(z[0]) < 1e-6 && Math.abs(z[1]) < 1e-6) z = [0, 0, 1]
+  if (Math.abs(z[0]) < 1e-6 && Math.abs(z[1]) < 1e-6 && z[2] > 0) z = [0, 0, 1]
   // A basis of the plane across z, from east (north when z lies along east).
   const eastInPlane = unitVector([1 - z[0] * z[0], -z[0] * z[1], -z[0] * z[2]]) ?? unitVector([-z[1] * z[0], 1 - z[1] * z[1], -z[1] * z[2]])!
   const northInPlane = cross(z, eastInPlane)
-  const points = footprintVertices(feature).map(position => {
+  const points = storedPositions(geometry).map(position => {
     const local = toLocal(position)
     return [dot(local, eastInPlane), dot(local, northInPlane)] as [number, number]
   })
@@ -590,4 +599,16 @@ export function featureAxes(feature: DrawFeature): [LocalPoint, LocalPoint, Loca
   // Without negative zeros, which compare unequal.
   const clean = (vector: LocalPoint): LocalPoint => [vector[0] + 0, vector[1] + 0, vector[2] + 0]
   return [clean(x), clean(cross(z, x)), clean(z)]
+}
+
+/** The area-weighted sum of the upward-facing normals, of unit length; straight up when none faces up. */
+function upwardNormal(faces: ReadonlyArray<{ normal: LocalPoint; area: number }>): LocalPoint {
+  const sum: LocalPoint = [0, 0, 0]
+  for (const { normal, area } of faces) {
+    if (normal[2] <= 1e-9) continue
+    sum[0] += normal[0] * area
+    sum[1] += normal[1] * area
+    sum[2] += normal[2] * area
+  }
+  return unitVector(sum) ?? [0, 0, 1]
 }

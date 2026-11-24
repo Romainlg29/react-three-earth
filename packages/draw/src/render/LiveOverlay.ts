@@ -216,6 +216,15 @@ export class LiveOverlay {
     return target
   }
 
+  /** How far in front of the camera a position is (its view-space depth, in scene units), or null without a camera. */
+  depth(longitude: number, latitude: number, heightMeters: number): number | null {
+    const camera = this.camera
+    if (camera === null) return null
+    this.earth.camera.toScenePosition({ longitudeDegrees: longitude, latitudeDegrees: latitude, heightMeters }, scenePoint)
+    viewPoint.copy(scenePoint).applyMatrix4(camera.matrixWorldInverse)
+    return -viewPoint.z
+  }
+
   protected drawFeature(feature: DrawFeature, style: DrawStyle): void {
     const geometry = feature.geometry
     if (geometry.type === 'Point') {

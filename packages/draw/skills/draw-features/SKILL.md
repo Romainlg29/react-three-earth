@@ -258,12 +258,13 @@ is drawn the other way, so arrows never lie on each other:
   (turn the camera a little). With `snapping: true`, Shift snaps turns to `snapDegrees` (15).
 - Drag a **cube** on an axis to scale along it (along up from the base, so it stays standing); drag the outer ring
   (or, with the scale tool, the center ring) to scale uniformly, a mesh in 3D from its base.
-- A press on the feature off every handle moves it on the ground. Over the feature a handle takes a press only where
-  drawn, so a small feature under the gizmo stays draggable; off it, handles reach 44 px on touch.
+- A press within reach of a handle takes the nearest handle, over the feature too (reach: 10 px with a mouse, 22 px
+  with a finger, so a 44 px touch target); anywhere else on the feature a press moves it on the ground. On a feature
+  small on the screen, zoom in or use `gizmoSizePixels` to leave it room.
 
 `draw.setGizmoTool('all' | 'move' | 'rotate' | 'scale')` shows every handle (default) or one tool's;
-`draw.setGizmoSpace('world' | 'local')` turns the axes to the feature's own (`featureAxes`: z its most upward face's
-normal, x and y its tightest rectangle's edges); both are in the state. With `keyboard: true`, G, R or S moves, turns or
+`draw.setGizmoSpace('world' | 'local')` turns the axes to the feature's own (`featureAxes`: z a box's or prism's
+first face normal, so it follows any tilt, straight up for a sphere; x and y its tightest rectangle's edges); both are in the state. With `keyboard: true`, G, R or S moves, turns or
 scales under the mouse with no press (on the ground, around up, uniformly), X, Y or Z locks a gizmo axis, a click or
 Enter confirms, Escape or a right click cancels (`select.startTransform('move')` from a button).
 
@@ -476,8 +477,8 @@ altitudes), which `placeOnTerrain` drapes again and `extrudeFeature` turns into 
 
 ### MEDIUM: Expecting scaling to keep a mesh's height
 
-`scaleFeature` (and the gizmo's outer ring) scales a mesh in 3D, its altitudes around its base too: a box twice as wide
-is twice as tall. To change only the footprint use a cube (`scaleFeatureAlongAxis` along east or north), or set the top
+`scaleFeature` (and the gizmo's outer ring) scales anything with altitudes in 3D, around its base: a box twice as wide
+is twice as tall, a tilted polygon keeps its slope; draped positions stay draped. To change only the footprint use a cube (`scaleFeatureAlongAxis` along east or north), or set the top
 back with `moveMeshTop`.
 
 ### MEDIUM: Expecting the keys without opting in
