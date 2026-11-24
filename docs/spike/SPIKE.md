@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), right-to-left and complex scripts (`fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), complex scripts such as Indic and Thai (right-to-left text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1009,6 +1009,12 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
 
+**Source components from packages (W17, part 4).** Terrain and imagery sources were open interfaces, but a package
+could not ship a `<MySource>` component: the layer contexts were internal. `react-three-earth/react` now exports
+`useRegisterTerrainSource(source, componentName)` and `useRegisterImagerySource(source, componentName)`, the same
+registration the built-in source components use (registration order, `<Name> must sit inside <Layer>` outside one).
+Unit tests: 4 new (registration and removal for both layers, a new instance replacing the old, the error outside them).
+
 ## Plugins (W17), part 5: symbol effects
 
 The design's slot for SDF text and icon effects (section 9), now that labels facing the viewer exist (W6).
@@ -1116,6 +1122,48 @@ DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill 
   `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
   fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
   loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
+
+## Keyboard and accessibility (W15), part 1
+
+The map works with a keyboard and a screen reader (`src/core/KeyboardControls.ts`, `src/core/EarthControls.ts`,
+`src/react/EarthControls.tsx`, `src/view/ViewMorph.ts`), skill `map-controls`.
+
+- **Map region.** `EarthViewControls.attach` gives the element it listens to `tabindex="0"`, `role="region"` and
+  `aria-label` (`label`, default "Map"), as MapLibre's canvas container. The element's own values come back on `detach`;
+  an app's own `tabindex` is kept (3DTilesRenderer sets -1 when there is none, which kept the map out of the tab order).
+- **Keys.** `KeyboardControls` (owned by `EarthViewControls`, `<EarthControls keyboard>`): MapLibre's bindings, from the
+  pure `keyboardAction(press, steps)`. Arrows `panBy` 100 px, `+` / `-` zoom 1 level (2 with `Shift`), `Shift` + left /
+  right turn 15°, `Shift` + up / down tilt 10°, clamped to the view's tilt limit (80° on the globe, the flat map's
+  `maximumTiltRadians`). Every press goes through `earth.camera.easeTo` (0.3 s, ease-out), so it stops other animations,
+  honours `prefers-reduced-motion`, and fires the camera events. Quick zoom, turn and tilt presses add to the running target (like
+  `NavigationControl`; arrows pan on from the camera, as MapLibre); a held key (`event.repeat`) starts from the camera instead, or holding `+` would race ahead. A
+  press stops the pointer controls' inertia first. Keys with `Ctrl` / `Alt` / `Cmd`, keys in form fields inside the map
+  and keys during a morph are not applied (during a morph the key is still taken, so arrows do not scroll the page).
+  The binding table is a protected `actionFor`, the seam for other bindings.
+- **Double-click zoom.** 3DTilesRenderer 0.5.4 already zooms in on a double click or double tap (`enableDoubleTapZoom`);
+  `<EarthControls doubleClickZoom>` exposes it for both views.
+- **Reduced motion.** `ViewMorph.setMode` switches at once for `prefers-reduced-motion` users unless
+  `{ essential: true }`, as camera animations already did.
+- **ARIA audit of W9 and W10.** Markers, popups and controls already had names, `aria-expanded`, `aria-pressed` and
+  focus handling; axe-core found nothing to fix in them. The playground's viewport meta blocked page zoom
+  (`maximum-scale=1, user-scalable=no`, a WCAG failure); it is gone (the map's own `touch-action: none` keeps pinches on
+  the map, and iOS ignores the setting anyway).
+
+Changed from the brief: double-click zoom was already there upstream, so it is a prop rather than new code. Cooperative
+gestures and box zoom move to part 2, to keep this pull request small and leave touch input untouched here.
+
+Not supported yet: cooperative gestures, box zoom (part 2); no live-region announcement of the view after a key press;
+keyboard zoom, like `NavigationControl`, is not clamped to the pointer controls' distance limits (camera zoom limits
+belong in `EarthCamera`); `<Earth>` has no prop for `essential` on the morph (use `useEarth().setView`).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/keyboard.test.ts`: every binding and modifier, editable targets, presses adding up during an ease and held keys starting from the camera, tilt clamped, nothing while disabled, detached or morphing, region attributes set and restored, an app's `tabindex` kept, double-click zoom switch, the morph switching at once under reduced motion unless essential |
+| Browser (`keyboard and accessibility`, SwiftShader) | `Tab` reaches the map, a region named "Map" around the canvas |
+| | right arrow pans east 0.065° at zoom 10, `=` zooms +1.00, `Shift` + right turns 15.0°, `Shift` + up tilts 10.0°, two `-` zoom −2.00, the page does not scroll |
+| | a double click zooms in 1.7 levels |
+| | axe-core 4.10 (WCAG 2.2 A and AA) finds no violation with the controls and markers, nor with a popup opened from the keyboard; markers faded behind terrain are left out (their fade is the point) |
+| | with `prefers-reduced-motion`, the view button switches to 2D with no in-between morph frame |
 
 ## Attribution
 
@@ -1250,6 +1298,35 @@ sun, one air and one haze. Playground: `/?test=afterburner&fixtures`.
   run it on 0.187, and it works in the browser check. The proper fix is an @aeronautic release for 0.187.
 
 ![afterburner over terrain](afterburner-on.png)
+
+## W13, part 1: right-to-left text (Arabic, Hebrew)
+
+Arabic and Hebrew labels read in the right order and Arabic letters join, in the worker, with no dependency.
+
+- **Deviation from the brief.** The brief offered two paths: the app passes MapLibre's `@mapbox/mapbox-gl-rtl-text`
+  (ICU in wasm) through a `textShaping` option, or a built-in bidi and Arabic joining tables. We took the second.
+  The plugin is ICU compiled to wasm, which the app must host and the worker must load before any right-to-left label
+  can lay out (MapLibre re-lays every tile when it arrives); functions cannot cross into our worker, so it would
+  need a URL and a loading state. `@pmndrs/glyph` was also ruled out: it shapes with HarfBuzz in wasm (MBs) and
+  draws its own glyphs, while MapLibre styles bring PBF glyphs. The built-in path is two files of compact
+  tables, synchronous, and does what the plugin does for map labels.
+- **Arabic** (`worker/arabic.ts`): Unicode joining types for U+0620–U+06FF and U+0750–U+077F, harakat transparent
+  to joining, lam-alef ligatures, out to presentation forms (U+FB50–U+FEFF). Letters with no presentation form
+  (some Kurdish and Pashto ones) keep their own glyph while their neighbours join to them, as ICU does. Labels with
+  Arabic take no `text-letter-spacing` (MapLibre's rule), which would open gaps in joined words. Shaping runs on
+  the whole `text-field` across its `format` sections, before glyphs load, so the glyph server's presentation-form
+  ranges are what is fetched, as with the MapLibre plugin.
+- **Bidi** (`worker/bidi.ts`): UAX #9 rules P2–P3, W1–W7, N1–N2, I1–I2, L1–L2 and L4 (mirrored brackets), from a
+  compact table of bidi classes (anything unlisted is L). Levels resolve per paragraph (explicit newlines); lines
+  wrap in logical order and each line is then reordered, as ICU's `ubidi_setLine`. Labels without a right-to-left
+  character skip it. Left out: explicit embeddings and isolates (stripped to BN) and bracket pairs (N0).
+- Labels keep their style text (reading order, unshaped) as their identity: `getScreenLabels` reports it.
+- **Browser check** (`run.mjs scripts`, `?map=scripts`): four names (Arabic with a lam-alef, Hebrew, Arabic with
+  digits, Latin with bracketed Hebrew) show and draw text, on WebGPU and WebGL 2. Screenshots `map-scripts-*.png`.
+- Unit tests: `test/scripts.test.ts` (joining forms, ligatures, marks, sections; classes; Hebrew with digits, Latin
+  inside right-to-left and the reverse, Arabic numbers and decimals; glyph order, mirroring, wrapping and letter
+  spacing in `shapeText`).
+- Next (part 2, 3): Indic and Thai drawn per grapheme cluster with the local font; vertical CJK (`text-writing-mode`).
 
 ## W14: image and video sources
 

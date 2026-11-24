@@ -3,9 +3,10 @@ name: map-controls
 description: >
   Use when an app needs buttons and widgets over the react-three-earth map, like MapLibre's controls: zoom
   in and out, a compass that resets north, a scale bar, a "find my location" button, fullscreen, or a
-  2D / 3D toggle, translated labels, styling them, or making them work on iPhone Safari.
+  2D / 3D toggle, translated labels, styling them, or making them work on iPhone Safari. Also when the map
+  must work with a keyboard or a screen reader: arrow keys, zoom keys, the map's label, reduced motion.
 metadata:
-  purpose: 'Documents <Controls>, <NavigationControl>, <ScaleControl>, <GeolocateControl>, <FullscreenControl>, <ViewControl> and their vanilla classes: placement, options, events, locale, CSS variables, touch and accessibility.'
+  purpose: 'Documents <Controls>, <NavigationControl>, <ScaleControl>, <GeolocateControl>, <FullscreenControl>, <ViewControl> and their vanilla classes: placement, options, events, locale, CSS variables, touch and accessibility; <EarthControls> keyboard, label and double-click zoom.'
   type: framework
   framework: 'react'
   library: 'react-three-earth'
@@ -19,6 +20,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/controls/ViewControl.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/controls/locale.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/controls.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/KeyboardControls.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/EarthControls.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/EarthControls.tsx'
   - 'Romainlg29/react-three-earth:apps/playground/src/MapDemo.tsx'
 requires:
   - getting-started
@@ -133,6 +137,45 @@ indicator (`env(safe-area-inset-*)`), and `touch-action: manipulation` stops dou
 button is a `<button>` with `aria-label` and `title`, toggles carry `aria-pressed`, the scale is `role="img"` with a
 label, and focus rings show with the keyboard.
 
+### Keyboard and screen readers
+
+`<EarthControls>` makes the element around the canvas the map for assistive technology: `tabindex="0"` (an app's
+own `tabindex` wins, for example -1 to keep the map out of the tab order), `role="region"` and `aria-label` from
+`label` (default "Map"). While it has focus, the keys work as in MapLibre:
+
+| Key | Does |
+| --- | --- |
+| Arrows | Pan 100 pixels |
+| `=` / `-` | Zoom in, out one level; with `Shift` (`+` / `_` on most layouts) two levels |
+| `Shift` + left / right | Turn 15° |
+| `Shift` + up / down | Tilt 10° more or less (up to 80° on the globe, `maximumFlatMapTiltDegrees` on the flat map) |
+
+Each press eases over 0.3 seconds; quick zoom, turn and tilt presses add up (arrows pan on from where the camera is,
+as in MapLibre), and a held key keeps moving. Keys with `Ctrl`, `Alt` or
+`Cmd` stay with the browser, and keys typed into a form field inside the map (a popup's `<input>`) never move it.
+Double-click or double-tap zooms in on that point.
+
+```tsx
+import { EarthControls } from 'react-three-earth/react'
+
+export const accessibleControls = (
+  <EarthControls
+    label="Map of the trail around Mont Blanc"
+    keyboard={{ panStepPixels: 60, zoomStep: 0.5 }}
+    doubleClickZoom={false}
+  />
+)
+```
+
+`keyboard={false}` turns the keys off; the map stays a named region in the tab order (give the element
+`tabindex="-1"` to take it out). In vanilla, `EarthViewControls` has `label` (set before `attach`),
+`doubleClickZoom`, and `keyboard` (a `KeyboardControls`: `enabled`, `setOptions`, and a protected `actionFor` to
+override for other bindings); `keyboardAction(press, steps)` is the binding table on its own.
+
+Users who ask the system to reduce motion (`prefers-reduced-motion`) get no animation: camera animations, key presses
+and the globe-to-map morph jump to their end. Pass `essential: true` to an animation, or to `earth.setView` (in React through
+`useEarth()`), for motion that carries meaning.
+
 ## Common Mistakes
 
 - Putting a control outside `<Controls>`: it throws, `<NavigationControl> must sit inside <Controls>`.
@@ -140,8 +183,12 @@ label, and focus rings show with the keyboard.
   your state stays behind.
 - Expecting geolocation on plain HTTP: browsers refuse it; use HTTPS or `localhost`.
 - Mounting `<Controls>` outside `<Earth>`: it needs `useEarth`.
+- Giving the canvas's parent a `role` or `aria-label` of your own and expecting it to stay: `<EarthControls>` sets
+  them while mounted (and puts yours back after); name the map with `label` instead.
+- Testing the keys without focusing the map first: they only work while the map's element has focus (a click or `Tab`).
 
 ## Completion
 
 The corners show the controls, the buttons work by mouse, touch and keyboard, labels read in the app's language, and
-on iPhone the buttons are 44 pixels and fullscreen covers the page.
+on iPhone the buttons are 44 pixels and fullscreen covers the page. `Tab` reaches the map, a screen reader names it,
+and the arrows and `+` / `-` move it.

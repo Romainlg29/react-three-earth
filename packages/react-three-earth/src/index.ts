@@ -130,6 +130,15 @@ export {
 } from './core/Atmosphere.js'
 export * from './atmosphere/index.js'
 export { EarthControls, EarthViewControls, FlatMapControls } from './core/EarthControls.js'
+export {
+  DEFAULT_KEYBOARD_OPTIONS,
+  isEditableTarget,
+  keyboardAction,
+  KeyboardControls,
+  type KeyboardAction,
+  type KeyboardControlsOptions,
+  type KeyPress,
+} from './core/KeyboardControls.js'
 export { TouchGestures, type TwoFingerFrame } from './core/TouchGestures.js'
 export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
 export * from './view/webMercator.js'
