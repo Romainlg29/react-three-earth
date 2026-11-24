@@ -1,6 +1,7 @@
-import type { LineString, Polygon } from 'geojson'
+import type { LineString, MultiPolygon, Polygon } from 'geojson'
 
 import { closeRing } from '../geometry.js'
+import { prismMesh, wallMesh } from '../mesh.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import type { DrawFeature, DrawPointerEvent, LongitudeLatitude } from '../types.js'
 import { DrawMode, hitTolerancePixels, IDLE_STATUS, type DrawModeContext, type DrawModeStatus } from './DrawMode.js'
@@ -13,10 +14,11 @@ export interface PlacementModeOptions {
   /** Properties given to each feature the mode creates. Default: none. */
   properties?: Record<string, unknown>
   /**
-   * Line string and polygon modes: extrudes each feature into a solid this many metres tall (a polygon into a prism, a
-   * line into a wall), kept as `properties.extrusionHeightMeters`. Change it any time on the mode. Default: none.
+   * Line string and polygon modes: makes each feature a mesh this many metres tall, its base on the terrain under each
+   * vertex: a polygon a closed prism (its level top this high above the highest base vertex), a line a wall (its top
+   * this high above its base). Change it any time on the mode (`mode.heightMeters`). Default: none, flat features.
    */
-  extrusionHeightMeters?: number
+  heightMeters?: number
 }
 
 /** Places a point at each tap. */
@@ -51,17 +53,19 @@ export class PointMode extends DrawMode {
  */
 export abstract class PathMode extends DrawMode {
   protected readonly properties: Record<string, unknown>
-  extrusionHeightMeters: number | undefined
+  heightMeters: number | undefined
   protected readonly vertices: LongitudeLatitude[] = []
+  /** The terrain's height under each vertex, from its tap. */
+  protected readonly vertexHeights: number[] = []
   /** Where the mouse is, for the segment to the next vertex. Null on touch screens and off the map. */
   protected hoverPosition: LongitudeLatitude | null = null
   /** Fewest vertices of a finished feature. */
   protected abstract readonly minimumVertices: number
 
-  constructor({ properties = {}, extrusionHeightMeters }: PlacementModeOptions = {}) {
+  constructor({ properties = {}, heightMeters }: PlacementModeOptions = {}) {
     super()
     this.properties = properties
-    this.extrusionHeightMeters = extrusionHeightMeters
+    this.heightMeters = heightMeters
   }
 
   override enter(context: DrawModeContext): void {
@@ -70,14 +74,19 @@ export abstract class PathMode extends DrawMode {
     context.holdDoubleClickZoom()
   }
 
-  /** The properties of a finished feature: the mode's, with the extrusion height when set. */
+  /** The properties of a finished feature: a copy of the mode's. */
   protected featureProperties(): Record<string, unknown> {
-    const extrusion = this.extrusionHeightMeters
-    return extrusion !== undefined && extrusion > 0 ? { ...this.properties, extrusionHeightMeters: extrusion } : { ...this.properties }
+    return { ...this.properties }
   }
 
   /** The geometry for these vertices: a line string, or a closed polygon. */
   protected abstract toGeometry(vertices: LongitudeLatitude[]): LineString | Polygon
+
+  /**
+   * The mesh for these vertices `heightMeters` tall, each standing on `baseHeightsMeters` (the terrain under it): a wall,
+   * or a prism.
+   */
+  protected abstract toMesh(vertices: LongitudeLatitude[], baseHeightsMeters: number[], heightMeters: number): MultiPolygon
 
   /** True when a tap at `event` lands on the vertex at `index`. */
   protected hits(event: DrawPointerEvent, index: number): boolean {
@@ -105,6 +114,7 @@ export abstract class PathMode extends DrawMode {
     if (ground === null) return
     context.heights.remember(ground.longitudeDegrees, ground.latitudeDegrees, ground.heightMeters)
     this.vertices.push([ground.longitudeDegrees, ground.latitudeDegrees])
+    this.vertexHeights.push(ground.heightMeters)
     context.changed()
   }
 
@@ -141,8 +151,17 @@ export abstract class PathMode extends DrawMode {
   override finish(): void {
     const context = this.context
     if (context === null || this.vertices.length < this.minimumVertices) return
-    const feature: DrawFeature = { type: 'Feature', id: context.createId(), properties: this.featureProperties(), geometry: this.toGeometry([...this.vertices]) }
+    const height = this.heightMeters
+    let geometry: LineString | Polygon | MultiPolygon
+    if (height !== undefined && height > 0) {
+      // The terrain under each vertex sampled now (finer tiles may have loaded since its tap), else the height remembered
+      // for it (its tap's), else the tap's height kept with the vertex.
+      const bases = this.vertices.map(([longitude, latitude], index) => context.heights.heightAt(longitude, latitude, this.vertexHeights[index] ?? 0, { immediate: true }))
+      geometry = this.toMesh([...this.vertices], bases, height)
+    } else geometry = this.toGeometry([...this.vertices])
+    const feature: DrawFeature = { type: 'Feature', id: context.createId(), properties: this.featureProperties(), geometry }
     this.vertices.length = 0
+    this.vertexHeights.length = 0
     context.create([feature])
     context.changed()
   }
@@ -150,10 +169,12 @@ export abstract class PathMode extends DrawMode {
   override cancel(): void {
     if (this.vertices.length === 0) return
     this.vertices.length = 0
+    this.vertexHeights.length = 0
     this.context?.changed()
   }
 
   override undo(): void {
+    this.vertexHeights.pop()
     if (this.vertices.pop() !== undefined) this.context?.changed()
   }
 
@@ -196,7 +217,10 @@ export abstract class PathMode extends DrawMode {
   }
 }
 
-/** Draws line strings: a tap per vertex, then a tap on the last vertex (or Enter, a double click, `finish()`). */
+/**
+ * Draws line strings: a tap per vertex, then a tap on the last vertex (or Enter, a double click, `finish()`). With
+ * `heightMeters`, wall meshes.
+ */
 export class LineStringMode extends PathMode {
   readonly name: string = 'linestring'
   protected readonly minimumVertices: number = 2
@@ -204,11 +228,19 @@ export class LineStringMode extends PathMode {
   protected toGeometry(vertices: LongitudeLatitude[]): LineString {
     return { type: 'LineString', coordinates: vertices }
   }
+
+  protected toMesh(vertices: LongitudeLatitude[], baseHeightsMeters: number[], heightMeters: number): MultiPolygon {
+    return wallMesh(
+      vertices.map(([longitude, latitude], index) => [longitude, latitude, baseHeightsMeters[index]!]),
+      position => position[2]!,
+      heightMeters,
+    )
+  }
 }
 
 /**
  * Draws polygons: a tap per vertex, then a tap on the first or last vertex (or Enter, a double click, `finish()`)
- * closes the ring. The fill shows from the third vertex.
+ * closes the ring. The fill shows from the third vertex. With `heightMeters`, prism meshes.
  */
 export class PolygonMode extends PathMode {
   readonly name: string = 'polygon'
@@ -224,6 +256,10 @@ export class PolygonMode extends PathMode {
 
   protected toGeometry(vertices: LongitudeLatitude[]): Polygon {
     return { type: 'Polygon', coordinates: [closeRing(vertices)] }
+  }
+
+  protected toMesh(vertices: LongitudeLatitude[], baseHeightsMeters: number[], heightMeters: number): MultiPolygon {
+    return prismMesh([vertices.map(([longitude, latitude], index) => [longitude, latitude, baseHeightsMeters[index]!])], position => position[2]!, heightMeters)
   }
 
   protected override inProgressGeometry(positions: LongitudeLatitude[]): LineString | Polygon {

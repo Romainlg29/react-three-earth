@@ -1783,8 +1783,9 @@ async function editing(name, { touch = false, flat = false } = {}) {
 
 /**
  * Shapes and solids (`?example=shapes`): six starting solids (a cylinder, a box, a hexagonal tower, a slab at 2.5 km,
- * a sphere and a wall) stand on the terrain, on the globe and the flat map; two taps draw an extruded circle and two
- * more a rectangle, each kept as GeoJSON with its shape and height. Clearing them leaves the map as it was.
+ * a sphere and a wall) stand on the terrain as meshes, on the globe and the flat map; two taps draw a cylinder and two
+ * more a box, each a GeoJSON multipolygon of faces 600 m tall (measured from its altitudes). Clearing them leaves the
+ * map as it was.
  */
 /**
  * A see-through solid standing against the sky (the hexagonal tower, 2.5 km tall, seen level from 1.5 km): the sky goes
@@ -1861,7 +1862,13 @@ async function shapes(name, { touch = false, flat = false } = {}) {
   await page.waitForTimeout(150)
   await tap(760, 400)
   await page.waitForTimeout(800)
-  result.drawn = await page.evaluate(() => window.draw.getFeatures().features.slice(6).map(feature => ({ type: feature.properties.shape?.type, extrusionHeightMeters: feature.properties.extrusionHeightMeters })))
+  result.drawn = await page.evaluate(() => window.draw.getFeatures().features.slice(6).map(feature => {
+    // The height of a prism: its level top over its highest base vertex.
+    const altitudes = feature.geometry.coordinates.flat(2).map(position => position[2])
+    const top = Math.max(...altitudes)
+    const base = Math.max(...altitudes.filter(altitude => altitude < top - 1e-6))
+    return { type: feature.geometry.type, faces: feature.geometry.coordinates.length, heightMeters: Math.round(top - base) }
+  }))
   result.solids = await page.evaluate(() => window.draw.inspect().solids)
   await idle()
   const png = await page.screenshot()
@@ -1891,10 +1898,11 @@ async function shapes(name, { touch = false, flat = false } = {}) {
 }
 
 /**
- * The gizmo (`?example=shapes`, the select mode): a tap on the box where it stands in 3D selects it; a corner
- * scales it, the knob beyond its top turns it, and the knob on top raises it (on the globe, where the vertical shows).
- * The middle of an edge stretches it with the opposite edge fixed, and the knob under its base lifts it into the air.
- * Each change fires one update and keeps the shape's measurements; the preview solids go once released.
+ * The gizmo (`?example=shapes`, the select mode): a tap on the box mesh where it stands in 3D selects it; a corner
+ * scales it, the knob beyond its top turns it, and the knob on top raises its top face (on the globe, where the vertical
+ * shows). The middle of an edge stretches it with the opposite edge fixed, and the knob under its base lifts it into the
+ * air. Each change fires one update; the box is measured from its vertices (width and length from its top face's
+ * corners, height from its altitudes). A flat polygon becomes a prism by its middle knob. The previews go once released.
  */
 async function transforming(name, { touch = false, flat = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
@@ -1932,37 +1940,47 @@ async function transforming(name, { touch = false, flat = false } = {}) {
     }
     await page.waitForTimeout(500)
   }
-  // Screen positions of the box's gizmo, from the stored feature (on the terrain, or `above` metres over it).
+  // Screen positions of the box's gizmo (drawn at its base, its lowest altitude), and the box measured from its vertices.
   const gizmo = () => page.evaluate(() => {
-    const box = window.draw.getFeatures().features.find(feature => feature.properties.shape?.type === 'rectangle')
+    const box = window.draw.getFeature('box')
     const frame = window.drawTransformFrame(box)
-    const ground = ([longitudeDegrees, latitudeDegrees], above = 0) => {
-      const heightMeters = (window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0) + above
+    const at = ([longitudeDegrees, latitudeDegrees], heightMeters) => {
       const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
       return { x: xPixels, y: yPixels }
     }
-    const base = ground(frame.center)
-    const altitude = box.geometry.coordinates[0][0][2] ?? null
-    const atBase = position => {
-      if (altitude === null) return ground(position)
-      const { xPixels, yPixels } = window.earth.project({ longitudeDegrees: position[0], latitudeDegrees: position[1], heightMeters: altitude })
-      return { x: xPixels, y: yPixels }
+    const radians = Math.PI / 180
+    const distance = (a, b) => {
+      const s = Math.sin(((b[1] - a[1]) * radians) / 2) ** 2 + Math.cos(a[1] * radians) * Math.cos(b[1] * radians) * Math.sin(((b[0] - a[0]) * radians) / 2) ** 2
+      return 2 * 6_371_008.8 * Math.asin(Math.sqrt(s))
     }
+    const bearing = (a, b) => {
+      const y = Math.sin((b[0] - a[0]) * radians) * Math.cos(b[1] * radians)
+      const x = Math.cos(a[1] * radians) * Math.sin(b[1] * radians) - Math.sin(a[1] * radians) * Math.cos(b[1] * radians) * Math.cos((b[0] - a[0]) * radians)
+      return ((Math.atan2(y, x) / radians) % 360 + 360) % 360
+    }
+    // The top face comes first: its corners give the width (first edge), length and turn (second edge).
+    const corners = box.geometry.coordinates[0][0]
+    const altitudes = box.geometry.coordinates.flat(2).map(position => position[2])
+    const top = Math.max(...altitudes)
+    const highestBase = Math.max(...altitudes.filter(altitude => altitude < top - 1e-6))
+    const base = frame.baseHeightMeters
     const [longitudeDegrees, latitudeDegrees] = frame.center
+    const center = at(frame.center, base)
     return {
       id: box.id,
-      shape: box.properties.shape,
-      extrusion: box.properties.extrusionHeightMeters,
-      altitude,
+      shape: { faces: box.geometry.coordinates.length, widthMeters: distance(corners[0], corners[1]), lengthMeters: distance(corners[1], corners[2]), rotationDegrees: bearing(corners[1], corners[2]) },
+      heightMeters: top - highestBase,
+      altitude: base,
       groundMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0,
-      center: base,
-      top: ground(frame.center, frame.extrusionHeightMeters),
-      corner: ground(frame.corners[2]),
-      knob: ground(frame.rotationHandle),
-      right: atBase(frame.sideHandles[1].position),
-      left: atBase(frame.sideHandles[3].position),
+      center,
+      top: at(frame.center, frame.topHeightMeters),
+      corner: at(frame.corners[2], base),
+      knob: at(frame.rotationHandle, base),
+      right: at(frame.sideHandles[1].position, base),
+      left: at(frame.sideHandles[3].position, base),
       leftPosition: frame.sideHandles[3].position,
-      lift: { x: base.x, y: base.y + 24 },
+      centerPosition: frame.center,
+      lift: { x: center.x, y: center.y + 24 },
     }
   })
   const result = { check: `transforming, ${name}`, errors }
@@ -1973,7 +1991,7 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   })
   let box = await gizmo()
   result.before = box.shape
-  // Where the box is drawn: its top, 900 m over the ground (on the flat map, seen from above, the same place).
+  // Where the box is drawn: its top, 900 m over its base (on the flat map, seen from above, the same place).
   await tap(box.top)
   result.selected = await page.evaluate(id => window.draw.getState().selectedIds.includes(id), box.id)
   result.gizmoShown = await page.evaluate(() => !window.draw.getState().editingVertices)
@@ -1988,7 +2006,7 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   await drag(box.knob, { x: box.center.x + radius * Math.cos(angle), y: box.center.y + radius * Math.sin(angle) })
   box = await gizmo()
   result.afterRotate = box.shape
-  // A flat polygon becomes a solid by dragging the knob in its middle up (on the flat map, up the screen).
+  // A flat polygon becomes a prism mesh by dragging the knob in its middle up (on the flat map, up the screen).
   const flatCenter = await page.evaluate(() => {
     const corners = [[560, 470], [680, 470], [680, 540], [560, 540]].map(([xPixels, yPixels]) => {
       const { longitudeDegrees, latitudeDegrees } = window.earth.unproject({ xPixels, yPixels })
@@ -2004,21 +2022,28 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   await tap({ x: flatCenter.x + 30, y: flatCenter.y + 15 })
   result.flatSelected = await page.evaluate(() => window.draw.getState().selectedIds.includes('flat'))
   await drag(flatCenter, { x: flatCenter.x, y: flatCenter.y - 40 })
-  result.flatExtrusion = await page.evaluate(() => window.draw.getFeature('flat').properties.extrusionHeightMeters ?? 0)
+  result.flatExtrusion = await page.evaluate(() => {
+    const flat = window.draw.getFeature('flat')
+    if (flat.geometry.type !== 'MultiPolygon') return { type: flat.geometry.type, faces: 0, heightMeters: 0 }
+    const altitudes = flat.geometry.coordinates.flat(2).map(position => position[2])
+    const top = Math.max(...altitudes)
+    return { type: flat.geometry.type, faces: flat.geometry.coordinates.length, heightMeters: top - Math.max(...altitudes.filter(altitude => altitude < top - 1e-6)) }
+  })
   // Back to the box, closer: seen pitched from 30 km it is only a few knobs deep on the screen, so its edge handles and
   // top knob hide (a press inside moves it). The top knob raises it (on the globe, where the vertical shows), the middle
   // of its right edge stretches it, and the knob under its base lifts it.
   await page.evaluate(id => window.draw.select([id]), box.id)
-  await page.evaluate(([longitudeDegrees, latitudeDegrees]) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 12_000, headingDegrees: 0, pitchDegrees: -60 }), box.shape.center)
+  await page.evaluate(([longitudeDegrees, latitudeDegrees]) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 12_000, headingDegrees: 0, pitchDegrees: -60 }), box.centerPosition)
   await page.waitForTimeout(500)
   await idle()
   await page.waitForTimeout(1000)
   box = await gizmo()
+  result.heightBeforeRaise = box.heightMeters
   if (!flat) {
     await drag(box.top, { x: box.top.x, y: box.top.y - 40 })
     box = await gizmo()
   }
-  result.extrusion = box.extrusion
+  result.heightMeters = box.heightMeters
   await drag(box.right, { x: box.right.x + (box.right.x - box.left.x) * 0.5, y: box.right.y + (box.right.y - box.left.y) * 0.5 })
   const leftBefore = box.leftPosition
   box = await gizmo()
@@ -2027,7 +2052,8 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   result.fixedSideMovedMeters = Math.hypot((box.leftPosition[0] - leftBefore[0]) * metresPerDegree * Math.cos((leftBefore[1] * Math.PI) / 180), (box.leftPosition[1] - leftBefore[1]) * metresPerDegree)
   await drag(box.lift, { x: box.lift.x, y: box.lift.y - 40 })
   box = await gizmo()
-  result.lifted = { altitude: box.altitude, groundMeters: box.groundMeters, extrusion: box.extrusion }
+  result.heightBeforeLift = box.heightMeters
+  result.lifted = { altitude: box.altitude, groundMeters: box.groundMeters, heightMeters: box.heightMeters, faces: box.shape.faces }
   result.updates = await page.evaluate(() => window.drawUpdates)
   writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
   await page.waitForTimeout(500)

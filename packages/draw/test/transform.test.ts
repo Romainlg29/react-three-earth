@@ -1,59 +1,139 @@
-import type { LineString, Point, Polygon, Position } from 'geojson'
+import type { LineString, MultiPolygon, Polygon, Position } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
+import { indexMesh, isClosedMesh, meshVolume } from '../src/mesh.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
 import { SelectMode } from '../src/modes/SelectMode.js'
-import { createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, destination, shapeOf } from '../src/shapes.js'
+import { bearingDegrees, createCircle, createRectangle, createRegularPolygon, createSphere, destination } from '../src/shapes.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
-import { baseAltitudeOf, featureCenter, liftFeature, placeOnTerrain, rotateFeature, scaleFeature, setExtrusionHeight, stretchFeature, transformFrame } from '../src/transform.js'
+import {
+  baseAltitudeOf,
+  extrudeFeature,
+  featureCenter,
+  featureRotationDegrees,
+  liftFeature,
+  meshTopOf,
+  moveMeshTop,
+  placeOnTerrain,
+  rotateFeature,
+  scaleFeature,
+  stretchFeature,
+  transformFrame,
+} from '../src/transform.js'
 import type { DrawFeature, DrawPointerEvent } from '../src/types.js'
 
 const CENTER: [number, number] = [6.6, 46.45]
-const rectangle = (): DrawFeature => ({ ...createRectangle(CENTER, 1000, 2000, { extrusionHeightMeters: 300 }), id: 'box' }) as DrawFeature
+/** A box mesh 1000 m across, 2000 m along (north), on the ellipsoid, 300 m tall. */
+const rectangle = (): DrawFeature => ({ ...createRectangle(CENTER, 1000, 2000, { baseHeightMeters: 0, heightMeters: 300 }), id: 'box' }) as DrawFeature
+
+/**
+ * A rectangle measured from its vertices (a flat polygon's ring, or a box mesh's top face): width (first edge), length
+ * (second edge), turn (the bearing of the second edge, folded to -90°…90°) and center.
+ */
+function measure(feature: DrawFeature): { widthMeters: number; lengthMeters: number; rotationDegrees: number; center: [number, number] } {
+  const geometry = feature.geometry
+  const ring = geometry.type === 'MultiPolygon' ? geometry.coordinates[0]![0]! : (geometry as Polygon).coordinates[0]!
+  const rotation = ((bearingDegrees(ring[1]!, ring[2]!) % 180) + 270) % 180 - 90
+  return { widthMeters: distanceMeters(ring[0]!, ring[1]!), lengthMeters: distanceMeters(ring[1]!, ring[2]!), rotationDegrees: rotation, center: featureCenter(feature) }
+}
+
+/** Altitudes of every position of a feature. */
+function altitudes(feature: DrawFeature): number[] {
+  const geometry = feature.geometry
+  const positions: Position[] = geometry.type === 'MultiPolygon' ? geometry.coordinates.flat(2) : geometry.type === 'Polygon' ? geometry.coordinates.flat() : geometry.type === 'LineString' ? geometry.coordinates : [geometry.coordinates]
+  return positions.map(position => position[2]!)
+}
+
+/** Expects a mesh still closed and wound outwards, with its six faces. */
+function expectBox(feature: DrawFeature): void {
+  const geometry = feature.geometry as MultiPolygon
+  expect(geometry.coordinates).toHaveLength(6)
+  const mesh = indexMesh(geometry)
+  expect(mesh.vertices).toHaveLength(8)
+  expect(isClosedMesh(mesh)).toBe(true)
+  expect(meshVolume(mesh)).toBeGreaterThan(0)
+}
 
 describe('transforms', () => {
-  it('turns a shape around its center, keeping its size and updating its rotation', () => {
+  it('turns a mesh around the vertical through its center, keeping its size, altitudes and faces', () => {
     const turned = rotateFeature(rectangle(), CENTER, 90)
-    expect(shapeOf(turned)).toMatchObject({ type: 'rectangle', widthMeters: 1000, lengthMeters: 2000, rotationDegrees: 90 })
-    const ring = (turned.geometry as Polygon).coordinates[0]!
+    expectBox(turned)
+    expect(altitudes(turned)).toEqual(altitudes(rectangle()))
+    const { widthMeters, lengthMeters } = measure(turned)
+    expect(widthMeters).toBeCloseTo(1000, 0)
+    expect(lengthMeters).toBeCloseTo(2000, 0)
     // Now 2000 m east-west: the first two corners (formerly 1000 m apart, west-east) run north-south.
-    expect(distanceMeters(ring[0]!, ring[1]!)).toBeCloseTo(1000, 0)
-    expect(distanceMeters(ring[1]!, ring[2]!)).toBeCloseTo(2000, 0)
-    expect(Math.abs(ring[0]![0]! - ring[1]![0]!)).toBeLessThan(1e-4) // same longitude: a north-south edge
-    expect(turned.properties?.extrusionHeightMeters).toBe(300)
-    expect(shapeOf(rotateFeature(rectangle(), CENTER, -30))).toMatchObject({ rotationDegrees: 330 })
+    const ring = (turned.geometry as MultiPolygon).coordinates[0]![0]!
+    expect(Math.abs(ring[0]![0]! - ring[1]![0]!)).toBeLessThan(1e-4)
+    expect(featureRotationDegrees(rotateFeature(rectangle(), CENTER, -30))).toBeCloseTo(-30, 4)
+    expect(featureRotationDegrees(rotateFeature(rectangle(), CENTER, 100))).toBeCloseTo(10, 4)
+    expect(turned.properties).toEqual({})
   })
 
-  it('scales around the center: positions, shape measurements and sphere radii', () => {
+  it('scales around the center: positions, and a mesh in 3D from its base', () => {
     const scaled = scaleFeature(rectangle(), CENTER, 2)
-    expect(shapeOf(scaled)).toMatchObject({ widthMeters: 2000, lengthMeters: 4000 })
-    const ring = (scaled.geometry as Polygon).coordinates[0]!
-    expect(distanceMeters(ring[1]!, ring[2]!)).toBeCloseTo(4000, 0)
+    expectBox(scaled)
+    expect(measure(scaled).widthMeters).toBeCloseTo(2000, 0)
+    expect(measure(scaled).lengthMeters).toBeCloseTo(4000, 0)
+    expect(Math.max(...altitudes(scaled))).toBeCloseTo(600, 6)
+    expect(Math.min(...altitudes(scaled))).toBe(0)
     const circle = { ...createCircle(CENTER, 500), id: 'c' } as DrawFeature
-    expect(shapeOf(scaleFeature(circle, CENTER, 0.5))).toMatchObject({ radiusMeters: 250 })
-    const ball = { ...createSphere(CENTER, 100), id: 'b' } as DrawFeature
-    expect(shapeOf(scaleFeature(ball, CENTER, 3))).toMatchObject({ radiusMeters: 300 })
+    for (const position of (scaleFeature(circle, CENTER, 0.5).geometry as Polygon).coordinates[0]!) expect(distanceMeters(CENTER, position)).toBeCloseTo(250, 3)
+    // A ball resting at 100 m stays round and resting there.
+    const ball = { ...createSphere(CENTER, 100, { baseHeightMeters: 100 }), id: 'b' } as DrawFeature
+    const big = scaleFeature(ball, featureCenter(ball), 3)
+    expect(Math.min(...altitudes(big))).toBeCloseTo(100, 6)
+    expect(Math.max(...altitudes(big))).toBeCloseTo(700, 6)
     expect(() => scaleFeature(circle, CENTER, 0)).toThrow(/positive number/)
   })
 
-  it('sets and removes extrusion heights', () => {
-    expect(setExtrusionHeight(rectangle(), 900).properties?.extrusionHeightMeters).toBe(900)
-    expect(setExtrusionHeight(rectangle(), 0).properties).not.toHaveProperty('extrusionHeightMeters')
+  it('extrudes flat polygons into prisms and lines into walls, from their altitudes or the terrain', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat', properties: { name: 'hall' } } as DrawFeature
+    const box = extrudeFeature(flat, 300, (longitude: number) => 100 + (longitude - CENTER[0]) * 1000)
+    expectBox(box)
+    expect(box.properties).toEqual({ name: 'hall' })
+    expect(meshTopOf(box)!.topMeters).toBeCloseTo(Math.max(...altitudes(box).filter(altitude => altitude < 300)) + 300, 6)
+    const slab = { ...createRectangle(CENTER, 100, 100, { baseHeightMeters: 2500 }), id: 's' } as DrawFeature
+    expect(Math.min(...altitudes(extrudeFeature(slab, 50, () => 0)))).toBe(2500)
+    const line: DrawFeature = { type: 'Feature', id: 'l', properties: {}, geometry: { type: 'LineString', coordinates: [CENTER, destination(CENTER, 100, 90), destination(CENTER, 200, 80)] } }
+    const wall = extrudeFeature(line, 4, 10)
+    expect((wall.geometry as MultiPolygon).coordinates).toHaveLength(2)
+    expect(Math.max(...altitudes(wall))).toBe(14)
+    // Meshes and points stay as they are.
+    expect(extrudeFeature(box, 10)).toBe(box)
   })
 
-  it('puts the gizmo around the feature: corners on its box, the knob beyond its top, none on circles', () => {
+  it('moves the top face of a prism, keeping it at least 1 m above the rest', () => {
+    const taller = moveMeshTop(rectangle(), 200)
+    expectBox(taller)
+    expect(Math.max(...altitudes(taller))).toBeCloseTo(500, 6)
+    expect(Math.min(...altitudes(taller))).toBe(0)
+    expect(Math.max(...altitudes(moveMeshTop(rectangle(), -1000)))).toBeCloseTo(1, 6)
+    // A sphere has no level top face.
+    const ball = { ...createSphere(CENTER, 100), id: 'b' } as DrawFeature
+    expect(meshTopOf(ball)).toBeNull()
+    expect(moveMeshTop(ball, 50)).toBe(ball)
+  })
+
+  it('puts the gizmo around the feature: corners on its box at its base, the knob beyond its top', () => {
     const frame = transformFrame(rectangle())
-    expect(frame.center).toEqual(CENTER)
+    expect(distanceMeters(frame.center, CENTER)).toBeLessThan(0.05)
+    expect(frame.rotationDegrees).toBe(0)
     expect(frame.corners).toHaveLength(4)
     for (const corner of frame.corners) expect(distanceMeters(CENTER, corner)).toBeCloseTo(Math.hypot(500, 1000), -1)
     // 1000 m to the top edge, then a quarter of the 2000 m length.
     expect(distanceMeters(CENTER, frame.rotationHandle!)).toBeCloseTo(1500, -1)
-    expect(frame.extrusionHeightMeters).toBe(300)
-    expect(transformFrame({ ...createCircle(CENTER, 100), id: 'c' } as DrawFeature).rotationHandle).toBeNull()
+    expect(frame.baseHeightMeters).toBe(0)
+    expect(frame.topHeightMeters).toBe(300)
+    // Circles face north and turn too; points have no box.
+    const circleFrame = transformFrame({ ...createCircle(CENTER, 100), id: 'c' } as DrawFeature)
+    expect(circleFrame.rotationDegrees).toBe(0)
+    expect(circleFrame.rotationHandle).not.toBeNull()
     expect(transformFrame({ type: 'Feature', id: 'p', properties: {}, geometry: { type: 'Point', coordinates: CENTER } }).corners).toEqual([])
-    // Side handles in the middle of each edge (bottom, right, top, left), none on spheres.
+    expect(transformFrame({ ...createCircle(CENTER, 100), id: 'c' } as DrawFeature).baseHeightMeters).toBeNull()
+    // Side handles in the middle of each edge (bottom, right, top, left).
     expect(frame.sideHandles.map(side => [side.axis, side.sideMeters, side.fixedMeters].map(value => (typeof value === 'number' ? Math.round(value) : value)))).toEqual([
       ['along', -1000, 1000],
       ['across', 500, -500],
@@ -61,75 +141,73 @@ describe('transforms', () => {
       ['across', -500, 500],
     ])
     expect(distanceMeters(CENTER, frame.sideHandles[1]!.position)).toBeCloseTo(500, 0)
-    expect(transformFrame({ ...createSphere(CENTER, 100), id: 'b' } as DrawFeature).sideHandles).toEqual([])
     const line: DrawFeature = { type: 'Feature', id: 'l', properties: {}, geometry: { type: 'LineString', coordinates: [[179.9, 0], [180.1, 0]] } }
     expect(featureCenter(line)[0]).toBeCloseTo(180, 9)
+  })
+
+  it('turns the gizmo with the feature: the tightest box around a turned box, a hexagon, a ball', () => {
+    const turned = { ...createRectangle(CENTER, 1000, 2000, { rotationDegrees: 30, baseHeightMeters: 0, heightMeters: 10 }), id: 't' } as DrawFeature
+    const frame = transformFrame(turned)
+    expect(frame.rotationDegrees).toBeCloseTo(30, 4)
+    expect(frame.sideHandles[1]!.sideMeters).toBeCloseTo(500, 0)
+    const ball = { ...createSphere(CENTER, 100), id: 'b' } as DrawFeature
+    const ballFrame = transformFrame(ball)
+    expect(Math.abs(ballFrame.rotationDegrees)).toBeLessThanOrEqual(45)
+    expect(ballFrame.baseHeightMeters).toBeCloseTo(0, 6)
+    expect(ballFrame.topHeightMeters).toBeCloseTo(200, 6)
+    expect(Math.abs(transformFrame({ ...createRegularPolygon(CENTER, 500, 6), id: 'h' } as DrawFeature).rotationDegrees)).toBeLessThanOrEqual(45)
   })
 })
 
 describe('stretching and lifting', () => {
-  const ring = (feature: DrawFeature) => (feature.geometry as Polygon).coordinates[0]!
-
-  it('stretches a rectangle across, keeping the opposite edge where it was', () => {
+  it('stretches a box across, keeping the opposite edge where it was, its height and its faces', () => {
     const box = rectangle()
     const frame = transformFrame(box)
     const right = frame.sideHandles.find(side => side.axis === 'across' && side.sideMeters > 0)!
     const stretched = stretchFeature(box, frame, 'across', right.fixedMeters, 1.5)
-    const shape = shapeOf(stretched) as { widthMeters: number; lengthMeters: number; center: [number, number] }
-    expect(shape.widthMeters).toBeCloseTo(1500, 6)
-    expect(shape.lengthMeters).toBe(2000)
-    expect(distanceMeters(CENTER, shape.center)).toBeCloseTo(250, 1)
-    // The west corners (the first and the last) stay; the east ones move 500 m east.
-    expect(distanceMeters(ring(box)[0]!, ring(stretched)[0]!)).toBeLessThan(0.01)
-    expect(distanceMeters(ring(box)[3]!, ring(stretched)[3]!)).toBeLessThan(0.01)
-    expect(distanceMeters(ring(box)[1]!, ring(stretched)[1]!)).toBeCloseTo(500, 1)
-    expect(distanceMeters(ring(stretched)[0]!, ring(stretched)[1]!)).toBeCloseTo(1500, 1)
-    expect(stretched.properties?.extrusionHeightMeters).toBe(300)
+    expectBox(stretched)
+    expect(altitudes(stretched)).toEqual(altitudes(box))
+    const shape = measure(stretched)
+    expect(shape.widthMeters).toBeCloseTo(1500, 1)
+    expect(shape.lengthMeters).toBeCloseTo(2000, 1)
+    expect(distanceMeters(CENTER, shape.center)).toBeCloseTo(250, 0)
+    // The west corners (the first and the last of the top face) stay; the east ones move 500 m east.
+    const top = (feature: DrawFeature) => (feature.geometry as MultiPolygon).coordinates[0]![0]!
+    expect(distanceMeters(top(box)[0]!, top(stretched)[0]!)).toBeLessThan(0.01)
+    expect(distanceMeters(top(box)[3]!, top(stretched)[3]!)).toBeLessThan(0.01)
+    expect(distanceMeters(top(box)[1]!, top(stretched)[1]!)).toBeCloseTo(500, 1)
     // A turned rectangle stretches along its own length.
     const turned = { ...createRectangle(CENTER, 1000, 2000, { rotationDegrees: 30 }), id: 't' } as DrawFeature
     const turnedFrame = transformFrame(turned)
-    expect(shapeOf(stretchFeature(turned, turnedFrame, 'along', -1000, 0.5))).toMatchObject({ widthMeters: 1000, lengthMeters: expect.closeTo(1000, 6), rotationDegrees: 30 })
+    expect(measure(stretchFeature(turned, turnedFrame, 'along', -1000, 0.5))).toMatchObject({ widthMeters: expect.closeTo(1000, 1), lengthMeters: expect.closeTo(1000, 1), rotationDegrees: expect.closeTo(30, 1) })
+    const point: DrawFeature = { type: 'Feature', id: 'p', properties: {}, geometry: { type: 'Point', coordinates: CENTER } }
+    expect(stretchFeature(point, frame, 'across', 0, 2)).toBe(point)
+    expect(() => stretchFeature(box, frame, 'across', 0, -1)).toThrow(/positive number/)
   })
 
-  it('makes an ellipse of a stretched circle, keeps an ellipse one, and a regular polygon a plain polygon', () => {
-    const circle = { ...createCircle(CENTER, 500), id: 'c' } as DrawFeature
-    const oval = stretchFeature(circle, transformFrame(circle), 'along', -500, 2)
-    expect(shapeOf(oval)).toMatchObject({ type: 'ellipse', semiMajorAxisMeters: 1000, semiMinorAxisMeters: 500, rotationDegrees: 0 })
-    expect(distanceMeters(CENTER, shapeOf(oval)!.center)).toBeCloseTo(500, 1)
-    const wide = stretchFeature(oval, transformFrame(oval), 'across', 500, 3)
-    expect(shapeOf(wide)).toMatchObject({ type: 'ellipse', semiMajorAxisMeters: 1000, semiMinorAxisMeters: 1500 })
-    const ellipse = { ...createEllipse(CENTER, 800, 400, { rotationDegrees: 45 }), id: 'e' } as DrawFeature
-    expect(shapeOf(stretchFeature(ellipse, transformFrame(ellipse), 'across', -400, 0.5))).toMatchObject({ type: 'ellipse', semiMajorAxisMeters: 800, semiMinorAxisMeters: 200, rotationDegrees: 45 })
-    const hexagon = { ...createRegularPolygon(CENTER, 500, 6, { extrusionHeightMeters: 50 }), id: 'h' } as DrawFeature
-    const squashed = stretchFeature(hexagon, transformFrame(hexagon), 'across', 0, 0.5)
-    expect(shapeOf(squashed)).toBeNull()
-    expect(squashed.properties).toEqual({ extrusionHeightMeters: 50 })
-    const ball = { ...createSphere(CENTER, 100), id: 'b' } as DrawFeature
-    expect(stretchFeature(ball, transformFrame(ball), 'across', 0, 2)).toBe(ball)
-    expect(() => stretchFeature(circle, transformFrame(circle), 'across', 0, -1)).toThrow(/positive number/)
-  })
-
-  it('lifts features into the air from the terrain or their altitude, keeping the extrusion, and back down', () => {
-    const lifted = liftFeature(rectangle(), 200, 50)
-    for (const position of ring(lifted)) expect(position[2]).toBe(250)
-    expect(lifted.properties?.extrusionHeightMeters).toBe(300)
+  it('lifts features into the air from the terrain or their altitude, a mesh whole, and back down', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'f' } as DrawFeature
+    const lifted = liftFeature(flat, 200, 50)
+    for (const altitude of altitudes(lifted)) expect(altitude).toBe(250)
     expect(baseAltitudeOf(lifted)).toBe(250)
-    expect(baseAltitudeOf(rectangle())).toBeNull()
+    expect(baseAltitudeOf(flat)).toBeNull()
     const line: DrawFeature = { type: 'Feature', id: 'l', properties: {}, geometry: { type: 'LineString', coordinates: [[6.6, 46.45, 100], [6.61, 46.45, 300]] } }
     expect((liftFeature(line, -50).geometry as LineString).coordinates.map(position => position[2])).toEqual([50, 250])
-    // A resting ball's altitude is its center: the ground plus its radius.
-    const ball = liftFeature({ ...createSphere(CENTER, 100), id: 'b' } as DrawFeature, 400, 10)
-    expect((ball.geometry as Point).coordinates).toEqual([CENTER[0], CENTER[1], 510])
-    expect(baseAltitudeOf(ball)).toBe(410)
-    expect(ring(placeOnTerrain(lifted)).every((position: Position) => position.length === 2)).toBe(true)
-    expect(placeOnTerrain(lifted).properties?.extrusionHeightMeters).toBe(300)
+    const box = liftFeature(rectangle(), 400)
+    expectBox(box)
+    expect(baseAltitudeOf(box)).toBe(400)
+    expect(Math.max(...altitudes(box))).toBe(700)
+    expect((placeOnTerrain(lifted).geometry as Polygon).coordinates[0]!.every((position: Position) => position.length === 2)).toBe(true)
+    // A mesh needs its altitudes: it stays as it is.
+    expect(placeOnTerrain(box)).toBe(box)
   })
 
   it('lifts a feature on the terrain from the height under each position, and fills the gaps of mixed altitudes', () => {
+    const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'f' } as DrawFeature
     const relief = (longitude: number, latitude: number) => (longitude - 6.6) * 10_000 + (latitude - 46.45) * 1000
-    const lifted = liftFeature(rectangle(), 100, relief)
-    for (const position of ring(lifted)) expect(position[2]).toBeCloseTo(relief(position[0]!, position[1]!) + 100, 9)
-    // Any altitude puts the feature in the air (as it is drawn): its base is the first one, the others come from the terrain.
+    const lifted = liftFeature(flat, 100, relief)
+    for (const position of (lifted.geometry as Polygon).coordinates[0]!) expect(position[2]).toBeCloseTo(relief(position[0]!, position[1]!) + 100, 9)
+    // Any altitude puts the feature in the air (as it is drawn): its base is the lowest, the others come from the terrain.
     const mixed: DrawFeature = { type: 'Feature', id: 'm', properties: {}, geometry: { type: 'LineString', coordinates: [[6.6, 46.45], [6.61, 46.45, 400]] } }
     expect(baseAltitudeOf(mixed)).toBe(400)
     expect((liftFeature(mixed, 10, () => 50).geometry as LineString).coordinates.map(position => position[2])).toEqual([60, 410])
@@ -184,12 +262,15 @@ describe('the gizmo of the select mode', () => {
     expect(setup.updates).toHaveLength(0)
     mode.pointerUp(pointerAt(setup, destination(CENTER, 1500, 88)))
     expect(setup.updates).toHaveLength(1)
-    expect(shapeOf(setup.store.get('box')!)).toMatchObject({ rotationDegrees: 90 })
+    // Turned a quarter: its length runs east-west.
+    const turned = setup.store.get('box')!
+    expect(Math.abs(measure(turned).rotationDegrees)).toBeCloseTo(90, 1)
+    expectBox(turned)
     mode.undo()
-    expect(shapeOf(setup.store.get('box')!)).toMatchObject({ rotationDegrees: 0 })
+    expect(measure(setup.store.get('box')!).rotationDegrees).toBeCloseTo(0, 1)
   })
 
-  it('scales with a corner, and raises the height with the knob on top', () => {
+  it('scales with a corner, and raises the top face with the knob on top', () => {
     const setup = createContext([rectangle()])
     const mode = new SelectMode()
     mode.enter(setup.context)
@@ -199,16 +280,22 @@ describe('the gizmo of the select mode', () => {
     const far = destination(CENTER, distanceMeters(CENTER, corner) * 1.5, 26.565)
     mode.pointerMove(pointerAt(setup, far))
     mode.pointerUp(pointerAt(setup, far))
-    expect(shapeOf(setup.store.get('box')!)).toMatchObject({ widthMeters: expect.closeTo(1500, 0), lengthMeters: expect.closeTo(3000, 0) })
-    // The height knob is drawn 300 m up, 30 px above the center; dragging it 50 px up adds 500 m.
-    const top = pointerAt(setup, CENTER, { heightMeters: 300 })
+    const scaled = setup.store.get('box')!
+    expect(measure(scaled)).toMatchObject({ widthMeters: expect.closeTo(1500, 0), lengthMeters: expect.closeTo(3000, 0) })
+    // Scaled in 3D from its base: 450 m tall now.
+    expect(Math.max(...altitudes(scaled))).toBeCloseTo(450, 0)
+    // The height knob is drawn on its top, 45 px above the center; dragging it 50 px up raises the top 500 m.
+    const top = pointerAt(setup, CENTER, { heightMeters: Math.max(...altitudes(scaled)) })
     expect(mode.pointerDown(top)).toBe(true)
     mode.pointerMove({ ...top, screen: { xPixels: top.screen.xPixels, yPixels: top.screen.yPixels - 50 } })
     mode.pointerUp(top)
-    expect(setup.store.get('box')!.properties?.extrusionHeightMeters).toBeCloseTo(800, 6)
+    const raised = setup.store.get('box')!
+    expectBox(raised)
+    expect(Math.max(...altitudes(raised))).toBeCloseTo(Math.max(...altitudes(scaled)) + 500, 6)
+    expect(Math.min(...altitudes(raised))).toBe(0)
   })
 
-  it('extrudes a flat rectangle with the knob in its middle, and flattens it again', () => {
+  it('extrudes a flat rectangle into a box with the knob in its middle, whose top then goes no lower than 1 m', () => {
     const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'box' } as DrawFeature
     const setup = createContext([flat])
     const mode = new SelectMode()
@@ -218,12 +305,26 @@ describe('the gizmo of the select mode', () => {
     expect(mode.pointerDown(middle)).toBe(true) // the knob, not the body
     mode.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - 30 } })
     mode.pointerUp(middle)
-    expect(setup.store.get('box')!.properties?.extrusionHeightMeters).toBeCloseTo(300, 6)
+    const box = setup.store.get('box')!
+    expectBox(box)
+    expect(box.properties).toEqual({})
+    expect(Math.max(...altitudes(box))).toBeCloseTo(300, 6)
+    expect(Math.min(...altitudes(box))).toBe(0)
+    expect(setup.updates).toHaveLength(1)
     const top = pointerAt(setup, CENTER, { heightMeters: 300 })
     expect(mode.pointerDown(top)).toBe(true)
     mode.pointerMove({ ...top, screen: { xPixels: top.screen.xPixels, yPixels: top.screen.yPixels + 40 } })
     mode.pointerUp(top)
-    expect(setup.store.get('box')!.properties).not.toHaveProperty('extrusionHeightMeters')
+    expect(Math.max(...altitudes(setup.store.get('box')!))).toBeCloseTo(1, 6)
+    // A drag that stays under a metre leaves a flat feature flat.
+    const other = createContext([{ ...flat, id: 'other' }])
+    const second = new SelectMode()
+    second.enter(other.context)
+    second.setSelection(['other'])
+    expect(second.pointerDown(middle)).toBe(true)
+    second.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - 0.05 } })
+    second.pointerUp(middle)
+    expect(other.store.get('other')!.geometry.type).toBe('Polygon')
   })
 
   it('extrudes by dragging up the screen when seen from straight above', () => {
@@ -240,7 +341,7 @@ describe('the gizmo of the select mode', () => {
     expect(mode.pointerDown(middle)).toBe(true)
     mode.pointerMove({ ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels - pixelsPerKilometre / 2 } })
     mode.pointerUp(middle)
-    expect(setup.store.get('box')!.properties?.extrusionHeightMeters).toBeCloseTo(500, 3)
+    expect(Math.max(...altitudes(setup.store.get('box')!))).toBeCloseTo(500, 3)
   })
 
   it('still moves the feature by its body, and leaves presses elsewhere to the camera', () => {
@@ -254,7 +355,7 @@ describe('the gizmo of the select mode', () => {
     const moved = destination(inside, 3000, 90)
     mode.pointerMove(pointerAt(setup, moved))
     mode.pointerUp(pointerAt(setup, moved))
-    expect(distanceMeters(shapeOf(setup.store.get('box')!)!.center, destination(CENTER, 3000, 90))).toBeLessThan(1)
+    expect(distanceMeters(featureCenter(setup.store.get('box')!), destination(CENTER, 3000, 90))).toBeLessThan(1)
     // No vertex handles: the gizmo instead.
     const content = { features: [], lines: [], handles: [] as unknown[] }
     mode.overlay(content as never)
@@ -273,8 +374,8 @@ describe('the gizmo of the select mode', () => {
     const moved = { ...press, screen: { xPixels: press.screen.xPixels + 100, yPixels: press.screen.yPixels }, geographic: { ...press.geographic!, longitudeDegrees: press.geographic!.longitudeDegrees + 0.01 } }
     mode.pointerMove(moved)
     mode.pointerUp(moved)
-    expect(setup.store.get('box')!.properties).not.toHaveProperty('extrusionHeightMeters')
-    expect(shapeOf(setup.store.get('box')!)!.center[0]).toBeCloseTo(CENTER[0] + 0.01, 6)
+    expect(setup.store.get('box')!.geometry.type).toBe('Polygon')
+    expect(featureCenter(setup.store.get('box')!)[0]).toBeCloseTo(CENTER[0] + 0.01, 6)
   })
 
   it('records nothing when a knob is dragged back where it started', () => {
@@ -301,8 +402,9 @@ describe('the gizmo of the select mode', () => {
     expect(mode.pointerDown(pointerAt(setup, knob))).toBe(true)
     mode.pointerMove(pointerAt(setup, destination(CENTER, 1500, 40), { shiftKey: true }))
     mode.pointerUp(pointerAt(setup, destination(CENTER, 1500, 40), { shiftKey: true }))
-    const rotation = (shapeOf(setup.store.get('box')!) as { rotationDegrees: number }).rotationDegrees
-    expect(rotation % 15).toBeCloseTo(0, 6)
+    const rotation = featureRotationDegrees(setup.store.get('box')!)
+    expect(rotation).not.toBeCloseTo(7, 1)
+    expect(Math.abs(rotation - Math.round(rotation / 15) * 15)).toBeLessThan(1e-4)
   })
 
   it('stretches the box by the middle of an edge, the opposite edge fixed, in one update', () => {
@@ -320,7 +422,8 @@ describe('the gizmo of the select mode', () => {
     mode.pointerUp(pointerAt(setup, pulled))
     expect(setup.updates).toHaveLength(1)
     const box = setup.store.get('box')!
-    expect(shapeOf(box)).toMatchObject({ type: 'rectangle', widthMeters: expect.closeTo(1500, -1), lengthMeters: 2000 })
+    expectBox(box)
+    expect(measure(box)).toMatchObject({ widthMeters: expect.closeTo(1500, -1), lengthMeters: expect.closeTo(2000, 2) })
     // The west edge stayed.
     expect(distanceMeters(transformFrame(box).sideHandles[3]!.position, frame.sideHandles[3]!.position)).toBeLessThan(5)
     // It cannot cross the opposite edge: pulled far past it, the box keeps a sliver.
@@ -328,7 +431,7 @@ describe('the gizmo of the select mode', () => {
     const past = destination(CENTER, 5000, 270)
     mode.pointerMove(pointerAt(setup, past))
     mode.pointerUp(pointerAt(setup, past))
-    expect((shapeOf(setup.store.get('box')!) as { widthMeters: number }).widthMeters).toBeCloseTo(15, 0)
+    expect(measure(setup.store.get('box')!).widthMeters).toBeCloseTo(15, 0)
   })
 
   it('lifts a box with the knob under its base, keeping its height, and lowers it keeping its altitudes', () => {
@@ -347,9 +450,10 @@ describe('the gizmo of the select mode', () => {
     mode.pointerUp(knob)
     expect(setup.updates).toHaveLength(1)
     const lifted = setup.store.get('box')!
-    for (const position of (lifted.geometry as Polygon).coordinates[0]!) expect(position[2]).toBeCloseTo(500, 6)
-    expect(lifted.properties?.extrusionHeightMeters).toBe(300)
-    expect(shapeOf(lifted)).toMatchObject({ type: 'rectangle', widthMeters: 1000 })
+    expectBox(lifted)
+    expect(Math.min(...altitudes(lifted))).toBeCloseTo(500, 6)
+    expect(Math.max(...altitudes(lifted))).toBeCloseTo(800, 6)
+    expect(measure(lifted).widthMeters).toBeCloseTo(1000, 3)
     // Its knob follows it up; lowered near (even under) the ground, a box in the air keeps its altitudes.
     const raised: DrawPointerEvent = { ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 50 } }
     expect(mode.pointerDown(raised)).toBe(true)
@@ -361,7 +465,7 @@ describe('the gizmo of the select mode', () => {
     expect(baseAltitudeOf(setup.store.get('box')!)).toBeCloseTo(500, 6)
   })
 
-  it('lifts a flat shape by the knob under its middle, apart from the height knob on it, and lifts a ball by its center', () => {
+  it('lifts a flat shape by the knob under its middle, apart from the height knob on it, and lifts a ball mesh whole', () => {
     const flat = { ...createRectangle(CENTER, 1000, 2000), id: 'flat' } as DrawFeature
     const ball = { ...createSphere(destination(CENTER, 5000, 90), 100), id: 'ball' } as DrawFeature
     const setup = createContext([flat, ball])
@@ -370,25 +474,27 @@ describe('the gizmo of the select mode', () => {
     mode.setSelection(['flat'])
     const middle = pointerAt(setup, CENTER)
     const knob: DrawPointerEvent = { ...middle, screen: { xPixels: middle.screen.xPixels, yPixels: middle.screen.yPixels + 24 } }
+    // A small lift that ends on the ground changes nothing.
+    expect(mode.pointerDown(knob)).toBe(true)
+    mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels + 10 } })
+    mode.pointerUp(knob)
+    expect(setup.updates).toHaveLength(0)
     expect(mode.pointerDown(knob)).toBe(true)
     mode.pointerMove({ ...knob, screen: { xPixels: knob.screen.xPixels, yPixels: knob.screen.yPixels - 30 } })
     mode.pointerUp(knob)
     const lifted = setup.store.get('flat')!
     expect(baseAltitudeOf(lifted)).toBeCloseTo(300, 6)
-    expect(lifted.properties).not.toHaveProperty('extrusionHeightMeters')
-    // A small lift that ends on the ground changes nothing.
+    expect(lifted.geometry.type).toBe('Polygon')
+    // The ball rests at 0 m: its knob hangs under its foot.
     mode.setSelection(['ball'])
-    const ground = pointerAt(setup, destination(CENTER, 5000, 90))
-    const ballKnob: DrawPointerEvent = { ...ground, screen: { xPixels: ground.screen.xPixels, yPixels: ground.screen.yPixels + 24 } }
-    expect(mode.pointerDown(ballKnob)).toBe(true)
-    mode.pointerMove({ ...ballKnob, screen: { xPixels: ballKnob.screen.xPixels, yPixels: ballKnob.screen.yPixels + 10 } })
-    mode.pointerUp(ballKnob)
-    expect(setup.updates).toHaveLength(1)
+    const foot = pointerAt(setup, featureCenter(ball))
+    const ballKnob: DrawPointerEvent = { ...foot, screen: { xPixels: foot.screen.xPixels, yPixels: foot.screen.yPixels + 24 } }
     expect(mode.pointerDown(ballKnob)).toBe(true)
     mode.pointerMove({ ...ballKnob, screen: { xPixels: ballKnob.screen.xPixels, yPixels: ballKnob.screen.yPixels - 20 } })
     mode.pointerUp(ballKnob)
-    // Resting on the ground, its center was at its radius: 100 m, now 300 m.
-    expect((setup.store.get('ball')!.geometry as Point).coordinates[2]).toBeCloseTo(300, 6)
+    const raised = setup.store.get('ball')!
+    expect(Math.min(...altitudes(raised))).toBeCloseTo(200, 6)
+    expect(Math.max(...altitudes(raised))).toBeCloseTo(400, 6)
     expect(setup.updates).toHaveLength(2)
   })
 
@@ -446,7 +552,7 @@ describe('the gizmo of the select mode', () => {
     const moved = destination(CENTER, 2000, 90)
     smallMode.pointerMove(pointerAt(tiny, moved))
     smallMode.pointerUp(pointerAt(tiny, moved))
-    expect(distanceMeters(shapeOf(tiny.store.get('small')!)!.center, moved)).toBeLessThan(1)
+    expect(distanceMeters(featureCenter(tiny.store.get('small')!), moved)).toBeLessThan(1)
   })
 
   it('stretches a straight line by its end rather than scaling it, where the handles meet', () => {
