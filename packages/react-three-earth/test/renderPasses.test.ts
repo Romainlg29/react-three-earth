@@ -1,4 +1,4 @@
-import { PerspectiveCamera } from 'three'
+import { Mesh, PerspectiveCamera, Scene } from 'three'
 import { float, vec4 } from 'three/tsl'
 import type { Node, PassNode, RenderPipeline } from 'three/webgpu'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { Earth } from '../src/core/Earth.js'
 import { EarthRenderPipeline } from '../src/core/EarthRenderPipeline.js'
 import { PLUGIN_API_VERSION } from '../src/plugins/plugin.js'
 import { RenderPassRegistry, type RenderPassDefinition } from '../src/plugins/renderPasses.js'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, TranslucentCompositeNode, TranslucentPassNode } from '../src/core/TranslucentPass.js'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -70,6 +71,51 @@ describe('RenderPassRegistry', () => {
     const earth = new Earth()
     earth.renderPasses.register({ name: 'grade', stage: 'display', order: 2, build: ({ color }) => color })
     expect(earth.inspect().renderPasses).toEqual([{ name: 'grade', stage: 'display', order: 2, active: false, timing: 'fused' }])
+  })
+})
+
+describe('translucent pass', () => {
+  it('stays registered while anyone holds it, first in radiance', () => {
+    const registry = new RenderPassRegistry()
+    const releaseFirst = registry.retainTranslucentPass()
+    const releaseSecond = registry.retainTranslucentPass()
+    expect(registry.get(TRANSLUCENT_RENDER_PASS_NAME)?.stage).toBe('radiance')
+    releaseFirst()
+    releaseFirst()
+    expect(registry.has(TRANSLUCENT_RENDER_PASS_NAME)).toBe(true)
+    releaseSecond()
+    expect(registry.has(TRANSLUCENT_RENDER_PASS_NAME)).toBe(false)
+  })
+
+  it('draws the scene pass\'s scene again on its own layer, and is skipped without a scene', () => {
+    const earth = new Earth()
+    earth.renderPasses.retainTranslucentPass()
+    const color = vec4(0, 0, 0, 1) as unknown as Node
+    const depth = float(1) as unknown as Node
+    const scene = new Scene()
+    const pipeline = new EarthRenderPipeline(earth)
+    const scenePass = { ...fakeScenePass(color, depth), scene } as unknown as PassNode
+    const renderPipeline = fakeRenderPipeline()
+    pipeline.attach(renderPipeline, scenePass, camera)
+    const output = renderPipeline.outputNode as unknown as TranslucentCompositeNode
+    expect(output).toBeInstanceOf(TranslucentCompositeNode)
+    expect(output.colorNode).toBe(color)
+    expect(pipeline.inspect()).toEqual([expect.objectContaining({ name: TRANSLUCENT_RENDER_PASS_NAME, active: true })])
+
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { outputNode } = pipeline.buildOutput({ color, depth, camera })
+    expect(outputNode).toBe(color)
+    expect(pipeline.inspect()[0]).toMatchObject({ active: false, error: expect.stringContaining('attach(renderPipeline, scenePass, camera)') })
+    pipeline.dispose()
+  })
+
+  it('renders only the translucent layer', () => {
+    const pass = new TranslucentPassNode(new Scene(), camera)
+    expect(pass.getLayers()?.mask).toBe(1 << TRANSLUCENT_LAYER)
+    const mesh = new Mesh()
+    mesh.layers.set(TRANSLUCENT_LAYER)
+    expect(mesh.layers.test(camera.layers)).toBe(false)
+    pass.dispose()
   })
 })
 

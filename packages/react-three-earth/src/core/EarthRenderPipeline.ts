@@ -1,4 +1,4 @@
-import { UnsignedByteType, type Camera } from 'three'
+import { UnsignedByteType, type Camera, type Object3D } from 'three'
 import { fxaa } from 'three/addons/tsl/display/FXAANode.js'
 import { renderOutput, rtt } from 'three/tsl'
 import type { Node, PassNode, RenderPipeline } from 'three/webgpu'
@@ -37,6 +37,11 @@ export interface EarthRenderPipelineInputs {
   color: Node
   depth: Node
   camera: Camera
+  /**
+   * The scene the pass draws, for passes that draw part of it again (the translucent pass, `TRANSLUCENT_LAYER`).
+   * Without it, those passes are skipped. `attach` sets it.
+   */
+  scene?: Object3D | null
 }
 
 /** The output `buildOutput` returns: set both on a three `RenderPipeline`. */
@@ -131,7 +136,7 @@ export class EarthRenderPipeline {
    * again when the scene pass or the camera is replaced.
    */
   attach(renderPipeline: RenderPipeline, scenePass: PassNode, camera: Camera): void {
-    this.attachInputs(renderPipeline, { color: scenePass.getTextureNode('output'), depth: scenePass.getTextureNode('depth'), camera })
+    this.attachInputs(renderPipeline, { color: scenePass.getTextureNode('output'), depth: scenePass.getTextureNode('depth'), camera, scene: scenePass.scene })
   }
 
   /** Like `attach`, from colour and depth nodes of your own (a pass that is not three's `pass`). */
@@ -178,7 +183,7 @@ export class EarthRenderPipeline {
    * Builds the output node from colour and depth, running every stage, without touching a pipeline. For apps
    * that compose the result further. What owns GPU memory is freed by the next build or `dispose`.
    */
-  buildOutput({ color, depth, camera }: EarthRenderPipelineInputs): EarthRenderPipelineOutput {
+  buildOutput({ color, depth, camera, scene = null }: EarthRenderPipelineInputs): EarthRenderPipelineOutput {
     const atmosphere = this._atmosphere
     const passes = this.collectPasses()
     const report: RenderPassInspection[] = []
@@ -194,6 +199,7 @@ export class EarthRenderPipeline {
             color: current as Node<'vec4'>,
             depth: depth as Node<'float'>,
             camera,
+            scene,
             atmosphere,
             disposeOnRebuild: resource => void owned.push(resource),
           })

@@ -18,6 +18,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AtmosphereParameters.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/ephemeris.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AerialPerspectiveNode.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/TranslucentPass.ts'
   - 'Romainlg29/react-three-earth:docs/spike/SPIKE.md'
 requires:
   - getting-started
@@ -185,10 +186,33 @@ tests pass `generationBudgetMillisecondsPerFrame={Infinity}`; on a real GPU it i
 
 ### MEDIUM: Expecting haze on objects that write no depth
 
-The aerial perspective hazes a pixel by its depth. Transparent meshes (`depthWrite: false`) and screen labels write
-none: over the ground they take the ground's haze, and against the sky they are drawn over it, unhazed but for their
-edges. Objects kilometres away that must fade with distance should write depth, or haze themselves with
-`createAerialPerspectiveAlongRay`. A `scene.background` colour covers the sky: leave it unset with an atmosphere.
+The aerial perspective hazes a pixel by its depth. Transparent meshes and screen labels write none: over the ground
+they take the ground's haze, and against the sky they are drawn over it, unhazed but for their edges, so a
+see-through face crossing the horizon changes shade along it. Put see-through solids on `TRANSLUCENT_LAYER` instead:
+they are drawn after the atmosphere, hazed at their own distance and hidden behind nearer ground.
+
+```ts
+import { TRANSLUCENT_LAYER, type Earth } from 'react-three-earth'
+import { Mesh, type BufferGeometry } from 'three'
+import { MeshStandardNodeMaterial } from 'three/webgpu'
+
+function addGlassBox(earth: Earth, geometry: BufferGeometry): () => void {
+  const release = earth.renderPasses.retainTranslucentPass() // the pass runs while held
+  // depthWrite stays true: the pass's depth buffer is its own, and gives the haze its distance.
+  const mesh = new Mesh(geometry, new MeshStandardNodeMaterial({ transparent: true, opacity: 0.6 }))
+  mesh.layers.set(TRANSLUCENT_LAYER) // out of the scene pass, which sees layer 0
+  earth.add(mesh)
+  return () => {
+    mesh.removeFromParent()
+    release()
+  }
+}
+```
+
+The pass needs an `EarthRenderPipeline` attached with the scene pass (`<Earth>` and `<Atmosphere>` host one; vanilla
+apps call `attach(renderPipeline, scenePass, camera)`): without it, objects on the layer are not drawn. Lights the
+camera sees light them. Other effects can haze themselves with `createAerialPerspectiveAlongRay`. A
+`scene.background` colour covers the sky: leave it unset with an atmosphere.
 
 ## Completion
 

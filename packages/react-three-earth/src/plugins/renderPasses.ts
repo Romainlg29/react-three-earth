@@ -1,7 +1,8 @@
-import type { Camera } from 'three'
+import type { Camera, Object3D } from 'three'
 import type { Node } from 'three/webgpu'
 
 import type { Atmosphere } from '../core/Atmosphere.js'
+import { TRANSLUCENT_RENDER_PASS } from '../core/TranslucentPass.js'
 
 /**
  * Where a render pass runs in `EarthRenderPipeline`:
@@ -30,6 +31,11 @@ export interface RenderPassInputs {
   depth: Node<'float'>
   /** The camera the scene is rendered with. */
   camera: Camera
+  /**
+   * The scene the scene pass draws, for passes that draw part of it again (the translucent pass), or null when the
+   * pipeline was attached with colour and depth only (`attachInputs` without a scene).
+   */
+  scene: Object3D | null
   /** The atmosphere composited in the `radiance` stage, or null when there is none. */
   atmosphere: Atmosphere | null
   /**
@@ -123,6 +129,8 @@ export class RenderPassRegistry {
   /** What each mounted `EarthRenderPipeline` built last, by pipeline. */
   protected readonly buildReports = new Map<object, readonly RenderPassInspection[]>()
   protected sequence = 0
+  protected translucentHolders = 0
+  protected removeTranslucentPass: (() => void) | null = null
 
   /** Adds a pass. Returns a function that removes it. Throws when the name is taken, stating the fix. */
   register(definition: RenderPassDefinition): () => void {
@@ -137,6 +145,23 @@ export class RenderPassRegistry {
       if (this.passes.get(definition.name) !== entry) return
       this.passes.delete(definition.name)
       this.notify()
+    }
+  }
+
+  /**
+   * Keeps the translucent pass registered (`TRANSLUCENT_LAYER`): objects on that layer are drawn after the
+   * atmosphere, hazed at their own distance. Returns a function that lets it go; the pass leaves once every holder
+   * has. Plugins that put objects on the layer hold it while they are installed.
+   */
+  retainTranslucentPass(): () => void {
+    if (this.translucentHolders++ === 0) this.removeTranslucentPass = this.register(TRANSLUCENT_RENDER_PASS)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--this.translucentHolders > 0) return
+      this.removeTranslucentPass?.()
+      this.removeTranslucentPass = null
     }
   }
 

@@ -492,6 +492,8 @@ for (const name of ['globe, mouse', 'flat map, touch']) {
 
 expectations['solids over the sky'] = r => [
   ['a see-through solid keeps its colour above the horizon: the sky goes behind it, not over it', r.aboveHorizon > 0.9 && r.belowHorizon > 0.9],
+  // Before the translucent pass: 64 levels (dark above, pale below); after: 16, the sky and the ground behind differing.
+  ['its shaded face keeps its shade across the horizon: hazed at its own distance, not the ground\'s', r.shadeStep < 30],
 ]
 
 for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {

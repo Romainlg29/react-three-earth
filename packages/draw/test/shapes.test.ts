@@ -1,5 +1,6 @@
 import type { Point, Polygon } from 'geojson'
-import { Object3D } from 'three'
+import { Object3D, type LineSegments, type Mesh } from 'three'
+import { TRANSLUCENT_LAYER } from 'react-three-earth'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
@@ -164,10 +165,12 @@ describe('solids', () => {
     let terrain: number | null = null
     const lookups = vi.fn(() => terrain)
     const requestFrame = vi.fn()
+    const releaseTranslucentPass = vi.fn()
     const earth = {
       view: { morph: 0, flatMapLuminance: 1 },
       queryTerrainElevation: lookups,
       requestFrame,
+      renderPasses: { retainTranslucentPass: () => releaseTranslucentPass },
       createGeographicAnchor: (position: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }) =>
         Object.assign(new Object3D(), {
           geographicPosition: { ...position },
@@ -178,6 +181,11 @@ describe('solids', () => {
     const solids = new SolidFeatures(earth as never)
     solids.setFeatures(Array.from({ length: 10 }, (_, index) => ({ feature: { ...createCircle(destination(CENTER, index * 1000, 90), 100, { extrusionHeightMeters: 50 }), id: `c${index}` } as DrawFeature, style: DEFAULT_DRAW_STYLE })))
     expect(lookups).not.toHaveBeenCalled() // nothing raycast while features change
+    // See-through faces are drawn after the atmosphere, hazed at their own distance; their edges stay in the scene.
+    const objects: Object3D[] = []
+    solids.object.traverse(object => void objects.push(object))
+    expect(objects.filter(object => (object as Mesh).isMesh === true).every(mesh => mesh.layers.mask === 1 << TRANSLUCENT_LAYER)).toBe(true)
+    expect(objects.some(object => (object as LineSegments).isLineSegments === true && object.layers.mask === 1)).toBe(true)
     expect(solids.update(0)).toBe(false)
     expect(lookups).toHaveBeenCalledTimes(4)
     vi.runAllTimers()
@@ -193,6 +201,7 @@ describe('solids', () => {
     expect(anchors.filter(anchor => anchor.geographicPosition.heightMeters === 420)).toHaveLength(4)
     solids.dispose()
     expect(solids.object.children).toHaveLength(0)
+    expect(releaseTranslucentPass).toHaveBeenCalledTimes(1)
     vi.useRealTimers()
   })
 
