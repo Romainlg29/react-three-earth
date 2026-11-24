@@ -8,18 +8,23 @@ import {
   isBackgroundDepth,
   logarithmicDepthToViewZ,
   mix,
+  min,
   perspectiveDepthToViewZ,
-  select,
+  int,
+  vec2,
   smoothstep,
   uniform,
   uv,
   vec3,
   vec4,
 } from 'three/tsl'
-import { Node, type NodeBuilder } from 'three/webgpu'
+import { Node, type NodeBuilder, type TextureNode } from 'three/webgpu'
 
 import type { AtmosphereContext } from './AtmosphereContext.js'
 import { LENGTH_UNIT_METERS } from './AtmosphereModel.js'
+
+/** What `nearestNeighbourKilometers` returns when no pixel beside has geometry. */
+const NO_NEIGHBOUR_KILOMETERS = 1e9
 
 /**
  * Post-processing node that puts the scene inside the atmosphere: geometry is dimmed by the transmittance
@@ -96,11 +101,19 @@ export class AerialPerspectiveNode extends Node {
         const sky = model.getSkyRadiance(textures, cameraPosition, viewDirectionModel, sunDirectionModel)
         const sun = sky.transmittance.mul(model.solarRadiance).mul(this.context.sunLuminanceFactor).mul(sunDisk)
         const behind = sky.radiance.mul(skyLuminanceFactor).add(sun)
-        // Transparent geometry writes no depth: over the cleared background (alpha 0) it leaves premultiplied colour
-        // and its coverage in alpha, which go over the sky. A fully covered pixel there is a scene background
-        // colour (alpha 1), which the sky replaces as before.
+        // Geometry that writes no depth (transparent faces, screen labels) leaves premultiplied colour over the
+        // cleared background (alpha 0), with its coverage in alpha: it goes over the sky, not under it. So do the
+        // multisampled edges of opaque geometry, such as the planet's limb: hazed as far away as the nearest
+        // neighbouring geometry, they blend into the haze beside them. A scene background colour (alpha 1) covers
+        // the sky.
         const coverage = colorNode.a.toConst()
-        luminance.assign(select(coverage.greaterThanEqual(0.999), behind, colorNode.rgb.add(behind.mul(float(1).sub(coverage)))))
+        const front = colorNode.rgb.toVar()
+        const neighbourKilometers = this.nearestNeighbourKilometers(viewDirection, near, far, logarithmicDepth)
+        If(coverage.greaterThan(0).and(neighbourKilometers.lessThan(NO_NEIGHBOUR_KILOMETERS)), () => {
+          const between = this.context.getAerialPerspective(cameraNodes, worldDirection, neighbourKilometers)
+          front.assign(colorNode.rgb.mul(between.transmittance).add(between.radiance.mul(coverage)))
+        })
+        luminance.assign(front.add(behind.mul(float(1).sub(coverage))))
       }).Else(() => {
         const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
         const distanceKilometers = viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS)
@@ -111,6 +124,25 @@ export class AerialPerspectiveNode extends Node {
       // alpha (0) would show the page behind the canvas where the sky should be.
       return vec4(mix(colorNode.rgb, luminance, opacity), 1)
     })()
+  }
+
+  /**
+   * Distance in kilometres to the nearest geometry among the four pixels beside this one, or
+   * `NO_NEIGHBOUR_KILOMETERS` when they are all background (or the depth is not a texture to sample around).
+   */
+  protected nearestNeighbourKilometers(viewDirection: Node<'vec3'>, near: Node<'float'>, far: Node<'float'>, logarithmicDepth: boolean): Node<'float'> {
+    const depthTexture = this.depthNode as unknown as TextureNode
+    if (depthTexture.isTextureNode !== true) return float(NO_NEIGHBOUR_KILOMETERS)
+    const texel = vec2(1).div(vec2(depthTexture.size(int(0)) as Node<'ivec2'>)).toConst()
+    const nearest = float(NO_NEIGHBOUR_KILOMETERS).toVar()
+    for (const [x, y] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const depth = depthTexture.sample(uv().add(texel.mul(vec2(x, y)))).x.toConst()
+      If(isBackgroundDepth(depth).not(), () => {
+        const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
+        nearest.assign(min(nearest, viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS)))
+      })
+    }
+    return nearest
   }
 
   /** 1 inside the sun disk, 0 outside, with a one-pixel soft edge. Uses derivatives: call in uniform control flow. */

@@ -1787,10 +1787,12 @@ async function editing(name, { touch = false, flat = false } = {}) {
  * behind its transparent faces, not over them, so its top above the horizon stays as orange as its foot.
  */
 async function solidsOverSky() {
-  const { page, errors } = await open('/?fixtures&example=shapes')
+  const { page, errors } = await open('/?fixtures&example=shapes&date=2026-11-22T12:00:00Z')
   await page.waitForFunction(() => window.earth?.inspect()?.terrain?.tilesLoaded > 5 && window.earth.inspect().idle, null, { timeout: 240_000, polling: 300 })
   await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: 6.6, latitudeDegrees: 46.414, heightMeters: 1500, distanceMeters: 9000, headingDegrees: 0, pitchDegrees: -4 }))
-  await page.waitForTimeout(6000)
+  // The sky and the ground lookups of the solids.
+  await page.waitForFunction(() => window.earth.inspect().loaded === true && window.earth.inspect().idle && (window.earth.inspect().atmosphere?.ready ?? true), null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000)
   const png = await page.screenshot()
   writeFileSync(new URL('solids-over-sky.png', OUT), png)
   const orange = (top, bottom) => `

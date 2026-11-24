@@ -14,6 +14,10 @@ import { MapControls } from '../controls/MapControls'
 import { cameraFromParams, forceWebGL, terrainAttribution, terrainUrl, withAtmosphere } from './data'
 import './examples.css'
 
+/** `?date=<ISO time>` fixes the sun, so browser checks see the same light at any hour. Default: now. */
+const requestedDate = new Date(new URLSearchParams(location.search).get('date') ?? Number.NaN)
+const date = Number.isNaN(requestedDate.getTime()) ? undefined : requestedDate
+
 function InitialView({ view, onEarth }: { view: CameraView; onEarth?: (earth: EarthImpl) => void }) {
   const camera = useThree(state => state.camera)
   const earth = useEarth()
@@ -64,7 +68,7 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
   return (
     <div className={className}>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth plugins={plugins}>
+        <Earth plugins={plugins} date={date}>
           <InitialView view={camera} onEarth={onEarth} />
           <Terrain exaggeration={exaggeration}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
