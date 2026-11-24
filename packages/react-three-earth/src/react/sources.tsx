@@ -1,10 +1,14 @@
 import { use, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 
 import {
+  ImageSource as ImageSourceImpl,
   MapStyleSource as MapStyleSourceImpl,
   QuantizedMeshSource as QuantizedMeshSourceImpl,
   RasterDemSource as RasterDemSourceImpl,
   RasterTileSource as RasterTileSourceImpl,
+  VideoSource as VideoSourceImpl,
+  type ImageSourceOptions,
+  type VideoSourceOptions,
   type QuantizedMeshSourceOptions,
   type RasterDemSourceOptions,
   type RasterTileSourceOptions,
@@ -197,5 +201,54 @@ export function StyleLayer(layerProps: StyleLayerProps) {
       report(error)
     }
   })
+  return null
+}
+
+export type ImageSourceProps = ImageSourceOptions
+
+/**
+ * A picture stretched over four geographic `coordinates` (top-left, top-right, bottom-right, bottom-left), draped
+ * on the terrain. New `coordinates` move it and a new `url` swaps it, both redrawing only the terrain they touch.
+ * Goes inside `<Imagery>`. Wraps the vanilla `ImageSource`.
+ */
+export function ImageSource({ url, coordinates, attribution }: ImageSourceProps) {
+  // The corners are applied below without rebuilding; the key is by value, so an inline array does not rebuild.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const source = useMemo(() => new ImageSourceImpl({ url, coordinates, attribution }), [])
+  const cornersKey = JSON.stringify(coordinates)
+  useLayoutEffect(() => {
+    source.setUrl(url)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [source, url])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => source.setCoordinates(coordinates), [source, cornersKey])
+  useAttribution(source, attribution)
+  useRegisterSource(use(ImagerySourceContext), source, 'ImageSource', 'Imagery')
+  return null
+}
+
+export interface VideoSourceProps extends VideoSourceOptions {
+  /** Receives the vanilla `VideoSource`: `play()`, `pause()` and its `video` element. */
+  ref?: Ref<VideoSourceImpl>
+}
+
+/**
+ * A video stretched over four geographic `coordinates`, draped on the terrain; only the terrain it covers is
+ * redrawn, per decoded frame. Goes inside `<Imagery>`. Wraps the vanilla `VideoSource`.
+ */
+export function VideoSource({ ref, urls, coordinates, autoplay, loop, attribution }: VideoSourceProps) {
+  const urlsKey = Array.isArray(urls) ? urls.join('\0') : ''
+  const source = useMemo(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => new VideoSourceImpl({ urls, coordinates, ...(autoplay !== undefined ? { autoplay } : {}), ...(loop !== undefined ? { loop } : {}), attribution }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [urlsKey, autoplay, loop],
+  )
+  const cornersKey = JSON.stringify(coordinates)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => source.setCoordinates(coordinates), [source, cornersKey])
+  useAttribution(source, attribution)
+  useImperativeHandle(ref, () => source, [source])
+  useRegisterSource(use(ImagerySourceContext), source, 'VideoSource', 'Imagery')
   return null
 }

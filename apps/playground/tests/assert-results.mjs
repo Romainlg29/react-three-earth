@@ -109,6 +109,15 @@ const expectations = {
     ['hills are lit and shaded', r.litShare > 0.01 && r.shadedShare > 0.05],
     ['no warnings', r.warnings.length === 0],
   ]])),
+  ...Object.fromEntries(['georeferenced image', 'georeferenced image webgl2'].map(name => [name, r => [
+    ['each quadrant lands inside its corner', r.colours.red === 'red' && r.colours.green === 'green' && r.colours.blue === 'blue' && r.colours.yellow === 'yellow'],
+    ['the picture ends at its top edge (margin, then nothing)', r.colours.marginInside === 'red' && r.colours.marginOutside === 'white'],
+    ['no errors', r.errors.length === 0],
+  ]])),
+  'georeferenced video': r => [
+    ['the video draws and changes colour over time', r.maximumHueChange > 40],
+    ['no errors', r.errors.length === 0],
+  ],
   // The runtime style API: setPaintProperty, setLayerVisibility, addLayer, setFeatureState on fixture lakes.
   'vector map style with fixtures, runtime style': r => [
     ['lakes start blue', r.before.blueShare > 0.002 && r.before.pinkShare < 0.0005],
