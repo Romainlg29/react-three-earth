@@ -5,7 +5,8 @@ description: >
   quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), terrain from raster-dem elevation
   tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain, as MapLibre's terrain), XYZ raster tiles
   (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
-  exaggerating terrain heights, or writing a custom terrain or imagery source class.
+  exaggerating terrain heights, or writing a custom terrain or imagery source class and its JSX component
+  (useRegisterTerrainSource, useRegisterImagerySource).
 metadata:
   purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
   type: core
@@ -25,6 +26,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/sources.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Imagery.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/context.ts'
 requires:
   - getting-started
 ---
@@ -237,9 +239,11 @@ Vanilla: `const labels = new Imagery({ sources: [...], opacity: 0.8 })`, `earth.
 A source is any object with the `kind` tag and one factory method, plus an optional `getAttributions()`
 (extend `AttributionTracker` to get it, `setAttribution` and change events for free). Implement the exported interfaces:
 
-```ts
-import { RasterTileSource, type ImagerySource, type TerrainSource } from 'react-three-earth'
+```tsx
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
+import { useMemo } from 'react'
+import { RasterTileSource, type ImagerySource, type TerrainSource } from 'react-three-earth'
+import { useRegisterImagerySource, useRegisterTerrainSource } from 'react-three-earth/react'
 
 /** A tenant's tiles: picks the URL template, then reuses RasterTileSource's overlay. */
 export class TenantImagerySource implements ImagerySource {
@@ -262,13 +266,34 @@ export class CustomTerrainSource implements TerrainSource {
     return [new QuantizedMeshPlugin({ useRecommendedSettings: true })]
   }
 }
+
+/* JSX components: memoise on what changes the tiles, then register with the layer around them. */
+export function TenantImagery({ tenant }: { tenant: string }) {
+  const source = useMemo(() => new TenantImagerySource(tenant), [tenant])
+  useRegisterImagerySource(source, 'TenantImagery')
+  return null
+}
+
+export function CustomTerrain({ url }: { url: string }) {
+  const source = useMemo(() => new CustomTerrainSource(url), [url])
+  useRegisterTerrainSource(source, 'CustomTerrain')
+  return null
+}
+
+// <Terrain><CustomTerrain url="…" /></Terrain>
+// <Imagery><TenantImagery tenant="acme" /></Imagery>
 ```
 
 `createPlugins` returns 3d-tiles-renderer plugins for the tile renderer; `createOverlay` returns a
-3d-tiles-renderer image overlay. In vanilla, pass instances in `sources`. To use them in JSX, write a
-small component the same way `src/react/sources.tsx` does: memoise the instance, then register it
-through the layer's context. Composing an existing source (as above) is the safest route while the
-overlay types are internal.
+3d-tiles-renderer image overlay. In vanilla, pass instances in `sources`. Composing an existing source
+(as above) is the safest route while the overlay types are internal.
+
+To use them in JSX, write a component that memoises the instance on the props that change its tiles and
+registers it with `useRegisterImagerySource` or `useRegisterTerrainSource` from `react-three-earth/react`,
+as the components at the end of the example above do. It stacks with the built-in sources in the order
+they register: a source mounted later, or a new instance after a prop change, goes on top of its
+`<Imagery>`. Outside its layer it throws `<TenantImagery> must sit inside <Imagery>.` A new instance
+rebuilds the layer (the terrain, for a terrain source), so memoise only on props that change the tiles.
 
 ## Common Mistakes
 

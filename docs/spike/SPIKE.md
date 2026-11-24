@@ -1009,6 +1009,12 @@ progress for the material tier (needs W2's `lineMetrics`), reach per zoom (the t
 Not done from the design: GPU timing of passes that own targets (reported `unavailable`), a normals buffer
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
 
+**Source components from packages (W17, part 4).** Terrain and imagery sources were open interfaces, but a package
+could not ship a `<MySource>` component: the layer contexts were internal. `react-three-earth/react` now exports
+`useRegisterTerrainSource(source, componentName)` and `useRegisterImagerySource(source, componentName)`, the same
+registration the built-in source components use (registration order, `<Name> must sit inside <Layer>` outside one).
+Unit tests: 4 new (registration and removal for both layers, a new instance replacing the old, the error outside them).
+
 ## Heatmap layers (W11)
 
 MapLibre `heatmap` layers, with every paint property and `heatmap-density`. The plugin design (W17, section 11)
