@@ -1782,6 +1782,33 @@ async function editing(name, { touch = false, flat = false } = {}) {
  * a sphere and a wall) stand on the terrain, on the globe and the flat map; two taps draw an extruded circle and two
  * more a rectangle, each kept as GeoJSON with its shape and height. Clearing them leaves the map as it was.
  */
+/**
+ * A see-through solid standing against the sky (the hexagonal tower, 2.5 km tall, seen level from 1.5 km): the sky goes
+ * behind its transparent faces, not over them, so its top above the horizon stays as orange as its foot.
+ */
+async function solidsOverSky() {
+  const { page, errors } = await open('/?fixtures&example=shapes&date=2026-11-22T12:00:00Z')
+  await page.waitForFunction(() => window.earth?.inspect()?.terrain?.tilesLoaded > 5 && window.earth.inspect().idle, null, { timeout: 240_000, polling: 300 })
+  await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: 6.6, latitudeDegrees: 46.414, heightMeters: 1500, distanceMeters: 9000, headingDegrees: 0, pitchDegrees: -4 }))
+  // The sky and the ground lookups of the solids.
+  await page.waitForFunction(() => window.earth.inspect().loaded === true && window.earth.inspect().idle && (window.earth.inspect().atmosphere?.ready ?? true), null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(4000)
+  const png = await page.screenshot()
+  writeFileSync(new URL('solids-over-sky.png', OUT), png)
+  const orange = (top, bottom) => `
+    let count = 0, total = 0
+    for (let y = ${top}; y < ${bottom}; y++) for (let x = 370; x < 455; x++) {
+      const i = (y * width + x) * 4
+      total++
+      if (px[i] - px[i + 2] > 40) count++
+    }
+    return count / total`
+  const aboveHorizon = await analyse(page, png, orange(245, 270))
+  const belowHorizon = await analyse(page, png, orange(330, 390))
+  results.push({ check: 'solids over the sky', aboveHorizon, belowHorizon, errors })
+  await page.close()
+}
+
 async function shapes(name, { touch = false, flat = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
   const errors = []
@@ -2528,6 +2555,7 @@ try {
     await transforming('globe, mouse')
     await transforming('flat map, touch', { touch: true, flat: true })
     await shapes('flat map, touch', { touch: true, flat: true })
+    await solidsOverSky()
   }
   if (want('examples')) {
     await galleryExample('city')

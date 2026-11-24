@@ -17,6 +17,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/RenderPipeline.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AtmosphereParameters.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/ephemeris.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AerialPerspectiveNode.ts'
   - 'Romainlg29/react-three-earth:docs/spike/SPIKE.md'
 requires:
   - getting-started
@@ -181,6 +182,13 @@ Haze bands on distant terrain seen from orbit, and a one-time warning. Create th
 
 The first frames have no sky. On a CPU rasteriser (SwiftShader in automated browser tests) paced generation takes minutes, so
 tests pass `generationBudgetMillisecondsPerFrame={Infinity}`; on a real GPU it is much shorter. Wait for `ready`.
+
+### MEDIUM: Expecting haze on objects that write no depth
+
+The aerial perspective hazes a pixel by its depth. Transparent meshes (`depthWrite: false`) and screen labels write
+none: over the ground they take the ground's haze, and against the sky they are drawn over it, unhazed but for their
+edges. Objects kilometres away that must fade with distance should write depth, or haze themselves with
+`createAerialPerspectiveAlongRay`. A `scene.background` colour covers the sky: leave it unset with an atmosphere.
 
 ## Completion
 

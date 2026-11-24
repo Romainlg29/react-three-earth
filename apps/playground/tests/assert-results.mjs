@@ -489,6 +489,10 @@ for (const name of ['globe, mouse', 'flat map, touch']) {
   ]
 }
 
+expectations['solids over the sky'] = r => [
+  ['a see-through solid keeps its colour above the horizon: the sky goes behind it, not over it', r.aboveHorizon > 0.9 && r.belowHorizon > 0.9],
+]
+
 for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {
   expectations[`transforming, ${name}`] = r => [
     ['a tap where the box stands in 3D selects it', r.selected],
