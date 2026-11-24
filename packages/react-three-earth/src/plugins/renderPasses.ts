@@ -1,7 +1,8 @@
-import type { Camera } from 'three'
+import type { Camera, Object3D } from 'three'
 import type { Node } from 'three/webgpu'
 
 import type { Atmosphere } from '../core/Atmosphere.js'
+import { TRANSLUCENT_RENDER_PASS } from '../core/TranslucentPass.js'
 
 /**
  * Where a render pass runs in `EarthRenderPipeline`:
@@ -30,6 +31,11 @@ export interface RenderPassInputs {
   depth: Node<'float'>
   /** The camera the scene is rendered with. */
   camera: Camera
+  /**
+   * The scene the scene pass draws, for passes that draw part of it again (the translucent pass), or null when the
+   * pipeline was attached with colour and depth only (`attachInputs` without a scene).
+   */
+  scene: Object3D | null
   /** The atmosphere composited in the `radiance` stage, or null when there is none. */
   atmosphere: Atmosphere | null
   /**
@@ -123,6 +129,8 @@ export class RenderPassRegistry {
   /** What each mounted `EarthRenderPipeline` built last, by pipeline. */
   protected readonly buildReports = new Map<object, readonly RenderPassInspection[]>()
   protected sequence = 0
+  protected translucentHolders = 0
+  protected removeTranslucentPass: (() => void) | null = null
 
   /** Adds a pass. Returns a function that removes it. Throws when the name is taken, stating the fix. */
   register(definition: RenderPassDefinition): () => void {
@@ -137,6 +145,25 @@ export class RenderPassRegistry {
       if (this.passes.get(definition.name) !== entry) return
       this.passes.delete(definition.name)
       this.notify()
+    }
+  }
+
+  /**
+   * Keeps the translucent pass registered (`TRANSLUCENT_LAYER`): objects on that layer are drawn after the
+   * atmosphere, hazed at their own distance. Returns a function that lets it go; the pass leaves once every holder
+   * has. Hold it while an atmosphere is set (without one there is no haze to fix), and move objects to the layer
+   * only while `isBuilt(TRANSLUCENT_RENDER_PASS_NAME)`: apps that compose their own pipeline never draw the layer.
+   */
+  retainTranslucentPass(): () => void {
+    if (this.translucentHolders === 0) this.removeTranslucentPass = this.register(TRANSLUCENT_RENDER_PASS)
+    this.translucentHolders++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      if (--this.translucentHolders > 0) return
+      this.removeTranslucentPass?.()
+      this.removeTranslucentPass = null
     }
   }
 
@@ -160,6 +187,17 @@ export class RenderPassRegistry {
   /** The passes with their order and registration sequence, in registration order. */
   entries(): RegisteredRenderPass[] {
     return [...this.passes.values()]
+  }
+
+  /**
+   * Whether a mounted pipeline built the pass `name` into its output, and it runs. Cheap: callable every frame,
+   * to know when objects may move to the translucent layer (`isBuilt(TRANSLUCENT_RENDER_PASS_NAME)`).
+   */
+  isBuilt(name: string): boolean {
+    for (const report of this.buildReports.values()) {
+      for (const entry of report) if (entry.name === name && entry.active) return true
+    }
+    return false
   }
 
   /** Records what a pipeline built (null: it stopped building), for `inspect`. `EarthRenderPipeline` calls it. */

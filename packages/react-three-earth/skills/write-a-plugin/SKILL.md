@@ -357,9 +357,9 @@ export function screenEffects(): EarthPlugin {
 }
 ```
 
-- `build({ color, depth, camera, atmosphere, disposeOnRebuild })` returns the stage's new colour node. It runs
-  once per rebuild (a pass added or removed, the atmosphere or camera changed), never per frame: animate
-  through uniforms, never by registering again. A build that throws is skipped and logged.
+- `build({ color, depth, camera, scene, atmosphere, disposeOnRebuild })` returns the stage's new colour node (`scene`: what
+  the scene pass draws, or null). It runs once per rebuild (a pass added or removed, the atmosphere or camera
+  changed), never per frame: animate through uniforms, never by registering again. A build that throws is skipped.
 - `color` is a texture node only for the first pass of the `scene` stage. After a fused pass it is a plain node:
   to sample neighbours (blur, edge detection), wrap it in `convertToTexture(color)` or `rtt(color)` from
   `three/tsl` and hand that to `disposeOnRebuild`, as the built-in FXAA does.

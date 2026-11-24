@@ -377,7 +377,10 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
         window.removeEventListener('focusout', this.onFocusOut, true)
       })
     }
-    context.onUpdate(frame => this.updateOverlay(frame))
+    context.onUpdate(frame => {
+      solids.update()
+      this.updateOverlay(frame)
+    })
     context.onDispose(() => {
       this.exitMode()
       this.applyCursor(null)
