@@ -14,6 +14,8 @@ import {
   SelectMode,
   SphereMode,
   StaticMode,
+  TransformMode,
+  transformFrame,
 } from 'react-three-earth-draw'
 import { useDrawState } from 'react-three-earth-draw/react'
 import { useMemo, useState } from 'react'
@@ -26,6 +28,7 @@ const CENTER: [number, number] = [6.6, 46.45]
 const TOOLS = [
   { mode: 'static', label: 'Pan' },
   { mode: 'select', label: 'Select' },
+  { mode: 'transform', label: 'Transform' },
   { mode: 'circle', label: 'Circle' },
   { mode: 'rectangle', label: 'Rectangle' },
   { mode: 'sphere', label: 'Sphere' },
@@ -94,7 +97,13 @@ function ShapesToolbar({ draw, setExtrusion }: { draw: Draw; setExtrusion: (mete
         </button>
       </div>
       <p className="example-status" data-testid="shapes-status">
-        {state.drawing ? 'Tap again to set the size.' : `${state.features.features.length} shapes.`}
+        {state.drawing
+          ? 'Tap again to set the size.'
+          : state.mode === 'transform'
+            ? state.selectedIds.length > 0
+              ? 'Drag the shape to move it, a corner to scale it, the outer knob to turn it, the top knob to change its height.'
+              : 'Tap a shape to transform it.'
+            : `${state.features.features.length} shapes.`}
       </p>
     </>
   )
@@ -114,7 +123,7 @@ export function ShapesExample() {
     }
     setExtrusion(600)
     const created = new Draw({
-      modes: [new StaticMode(), new SelectMode(), ...extruded, new SphereMode()],
+      modes: [new StaticMode(), new SelectMode(), new TransformMode(), ...extruded, new SphereMode()],
       features: startingShapes(),
       style: feature => ({
         fillColor: feature.geometry.type === 'Point' ? '#d946ef' : '#f97316',
@@ -122,8 +131,8 @@ export function ShapesExample() {
         lineWidthPixels: 2,
       }),
     })
-    // `window.draw` lets the browser checks drive it.
-    ;(window as unknown as { draw: Draw }).draw = created
+    // `window.draw` lets the browser checks drive it; `transformFrame` tells them where the gizmo's handles are.
+    Object.assign(window, { draw: created, drawTransformFrame: transformFrame })
     return { draw: created, setExtrusion }
   }, [])
   const plugins = useMemo(() => [draw], [draw])

@@ -10,6 +10,7 @@ import { ExampleShell } from './ExampleShell'
 const TOOLS = [
   { mode: 'static', label: 'Pan' },
   { mode: 'select', label: 'Select' },
+  { mode: 'transform', label: 'Transform' },
   { mode: 'point', label: 'Point' },
   { mode: 'linestring', label: 'Line' },
   { mode: 'polygon', label: 'Polygon' },

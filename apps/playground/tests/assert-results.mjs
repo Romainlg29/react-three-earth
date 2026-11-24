@@ -489,6 +489,18 @@ for (const name of ['globe, mouse', 'flat map, touch']) {
   ]
 }
 
+for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {
+  expectations[`transforming, ${name}`] = r => [
+    ['a tap where the box stands in 3D selects it', r.selected],
+    ['a corner scales it, keeping it a rectangle with its proportions', r.afterScale.widthMeters > r.before.widthMeters * 1.2 && Math.abs(r.afterScale.lengthMeters / r.afterScale.widthMeters - r.before.lengthMeters / r.before.widthMeters) < 0.01],
+    ['the knob turns it', Math.abs(((r.afterRotate.rotationDegrees - r.before.rotationDegrees + 540) % 360) - 180) > 20],
+    ...(height ? [['the top knob raises it', r.extrusion > 900 * 1.1]] : []),
+    ['each change fires one update', r.updates === (height ? 3 : 2)],
+    ['the knob in the middle of a flat polygon extrudes it into a solid', r.flatSelected && r.flatExtrusion > 50],
+    ['the previews leave once released: one solid per stored feature', r.solids.stored === 7 && r.solids.inScene === 7],
+  ]
+}
+
 let failures = 0
 let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {

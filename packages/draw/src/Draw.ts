@@ -16,6 +16,7 @@ import { createFeatureId, FeatureStore, type FeatureStoreChange } from './Featur
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
 import { SelectMode } from './modes/SelectMode.js'
+import { TransformMode } from './modes/TransformMode.js'
 import { LineStringMode, PointMode, PolygonMode } from './modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from './modes/ShapeModes.js'
 import { DrapedFeatures } from './render/DrapedFeatures.js'
@@ -33,7 +34,7 @@ export interface DrawOptions {
    * Default: 'draw'.
    */
   name?: string
-  /** The modes `setMode` can switch to. Default: static, select, point, linestring, polygon, circle, rectangle and sphere. */
+  /** The modes `setMode` can switch to. Default: static, select, transform, point, linestring, polygon, circle, rectangle and sphere. */
   modes?: DrawMode[]
   /** The mode to start in. Default: 'static'. */
   mode?: string
@@ -134,7 +135,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.styleInput = style
     this.keyboard = keyboard
     this.makeId = createId
-    for (const each of modes ?? [new StaticMode(), new SelectMode(), new PointMode(), new LineStringMode(), new PolygonMode(), new CircleMode(), new RectangleMode(), new SphereMode()]) {
+    for (const each of modes ?? [new StaticMode(), new SelectMode(), new TransformMode(), new PointMode(), new LineStringMode(), new PolygonMode(), new CircleMode(), new RectangleMode(), new SphereMode()]) {
       if (this.modes.has(each.name)) throw new Error(`Draw: two modes are named "${each.name}"; give each mode a unique name.`)
       this.modes.set(each.name, each)
     }
@@ -523,6 +524,10 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.overlayDirty = false
     const content: OverlayContent = { features: [], lines: [], handles: [] }
     this.mode.overlay(content)
+    // Solids the mode draws live (dragged, transformed) stay 3D: previews in the scene rather than flat in the overlay.
+    const previews = content.features.filter(entry => isSolidFeature(entry.feature))
+    if (previews.length > 0) content.features = content.features.filter(entry => !isSolidFeature(entry.feature))
+    this.solids?.setPreviews(previews)
     const pending = overlay.draw(camera, content)
     if (pending) this.overlayDirty = true
     return pending
