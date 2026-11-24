@@ -1361,7 +1361,7 @@ async function scriptLabels(name, query) {
   const labels = await page.evaluate(() =>
     window.earth.terrain.getScreenLabels()
       .filter(l => /[^\x00-\x7f]/.test(l.text))
-      .map(l => ({ text: l.text, box: l.box.map(Math.round) })),
+      .map(l => ({ text: l.text, box: l.box.map(Math.round), heightOverWidth: +((l.box[3] - l.box[1]) / (l.box[2] - l.box[0])).toFixed(2) })),
   )
   // Text-colour pixels inside each label's box.
   const inBoxes = await analyse(page, png, `

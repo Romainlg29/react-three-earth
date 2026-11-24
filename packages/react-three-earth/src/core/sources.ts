@@ -576,7 +576,7 @@ export interface MapStyleSourceOptions {
  * `background-pattern`) come from the style's sprite and from `addImage`. Heatmap layers sum their kernels
  * in a half-float target, then colour it with `heatmap-color`. Arabic and Hebrew labels are shaped and ordered
  * right to left in the worker, with no plugin; Indic, Thai and other complex scripts are drawn per grapheme
- * cluster by `localFontFamily`. Not supported yet: vertical text (`text-writing-mode`). `fill-extrusion` layers stand in 3D (`extrusions`). A raster-dem source in a style shades the drape; for terrain from
+ * cluster by `localFontFamily`; `text-writing-mode: vertical` stands CJK point labels in columns. `fill-extrusion` layers stand in 3D (`extrusions`). A raster-dem source in a style shades the drape; for terrain from
  * it, put a `RasterDemSource` in the `Terrain`.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when

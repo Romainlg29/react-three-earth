@@ -371,6 +371,7 @@ for (const name of ['top-down', 'webgl2']) {
   expectations[`script labels, ${name}`] = r => [
     ['every script label shows, with its text in reading order', SCRIPT_NAMES.every(text => r.labels.some(l => l.text === text))],
     ['every script label draws text pixels', r.labels.length > 0 && r.labels.every(l => l.textPixels > 30)],
+    ['the vertical Japanese labels stand taller than wide', ['東京都庁', '富士Q'].every(text => (r.labels.find(l => l.text === text)?.heightOverWidth ?? 0) > 2)],
   ]
 }
 for (const name of ['road names, pitched', 'road names, top-down']) {

@@ -5,9 +5,9 @@ description: >
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
-  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, Hindi and Thai, reading the labels on the
-  screen in tests (earth.terrain.getScreenLabels), custom label looks from a plugin (registerSymbolEffect: neon,
-  glow, outline, gradient text), and what labels do not do yet.
+  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, Hindi and Thai, vertical CJK
+  (text-writing-mode), reading the labels on the screen in tests (earth.terrain.getScreenLabels), custom label
+  looks from a plugin (registerSymbolEffect: neon, glow, outline, gradient text), and what labels do not do yet.
 metadata:
   purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, symbol effects from plugins, and current limits.'
   type: core
@@ -137,6 +137,26 @@ drawn whole by the local font, as MapLibre does for local CJK ideographs:
   by `Intl.Segmenter`. Without `Intl.Segmenter` the text draws code point by code point, unshaped.
 - `text-letter-spacing` is ignored on these labels, which would break the clusters' joins.
 - Shaping across clusters (a few Indic ligatures span two) is not done: each cluster is shaped on its own.
+
+### Vertical Japanese, Chinese and Korean
+
+`"text-writing-mode": ["vertical"]` on a point-placed symbol layer stands CJK names in columns, read top to bottom,
+the next line in a column to the left. CJK characters stand upright, one em each, punctuation takes its vertical
+form (、 → ︑, 「 → ﹁) when the font has it, and other characters (Latin, digits) turn 90° clockwise inside the
+column. Names with no CJK character, or with right-to-left text, stay horizontal.
+
+```json
+{
+  "id": "station-label",
+  "type": "symbol",
+  "source": "openmaptiles",
+  "source-layer": "poi",
+  "layout": { "text-field": ["get", "name:ja"], "text-font": ["Noto Sans Regular"], "text-writing-mode": ["vertical", "horizontal"] }
+}
+```
+
+Only the first mode is used: MapLibre tries the next one when the first collides, here a vertical label that
+collides hides. Line-placed labels stay horizontal.
 
 ### Give labels a custom look (symbol effects)
 
