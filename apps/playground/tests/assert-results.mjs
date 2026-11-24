@@ -129,6 +129,16 @@ const expectations = {
     ['the change redraws the relief (over 2 % of pixels change)', r.changedShare > 0.02],
     ['without rebuilding the terrain', r.sameTerrain === true],
   ]])),
+  // `?terrain=style`: an empty <Terrain>, a style with root terrain (exaggeration 1.5), center, zoom, bearing and pitch.
+  'style root properties': r => [
+    ['the earth built the terrain from the style', r.fromStyle === true],
+    ['every point of the grid has a height', r.heights?.count === 49],
+    ['heights read 1.5 times the fixture\'s (within 8 m)', r.heights?.maximum < 8],
+    ['the camera starts at the style\'s center', Math.abs(r.camera?.longitudeDegrees + 90) < 0.05 && Math.abs(r.camera?.latitudeDegrees) < 0.05],
+    ['at its zoom, bearing and pitch', Math.abs(r.camera?.zoom - 9) < 0.15 && Math.abs(r.camera?.headingDegrees - 30) < 0.5 && Math.abs(r.camera?.pitchDegrees + 70) < 0.5],
+    ['the style\'s raster layer drapes on it (over 50 % checker pixels)', r.greenShare > 0.5],
+    ['the terrain credit shows', r.attributions?.includes('Synthetic test elevation')],
+  ],
   'relief style with fixtures, 3d': r => [
     ['the raster layer drapes on the terrain', r.imageryShare > 0.2],
     ['no warnings', r.warnings.length === 0],
@@ -420,6 +430,31 @@ expectations['3d buildings, 2d'] = r => [...standing(r), ['buildings draw on the
 expectations['3d buildings, draped'] = r => [
   ['nothing stands in 3D', r.inspection === null],
   ['footprints are drawn on the ground instead', r.redShare > 0.004 && r.redShare < 0.02],
+]
+
+// Gallery examples (`?example=<name>`, src/examples/) on the fixtures.
+expectations['gallery example, city'] = r => [['buildings stand in 3D', r.buildings > 10]]
+expectations['gallery example, labels'] = r => [
+  ['names in Arabic, Hebrew, Hindi and Thai show', ['القاهرة', 'תל אביב', 'नई दिल्ली', 'ถนนสุขุมวิท'].every(name => r.labels.includes(name))],
+  ['the vertical button stands Japanese names in columns', r.verticalLabel !== null && r.verticalLabel.height > r.verticalLabel.width],
+]
+expectations['gallery example, geojson'] = r => [
+  ['peak names and cluster counts from the GeoJSON source show', r.labels.includes('Shishapangma') && r.labels.some(text => /^\d+$/.test(text))],
+  ['a click on a peak opens its popup', /Manaslu.*8,163 m/.test(r.popup ?? '')],
+]
+expectations['gallery example, heatmap'] = r => [['the heat draws', r.heatShare > 0.007]]
+expectations['gallery example, terrain'] = r => [['the slider exaggerates the terrain', r.exaggeration === 3]]
+expectations['gallery example, overlay'] = r => [
+  ['the radar picture draws', r.radar.shown.share > 0.003],
+  ['playing steps to other frames: the rain moves', r.radar.played.share > 0.003 && Math.abs(r.radar.played.centreX - r.radar.shown.centreX) > 4],
+  ['the opacity slider hides it', r.radar.hidden.share < r.radar.shown.share * 0.1],
+]
+expectations['gallery example, night'] = r => [
+  ['the sdf-glow plugin lights the major roads, in the colour the buttons pick', r.glow.before.amber > 0.01 && r.glow.after.cyan > 0.01 && r.glow.after.amber < r.glow.before.amber / 4],
+  ['the neon symbol effect draws the place names with their magenta outline', r.labels.length > 0 && r.glow.before.magenta > 0.0005],
+]
+expectations['gallery example, embedded'] = r => [
+  ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],
 ]
 
 let failures = 0

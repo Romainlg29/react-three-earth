@@ -1094,34 +1094,43 @@ which starts near a 400 px radius at a weight × intensity of 1.
 
 ## Map controls (W10)
 
-DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`.
+Headless controls (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`. The library draws no buttons and
+ships no CSS for them: apps draw their own from state, and the playground's styled set (`apps/playground/src/controls/`)
+is the example.
 
-- **Structure.** `Controls({ earth, container, position })` owns a corner element (`.react-three-earth-controls`,
-  shared and reference-counted per container and corner, so two `Controls` in one corner stack). Items implement
-  `ControlsItem { element, onAdd, onRemove }`; `MapControl` is the base class with `addTo` and `attach`/`detach`. That
-  is the plugin seam: a third-party control is a `MapControl` subclass. The React `<Controls>` creates the vanilla object in a layout
-  effect and renders its children once it exists; each control component wraps the vanilla class of the same name and
-  rebuilds it when a primitive option changes.
-- **Controls.** `NavigationControl` (zoom by `camera.zoomTo`, summing presses made during the ease; compass from the
-  `rotate`/`pitch` events, `visualizePitch` tilts the needle and resets pitch too), `ScaleControl` (`computeScaleBar`,
-  MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`), `GeolocateControl`,
-  `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on the `update` event, `viewchange` event
-  for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
-- **Geolocate.** States `off | waiting | tracking | background | error`. The dot and the accuracy circle are two
-  `Marker`s (the circle `pitchAlignment: 'map'`, sized as accuracy over metres per pixel). "The user took the map" is a
-  a `pointerdown`, `wheel` or `touchstart` on the container (the corner stops those from the buttons; a `movestart` check
-  was dropped because viewport resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the state
-  before it and restores it on the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1 error disables the button.
-- **Phone.** `pointer: coarse` makes buttons 44 px; corners add `env(safe-area-inset-*)`; `touch-action: manipulation`.
-  iPhone Safari has no element Fullscreen API, so `FullscreenControl` falls back to a `position: fixed; 100dvh` class on
-  the container (Escape leaves), or hides with `unsupported: 'hide'`. Not tested on a real iPhone yet.
-- **Gestures.** The corner stops `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart` so a press
-  on a control never starts a map gesture or a map `click`.
-- **Not done.** `TerrainControl` (needs W8 exaggeration), disabled zoom buttons at the limits, compass dragging.
-- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
-  `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
-  fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
-  loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
+- **Structure.** `MapControl<State>` is the base: `getState()` (a new object only when something changed, so React's
+  `useSyncExternalStore` takes `subscribe` and `getState` as they are), `subscribe(listener)`, and the actions. The earth
+  is a constructor option. A control listens to the earth only while it has a listener (`attach` on the first, `detach`
+  after the last), so construction has no side effect and React can build it in a `useMemo`. Each hook
+  (`useNavigationControl`…) wraps the vanilla class of the same name and adds `…ButtonProps` objects (type, `aria-label`,
+  `title`, `onClick`, `aria-pressed`…) to spread on the app's own buttons.
+- **Controls.** `Controls({ container })` is an unstyled `<div class="react-three-earth-controls">` that stops
+  `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart`, so a press on a control never starts a map
+  gesture or a map `click`. The React `<Controls className style>` renders its children as HTML in it through `useDomRoot`
+  (contexts bridged, so the hooks and `<Marker>` work inside). The class also marks map UI for `GeolocateControl` and
+  cooperative gestures.
+- **State.** `NavigationControl` (zoom by `camera.zoomTo`, summing calls made during the ease; compass rotation, tilt and
+  a CSS transform from the `rotate`/`pitch` events, `north`; `visualizePitch` resets pitch too), `ScaleControl`
+  (`computeScaleBar`, MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`; width rounded
+  to whole pixels), `GeolocateControl`, `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on
+  the `update` event, `viewchange` event for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
+- **Geolocate.** Statuses `off | waiting | tracking | background | error`. The state carries `userLocation` and
+  `accuracyDiameterPixels` (accuracy over metres per pixel at the centre); the app draws the dot and circle (the
+  playground uses two `<Marker>`s, the circle `pitchAlignment: 'map'`). "The user took the map" is a `pointerdown`, `wheel`
+  or `touchstart` on the container outside `.react-three-earth-controls` (a `movestart` check was dropped because viewport
+  resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the status before it and restores it on
+  the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1
+  error disables it. A one-off request answered after `stop` is ignored.
+- **Phone.** iPhone Safari has no element Fullscreen API, so `FullscreenControl` covers the page with an inline
+  `position: fixed; height: 100dvh` (the previous inline style is put back on exit; Escape leaves), or reports
+  `available: false` with `unsupported: 'hide'`. 44 px targets and safe-area insets are now the app's CSS (the playground
+  has them). Not tested on a real iPhone yet.
+- **Not done.** `TerrainControl` (needs W8 exaggeration), zoom limits in the state, compass dragging.
+- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, subscription, every control's state and actions
+  against a stub earth); browser check `map controls` drives the playground's buttons: zoom in/out, compass reset, view
+  toggle, scale, geolocate (granted position near the fixture peak), fullscreen, and a 390 px touch context with 44 px
+  buttons (`controls-desktop.png`, `controls-phone.png`). Terrain loading changes the zoom (measured from the ground), so
+  the check waits for `earth.idle` before measuring.
 
 ## Keyboard and accessibility (W15), part 1
 
@@ -1238,12 +1247,15 @@ Every source can carry a credit, and a control shows them all (`src/core/attribu
   `<script>`, `<style>`, `<iframe>` and similar, whose content goes too. Parsing is linear (sticky regex, 100 KB of pathological tags in a few ms) and each entry is capped at 2048 characters. Attributes other than `href` are never read.
   Entities decode to plain text and are not parsed again. The control builds text nodes and `<a>` elements
   (`target="_blank" rel="noopener noreferrer"`) and never uses `innerHTML`. App-provided strings take the same path.
-- **Control.** Role `group`; resizes rebuild only when the compact state flips; several controls may share a container. Vanilla `new AttributionControl({ earth, container, compact?, customAttribution? })` adds a bottom-right
-  element to `container` (made `position: relative` if static) and injects one small `<style>` per document (needs `style-src 'unsafe-inline'` under a strict CSP), themed by
-  `--react-three-earth-attribution-background`, `-color`, `-link-color` and `-font-size`. `compact` true or false forces
-  the mode; undefined is automatic, compact while the container is under 640 px wide (a `ResizeObserver` follows it; the
-  rule is the pure `resolveCompact`). Compact shows a "ⓘ" button that expands the text. `<AttributionControl compact
-  customAttribution container />` wraps it, mounting into the canvas's parent unless `container` is given.
+- **Control.** Headless since the controls went headless: `AttributionControl({ earth, container?, compact?,
+  customAttribution?, locale? })` is a `MapControl` whose state holds `entries` (each credit parsed into segments, the
+  same array while the credits do not change), `visible`, `compact`, `expanded`, `textVisible` and the labels. `compact`
+  true or false forces the mode; undefined is automatic, compact while the container is under 640 px wide (a
+  `ResizeObserver` follows it while subscribed; the rule is the pure `resolveCompact`). `appendAttribution(element,
+  entries)` builds text nodes and links for vanilla apps. React: `useAttributionControl` (state, `groupProps`,
+  `toggleButtonProps`), `<AttributionText>`, and `<AttributionControl className style>`, which renders the group, the
+  text and the "ⓘ" toggle as unstyled HTML through `<Controls>`. No `<style>` is injected any more (so no
+  `style-src 'unsafe-inline'` is needed); the playground's `mapControls.css` places it bottom-right.
 
 Deviations from the brief: the sources' `attribution` accepts an array as well as a string; `Earth.getAttributions()`
 needs sources to expose an optional change listener (`addAttributionListener`) next to `getAttributions()`, so the
@@ -1435,6 +1447,40 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
   its edge (WebGPU and WebGL 2), and the video colour changes over time.
 - Not supported yet: `image` and `video` entries inside a `MapStyleSource` style, `canvas` sources, video
   controls beyond `play()` / `pause()` and the element.
+
+## W16: style root properties
+
+The earth follows a map style's root `terrain`, `center`, `zoom`, `bearing`, `pitch` and `projection` when the app
+does not set them. `readStyleRoot` (`src/vector/styleRoot.ts`) maps them; `Earth` follows the map style sources of its
+imagery layers (`styledata`), and `MapStyleSource.getStyleRoot()` returns the reading.
+
+- **Terrain.** With no terrain from the app, the earth builds one from the root `terrain`: a `RasterDemSource` of
+  the raster-dem source it names (`tiles` or TileJSON `url` resolved against the style URL, `encoding`, factors,
+  `maxzoom`, `attribution`) with its `exaggeration`. `setTerrain(app)` drops and disposes it; `setTerrain(null)`
+  brings it back. A new exaggeration (`setStyle`) applies in place; a new source rebuilds it. In React this means an
+  empty `<Terrain />`. Since nothing loads a style while there is no terrain to drape it on, the earth loads it
+  itself to read the root (with the page's `fetch`, not 3DTilesRenderer's queue the overlay uses: one small JSON).
+  The DEM source cannot use the style's protocols or `pmtiles://` (`RasterDemSource` has none): such a source, or
+  one without `{z}/{x}/{y}` tiles, warns stating the fix and is skipped. With `requestHeaders` or `transformRequest`
+  set, the terrain still loads, without them, and a warning says so.
+- **Starting view.** `center`, `zoom`, `bearing` (`headingDegrees`) and `pitch` (`pitchDegrees = pitch - 90`) apply
+  once, from the first style that has them, as MapLibre does while its transform is unmodified: not when the app
+  gave `initialView`, and not when the camera was placed before the style loaded: by `jumpTo` or an animation, or
+  moved out of the Earth's centre, where a fresh three.js camera starts (`setCameraView`, controls, app code). The centre lands on the ellipsoid because the terrain has
+  not loaded yet: the browser check, pitched 70° from straight down over a 5.8 km hill, starts 0.02° short.
+- **Projection.** `'mercator'` → `'2d'`; `'globe'`, `'vertical-perspective'` and expressions (MapLibre's globe preset
+  is one that flattens from zoom 10 to 12) → `'3d'`, unless the app gave `view` (`<Earth view>` no longer defaults to
+  `'3d'` in React; `setView` also takes over). The first style's projection applies at once, a later change morphs.
+- **Not read: `light`, `sky`, `fog`.** The Bruneton atmosphere lights and hazes the scene from the sun's real
+  position (`date`); a style's light direction or sky colours would contradict it, and the flat map is unlit.
+  Mapping `fog` ranges onto aerial perspective is possible but would fake a physical quantity; left out.
+- **Root changes through `setStyle`.** MapLibre's diff expresses root changes as `setTerrain`, `setCenter`… commands
+  the renderer skips; `MapStyle` now copies the root properties into its document on the diff path, so `getStyle()`
+  and the earth see them.
+- **Browser check** (`run.mjs style-root`, `?terrain=style`): an empty `<Terrain>` and a style with the DEM fixture
+  as root terrain (exaggeration 1.5) and a center, zoom, bearing and pitch: the terrain is built from the style,
+  heights read 1.5 times the fixture's (within 0.5 m), the camera starts at the style's view, and the style's
+  raster layer drapes on it.
 
 ## Round 3: faster atmosphere startup
 

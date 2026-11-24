@@ -16,7 +16,7 @@ instead.
   - `test/`: vitest unit tests.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
   is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
-  renders under React's StrictMode. `tests/run.mjs` drives it in Chromium.
+  renders under React's StrictMode, `?example=<name>` opens a gallery example (`src/examples/`, live data or `?fixtures`). `tests/run.mjs` drives it in Chromium.
 - `docs/spike/SPIKE.md`: what was built and measured so far. Read it before architectural changes.
 
 ## Rules

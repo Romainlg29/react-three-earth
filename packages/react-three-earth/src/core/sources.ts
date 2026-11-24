@@ -15,6 +15,7 @@ import type { FeatureIdentifier } from '../vector/worker/featureState.js'
 import type { StyleDocument, StyleDocumentLayer } from '../vector/worker/styleDocument.js'
 import type { FeatureState, SourceFeature } from '../vector/worker/types.js'
 import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../vector/styleImageInput.js'
+import { readStyleRoot, type StyleRoot } from '../vector/styleRoot.js'
 import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
 import { RasterDemTerrainPlugin } from '../tiles/RasterDemTerrainPlugin.js'
@@ -577,7 +578,7 @@ export interface MapStyleSourceOptions {
  * in a half-float target, then colour it with `heatmap-color`. Arabic and Hebrew labels are shaped and ordered
  * right to left in the worker, with no plugin; Indic, Thai and other complex scripts are drawn per grapheme
  * cluster by `localFontFamily`; `text-writing-mode: vertical` stands CJK point labels in columns. `fill-extrusion` layers stand in 3D (`extrusions`). A raster-dem source in a style shades the drape; for terrain from
- * it, put a `RasterDemSource` in the `Terrain`.
+ * it, put a `RasterDemSource` in the `Terrain`, or let the earth build one from the style's root `terrain`.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when
  * the style loads and joins `attribution`, and `attributionchange` fires on the earth.
@@ -731,6 +732,17 @@ export class MapStyleSource extends AttributionTracker implements ImagerySource 
   /** A copy of the style as it is now, with every change applied; null before it has loaded. */
   getStyle(): StyleDocument | null {
     return this.mapStyle.getStyle()
+  }
+
+  /**
+   * What the style's root asks of the map (`center`, `zoom`, `bearing`, `pitch`, `projection`, `terrain`); null
+   * before it has loaded. The earth follows it on its own: see `Earth`.
+   */
+  getStyleRoot(): StyleRoot | null {
+    const style = this.mapStyle.getStyle()
+    const baseUrl = this.mapStyle.getBaseUrl()
+    const customRequests = this.options.requestHeaders !== undefined || this.options.transformRequest !== undefined
+    return style === null || baseUrl === null ? null : readStyleRoot(style, baseUrl, { customRequests })
   }
 
   /** A copy of a layer, or undefined. */

@@ -218,7 +218,7 @@ async function controls() {
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
     page.on('pageerror', e => errors.push(String(e)))
     await page.goto(BASE + '/?fixtures&stats=0&atmosphere=0')
-    await page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('.react-three-earth-control-button'), null, { timeout: 120_000 })
+    await page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('.map-control-button'), null, { timeout: 120_000 })
     return { page, context, errors }
   }
   const buttonSelector = label => `button[aria-label="${label}"]`
@@ -230,9 +230,9 @@ async function controls() {
   const desktop = await openIn({ permissions: ['geolocation'], geolocation: { longitude: -90, latitude: 0.02, accuracy: 60 } }, { width: 1000, height: 640 })
   const { page } = desktop
   const result = {}
-  result.labels = await page.evaluate(() => [...document.querySelectorAll('.react-three-earth-controls button')].map(b => b.getAttribute('aria-label')))
+  result.labels = await page.evaluate(() => [...document.querySelectorAll('.map-corner button')].map(b => b.getAttribute('aria-label')))
   result.corner = await page.evaluate(() => {
-    const box = document.querySelector('.react-three-earth-controls[data-position="top-right"]').getBoundingClientRect()
+    const box = document.querySelector('.map-corner-top-right').getBoundingClientRect()
     return { right: Math.round(innerWidth - box.right), top: Math.round(box.top) }
   })
 
@@ -247,22 +247,22 @@ async function controls() {
   result.zoomOutDelta = (await view(page)).zoom - startZoom
 
   await page.evaluate(() => window.earth.camera.jumpTo({ headingDegrees: 45, pitchDegrees: -50 }))
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-compass-needle')?.style.transform.includes('rotateZ(-45'), null, { timeout: 10_000 })
-  result.compassTurned = await page.evaluate(() => document.querySelector('.react-three-earth-compass-needle').style.transform)
+  await page.waitForFunction(() => document.querySelector('.map-compass-needle')?.style.transform.includes('rotateZ(-45'), null, { timeout: 10_000 })
+  result.compassTurned = await page.evaluate(() => document.querySelector('.map-compass-needle').style.transform)
   await page.click(buttonSelector('Reset bearing to north and look straight down'))
   await settle(page)
   const reset = await view(page)
   result.resetHeading = reset.headingDegrees
   result.resetPitch = reset.pitchDegrees
 
-  result.scaleText = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.textContent ?? null)
-  result.scaleWidth = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.getBoundingClientRect().width ?? 0)
+  result.scaleText = await page.evaluate(() => document.querySelector('.map-scale')?.textContent ?? null)
+  result.scaleWidth = await page.evaluate(() => document.querySelector('.map-scale')?.getBoundingClientRect().width ?? 0)
   const scaleBefore = result.scaleText
   await page.click(buttonSelector('Zoom in'))
   await page.click(buttonSelector('Zoom in'))
   await settle(page)
-  await page.waitForFunction(before => document.querySelector('.react-three-earth-scale')?.textContent !== before, scaleBefore, { timeout: 10_000 })
-  result.scaleAfterZoom = await page.evaluate(() => document.querySelector('.react-three-earth-scale').textContent)
+  await page.waitForFunction(before => document.querySelector('.map-scale')?.textContent !== before, scaleBefore, { timeout: 10_000 })
+  result.scaleAfterZoom = await page.evaluate(() => document.querySelector('.map-scale').textContent)
 
   await page.click(buttonSelector('Switch to the flat map'))
   await settle(page)
@@ -278,33 +278,33 @@ async function controls() {
 
   // Geolocate: follows the user, dot on the map, a second press stops
   await page.click(buttonSelector('Show my location'))
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-user-dot') !== null, null, { timeout: 20_000 })
+  await page.waitForFunction(() => document.querySelector('.map-user-dot') !== null, null, { timeout: 20_000 })
   await settle(page)
   const found = await view(page)
   result.geolocate = {
     longitude: found.longitudeDegrees,
     latitude: found.latitudeDegrees,
-    pressed: await page.getAttribute('.react-three-earth-control-button[aria-label="Stop following my location"]', 'aria-pressed'),
-    circle: await page.evaluate(() => document.querySelector('.react-three-earth-accuracy-circle') !== null),
+    pressed: await page.getAttribute('.map-control-button[aria-label="Stop following my location"]', 'aria-pressed'),
+    circle: await page.evaluate(() => document.querySelector('.map-accuracy-circle') !== null),
   }
   await page.click(buttonSelector('Stop following my location'))
-  result.geolocate.dotAfterStop = await page.evaluate(() => document.querySelector('.react-three-earth-user-dot') !== null)
+  result.geolocate.dotAfterStop = await page.evaluate(() => document.querySelector('.map-user-dot') !== null)
   writeFileSync(new URL('controls-desktop.png', OUT), await page.screenshot())
 
   // Fullscreen (a user gesture is needed, a click is one)
   await page.click(buttonSelector('Enter fullscreen'))
-  await page.waitForFunction(() => document.fullscreenElement !== null || document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
-  result.fullscreen = await page.evaluate(() => ({ native: document.fullscreenElement !== null, pseudo: document.querySelector('.react-three-earth-pseudo-fullscreen') !== null, pressed: document.querySelector('button[aria-label="Exit fullscreen"]')?.getAttribute('aria-pressed') }))
+  await page.waitForFunction(() => document.fullscreenElement !== null || (() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), null, { timeout: 10_000 })
+  result.fullscreen = await page.evaluate(() => ({ native: document.fullscreenElement !== null, pseudo: (() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), pressed: document.querySelector('button[aria-label="Exit fullscreen"]')?.getAttribute('aria-pressed') }))
   await page.click(buttonSelector('Exit fullscreen'))
-  await page.waitForFunction(() => document.fullscreenElement === null && !document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
+  await page.waitForFunction(() => document.fullscreenElement === null && !(() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), null, { timeout: 10_000 })
   result.fullscreenExited = true
   await desktop.context.close()
 
   // A phone: touch, 390 × 700. Buttons are 44 pixels and a tap works
   const phone = await openIn({ isMobile: true, hasTouch: true, deviceScaleFactor: 3 }, { width: 390, height: 700 })
   result.phone = await phone.page.evaluate(() => {
-    const sizes = [...document.querySelectorAll('.react-three-earth-controls button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
-    const inside = [...document.querySelectorAll('.react-three-earth-controls')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
+    const sizes = [...document.querySelectorAll('.map-corner button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
+    const inside = [...document.querySelectorAll('.map-corner')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
     return { sizes, inside }
   })
   await settle(phone.page)
@@ -1556,9 +1556,11 @@ async function heatmaps(name, query) {
   const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&heatmap${query}`)
   const warnings = []
   page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  // `idle`, not zero download, parse and composition counts: those also hold between two refinement steps, and the
+  // slower WebGL2 path sometimes stopped there and screenshotted the heat of coarse tiles, with a seam at their edge.
   await page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 10 && inspection.idle
   }, null, { timeout: 240_000, polling: 300 })
   await page.waitForTimeout(3000) // tile fades
   // The tile edge the quake heat straddles (z8 column 227) at the cloud's latitude.
@@ -1568,6 +1570,35 @@ async function heatmaps(name, query) {
   const stats = await analyse(page, png, heatmapPixels(edge.xPixels, edge.yPixels))
   await page.close()
   results.push({ check: `heatmap layers, ${name}`, edge: { x: Math.round(edge.xPixels), y: Math.round(edge.yPixels) }, ...stats, errors, warnings: warnings.filter(text => /heatmap|skipp/i.test(text)) })
+}
+
+/**
+ * The gallery examples (`?example=<name>`, src/examples/) on the fixtures: each loads without an error and draws what
+ * it is about. `interact` runs in the page once it is idle and returns extra facts.
+ */
+async function galleryExample(name, query = '', interact = null) {
+  const { page, errors } = await open(`/?fixtures&atmosphere=0&example=${name}${query}`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  await page.waitForTimeout(2000) // tile and label fades
+  const facts = interact === null ? {} : await interact(page, idle)
+  const png = await page.screenshot()
+  writeFileSync(new URL(`example-${name}.png`, OUT), png)
+  const inspection = await page.evaluate(() => {
+    const { terrain } = window.earth.inspect()
+    return { buildings: terrain?.extrusions?.buildings ?? 0, labels: window.earth.terrain.getScreenLabels().filter(label => label.opacity > 0.5).map(label => label.text) }
+  })
+  // Heat: purple to orange pixels, far from the grey fixture ground (green well under red or blue).
+  const colours = await analyse(page, png, `
+    let heat = 0
+    for (let i = 0; i < px.length; i += 4) if (Math.max(px[i], px[i + 2]) - px[i + 1] > 60) heat++
+    return { heatShare: heat / (width * height) }
+  `)
+  await page.close()
+  results.push({ check: `gallery example, ${name}`, ...inspection, ...colours, ...facts, errors })
 }
 
 /**
@@ -1678,6 +1709,30 @@ async function rasterDemTerrain(name, query, { heights = false } = {}) {
   const { inspection, attributions } = await page.evaluate(() => ({ inspection: window.earth.inspect(), attributions: window.earth.getAttributions() }))
   await page.close()
   results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
+}
+
+/**
+ * A style's root properties (`?terrain=style`): with an empty `<Terrain>`, the earth builds terrain from the style's
+ * `terrain` (DEM fixture, exaggeration 1.5) and the camera starts at its `center`, `zoom`, `bearing` and `pitch`.
+ */
+async function styleRoot() {
+  const { page, errors } = await open('/?fixtures&stats=0&atmosphere=0&terrain=style')
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect().terrain
+    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(2000) // tiles fade in
+  const png = await page.screenshot()
+  writeFileSync(new URL('style-root.png', OUT), png)
+  const stats = await analyse(page, png, `
+    let green = 0
+    for (let i = 0; i < px.length; i += 4) if (px[i + 1] > px[i] + 20 && px[i + 1] > px[i + 2] + 20) green++
+    return { greenShare: +(green / (px.length / 4)).toFixed(3) }
+  `)
+  const heights = await fixtureHeightErrors(page, 1.5)
+  const { inspection, attributions } = await page.evaluate(() => ({ inspection: window.earth.inspect(), attributions: window.earth.getAttributions() }))
+  await page.close()
+  results.push({ check: 'style root properties', ...stats, heights, fromStyle: inspection.terrain?.fromStyle, camera: inspection.camera, attributions, errors })
 }
 
 /** Heights under a 7 × 7 grid over 2.4° around (-90°, 0°), against the fixture function times `exaggeration`. */
@@ -2113,10 +2168,98 @@ try {
     await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
     await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
   }
+  if (want('style-root')) await styleRoot()
   if (want('exaggeration')) {
     await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
     await terrainExaggeration('quantized-mesh', '&exaggeration=2')
     await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
+  }
+  if (want('examples')) {
+    await galleryExample('city')
+    await galleryExample('labels', '', async (page, idle) => {
+      await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      await page.waitForTimeout(1500)
+      // A vertical label is taller than wide.
+      const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
+      return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
+    })
+    await galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
+      // Manaslu stands alone at this zoom: a click on it opens its popup.
+      const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
+      await page.mouse.click(point.xPixels, point.yPixels)
+      await page.waitForTimeout(1000)
+      return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
+    })
+    await galleryExample('heatmap')
+    await galleryExample('terrain', '', async (page, idle) => {
+      await page.locator('input[type=range]').fill('3')
+      await page.getByRole('button', { name: 'Map and hillshade' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+    })
+    await galleryExample('overlay', '', async (page, idle) => {
+      const radarShare = async () => {
+        await idle()
+        await page.waitForTimeout(1000)
+        return analyse(page, await page.screenshot(), `
+          // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
+          // of the rain moves between frames.
+          let radar = 0, sumX = 0
+          for (let y = Math.floor(height / 3); y < height - 40; y++) {
+            for (let x = 0; x < width; x++) {
+              const i = (y * width + x) * 4
+              if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
+            }
+          }
+          return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
+        `)
+      }
+      const shown = await radarShare()
+      await page.getByRole('button', { name: 'Play' }).click()
+      await page.waitForTimeout(2000)
+      await page.getByRole('button', { name: 'Pause' }).click()
+      const played = await radarShare()
+      await page.locator('input[type=range]').fill('0')
+      const hidden = await radarShare()
+      return { radar: { shown, played, hidden } }
+    })
+    await galleryExample('night', '', async (page, idle) => {
+      // Glow pixels by hue, before and after the glow colour changes.
+      const glow = async () => analyse(page, await page.screenshot(), `
+        let amber = 0, cyan = 0, magenta = 0
+        for (let i = 0; i < px.length; i += 4) {
+          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+          if (r > 80 && r > g * 1.5 && r > b * 2) amber++
+          if (b > 80 && g > 60 && b > r * 2) cyan++
+          // The neon outline (#ff2bd6) around the place names.
+          if (r > 170 && b > 150 && g < 110) magenta++
+        }
+        return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+      `)
+      const before = await glow()
+      await page.getByRole('button', { name: 'Cyan glow' }).click()
+      // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
+      let after = null
+      for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
+        await page.waitForTimeout(1000)
+        await idle()
+        after = await glow()
+      }
+      return { glow: { before, after } }
+    })
+    await galleryExample('embedded', '', async page => {
+      // A plain wheel over the map scrolls the page and leaves the camera where it was.
+      const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      const box = await page.locator('.example-embedded canvas').boundingBox()
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.wheel(0, 400)
+      await page.waitForTimeout(1500)
+      const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      return { wheel: { before, after } }
+    })
   }
 } finally {
   await browser.close()

@@ -1,0 +1,151 @@
+/* The gallery examples' frame: a full-window map and a card in its top-left corner. */
+.example-canvas {
+  position: fixed;
+  inset: 0;
+}
+
+.example-card {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(10px, env(safe-area-inset-left));
+  width: min(340px, calc(100vw - 80px));
+  max-height: calc(100% - 90px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(14, 18, 28, 0.82);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: #e8ecf3;
+  font: 14px/1.45 system-ui, -apple-system, sans-serif;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+.example-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.example-card h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.example-back,
+.example-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  font: 20px/1 system-ui, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.example-body p {
+  margin: 8px 0 0;
+  color: #b4bdcc;
+}
+
+.example-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+/* Tall enough to tap. */
+.example-buttons button {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid #34405a;
+  border-radius: 18px;
+  background: #1b2333;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.example-buttons button[aria-pressed='true'] {
+  border-color: #6d9cff;
+  background: #24365e;
+}
+
+.example-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.example-field input[type='range'] {
+  flex: 1;
+}
+
+.example-popup {
+  color: #1d2333;
+  font: 13px/1.4 system-ui, -apple-system, sans-serif;
+}
+
+.example-popup strong {
+  display: block;
+  font-size: 14px;
+}
+
+.example-field output {
+  min-width: 3.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* `?example=embedded`: an article that scrolls past a map. */
+.example-article {
+  box-sizing: border-box;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  color: #e8ecf3;
+  font: 17px/1.6 system-ui, -apple-system, sans-serif;
+}
+
+.example-article h1 {
+  margin: 12px 0 16px;
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.example-article-back {
+  color: #8fb0ff;
+  font-size: 15px;
+}
+
+.example-article kbd {
+  padding: 1px 6px;
+  border: 1px solid #3a465e;
+  border-radius: 4px;
+  background: #1b2333;
+  font: 14px ui-monospace, monospace;
+}
+
+.example-article-spacer {
+  min-height: 60vh;
+  color: #9aa4b5;
+}
+
+.example-embedded {
+  position: relative;
+  height: min(65vh, 520px);
+  margin: 24px 0;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
