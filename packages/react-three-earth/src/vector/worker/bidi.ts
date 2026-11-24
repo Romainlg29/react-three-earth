@@ -357,7 +357,7 @@ export function visualOrder(levels: ArrayLike<number>): number[] {
 }
 
 const MIRRORED = new Map<number, number>()
-for (const [a, b] of [
+for (const [opening, closing] of [
   [0x28, 0x29],
   [0x3c, 0x3e],
   [0x5b, 0x5d],
@@ -377,8 +377,8 @@ for (const [a, b] of [
   [0xff3b, 0xff3d],
   [0xff5b, 0xff5d],
 ] as const) {
-  MIRRORED.set(a, b)
-  MIRRORED.set(b, a)
+  MIRRORED.set(opening, closing)
+  MIRRORED.set(closing, opening)
 }
 
 /** L4: the mirrored glyph of a bracket or similar on a right-to-left level, or the code point itself. */

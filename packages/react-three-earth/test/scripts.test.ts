@@ -48,6 +48,11 @@ describe('Arabic shaping', () => {
     expect(shapeArabic('Tokyo 東京')).toBe('Tokyo 東京')
   })
 
+  it('joins neighbours to letters with no presentation form (Kurdish, Pashto)', () => {
+    // هەولێر (Erbil): ە (U+06D5) and ێ (U+06CE) have no forms but heh, lam and reh still join to them.
+    expect(hex(shapeArabic('هەولێر'))).toEqual(['feeb', '6d5', 'feed', 'fedf', '6ce', 'feae'])
+  })
+
   it('joins across text sections', () => {
     const sections = shapeSectionsForScripts([
       { text: 'ب', fontStack: 'a', scale: 1 },
@@ -108,6 +113,16 @@ describe('shaping labels with right-to-left text', () => {
     for (const glyph of shaped.glyphs) rows.set(glyph.y, [...(rows.get(glyph.y) ?? []), glyph.codePoint])
     // The first word read stays on the first line.
     expect([...rows.values()].map(row => String.fromCodePoint(...row))).toEqual(['גבא', 'והד', 'טחז'])
+  })
+
+  it('ignores letter spacing on Arabic labels, whose letters must touch', () => {
+    const spaced = { ...options, letterSpacingEms: 0.5 }
+    const width = (text: string) => {
+      const shaped = shapeText([{ text, fontStack: 'f', scale: 1 }], spaced, lookup)!
+      return shaped.right - shaped.left
+    }
+    expect(width(shapeArabic('سلام'))).toBeCloseTo(36)
+    expect(width('abc')).toBeCloseTo(3 * 12 + 2 * 12)
   })
 
   it('keeps advances: a right-to-left label is as wide as it would be left to right', () => {

@@ -1,4 +1,4 @@
-import { needsArabicShaping, shapeArabicCodePoints } from './arabic.js'
+import { isArabicScript, needsArabicShaping, shapeArabicCodePoints } from './arabic.js'
 import { hasRightToLeft, mirrorCodePoint, resolveLevels, visualOrder } from './bidi.js'
 import { GLYPH_BUFFER, GLYPH_EDGE, GLYPH_FONT_SIZE, type AtlasGlyph } from './glyphs.js'
 import type { Point } from './ShapeBuilder.js'
@@ -63,7 +63,9 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     /** Bidi embedding level: odd runs right to left. */
     level: number
   }
-  const spacing = options.letterSpacingEms * GLYPH_FONT_SIZE
+  // Letter spacing would open gaps between joined Arabic letters: such labels take none, as in MapLibre.
+  const joinedScript = sections.some(section => Array.from(section.text).some(character => isArabicScript(character.codePointAt(0)!)))
+  const spacing = joinedScript ? 0 : options.letterSpacingEms * GLYPH_FONT_SIZE
   const characters: Character[] = []
   for (const section of sections) {
     for (const character of section.text) {

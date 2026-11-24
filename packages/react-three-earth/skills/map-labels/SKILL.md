@@ -114,6 +114,9 @@ orders the text itself.
 - Each line is reordered by the Unicode bidirectional algorithm: right-to-left words read right to left, numbers
   and Latin runs inside them left to right, brackets mirror. Wrapping (`text-max-width`) breaks in reading order
   first, so the first word read stays on the first line. Road names work the same way.
+- `text-letter-spacing` is ignored on labels with Arabic, whose letters must touch (as in MapLibre).
+- Letters of the Arabic blocks with no presentation form (some Kurdish and Pashto letters) draw in their own
+  glyph; their neighbours still join to them.
 - Not covered: explicit direction controls (U+202A–U+202E, U+2066–U+2069 are ignored), and bracket pairing
   (UAX #9 rule N0), which rarely matters in a name.
 
@@ -127,7 +130,7 @@ export function labelsOnScreen(earth: Earth): string[] {
 }
 ```
 
-Each entry has `text` (as drawn: Arabic in presentation forms, still in reading order), `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
+Each entry has `text` (as the style gives it, in reading order), `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
 `opacity`, `layerIndex`, `allowOverlap` and `ignorePlacement`. Labels that collide as several boxes have
 `collisionBoxes` (a road name's glyphs, or a place's icon then text); it is null for a single box.
 `glyphAnglesRadians` (0 reads left to right) is set for road names only. Labels fading in

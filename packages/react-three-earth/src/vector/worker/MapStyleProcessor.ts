@@ -134,7 +134,9 @@ interface SymbolCandidate {
   state: FeatureState
   type: VectorTileFeatureLike['type']
   geometry: Point[][]
-  /** The text, empty for an icon alone. */
+  /** The text as the style gives it, in reading order: the label's identity and what `getScreenLabels` reports. */
+  text: string
+  /** The text to draw (Arabic letters joined), empty for an icon alone. */
   sections: TextSection[]
   /** `icon-image`, or null without an icon. */
   iconId: string | null
@@ -901,7 +903,7 @@ export class MapStyleProcessor {
         color,
         haloColor,
         haloWidthPixels: layer.evaluate<number>('paint', 'text-halo-width', zoom, feature, state),
-        key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}${symbol.iconId === null ? '' : `\u0000${symbol.iconId}`}`,
+        key: `${layer.id}\u0000${symbol.text}${symbol.iconId === null ? '' : `\u0000${symbol.iconId}`}`,
         sourceLayer: symbol.sourceLayer,
         featureIndex: symbol.featureIndex,
       }
@@ -1282,11 +1284,12 @@ export class MapStyleProcessor {
     sourceLayer: string,
     featureIndex: number,
   ): SymbolCandidate | null {
-    const sections = this.symbolText(layer, feature, zoom)
+    const text = this.symbolText(layer, feature, zoom)
     const iconId = symbolIcon(layer, feature, zoom)
-    if (sections.length === 0 && iconId === null) return null
+    if (text.length === 0 && iconId === null) return null
     const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, sections, iconId, sortKey, order }
+    const sections = shapeSectionsForScripts(text)
+    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, text: text.map(section => section.text).join(''), sections, iconId, sortKey, order }
   }
 
   /** A symbol's `text-field` as sections to shape; empty without text. */
@@ -1302,15 +1305,13 @@ export class MapStyleProcessor {
     const fonts = layer.evaluate<string[]>('layout', 'text-font', zoom, feature)
     const fontStack = fonts.join(',')
     const transform = layer.evaluate<'none' | 'uppercase' | 'lowercase'>('layout', 'text-transform', zoom, feature)
-    return shapeSectionsForScripts(
-      formatted.sections
-        .filter(section => section.text.length > 0)
-        .map(section => ({
-          text: transform === 'uppercase' ? section.text.toLocaleUpperCase() : transform === 'lowercase' ? section.text.toLocaleLowerCase() : section.text,
-          fontStack: section.fontStack ?? fontStack,
-          scale: section.scale ?? 1,
-        })),
-    )
+    return formatted.sections
+      .filter(section => section.text.length > 0)
+      .map(section => ({
+        text: transform === 'uppercase' ? section.text.toLocaleUpperCase() : transform === 'lowercase' ? section.text.toLocaleLowerCase() : section.text,
+        fontStack: section.fontStack ?? fontStack,
+        scale: section.scale ?? 1,
+      }))
   }
 
   /**

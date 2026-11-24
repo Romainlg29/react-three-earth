@@ -1258,8 +1258,8 @@ async function screenSymbols(name, query, map = 'labels') {
 }
 
 /**
- * Place names in other scripts (`?map=scripts`): Arabic drawn in its joined presentation forms, Hebrew and mixed
- * labels shown, text pixels inside each label's box. The screenshot shows the reading order.
+ * Place names in other scripts (`?map=scripts`): every name shows, reported in reading order, with text pixels
+ * inside its box. Shaping and order are unit-tested (test/scripts.test.ts); the screenshot shows them drawn.
  */
 async function scriptLabels(name, query) {
   const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=scripts${query}`)
@@ -1299,17 +1299,10 @@ async function scriptLabels(name, query) {
       return count
     })
   `)
-  const codePoints = text => [...text].map(character => character.codePointAt(0))
-  const arabic = labels.filter(l => codePoints(l.text).some(c => (c >= 0x0600 && c <= 0x06ff) || (c >= 0xfb50 && c <= 0xfeff)))
   await page.close()
   results.push({
     check: `script labels, ${name}`,
     labels: labels.map((l, index) => ({ ...l, textPixels: inBoxes[index] })),
-    arabicLabels: arabic.length,
-    // Arabic letters left in their base form (U+0621–U+064A) were not shaped.
-    arabicUnshaped: arabic.filter(l => codePoints(l.text).some(c => c >= 0x0621 && c <= 0x064a)).length,
-    lamAlef: arabic.some(l => codePoints(l.text).some(c => c >= 0xfef5 && c <= 0xfefc)),
-    hebrewLabels: labels.filter(l => codePoints(l.text).some(c => c >= 0x05d0 && c <= 0x05ea)).length,
     errors,
   })
 }

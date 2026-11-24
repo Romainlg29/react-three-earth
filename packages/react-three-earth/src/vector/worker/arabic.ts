@@ -55,23 +55,88 @@ function define(codePoint: number, joining: 'dual' | 'right', forms: Forms): voi
   define(0x0649, 'dual', [0xfeef, 0xfef0, 0xfbe8, 0xfbe9])
 }
 
-// Persian, Urdu and other extended letters, in Arabic Presentation Forms-A.
-define(0x0671, 'right', [0xfb50, 0xfb51, 0, 0]) // alef wasla
-define(0x0679, 'dual', [0xfb66, 0xfb67, 0xfb68, 0xfb69]) // tteh
-define(0x067e, 'dual', [0xfb56, 0xfb57, 0xfb58, 0xfb59]) // peh
-define(0x0686, 'dual', [0xfb7a, 0xfb7b, 0xfb7c, 0xfb7d]) // tcheh
-define(0x0688, 'right', [0xfb88, 0xfb89, 0, 0]) // ddal
-define(0x0691, 'right', [0xfb8c, 0xfb8d, 0, 0]) // rreh
-define(0x0698, 'right', [0xfb8a, 0xfb8b, 0, 0]) // jeh
-define(0x06a4, 'dual', [0xfb6a, 0xfb6b, 0xfb6c, 0xfb6d]) // veh
-define(0x06a9, 'dual', [0xfb8e, 0xfb8f, 0xfb90, 0xfb91]) // keheh
-define(0x06af, 'dual', [0xfb92, 0xfb93, 0xfb94, 0xfb95]) // gaf
-define(0x06ba, 'dual', [0xfb9e, 0xfb9f, 0, 0]) // noon ghunna
-define(0x06be, 'dual', [0xfbaa, 0xfbab, 0xfbac, 0xfbad]) // heh doachashmee
-define(0x06c0, 'right', [0xfba4, 0xfba5, 0, 0]) // heh with yeh above
-define(0x06c1, 'dual', [0xfba6, 0xfba7, 0xfba8, 0xfba9]) // heh goal
-define(0x06cc, 'dual', [0xfbfc, 0xfbfd, 0xfbfe, 0xfbff]) // farsi yeh
-define(0x06d2, 'right', [0xfbae, 0xfbaf, 0, 0]) // yeh barree
+// Persian, Urdu, Pashto, Kurdish and other extended letters with forms in Arabic Presentation Forms-A.
+const right = (codePoint: number, form: number) => define(codePoint, 'right', [form, form + 1, 0, 0])
+const dual = (codePoint: number, form: number) => define(codePoint, 'dual', [form, form + 1, form + 2, form + 3])
+right(0x0671, 0xfb50) // alef wasla
+dual(0x067b, 0xfb52) // beeh
+dual(0x067e, 0xfb56) // peh
+dual(0x0680, 0xfb5a) // beheh
+dual(0x067a, 0xfb5e) // tteheh
+dual(0x067f, 0xfb62) // teheh
+dual(0x0679, 0xfb66) // tteh
+dual(0x06a4, 0xfb6a) // veh
+dual(0x06a6, 0xfb6e) // peheh
+dual(0x0684, 0xfb72) // dyeh
+dual(0x0683, 0xfb76) // nyeh
+dual(0x0686, 0xfb7a) // tcheh
+dual(0x0687, 0xfb7e) // tcheheh
+right(0x068d, 0xfb82) // ddahal
+right(0x068c, 0xfb84) // dahal
+right(0x068e, 0xfb86) // dul
+right(0x0688, 0xfb88) // ddal
+right(0x0698, 0xfb8a) // jeh
+right(0x0691, 0xfb8c) // rreh
+dual(0x06a9, 0xfb8e) // keheh
+dual(0x06af, 0xfb92) // gaf
+dual(0x06b3, 0xfb96) // gueh
+dual(0x06b1, 0xfb9a) // ngoeh
+dual(0x06bb, 0xfba0) // rnoon
+right(0x06c0, 0xfba4) // heh with yeh above
+dual(0x06c1, 0xfba6) // heh goal
+dual(0x06be, 0xfbaa) // heh doachashmee
+right(0x06d2, 0xfbae) // yeh barree
+right(0x06d3, 0xfbb0) // yeh barree with hamza above
+dual(0x06ad, 0xfbd3) // ng
+right(0x06c7, 0xfbd7) // u
+right(0x06c6, 0xfbd9) // oe
+right(0x06c8, 0xfbdb) // yu
+right(0x06cb, 0xfbde) // ve
+right(0x06c5, 0xfbe0) // kirghiz oe
+right(0x06c9, 0xfbe2) // kirghiz yu
+dual(0x06d0, 0xfbe4) // e
+dual(0x06cc, 0xfbfc) // farsi yeh
+// Noon ghunna joins on both sides in Unicode, but has no initial or medial form: drawn as joining right only.
+right(0x06ba, 0xfb9e)
+
+/**
+ * Joining types of the other letters of the Arabic blocks (Unicode ArabicShaping.txt). They have no presentation
+ * form and draw in their own glyph, but their neighbours still join to them, as ICU shapes them.
+ */
+const JOINING_RANGES: ReadonlyArray<readonly [number, number, 'dual' | 'right']> = [
+  [0x0620, 0x0620, 'dual'],
+  [0x063b, 0x063f, 'dual'],
+  [0x066e, 0x066f, 'dual'],
+  [0x0672, 0x0673, 'right'],
+  [0x0675, 0x0677, 'right'],
+  [0x0678, 0x0687, 'dual'],
+  [0x0688, 0x0699, 'right'],
+  [0x069a, 0x06bf, 'dual'],
+  [0x06c0, 0x06c0, 'right'],
+  [0x06c1, 0x06c2, 'dual'],
+  [0x06c3, 0x06cb, 'right'],
+  [0x06cc, 0x06cc, 'dual'],
+  [0x06cd, 0x06cd, 'right'],
+  [0x06ce, 0x06ce, 'dual'],
+  [0x06cf, 0x06cf, 'right'],
+  [0x06d0, 0x06d1, 'dual'],
+  [0x06d2, 0x06d3, 'right'],
+  [0x06d5, 0x06d5, 'right'],
+  [0x06ee, 0x06ef, 'right'],
+  [0x06fa, 0x06fc, 'dual'],
+  [0x06ff, 0x06ff, 'dual'],
+  [0x0750, 0x0758, 'dual'],
+  [0x0759, 0x075b, 'right'],
+  [0x075c, 0x076a, 'dual'],
+  [0x076b, 0x076c, 'right'],
+  [0x076d, 0x0770, 'dual'],
+  [0x0771, 0x0771, 'right'],
+  [0x0772, 0x0772, 'dual'],
+  [0x0773, 0x0774, 'right'],
+  [0x0775, 0x0777, 'dual'],
+  [0x0778, 0x0779, 'right'],
+  [0x077a, 0x077f, 'dual'],
+]
 JOINING.set(0x0640, 'causing') // tatweel
 JOINING.set(0x200d, 'causing') // zero width joiner
 
@@ -101,14 +166,26 @@ function joiningOf(codePoint: number): JoiningType | null {
   const joining = JOINING.get(codePoint)
   if (joining !== undefined) return joining
   for (const [start, end] of TRANSPARENT_RANGES) if (codePoint >= start && codePoint <= end) return 'transparent'
+  for (const [start, end, type] of JOINING_RANGES) if (codePoint >= start && codePoint <= end) return type
   return null
+}
+
+/** Whether a code point is Arabic script, base or presentation form: such labels take no letter spacing. */
+export function isArabicScript(codePoint: number): boolean {
+  return (
+    (codePoint >= 0x0600 && codePoint <= 0x06ff) ||
+    (codePoint >= 0x0750 && codePoint <= 0x077f) ||
+    (codePoint >= 0x08a0 && codePoint <= 0x08ff) ||
+    (codePoint >= 0xfb50 && codePoint <= 0xfdff) ||
+    (codePoint >= 0xfe70 && codePoint <= 0xfeff)
+  )
 }
 
 /** Whether a string has a letter this module shapes, to skip the work for every other label. */
 export function needsArabicShaping(text: string): boolean {
   for (let index = 0; index < text.length; index++) {
     const code = text.charCodeAt(index)
-    if (code >= 0x0620 && code <= 0x06ff) return true
+    if ((code >= 0x0620 && code <= 0x06ff) || (code >= 0x0750 && code <= 0x077f)) return true
   }
   return false
 }
