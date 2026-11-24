@@ -265,7 +265,7 @@ describe('select mode', () => {
     expect(events.at(-1)).toBe('create square')
   })
 
-  it('moves sphere meshes whole, with a gizmo of corners, a turning knob and a lift knob, and no vertex handles', () => {
+  it('moves sphere meshes whole, with a gizmo and no vertex handles', () => {
     const sphere = { ...createSphere([0.5, 0.5], 20_000), id: 'ball' } as DrawFeature
     const { context, store } = createContext([sphere])
     const mode = new SelectMode()
@@ -275,8 +275,8 @@ describe('select mode', () => {
     expect(mode.selectedFeatureIds()).toEqual(['ball'])
     const content = { features: [], lines: [], handles: [] }
     mode.overlay(content)
-    // Scale corners, the turning knob and the lift knob: no height knob (no level top), no side handles (small on screen).
-    expect(content.handles).toHaveLength(4 + 1 + 1)
+    // The gizmo's handles: three scale cubes, the center ring and the outer ring (its arrows and arcs are lines).
+    expect(content.handles).toHaveLength(3 + 2)
     // A second tap keeps the gizmo: a mesh's vertices are not edited one by one.
     mode.click(pointer(50, 30))
     expect(mode.editingVertices).toBe(false)
@@ -314,7 +314,7 @@ describe('select mode', () => {
     mode.click(pointer(30, 70))
     expect(mode.selectedFeatureIds()).toEqual(['square'])
     expect(mode.editingVertices).toBe(false)
-    expect(handles()).toBe(4 + 4 + 1 + 1 + 1) // corners, sides, turning knob, height knob, lift knob
+    expect(handles()).toBe(3 + 2) // the gizmo's scale cubes, center ring and outer ring
     // A tap (no drag) on the selected feature: vertex handles and midpoints instead.
     expect(mode.pointerDown(pointer(30, 70))).toBe(true)
     mode.pointerUp(pointer(30, 70))
@@ -334,7 +334,7 @@ describe('select mode', () => {
     mode.click(pointer(500, 500))
     expect(mode.selectedFeatureIds()).toEqual([])
     expect(mode.editingVertices).toBe(false)
-    // A tap on the knob in the middle of a flat shape is a tap on the shape; Escape steps back to the gizmo first.
+    // A tap on the gizmo's center ring over a flat shape is a tap on the shape; Escape steps back to the gizmo first.
     mode.setSelection(['square'])
     expect(mode.pointerDown(pointer(50, 50))).toBe(true)
     mode.pointerUp(pointer(50, 50))
