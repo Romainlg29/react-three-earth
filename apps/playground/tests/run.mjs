@@ -1,6 +1,6 @@
 // Browser checks on real WebGPU (Chromium, SwiftShader adapter). Needs `pnpm dev` running.
 // Frame times here measure a CPU rasteriser, not a GPU: correctness only.
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { AREAS, selectAreas } from './areas.mjs'
 
@@ -10,15 +10,21 @@ const { chromium } = createRequire(import.meta.url)('playwright')
 const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
 const OUT = new URL('../test-results/', import.meta.url)
 mkdirSync(OUT, { recursive: true })
+// A run that crashes leaves no results, so assert-results.mjs fails instead of reading an earlier run's.
+rmSync(new URL('results.json', OUT), { force: true })
+rmSync(new URL('selection.json', OUT), { force: true })
 
 // Areas: all by default, named ones (`labels buildings`), or those the branch's changes reach (`--changed`). See areas.mjs.
 const selected = new Set(selectAreas(process.argv.slice(2)))
 const want = area => selected.has(area)
 console.error(selected.size === AREAS.length ? 'Browser checks: every area' : `Browser checks: ${[...selected].join(', ') || 'none, no change reaches the playground'}`)
-// assert-results.mjs reads this to tell the checks a partial run skipped from missing ones.
-writeFileSync(new URL('selection.json', OUT), JSON.stringify({ areas: [...selected], every: selected.size === AREAS.length }, null, 2))
+/** Writes the results and the areas they cover: assert-results.mjs tells the checks a partial run skipped from missing ones. */
+function writeResults(results) {
+  writeFileSync(new URL('selection.json', OUT), JSON.stringify({ areas: [...selected], every: selected.size === AREAS.length }, null, 2))
+  writeFileSync(new URL('results.json', OUT), JSON.stringify(results, null, 2))
+}
 if (selected.size === 0) {
-  writeFileSync(new URL('results.json', OUT), '[]')
+  writeResults([])
   process.exit(0)
 }
 
@@ -1722,5 +1728,5 @@ try {
 } finally {
   await browser.close()
 }
-writeFileSync(new URL('results.json', OUT), JSON.stringify(results, null, 2))
+writeResults(results)
 console.log(JSON.stringify(results, null, 2))
