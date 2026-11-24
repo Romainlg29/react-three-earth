@@ -36,7 +36,8 @@ Changing `view` plays a transition:
   camera eases down to the flat map's height limit.
 - **Towards the globe:** the map rolls back up from its edges inwards.
 
-The default length is 1.8 s.
+The default length is 1.8 s. Users who ask the system to reduce motion (`prefers-reduced-motion`) get no
+transition: the view switches at once, unless `earth.setView(mode, { essential: true })`.
 
 ## Setup
 
