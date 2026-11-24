@@ -21,7 +21,7 @@ import { useDrawState } from 'react-three-earth-draw/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'
-import { DrawGizmoToolbar, GIZMO_HELP } from './DrawGizmoToolbar'
+import { DrawGizmoToolbar, EDIT_HELP, GIZMO_HELP } from './DrawGizmoToolbar'
 import { ExampleShell } from './ExampleShell'
 
 const CENTER: [number, number] = [6.6, 46.45]
@@ -125,8 +125,8 @@ function ShapesToolbar({ draw, setSolidHeight }: { draw: Draw; setSolidHeight: (
             ? state.selectedIds.length === 0
               ? 'Tap a shape to select it.'
               : state.editingVertices
-                ? 'Drag a vertex or a midpoint; tap the shape again for the gizmo.'
-                : `${GIZMO_HELP} Drag the shape itself to move it. Tap a flat shape again to edit its vertices.`
+                ? EDIT_HELP
+                : `${GIZMO_HELP} Drag the shape itself to move it. Tap it again, or double tap a solid's face, to edit it.`
             : `${state.features.features.length} shapes.`}
       </p>
     </>

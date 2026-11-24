@@ -2,6 +2,7 @@ import type { Earth } from 'react-three-earth'
 
 import type { FeatureStore } from '../FeatureStore.js'
 import type { HeightSampler, OverlayContent } from '../render/LiveOverlay.js'
+import type { ElementMode } from './SelectMode.js'
 import type { DrawFeature, DrawPointerEvent, DrawStyle, DrawStyleState, LongitudeLatitude } from '../types.js'
 
 /** What a mode reaches its `Draw` through. */
@@ -41,6 +42,8 @@ export interface DrawModeContext {
   setCursor(cursor: string | null): void
   /** Turns double-click and double-tap zoom off while the mode places things by tapping. Released on `exit`. */
   holdDoubleClickZoom(): void
+  /** Gives double-click and double-tap zoom back before `exit`. */
+  releaseDoubleClickZoom(): void
 }
 
 /** What a mode reports for `Draw.getState()`. */
@@ -53,8 +56,12 @@ export interface DrawModeStatus {
   canFinish: boolean
   /** `undo()` would remove the last vertex. */
   canUndo: boolean
-  /** The select mode shows the selected feature's vertex handles rather than its gizmo. Default: false. */
+  /** The select mode is in edit mode: the selected feature shows its elements rather than its gizmo. Default: false. */
   editingVertices?: boolean
+  /** The elements the select mode's edit mode picks. Default: the select mode's. */
+  elementMode?: ElementMode
+  /** The select mode's `extrude()` would act: a face is picked. Default: false. */
+  canExtrude?: boolean
 }
 
 export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false, editingVertices: false })

@@ -1695,7 +1695,7 @@ async function drawing(name, { touch = false, flat = false } = {}) {
  * Editing (`?example=draw`, the select mode): a tap selects a polygon (with its gizmo), a second tap shows its vertex
  * handles, a drag on a vertex handle moves it, a tap on a
  * midpoint inserts a vertex, a drag inside moves the polygon whole without panning, a drag off it still pans, and a
- * picked vertex can be deleted. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
+ * picked vertex can be deleted. A tap on the empty map leaves edit mode, a second clears the selection. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
  */
 async function editing(name, { touch = false, flat = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
@@ -1779,7 +1779,10 @@ async function editing(name, { touch = false, flat = false } = {}) {
   await drag([740, 560], [640, 560])
   result.pannedOffSelection = Math.abs((await view()).longitudeDegrees - viewBeforePan.longitudeDegrees) > 1e-4
   await idle() // a tap while the map still glides only stops it
-  await tap(680, 150) // the empty map clears the selection
+  await tap(680, 150) // the empty map leaves edit mode first, keeping the selection
+  result.leftEditingOnEmptyTap = await page.evaluate(() => { const { editingVertices, selectedIds } = window.draw.getState(); return !editingVertices && selectedIds.length === 1 })
+  await page.waitForTimeout(400)
+  await tap(680, 150) // then clears the selection
   result.selectedAfterEmptyTap = await page.evaluate(() => window.draw.getState().selectedIds.length)
   if (!touch) {
     // The keyboard (opted in by the example): G moves the selection under the pointer, X locks it to east, Enter confirms.
@@ -2087,6 +2090,120 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   result.updates = await page.evaluate(() => window.drawUpdates)
   await page.waitForTimeout(500)
   writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
+  result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))
+  await page.close()
+  results.push(result)
+}
+
+/**
+ * Edit mode on a solid (`?example=shapes`, the select mode): a double click (or double tap) on the box's top, where it
+ * stands in 3D, selects it and enters edit mode with that face picked. Dragging the face's arrow pulls the top up: the
+ * box grows along the top's normal, its footprint and base kept, in one update. Extruding the top adds four walls and a
+ * new top above it, in one update. The box is measured from its vertices.
+ */
+async function meshEditing(name, { touch = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=shapes`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  await page.waitForTimeout(1500)
+  const client = touch ? await page.context().newCDPSession(page) : null
+  const drag = async (from, to) => {
+    const path = Array.from({ length: 10 }, (_, index) => ({ x: from.x + ((to.x - from.x) * (index + 1)) / 10, y: from.y + ((to.y - from.y) * (index + 1)) / 10 }))
+    if (touch) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y, id: 1 }] })
+      for (const point of path) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x, y: point.y, id: 1 }] })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    } else {
+      await page.mouse.move(from.x, from.y)
+      await page.mouse.down()
+      for (const point of path) await page.mouse.move(point.x, point.y)
+      await page.mouse.up()
+    }
+    await page.waitForTimeout(500)
+  }
+  // The box measured from its vertices, in metres from where it started, and the state of edit mode.
+  const measure = () => page.evaluate(() => {
+    const box = window.draw.getFeature('box')
+    const positions = box.geometry.coordinates.flat(2)
+    const altitudes = positions.map(position => position[2])
+    const start = window.boxStart ?? positions.reduce((sum, position) => [sum[0] + position[0] / positions.length, sum[1] + position[1] / positions.length], [0, 0])
+    window.boxStart = start
+    const radians = Math.PI / 180
+    const xs = positions.map(position => (position[0] - start[0]) * radians * 6_371_008.8 * Math.cos(start[1] * radians))
+    const ys = positions.map(position => (position[1] - start[1]) * radians * 6_371_008.8)
+    const { editingVertices, elementMode, canExtrude } = window.draw.getState()
+    return {
+      faces: box.geometry.coordinates.length,
+      extent: { east: Math.max(...xs) - Math.min(...xs), north: Math.max(...ys) - Math.min(...ys) },
+      base: Math.min(...altitudes),
+      height: Math.max(...altitudes) - Math.min(...altitudes),
+      editing: editingVertices,
+      elementMode,
+      canExtrude,
+      picked: window.draw.inspect().modeState.picked,
+      handle: window.draw.getMode().pushPullHandle?.() ?? null,
+      updates: window.drawUpdates,
+    }
+  })
+  const result = { check: `mesh editing, ${name}`, errors }
+  await page.evaluate(() => {
+    window.drawUpdates = 0
+    window.draw.addEventListener('update', () => window.drawUpdates++)
+    window.draw.setMode('select')
+  })
+  await page.getByRole('button', { name: 'Hide details' }).click()
+  // Closer, seen from the south-west, then the middle of the box's top (its first face) where it is drawn.
+  await page.evaluate(() => {
+    const positions = window.draw.getFeature('box').geometry.coordinates.flat(2)
+    const longitudeDegrees = positions.reduce((sum, position) => sum + position[0], 0) / positions.length
+    const latitudeDegrees = positions.reduce((sum, position) => sum + position[1], 0) / positions.length
+    window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 14_000, headingDegrees: 35, pitchDegrees: -40 })
+  })
+  await page.waitForTimeout(500)
+  await idle()
+  await page.waitForTimeout(1000)
+  const top = await page.evaluate(() => {
+    const ring = window.draw.getFeature('box').geometry.coordinates[0][0].slice(0, -1)
+    const mean = index => ring.reduce((sum, position) => sum + position[index], 0) / ring.length
+    const { xPixels, yPixels } = window.earth.project({ longitudeDegrees: mean(0), latitudeDegrees: mean(1), heightMeters: mean(2) })
+    return { x: xPixels, y: yPixels }
+  })
+  if (touch) {
+    // Two taps 100 ms apart by their timestamps: on SwiftShader each `touchscreen.tap` waits for a slow frame, too long for a double tap.
+    const now = Date.now() / 1000
+    for (const offset of [0, 0.1]) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: top.x, y: top.y, id: 1 }], timestamp: now + offset })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: now + offset + 0.03 })
+    }
+  } else await page.mouse.dblclick(top.x, top.y)
+  await page.waitForTimeout(500)
+  const before = await measure()
+  result.entered = before
+  writeFileSync(new URL(`mesh-editing-${name.replaceAll(' ', '-')}-face.png`, OUT), await page.screenshot())
+  // The top's arrow, dragged 40 px further up the screen.
+  if (before.handle !== null) await drag(before.handle, { x: before.handle.x, y: before.handle.y - 40 })
+  const pulled = await measure()
+  result.pull = { before, after: pulled, updates: pulled.updates - before.updates }
+  if (touch) {
+    await page.waitForTimeout(500)
+    await page.evaluate(() => window.draw.extrude())
+  } else {
+    // The toolbar's Extrude button, built on `state.canExtrude` and `draw.extrude()`.
+    await page.getByRole('button', { name: 'Show details' }).click()
+    await page.getByRole('button', { name: 'Extrude' }).click()
+    await page.getByRole('button', { name: 'Hide details' }).click()
+  }
+  await page.waitForTimeout(500)
+  const extruded = await measure()
+  result.extrude = { before: pulled, after: extruded, updates: extruded.updates - pulled.updates }
+  writeFileSync(new URL(`mesh-editing-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
   result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))
   await page.close()
   results.push(result)
@@ -2675,6 +2792,8 @@ try {
     await shapes('globe, mouse')
     await transforming('globe, mouse')
     await transforming('flat map, touch', { touch: true, flat: true })
+    await meshEditing('globe, mouse')
+    await meshEditing('globe, touch', { touch: true })
     await shapes('flat map, touch', { touch: true, flat: true })
     await solidsOverSky()
   }
