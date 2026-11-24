@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 
 export const AREAS = [
   'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'accessibility', 'invalidate', 'style', 'geojson', 'heatmap',
-  'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'scripts', 'buildings',
+  'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'scripts', 'symbol-effects', 'buildings',
   'roads', 'dem', 'exaggeration',
 ]
 
@@ -17,12 +17,12 @@ export const GROUPS = {
   vector: ['vector', 'patterns', 'invalidate', 'style', 'geojson', 'heatmap', 'query', 'layers'],
   controls: ['controls', 'accessibility'],
   camera: ['camera', 'animations'],
-  labels: ['labels', 'roads', 'scripts'],
+  labels: ['labels', 'roads', 'scripts', 'symbol-effects'],
   dem: ['dem', 'exaggeration'],
 }
 
 const ALL = Symbol('every area')
-const VECTOR_CORE = [...GROUPS.vector, 'labels', 'roads', 'scripts', 'buildings', 'relief', 'effects']
+const VECTOR_CORE = [...GROUPS.vector, 'labels', 'roads', 'scripts', 'symbol-effects', 'buildings', 'relief', 'effects']
 const LIBRARY = 'packages/react-three-earth/src/'
 const PLAYGROUND = 'apps/playground/src/'
 
@@ -49,11 +49,13 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}(plugins/(drapedLayers|renderPasses)\\.ts|tiles/imagery/DrapedLayerOverlay\\.ts|core/ScreenOverlay\\.ts)$`), ['effects']],
   [new RegExp(`^${LIBRARY}tiles/imagery/GeoreferencedImageOverlay\\.ts$`), ['georef']],
   [new RegExp(`^${LIBRARY}plugins/styleLayerTypes\\.ts$`), ['layers']],
+  [new RegExp(`^${LIBRARY}plugins/symbolEffects\\.ts$`), ['symbol-effects']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
   [new RegExp(`^${PLAYGROUND}geojson/`), ['geojson']],
   [new RegExp(`^${PLAYGROUND}sdf/`), ['sdf']],
   [new RegExp(`^${PLAYGROUND}styleLayers/`), ['layers', 'patterns']],
   [new RegExp(`^${PLAYGROUND}effects/`), ['effects']],
+  [new RegExp(`^${PLAYGROUND}symbolEffects/`), ['symbol-effects']],
   [new RegExp(`^${PLAYGROUND}(aeronautic/|AfterburnerDemo\\.tsx$)`), ['afterburner']],
   [new RegExp(`^${PLAYGROUND}PrecisionTest\\.tsx$`), ['precision']],
   [new RegExp(`^(${LIBRARY}|${PLAYGROUND})`), ALL],

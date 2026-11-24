@@ -6,6 +6,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry, RegisteredDrapedLayer } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import { DrapedLayerOverlay } from './imagery/DrapedLayerOverlay.js'
 import { GeoreferencedImageOverlay } from './imagery/GeoreferencedImageOverlay.js'
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
@@ -13,9 +14,10 @@ import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
 import { MAXIMUM_TERRAIN_LAYERS, wrapOverlaysNodeMaterial } from './wrapOverlaysNodeMaterial.js'
 
-/** An overlay that draws custom style layer types (`MapStyleOverlay`). */
+/** An overlay that draws custom style layer types and symbol effects (`MapStyleOverlay`). */
 interface StyleLayerTypeConsumer {
   setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void
 }
 
 function isStyleLayerTypeConsumer(overlay: unknown): overlay is StyleLayerTypeConsumer {
@@ -132,6 +134,14 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
     for (const overlay of this.styleLayerOverlays) overlay.setStyleLayerTypes(registry)
   }
 
+  protected symbolEffects: SymbolEffectRegistry | null = null
+
+  /** Hands the symbol effects (plugins) to the overlays that draw labels, now and later. */
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void {
+    this.symbolEffects = registry
+    for (const overlay of this.styleLayerOverlays) overlay.setSymbolEffects(registry)
+  }
+
   protected drapedLayers: DrapedLayerRegistry | null = null
   protected unsubscribeDrapedLayers: (() => void) | null = null
   protected readonly drapedLayerOverlays = new Map<RegisteredDrapedLayer, DrapedLayerOverlay>()
@@ -218,6 +228,7 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
     if (isStyleLayerTypeConsumer(overlay)) {
       this.styleLayerOverlays.add(overlay)
       overlay.setStyleLayerTypes(this.styleLayerTypes)
+      overlay.setSymbolEffects(this.symbolEffects)
     }
     upstream.addOverlay.call(this, overlay, order ?? null)
   }
@@ -229,7 +240,10 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
       if (index !== -1) this.overlays.splice(index, 1)
       this.overlayInfo.delete(overlay)
     } else upstream.deleteOverlay.call(this, overlay)
-    if (isStyleLayerTypeConsumer(overlay) && this.styleLayerOverlays.delete(overlay)) overlay.setStyleLayerTypes(null)
+    if (isStyleLayerTypeConsumer(overlay) && this.styleLayerOverlays.delete(overlay)) {
+      overlay.setStyleLayerTypes(null)
+      overlay.setSymbolEffects(null)
+    }
     if (isGpuComposedOverlay(overlay) && overlay.compositor === this.compositor) overlay.compositor = null
   }
 

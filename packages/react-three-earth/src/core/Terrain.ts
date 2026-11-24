@@ -3,6 +3,7 @@ import type { WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
@@ -151,6 +152,11 @@ export class Terrain implements AttributionProvider {
   /** The custom style layer types (plugins) its map style sources draw. `Earth.setTerrain` calls it. */
   setStyleLayerTypes(registry: StyleLayerTypeRegistry | null): void {
     this.overlays.setStyleLayerTypes(registry)
+  }
+
+  /** The symbol effects (plugins) its map style sources draw labels with. `Earth.setTerrain` calls it. */
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void {
+    this.overlays.setSymbolEffects(registry)
   }
 
   /** The draped layers (plugins) it draws above its imagery. `Earth.setTerrain` calls it. */

@@ -8,8 +8,8 @@ description: >
   bloom, vignette, grading, EarthRenderPipeline stages), layers drawn by plugin code draped above the imagery
   (registerDrapedLayer: a selection glow, a measurement buffer), placing 3D objects at a longitude and latitude
   that follow the globe-to-map morph (createGeographicAnchor), raymarched signed-distance (SDF) shapes that
-  sort against terrain and take the atmosphere's haze, per-frame plugin code, or reading plugin state from
-  earth.inspect().
+  sort against terrain and take the atmosphere's haze, per-frame plugin code, label looks (registerSymbolEffect:
+  see map-labels), or reading plugin state from earth.inspect().
 metadata:
   purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
   type: framework

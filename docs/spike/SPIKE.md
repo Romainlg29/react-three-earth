@@ -1015,6 +1015,40 @@ could not ship a `<MySource>` component: the layer contexts were internal. `reac
 registration the built-in source components use (registration order, `<Name> must sit inside <Layer>` outside one).
 Unit tests: 4 new (registration and removal for both layers, a new instance replacing the old, the error outside them).
 
+## Plugins (W17), part 5: symbol effects
+
+The design's slot for SDF text and icon effects (section 9), now that labels facing the viewer exist (W6).
+
+- **`context.registerSymbolEffect({ name, shade })`**, kept in `earth.symbolEffects` and handed down like the style
+  layer types (`Earth` → `Terrain` → `ImageOverlayPlugin` → `MapStyleOverlay` → `ScreenSymbols`). `shade` is a TSL
+  function from `{ distance, edge, haloEdge, pixelWidth, fillColor, haloColor, isIcon, scale, standardColor }` to
+  a straight-alpha linear colour; the library still applies the label's fade, the layer's opacity and the flat
+  map's luminance, so an effect cannot break fades. Colour icons are not shaded.
+- **Picked per layer by style metadata**: `"metadata": { "react-three-earth:symbol-effect": "neon" }` on a `symbol`
+  layer. Metadata is the specification's place for extensions, so the style still validates and renders in
+  MapLibre. A name no plugin provides draws the standard look with one warning naming the layer and the effect.
+- **Draw order kept.** One material per effect per source, built on first use. A tile whose labels all use the
+  standard look stays one draw; otherwise its triangles split into consecutive runs per material (geometry
+  groups), so layers still draw in style order. Registering or removing an effect, or a `setStyle` that changes
+  a layer's metadata (MapLibre's diff leaves metadata out, so `MapStyle` copies it over), regroups the tiles
+  already drawn: no tile is processed again. Detached from the earth (terrain swaps, StrictMode), the materials
+  are kept and nothing is warned. A `shade` that throws or returns no node draws the standard look, with an
+  error naming the effect, instead of failing the frame.
+- **Limits.** An effect draws inside each glyph's quad, which reaches the distance field's padding (3 px of a
+  24 px font): wider glows are cut. Draped labels (`symbols: 'draped'`) keep the standard look; their text
+  meshes carry no layer per vertex yet. Per-feature effect parameters beyond the style's colours and halo
+  width are left for later (a `paint` specification like style layer types', without a version bump).
+
+| Check (`?fixtures&map=labels&neon=late`, 40 km, pitched; SwiftShader) | Result |
+| --- | --- |
+| Before the plugin | standard towns, no neon; one warning naming `town-label` and `neon` |
+| Installed at runtime | green text (0.56 % of pixels) with a magenta outline (2.8 %); the same 36 towns placed; no tile processed |
+| Removed | the standard look again (text pixels as before), the warning once more |
+| WebGL2 fallback | the same shares as WebGPU |
+| Unit tests | 10 new: registry, plugin undo, metadata lookup, draw runs, one draw without effects, groups in style order, one material per effect rebuilt when registered again, materials kept while detached, the missing-effect warning, metadata taken from `setStyle` |
+
+![Neon town labels from a symbol effect plugin](symbol-effects.png)
+
 ## Heatmap layers (W11)
 
 MapLibre `heatmap` layers, with every paint property and `heatmap-density`. The plugin design (W17, section 11)

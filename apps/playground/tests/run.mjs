@@ -1275,6 +1275,67 @@ async function screenSymbols(name, query, map = 'labels') {
   results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })
 }
 
+/** Neon green text and magenta outline pixels of the symbol effect example, and the standard town text colour. */
+const NEON_PIXELS = `
+  let green = 0, magenta = 0, standard = 0
+  for (let i = 0; i < px.length; i += 4) {
+    const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+    // Thin strokes blend with the ground: green dominates rather than being pure.
+    if (g > 200 && g > r + 50 && g > b + 90) green++
+    if (r > 180 && b > 140 && g < 110) magenta++
+    if (r < 110 && r > g && g > b && r - b > 15 && r - b < 60) standard++
+  }
+  const share = count => +(count / (px.length / 4)).toFixed(4)
+  return { greenShare: share(green), magentaShare: share(magenta), standardShare: share(standard) }
+`
+
+/**
+ * The symbol effect example (`src/symbolEffects/`, `?map=labels&neon=late`): the town labels name the `neon` effect in
+ * their metadata. Before its plugin is installed they draw the standard look (one warning names the missing effect);
+ * installed at runtime, they turn neon with no tile processed again; removed, they are standard again.
+ */
+async function symbolEffects(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=labels&neon=late&camera=138.74,35.36,0,40000,0,-30${query}`)
+  const warnings = []
+  page.on('console', message => { if (message.type() === 'warning' && message.text().includes('symbol effect')) warnings.push(message.text()) })
+  const settle = async () => {
+    await page.waitForFunction(() => {
+      const t = window.earth?.inspect().terrain
+      return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && (t.symbols?.labelsShown ?? 0) > 0 && t.symbols.elevationsPending === 0
+    }, null, { timeout: 240_000, polling: 500 })
+    await page.waitForTimeout(1500)
+  }
+  const measure = async label => {
+    const png = await page.screenshot()
+    writeFileSync(new URL(`symbol-effects-${name.replaceAll(' ', '-')}-${label}.png`, OUT), png)
+    const stats = await analyse(page, png, NEON_PIXELS)
+    const labels = await page.evaluate(() => window.earth.terrain.getScreenLabels().filter(l => l.text.startsWith('Town')).length)
+    return { ...stats, towns: labels }
+  }
+  await settle()
+  const result = { check: `symbol effects, ${name}`, errors }
+  result.before = await measure('before')
+  // Tiles processed from here: installing the effect must not process any again.
+  await page.evaluate(() => {
+    window.__processed = 0
+    for (const overlay of window.mapStyleSource.overlays) {
+      const backend = overlay.backend // protected, wrapped for the check only
+      const processTile = backend.processTile.bind(backend)
+      backend.processTile = (...args) => { window.__processed++; return processTile(...args) }
+    }
+    window.earth.addPlugin(window.neonLabelsPlugin)
+  })
+  await settle()
+  result.installed = await measure('installed')
+  result.tilesProcessedOnInstall = await page.evaluate(() => window.__processed)
+  await page.evaluate(() => window.earth.removePlugin(window.neonLabelsPlugin))
+  await settle()
+  result.removed = await measure('removed')
+  result.warnings = warnings
+  await page.close()
+  results.push(result)
+}
+
 /**
  * Place names in other scripts (`?map=scripts`): every name shows, reported in reading order, with text pixels
  * inside its box. Shaping and order are unit-tested (test/scripts.test.ts); the screenshot shows them drawn.
@@ -1914,6 +1975,10 @@ try {
     await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
+  }
+  if (want('symbol-effects')) {
+    await symbolEffects('webgpu', '')
+    await symbolEffects('webgl2', '&webgl')
   }
   if (want('scripts')) {
     await scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')

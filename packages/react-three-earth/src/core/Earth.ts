@@ -20,6 +20,7 @@ import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnch
 import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
 import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import { DrapedLayerRegistry, type DrapedLayerInspection } from '../plugins/drapedLayers.js'
 import { RenderPassRegistry, type RenderPassInspection } from '../plugins/renderPasses.js'
 
@@ -145,6 +146,8 @@ export class Earth extends Group<EarthEventMap> {
   readonly plugins: PluginManager = new PluginManager(this)
   /** Custom style layer types plugins registered (`context.registerStyleLayerType`), drawn by map style sources. */
   readonly styleLayerTypes = new StyleLayerTypeRegistry()
+  /** Symbol effects plugins registered (`context.registerSymbolEffect`), for labels of layers whose metadata names one. */
+  readonly symbolEffects = new SymbolEffectRegistry()
   /** Screen effects plugins registered (`context.registerRenderPass`), built into the output by `EarthRenderPipeline`. */
   readonly renderPasses = new RenderPassRegistry()
   /** Layers plugins drape above every imagery layer (`context.registerDrapedLayer`), drawn by the terrain. */
@@ -310,6 +313,7 @@ export class Earth extends Group<EarthEventMap> {
       this.unsubscribeAttributions(this.terrain)
       this.terrain.setView(null)
       this.terrain.setStyleLayerTypes(null)
+      this.terrain.setSymbolEffects(null)
       this.terrain.setDrapedLayers(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
@@ -321,6 +325,7 @@ export class Earth extends Group<EarthEventMap> {
       this.subscribeAttributions(terrain)
       terrain.setView(this.view)
       terrain.setStyleLayerTypes(this.styleLayerTypes)
+      terrain.setSymbolEffects(this.symbolEffects)
       this.add(terrain.object)
       this.add(terrain.symbols)
       this.add(terrain.extrusions)

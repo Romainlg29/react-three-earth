@@ -332,6 +332,19 @@ function effectExpectations(r, { glowIsMagenta }) {
   ]
 }
 
+// The symbol effect example (src/symbolEffects/): towns turn neon when the plugin is installed, back when removed.
+for (const name of ['webgpu', 'webgl2']) {
+  expectations[`symbol effects, ${name}`] = r => [
+    ['before the plugin, towns draw the standard look, with no neon', r.before.towns > 10 && r.before.standardShare > 0.003 && r.before.greenShare < 0.0005],
+    // Once while the plugin is missing, once again after it was removed.
+    ['a warning names the layer and the missing effect, once per absence', r.warnings.length === 2 && r.warnings.every(warning => warning.includes('"town-label"') && warning.includes('"neon"'))],
+    ['installed, towns draw neon: green text with a magenta outline, fewer pixels of the standard text colour (roads share it)', r.installed.greenShare > 0.002 && r.installed.magentaShare > 0.005 && r.installed.standardShare < r.before.standardShare * 0.9],
+    ['the same towns show (placement is unchanged)', Math.abs(r.installed.towns - r.before.towns) <= 2],
+    ['installing processes no tile again', r.tilesProcessedOnInstall === 0],
+    ['removed, the standard look is back', r.removed.greenShare < 0.0005 && r.removed.standardShare > r.before.standardShare * 0.8],
+  ]
+}
+
 // Screen-space labels on a dense grid of towns (124 labels, a third fit at 40 km).
 const screenLabels = (r, textShare = 0.005) => [
   ...(textShare === null ? [] : [[`text draws (over ${textShare * 100} % text pixels)`, r.textShare > textShare]]),

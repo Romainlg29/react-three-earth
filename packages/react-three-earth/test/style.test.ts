@@ -340,6 +340,18 @@ describe('MapStyle', () => {
     expect(mapStyle.getLayerIds()).toContain('highlight')
   })
 
+  it('takes layer metadata from setStyle, which the diff leaves out (symbol effects read it)', async () => {
+    const { mapStyle, commands } = await loadedStyle()
+    const next = baseStyle()
+    Object.assign(next.layers[2]!, { metadata: { 'react-three-earth:symbol-effect': 'neon' } })
+    await mapStyle.setStyle(next)
+    await microtask()
+    expect(commands()).toEqual([])
+    expect(mapStyle.getLayerMetadata('roads')).toEqual({ 'react-three-earth:symbol-effect': 'neon' })
+    await mapStyle.setStyle(baseStyle())
+    expect(mapStyle.getLayerMetadata('roads')).toBeUndefined()
+  })
+
   it('applies changes made during setStyle to the new style, and lets the last of overlapping calls win', async () => {
     const { mapStyle } = await loadedStyle()
     const first = baseStyle()

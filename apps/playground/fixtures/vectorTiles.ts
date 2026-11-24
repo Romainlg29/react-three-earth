@@ -287,7 +287,7 @@ export function fixtureStyle({ live = false }: { live?: boolean } = {}): object 
  * the places, sort by rank, grow with zoom (12 px at zoom 9 to 16 px at zoom 13) and try five anchors. Places
  * have icons from the fixture sprite: a red pin, and Mount Fuji a blue SDF disc with a white halo, text below.
  */
-export function fixtureLabelStyle(): object {
+export function fixtureLabelStyle({ symbolEffect }: { symbolEffect?: string | null } = {}): object {
   const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
   const placeIndex = base.layers.findIndex(layer => layer.id === 'place-label')
   const towns = {
@@ -305,6 +305,8 @@ export function fixtureLabelStyle(): object {
       'text-variable-anchor': ['center', 'left', 'right', 'top', 'bottom'],
     },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+    // A symbol effect from a plugin (`?neon` in the playground), named in the layer's metadata.
+    ...(symbolEffect ? { metadata: { 'react-three-earth:symbol-effect': symbolEffect } } : {}),
   }
   const places = base.layers[placeIndex] as { layout: Record<string, unknown>; paint: Record<string, unknown> }
   const placesWithIcons = {
