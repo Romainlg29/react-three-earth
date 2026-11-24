@@ -1257,6 +1257,56 @@ async function screenSymbols(name, query, map = 'labels') {
   results.push({ check: `screen-space labels, ${name}`, ...result, ...stats, errors })
 }
 
+/**
+ * Place names in other scripts (`?map=scripts`): every name shows, reported in reading order, with text pixels
+ * inside its box. Shaping and order are unit-tested (test/scripts.test.ts); the screenshot shows them drawn.
+ */
+async function scriptLabels(name, query) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphereBudget=Infinity&map=scripts${query}`)
+  await page.waitForFunction(() => {
+    const t = window.earth?.inspect()?.terrain
+    return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
+  }, null, { timeout: 240_000, polling: 500 })
+  let previous = ''
+  for (let attempt = 0; attempt < 40; attempt++) {
+    await page.waitForTimeout(1000)
+    const state = await page.evaluate(() => {
+      const s = window.earth.inspect().terrain.symbols ?? { labelsShown: 0, elevationsPending: 0 }
+      return JSON.stringify([s.labelsShown, s.elevationsPending, window.earth.terrain.getScreenLabels().filter(l => l.opacity < 1).length])
+    })
+    if (state === previous && JSON.parse(state)[1] === 0 && JSON.parse(state)[2] === 0) break
+    previous = state
+  }
+  const png = await page.screenshot()
+  writeFileSync(new URL(`map-scripts-${name.replaceAll(/[^a-z0-9]+/gi, '-')}.png`, OUT), png)
+  const labels = await page.evaluate(() =>
+    window.earth.terrain.getScreenLabels()
+      .filter(l => /[^\x00-\x7f]/.test(l.text))
+      .map(l => ({ text: l.text, box: l.box.map(Math.round) })),
+  )
+  // Text-colour pixels inside each label's box.
+  const inBoxes = await analyse(page, png, `
+    const boxes = ${JSON.stringify(labels.map(l => l.box))}
+    return boxes.map(([left, top, right, bottom]) => {
+      let count = 0
+      for (let y = Math.max(0, top); y < Math.min(height, bottom); y++) {
+        for (let x = Math.max(0, left); x < Math.min(width, right); x++) {
+          const i = (y * width + x) * 4
+          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+          if (r < 110 && r > g && g > b && r - b > 15 && r - b < 60) count++
+        }
+      }
+      return count
+    })
+  `)
+  await page.close()
+  results.push({
+    check: `script labels, ${name}`,
+    labels: labels.map((l, index) => ({ ...l, textPixels: inBoxes[index] })),
+    errors,
+  })
+}
+
 const BUILDING_PIXELS = `
   // Red buildings (roofs bright, walls darker), the blue glass tower blended over the ground, and the courtyard's
   // middle (the screen centre in the top-down view).
@@ -1755,6 +1805,10 @@ try {
     await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
     await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
+  }
+  if (!only || only === 'labels' || only === 'scripts') {
+    await scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')
+    await scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')
   }
   if (!only || only === 'buildings') {
     // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.

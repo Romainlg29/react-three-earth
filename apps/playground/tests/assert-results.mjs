@@ -333,6 +333,14 @@ for (const name of ['top-down', 'pitched', 'webgl2', 'strict mode']) expectation
 expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
 // Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
 expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
+// Place names in other scripts: each shows, reported as the style gives it, and draws text.
+const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)']
+for (const name of ['top-down', 'webgl2']) {
+  expectations[`script labels, ${name}`] = r => [
+    ['every script label shows, with its text in reading order', SCRIPT_NAMES.every(text => r.labels.some(l => l.text === text))],
+    ['every script label draws text pixels', r.labels.length > 0 && r.labels.every(l => l.textPixels > 30)],
+  ]
+}
 for (const name of ['road names, pitched', 'road names, top-down']) {
   expectations[`screen-space labels, ${name}`] = r => [
     ['road names show along their roads, none upside down', r.roadNames >= 2 && r.roadNamesUpsideDown === 0],

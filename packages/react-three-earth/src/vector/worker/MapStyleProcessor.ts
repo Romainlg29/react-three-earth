@@ -15,6 +15,8 @@ import {
   textOffsetForAnchor,
   variableAnchorShifts,
   layoutPointLabel,
+  mirroredCodePoints,
+  shapeSectionsForScripts,
   shapeText,
   TextBuilder,
   type Box,
@@ -132,7 +134,9 @@ interface SymbolCandidate {
   state: FeatureState
   type: VectorTileFeatureLike['type']
   geometry: Point[][]
-  /** The text, empty for an icon alone. */
+  /** The text as the style gives it, in reading order: the label's identity and what `getScreenLabels` reports. */
+  text: string
+  /** The text to draw (Arabic letters joined), empty for an icon alone. */
   sections: TextSection[]
   /** `icon-image`, or null without an icon. */
   iconId: string | null
@@ -899,7 +903,7 @@ export class MapStyleProcessor {
         color,
         haloColor,
         haloWidthPixels: layer.evaluate<number>('paint', 'text-halo-width', zoom, feature, state),
-        key: `${layer.id}\u0000${symbol.sections.map(section => section.text).join('')}${symbol.iconId === null ? '' : `\u0000${symbol.iconId}`}`,
+        key: `${layer.id}\u0000${symbol.text}${symbol.iconId === null ? '' : `\u0000${symbol.iconId}`}`,
         sourceLayer: symbol.sourceLayer,
         featureIndex: symbol.featureIndex,
       }
@@ -1045,6 +1049,7 @@ export class MapStyleProcessor {
         let set = codePoints.get(section.fontStack)
         if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
         for (const character of section.text) set.add(character.codePointAt(0)!)
+        for (const codePoint of mirroredCodePoints(section.text)) set.add(codePoint)
       }
     }
     await Promise.all([...codePoints].map(([fontStack, set]) => this.glyphs.load(fontStack, set)))
@@ -1279,11 +1284,12 @@ export class MapStyleProcessor {
     sourceLayer: string,
     featureIndex: number,
   ): SymbolCandidate | null {
-    const sections = this.symbolText(layer, feature, zoom)
+    const text = this.symbolText(layer, feature, zoom)
     const iconId = symbolIcon(layer, feature, zoom)
-    if (sections.length === 0 && iconId === null) return null
+    if (text.length === 0 && iconId === null) return null
     const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, sections, iconId, sortKey, order }
+    const sections = shapeSectionsForScripts(text)
+    return { layer, feature, sourceLayer, featureIndex, state, type, geometry, text: text.map(section => section.text).join(''), sections, iconId, sortKey, order }
   }
 
   /** A symbol's `text-field` as sections to shape; empty without text. */
