@@ -1,6 +1,7 @@
 import { classifyRings, featureFilter, Formatted, type Color, type FeatureFilter } from '@maplibre/maplibre-gl-style-spec'
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
+import { HEATMAP_LAYER_TYPE, summarizeHeatmapLayer } from '../heatmap/heatmapWorker.js'
 import { createCustomLayerBuilder, loadLayerTypes, type CustomLayerBuilder, type LoadedLayerType } from './customLayers.js'
 import { clipQueryToTile, featureHitTesters, getTileFeatureIndex, MAXIMUM_QUERY_RADIUS_PIXELS, polygonIntersectsBoxes, queryBounds, type QueryGeometry } from './featureIndex.js'
 import { FeatureColorTable, featureKey } from './featureState.js'
@@ -22,6 +23,7 @@ import {
   type TextSection,
 } from './labels.js'
 import { tileOverlaps, type MercatorRectangle } from './rectangles.js'
+import { ExtrusionBuilder, extrusionMeshByteLength } from './extrusions.js'
 import { SymbolBuilder, symbolMeshByteLength, type ScreenLabelIcon } from './symbols.js'
 import { applyStyleCommand, copyStyleDocument, type StyleDocument } from './styleDocument.js'
 import { ShapeBuilder, type LineCap, type LineGradient, type LineJoin, type Point } from './ShapeBuilder.js'
@@ -272,7 +274,7 @@ export class MapStyleProcessor {
     this.previous = previous
     // Worker modules already imported stay loaded across a reload.
     if (previous !== undefined) this.layerTypes = previous.layerTypes
-    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [], rasterLayers: [] }
+    this.summary = { sources: [], backgroundByZoom: [], skippedLayers: [], attributions: [], backgroundPatternByZoom: [], missingBackgroundImages: [], spriteImageIds: [], customLayerTypes: [], missingLayerTypes: [], rasterLayers: [], heatmapLayers: [] }
   }
 
   static async create(options: MapStyleProcessorOptions, hooks: MapStyleProcessorHooks = {}, previous?: MapStyleProcessor): Promise<MapStyleProcessor> {
@@ -395,6 +397,12 @@ export class MapStyleProcessor {
         this.layers.filter(layer => layer.source !== undefined && this.fetchers.has(layer.source)),
         sources,
       ),
+      extrusionLayers: this.layers.flatMap(layer =>
+        layer.type === 'fill-extrusion' && layer.custom === null && layer.source !== undefined && this.fetchers.has(layer.source)
+          ? [{ id: layer.id, source: layer.source, minimumZoom: layer.layerSpecification.minzoom ?? 0, maximumZoom: layer.layerSpecification.maxzoom ?? MAXIMUM_ZOOM + 1 }]
+          : [],
+      ),
+      heatmapLayers: this.layers.flatMap(layer => (layer.type === HEATMAP_LAYER_TYPE && layer.custom !== null ? [summarizeHeatmapLayer(layer, MAXIMUM_ZOOM)] : [])),
     }
   }
 
@@ -672,8 +680,11 @@ export class MapStyleProcessor {
     const uses: FeatureStateUse = { colorKeys: new Set(), rebuildKeys: new Set() }
     const customBuilders: CustomLayerBuilder[] = []
     if (request.symbols === true) return this.processSymbolTile(tile, request, empty, signal)
+    if (request.extrusions === true) return this.processExtrusionTile(tile, request, empty)
     for (const layer of layers) {
       if (layer.source !== sourceId || layer.type === 'background' || !layer.isVisibleAtZoom(zoom)) continue
+      // Stands in 3D instead: built by `processExtrusionTile`.
+      if (layer.type === 'fill-extrusion' && layer.custom === null && this.options.extrusions === true) continue
       const layerName = singleLayer ?? layer.sourceLayer
       const sourceLayer = layerName === undefined ? undefined : tile.layers[layerName]
       if (sourceLayer === undefined) continue
@@ -771,6 +782,62 @@ export class MapStyleProcessor {
       return empty
     }
     return { ...empty, raster, byteLength: rasterTileByteLength(raster) }
+  }
+
+  /**
+   * The buildings of a tile (`fill-extrusion` layers standing in 3D): walls and roofs with heights at the request's
+   * zoom and one deeper. Feature-state is baked: a state change processes the tile again.
+   */
+  protected processExtrusionTile(tile: VectorTileLike, request: TileRequest, empty: TileBucket): TileBucket {
+    const { sourceId, x, y, z, zoom } = request
+    const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
+    const singleLayer = this.fetchers.get(sourceId)?.singleLayer
+    const builder = new ExtrusionBuilder({ x, y, z })
+    const rebuildKeys = new Set<string>()
+    for (const layer of this.layers) {
+      if (layer.source !== sourceId || layer.type !== 'fill-extrusion' || layer.custom !== null || !layer.isVisibleAtZoom(zoom)) continue
+      const layerName = singleLayer ?? layer.sourceLayer
+      const sourceLayer = layerName === undefined ? undefined : tile.layers[layerName]
+      if (sourceLayer === undefined) continue
+      const opacity = layer.evaluate<number>('paint', 'fill-extrusion-opacity', zoom)
+      const nextZoomOpacity = layer.evaluate<number>('paint', 'fill-extrusion-opacity', zoom + 1)
+      if (opacity <= 0 && nextZoomOpacity <= 0) continue
+      builder.beginLayer(layer.id, layer.index, opacity, nextZoomOpacity)
+      const stateLayer = singleLayer === undefined ? layer.sourceLayer : undefined
+      const factor = TILE_EXTENT / sourceLayer.extent
+      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layerName!]
+      for (let index = 0; index < sourceLayer.length; index++) {
+        const vectorFeature = sourceLayer.feature(index)
+        if (vectorFeature.type !== 3) continue
+        const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
+        const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
+        if (!layer.accepts(zoom, feature)) continue
+        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, stateLayer, id)
+        const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
+        if (key !== undefined) rebuildKeys.add(key)
+        const color = layer.evaluateColor('fill-extrusion-color', zoom, feature, 1, state)
+        if (color[3] === 0) continue
+        const heightMeters = Math.max(0, layer.evaluate<number>('paint', 'fill-extrusion-height', zoom, feature, state))
+        const nextZoomHeightMeters = Math.max(0, layer.evaluate<number>('paint', 'fill-extrusion-height', zoom + 1, feature, state))
+        // The base never rises above the roof (MapLibre).
+        const baseMeters = Math.min(heightMeters, Math.max(0, layer.evaluate<number>('paint', 'fill-extrusion-base', zoom, feature, state)))
+        const nextZoomBaseMeters = Math.min(nextZoomHeightMeters, Math.max(0, layer.evaluate<number>('paint', 'fill-extrusion-base', zoom + 1, feature, state)))
+        // Flat at both zooms: a roof on the ground would fight with it.
+        if (heightMeters <= baseMeters && nextZoomHeightMeters <= nextZoomBaseMeters) continue
+        const polygons = classifyRings(scaleGeometry(vectorFeature.loadGeometry(), factor) as never, 500) as unknown as Point[][][]
+        builder.addBuilding(polygons, {
+          baseMeters,
+          heightMeters,
+          nextZoomBaseMeters,
+          nextZoomHeightMeters,
+          color,
+          verticalGradient: layer.evaluate<boolean>('paint', 'fill-extrusion-vertical-gradient', zoom),
+        })
+      }
+    }
+    const mesh = builder.build()
+    if (mesh === null) return { ...empty, rebuildFeatureKeys: [...rebuildKeys] }
+    return { ...empty, extrusions: mesh, rebuildFeatureKeys: [...rebuildKeys], byteLength: extrusionMeshByteLength(mesh) }
   }
 
   /**

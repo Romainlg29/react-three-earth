@@ -8,6 +8,7 @@ import type { GeoJSON } from 'geojson'
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
 import type { GeoJsonSourceDiff } from './geoJsonData.js'
 import type { MercatorRectangle } from './rectangles.js'
+import { extrusionMeshBuffers } from './extrusions.js'
 import { symbolMeshBuffers } from './symbols.js'
 
 /** Vector tile coordinates are rescaled to this extent, whatever the source layer's own extent. */
@@ -54,6 +55,11 @@ export interface MapStyleProcessorOptions {
    * Default: false (every label is draped).
    */
   screenSymbols?: boolean
+  /**
+   * `fill-extrusion` layers stand in 3D: they are built by `extrusions` requests and left out of draped tiles.
+   * Default: false (drawn flat on the ground).
+   */
+  extrusions?: boolean
 }
 
 /** Feature-state of one feature: any JSON values, read by `['feature-state', name]` in paint properties. */
@@ -229,6 +235,23 @@ export interface MapStyleSummary {
   missingLayerTypes: Array<[string, string]>
   /** Raster, hillshade and colour relief layers in style order, with their paint per zoom. Default: none. */
   rasterLayers?: RasterLayerSummary[]
+  /** `fill-extrusion` layers in style order: the main thread asks for building tiles of their sources. Default: none. */
+  extrusionLayers?: Array<{ id: string; source: string; minimumZoom: number; maximumZoom: number }>
+  /** Heatmap layers in style order, with what colours them. Default: none. */
+  heatmapLayers?: HeatmapLayerSummary[]
+}
+
+/** A heatmap layer, evaluated in the worker: the main thread colours its density with these. */
+export interface HeatmapLayerSummary {
+  id: string
+  /** `heatmap-color` at 256 densities from 0 to 1, as premultiplied sRGB bytes (RGBA). */
+  colorRamp: Uint8Array
+  /** `heatmap-opacity` per integer zoom 0 to 24. */
+  opacityByZoom: number[]
+  /** `heatmap-intensity` per integer zoom 0 to 24. */
+  intensityByZoom: number[]
+  /** How far its kernels reach past their points, in pixels, per integer zoom 0 to 24. */
+  reachPixelsByZoom: number[]
 }
 
 /** The types of style layers drawn from raster tiles: images (`raster`) and elevation (`hillshade`, `color-relief`). */
@@ -268,6 +291,11 @@ export interface TileRequest {
    * draped meshes. Default: false.
    */
   symbols?: boolean
+  /**
+   * Builds only the buildings of `fill-extrusion` layers (`ExtrusionMesh`), for the camera's extrusion tiles, instead
+   * of the draped meshes. Default: false.
+   */
+  extrusions?: boolean
 }
 
 /** A point in normalised Web Mercator space: x from 0 (180° W) to 1 (180° E), y from 0 (south edge) to 1 (north edge). */
@@ -509,12 +537,44 @@ export interface CustomLayerMesh {
   indices: Uint32Array | Uint16Array
 }
 
+/**
+ * The buildings of one tile (`fill-extrusion` layers): walls and flat roofs, at elevation 0. The main thread lifts
+ * each building onto the terrain and moves its heights between zooms.
+ */
+export interface ExtrusionMesh {
+  /** The tile's centre on the ellipsoid: `positions` are metres in its east-north-up frame. */
+  originLongitudeRadians: number
+  originLatitudeRadians: number
+  /** The same centre in Web Mercator metres: `flatPositions` are relative to it. */
+  originMercatorXMeters: number
+  originMercatorYMeters: number
+  /** Three floats per vertex: east, north, up, in metres from the origin, heights evaluated at the tile's zoom. */
+  positions: Float32Array
+  /** Three floats per vertex: Web Mercator x and y from the origin, and the height times the local scale factor. */
+  flatPositions: Float32Array
+  /** Three signed bytes per vertex (127 = 1): east, north, up. Walls are horizontal, roofs face up. */
+  normals: Int8Array
+  /** Four bytes per vertex: `fill-extrusion-color` in sRGB, the vertical gradient applied, straight alpha. */
+  colors: Uint8Array
+  /** Per vertex: its height one zoom deeper minus its height at the tile's zoom, in metres along the up direction. */
+  heightDeltas: Float32Array
+  indices: Uint16Array | Uint32Array
+  /** First vertex of each building, plus the vertex count at the end. */
+  buildingVertexStarts: Uint32Array
+  /** Four floats per building: its footprint's bounds in tile units (minimum x, minimum y, maximum x, maximum y). */
+  buildingBounds: Float32Array
+  /** Index ranges per style layer, in style order. */
+  layers: Array<{ layerId: string; layerIndex: number; start: number; count: number; opacity: number; nextZoomOpacity: number }>
+}
+
 /** The processed tile. Null meshes when the tile has nothing of that kind. */
 export interface TileBucket {
   shapes: ShapeMesh | null
   text: TextMesh | null
   /** Labels that face the viewer, for `symbols` requests only. */
   symbols?: SymbolMesh | null
+  /** Buildings standing in 3D, for `extrusions` requests only. */
+  extrusions?: ExtrusionMesh | null
   /** Custom style layers (plugins), in style order. */
   layers: CustomLayerMesh[]
   /** The tile of a raster or raster-dem source; null for vector tiles and missing raster tiles. Default: null. */
@@ -591,7 +651,7 @@ export type WorkerResponse =
 export function collectTransferables(bucket: TileBucket | null): Transferable[] {
   if (bucket === null) return []
   const buffers: ArrayBufferLike[] = []
-  const { shapes, text, atlas, layers, raster, symbols } = bucket
+  const { shapes, text, atlas, layers, raster, symbols, extrusions } = bucket
   if (raster?.kind === 'dem') buffers.push(raster.elevations.buffer)
   if (shapes !== null) buffers.push(shapes.positions.buffer, shapes.colors.buffer, shapes.indices.buffer)
   if (shapes?.colorSlots) buffers.push(shapes.colorSlots.buffer)
@@ -599,6 +659,7 @@ export function collectTransferables(bucket: TileBucket | null): Transferable[] 
   if (text !== null) buffers.push(text.positions.buffer, text.uvs.buffer, text.colors.buffer, text.haloColors.buffer, text.haloEdges.buffer, text.indices.buffer)
   if (atlas !== null) for (const glyph of atlas.glyphs) buffers.push(glyph.data.buffer)
   if (symbols != null) buffers.push(...symbolMeshBuffers(symbols))
+  buffers.push(...extrusionMeshBuffers(extrusions))
   for (const layer of layers) {
     buffers.push(layer.indices.buffer)
     for (const attribute of layer.attributes) buffers.push(attribute.array.buffer)

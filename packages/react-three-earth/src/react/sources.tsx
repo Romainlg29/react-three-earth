@@ -4,11 +4,13 @@ import {
   ImageSource as ImageSourceImpl,
   MapStyleSource as MapStyleSourceImpl,
   QuantizedMeshSource as QuantizedMeshSourceImpl,
+  RasterDemSource as RasterDemSourceImpl,
   RasterTileSource as RasterTileSourceImpl,
   VideoSource as VideoSourceImpl,
   type ImageSourceOptions,
   type VideoSourceOptions,
   type QuantizedMeshSourceOptions,
+  type RasterDemSourceOptions,
   type RasterTileSourceOptions,
   type MapStyleSourceOptions,
 } from '../core/sources.js'
@@ -36,6 +38,23 @@ export function QuantizedMeshSource({ url, skirtLengthMeters, smoothSkirtNormals
   )
   useAttribution(source, attribution)
   useRegisterSource(use(TerrainSourceContext), source, 'QuantizedMeshSource', 'Terrain')
+  return null
+}
+
+export type RasterDemSourceProps = RasterDemSourceOptions
+
+/**
+ * Terrain from elevation tiles (Terrarium, Mapbox Terrain-RGB), MapLibre's `raster-dem`. Goes inside `<Terrain>`.
+ * Keep `createWorker` stable (memoised): changing it reloads the terrain.
+ */
+export function RasterDemSource({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }: RasterDemSourceProps) {
+  const source = useMemo(
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => new RasterDemSourceImpl({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }),
+    [url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker],
+  )
+  useAttribution(source, attribution)
+  useRegisterSource(use(TerrainSourceContext), source, 'RasterDemSource', 'Terrain')
   return null
 }
 
@@ -79,6 +98,7 @@ export function MapStyleSource({
   spritePixelRatio,
   symbols,
   symbolFadeDurationSeconds,
+  extrusions,
   onStyleImageMissing,
   transformRequest,
   protocols,
@@ -112,12 +132,13 @@ export function MapStyleSource({
         ...(spritePixelRatio !== undefined ? { spritePixelRatio } : {}),
         ...(symbols !== undefined ? { symbols } : {}),
         ...(symbolFadeDurationSeconds !== undefined ? { symbolFadeDurationSeconds } : {}),
+        ...(extrusions !== undefined ? { extrusions } : {}),
         onStyleImageMissing: imageId => onStyleImageMissingRef.current?.(imageId),
       })
     },
     // url and style are applied below with setStyle; attribution by useAttribution
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio, symbols, symbolFadeDurationSeconds, retries],
+    [baseUrl, requestHeaders, localFontFamily, maximumZoom, createWorker, hasTransform, protocols, spritePixelRatio, symbols, symbolFadeDurationSeconds, extrusions, retries],
   )
   const applied = useRef<{ source: MapStyleSourceImpl; style: unknown } | null>(null)
   useEffect(() => {

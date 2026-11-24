@@ -9,6 +9,7 @@ export {
   MapStyleSource,
   QuantizedMeshSource,
   ImageSource,
+  RasterDemSource,
   RasterTileSource,
   VideoSource,
   StyleLayer,
@@ -16,6 +17,7 @@ export {
   type StyleLayerProps,
   type QuantizedMeshSourceProps,
   type ImageSourceProps,
+  type RasterDemSourceProps,
   type RasterTileSourceProps,
   type VideoSourceProps,
 } from './sources.js'

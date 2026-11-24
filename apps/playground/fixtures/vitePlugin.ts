@@ -4,7 +4,7 @@ import type { Plugin } from 'vite'
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
 import { terrariumTile } from './dem.ts'
-import { fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
+import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
@@ -17,7 +17,8 @@ import { fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSpri
  * (and `@2x`).
  *
  * `/fixtures/style-relief.json` adds a raster layer of the imagery, colour relief and hillshade from Terrarium
- * elevation tiles at /fixtures/dem/{z}/{x}/{y}.png (`?only=hillshade`: the hillshade alone, on mid-grey).
+ * elevation tiles at /fixtures/dem/{z}/{x}/{y}.png (`?only=hillshade`: the hillshade alone, on mid-grey). The DEM tiles
+ * with `?plain` hold the quantized-mesh terrain's heights alone, for terrain from raster-dem.
  *
  * `/fixtures/style.json?live` reads /fixtures/vector-live/ instead, whose lakes take the colour set with
  * `/fixtures/vector-live/water-color?value=%23e0457b` (empty: the style's blue), for the invalidate check.
@@ -54,6 +55,11 @@ export function fixtureTiles(): Plugin {
           res.end(JSON.stringify(fixtureStyle({ live })))
           return
         }
+        if (url === '/fixtures/style-buildings.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixtureBuildingStyle()))
+          return
+        }
         if (url === '/fixtures/style-labels.json') {
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(fixtureLabelStyle()))
@@ -68,7 +74,8 @@ export function fixtureTiles(): Plugin {
         if (dem) {
           const [, z, x, y] = dem.map(Number)
           res.setHeader('Content-Type', 'image/png')
-          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0)))
+          const plain = new URLSearchParams(req.url?.split('?')[1] ?? '').has('plain')
+          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0, { hills: !plain })))
           return
         }
         if (url === '/fixtures/style-patterns.json') {

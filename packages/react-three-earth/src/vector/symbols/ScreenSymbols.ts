@@ -4,8 +4,7 @@ import type { MeshBasicNodeMaterial } from 'three/webgpu'
 
 import { isOccludedByEllipsoid } from '../../core/projection.js'
 import type { ViewMorph } from '../../view/ViewMorph.js'
-import { longitudeToMercatorX, wrapMercatorXNear } from '../../view/webMercator.js'
-import { computeCameraTilePyramid, horizonCap, tileRowToLatitude } from '../CameraTilePyramid.js'
+import { cameraHeightAboveSurface, computeViewTilePyramid, tileRowToLatitude, toScenePosition } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_IGNORE_PLACEMENT, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../worker/symbols.js'
@@ -22,9 +21,13 @@ export interface SymbolFrame {
   zoom: number
   /** Distance from the camera to the screen centre, in scene metres: labels further away shrink a little (MapLibre). */
   centerDistanceMeters: number
+  /** Height of the terrain at the screen centre, in metres (0 without terrain): the camera's tiles are chosen at it. */
+  centerHeightMeters: number
   view: ViewMorph
   /** Height of the terrain as drawn (radians in), or null where no tile is loaded. Null without terrain. */
   sampleTerrainElevation: ((longitudeRadians: number, latitudeRadians: number) => number | null) | null
+  /** The terrain's exaggeration (`Terrain.exaggeration`): drawn summits reach this many times Everest. Default: 1. */
+  terrainExaggeration?: number
   /** Terrain height reads left this frame, and milliseconds of reading, shared by every source. */
   elevationBudget: { remaining: number; milliseconds: number }
   timeMilliseconds: number
@@ -189,7 +192,6 @@ function readsBackwards(glyphCount: number): boolean {
   const dy = glyphScratch[last + 1]! - glyphScratch[1]!
   return dx < -UPRIGHT_SLACK * Math.hypot(dx, dy)
 }
-const cartographic = { lat: 0, lon: 0, height: 0 }
 const cameraPoint = new Vector3()
 
 /** Whether two labels' variable anchor shifts are the same (both without, or equal values). */
@@ -218,7 +220,12 @@ const OCCLUSION_MARGIN_METERS = 30
  * Whether the terrain rises above the straight line from `from` to `to` (ECEF), read at points at growing distances
  * from `to` (the label), from 150 m to about 50 km. Points without a terrain tile do not occlude.
  */
-export function rayHitsTerrain(from: Vector3, to: Vector3, sampleTerrainElevation: (longitudeRadians: number, latitudeRadians: number) => number | null): boolean {
+export function rayHitsTerrain(
+  from: Vector3,
+  to: Vector3,
+  sampleTerrainElevation: (longitudeRadians: number, latitudeRadians: number) => number | null,
+  maximumTerrainHeightMeters = MAXIMUM_TERRAIN_HEIGHT_METERS,
+): boolean {
   // The ray's height above the ellipsoid, cheaply: between its ends' heights, less the chord's dip under the curved
   // Earth. Stretches above any summit are skipped without converting the point.
   WGS84_ELLIPSOID.getPositionToCartographic(from, rayCartographic)
@@ -233,10 +240,10 @@ export function rayHitsTerrain(from: Vector3, to: Vector3, sampleTerrainElevatio
     if (distanceFromLabel >= length * 0.98) break
     const t = 1 - distanceFromLabel / length
     const estimate = fromHeight + (toHeight - fromHeight) * t - (t * (1 - t) * lengthSquared) / (2 * EARTH_RADIUS_METERS)
-    if (estimate > MAXIMUM_TERRAIN_HEIGHT_METERS + OCCLUSION_ESTIMATE_SLACK_METERS) continue
+    if (estimate > maximumTerrainHeightMeters + OCCLUSION_ESTIMATE_SLACK_METERS) continue
     rayPoint.lerpVectors(from, to, t)
     WGS84_ELLIPSOID.getPositionToCartographic(rayPoint, rayCartographic)
-    if (rayCartographic.height > MAXIMUM_TERRAIN_HEIGHT_METERS) continue
+    if (rayCartographic.height > maximumTerrainHeightMeters) continue
     const ground = sampleTerrainElevation(rayCartographic.lon, rayCartographic.lat)
     if (ground !== null && ground > rayCartographic.height + OCCLUSION_MARGIN_METERS) return true
   }
@@ -500,19 +507,7 @@ export class ScreenSymbols {
 
   /** Asks for the pyramid's tiles of every source, keeping tiles already held. */
   protected requestTiles(frame: SymbolFrame, summary: MapStyleSummary): void {
-    const { view, camera } = frame
-    const flat = view.morph === 1
-    camera.updateMatrixWorld()
-    const cameraPosition = point.setFromMatrixPosition(camera.matrixWorld).clone()
-    const pyramid = computeCameraTilePyramid({
-      camera,
-      widthPixels: frame.widthPixels,
-      heightPixels: frame.heightPixels,
-      toScenePosition: (longitude, latitude, target, centerLongitude) => toScenePosition(view, flat, longitude, latitude, 0, target, centerLongitude),
-      visibleCap: flat ? null : horizonCap(cameraPosition),
-      cameraHeightMeters: cameraHeightAboveSurface(view, flat, cameraPosition),
-      maximumZoom: this.host.maximumZoom,
-    })
+    const pyramid = computeViewTilePyramid(frame.camera, frame.widthPixels, frame.heightPixels, frame.view, this.host.maximumZoom, frame.centerHeightMeters)
     const requested = new Set<string>()
     for (const source of summary.sources) {
       // Raster and elevation tiles hold no labels.
@@ -1061,7 +1056,7 @@ export class ScreenSymbols {
       const ground = sample!(tile.longitudes[index]!, tile.latitudes[index]!)
       if (ground === null) return true
       const end = this.labelPosition(tile, index, false, frame.view, Math.max(height, ground))
-      tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!) ? 1 : 0
+      tile.occluded[index] = rayHitsTerrain(cameraPoint, end, sample!, MAXIMUM_TERRAIN_HEIGHT_METERS * Math.max(1, frame.terrainExaggeration ?? 1)) ? 1 : 0
       return true
     }
     // Labels never read first (a tile that just arrived), then the rest in turn from where the last pass stopped.
@@ -1221,25 +1216,6 @@ export class ScreenSymbols {
     this.state.upload()
     this.glyphState.upload()
   }
-}
-
-/**
- * Scene position of a geographic point: on the globe, or on the flat map's world copy nearest the camera (the copy of
- * `referenceLongitudeRadians`, when given, so points of one tile stay together).
- */
-function toScenePosition(view: ViewMorph, flat: boolean, longitudeRadians: number, latitudeRadians: number, heightMeters: number, target: Vector3, referenceLongitudeRadians = longitudeRadians): Vector3 {
-  if (!flat) return WGS84_ELLIPSOID.getCartographicToPosition(latitudeRadians, longitudeRadians, heightMeters, target) as Vector3
-  const flatPoint = view.geodeticToFlat(longitudeRadians, latitudeRadians, heightMeters, target)
-  const referenceX = longitudeToMercatorX(referenceLongitudeRadians)
-  flatPoint.x += wrapMercatorXNear(referenceX, view.worldCopyReferenceXMeters) - referenceX
-  return flatPoint.applyMatrix4(view.flatToEarth)
-}
-
-/** The camera's height above the ellipsoid (the map's plane on the flat map), in scene metres. */
-function cameraHeightAboveSurface(view: ViewMorph, flat: boolean, cameraPosition: Vector3): number {
-  if (flat) return point.copy(cameraPosition).applyMatrix4(view.earthToFlat).z * view.scale
-  WGS84_ELLIPSOID.getPositionToCartographic(cameraPosition, cartographic)
-  return cartographic.height
 }
 
 function meetsBox(left: number, top: number, right: number, bottom: number, box: readonly [number, number, number, number], tolerancePixels: number): boolean {

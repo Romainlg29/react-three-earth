@@ -32,10 +32,10 @@ export type XYZImageryOverlayOptions = ConstructorParameters<typeof XYZTilesOver
 }
 
 /** Reads a TileJSON document's tile template, zoom levels and attribution. Throws an error that states the fix. */
-export function readTileJson(tileJson: unknown, tileJsonUrl: string): TileJsonInfo {
+export function readTileJson(tileJson: unknown, tileJsonUrl: string, sourceName = 'RasterTileSource'): TileJsonInfo {
   const { tiles, maxzoom, scheme, attribution } = (tileJson ?? {}) as { tiles?: unknown; maxzoom?: unknown; scheme?: unknown; attribution?: unknown }
   const template = Array.isArray(tiles) ? tiles.find((entry): entry is string => typeof entry === 'string') : undefined
-  if (template === undefined) throw new Error(`RasterTileSource: the TileJSON at ${tileJsonUrl} has no \`tiles\`; pass a TileJSON with a tile URL template, or the template itself as \`url\`.`)
+  if (template === undefined) throw new Error(`${sourceName}: the TileJSON at ${tileJsonUrl} has no \`tiles\`; pass a TileJSON with a tile URL template, or the template itself as \`url\`.`)
   // `new URL` percent-encodes braces: protect the placeholders through the resolution.
   const absolute = new URL(template.replace(/{/g, '__open__').replace(/}/g, '__close__'), tileJsonUrl).href.replace(/__open__/g, '{').replace(/__close__/g, '}')
   return {

@@ -869,7 +869,8 @@ export class EarthCamera {
     WGS84_ELLIPSOID.getEastNorthUpAxes(latitude, longitude, east, north, up)
     raycaster.ray.direction.copy(up).negate()
     const point = this.raycastTerrain(surfacePoint)
-    if (point === null) return null
+    // A ray straight down a seam between two tiles can slip between their float32 edges: read the tile's mesh then.
+    if (point === null) return terrain.sampleElevation(longitude, latitude)
     WGS84_ELLIPSOID.getPositionToCartographic(point, cartographic)
     return cartographic.height
   }

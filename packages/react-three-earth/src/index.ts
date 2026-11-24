@@ -132,6 +132,7 @@ export {
   ImageSource,
   MapStyleSource,
   QuantizedMeshSource,
+  RasterDemSource,
   RasterTileSource,
   VideoSource,
   type GeoreferencedCorners,
@@ -139,6 +140,7 @@ export {
   type VideoSourceOptions,
   type MapStyleSourceOptions,
   type QuantizedMeshSourceOptions,
+  type RasterDemSourceOptions,
   type RasterTileSourceOptions,
   type TerrainSource,
   type ImagerySource,
@@ -146,6 +148,8 @@ export {
 export { ImageOverlayPlugin } from './tiles/ImageOverlayPlugin.js'
 export { TilesFadePlugin } from './tiles/TilesFadePlugin.js'
 export { QuantizedMeshVersionPlugin } from './tiles/QuantizedMeshVersionPlugin.js'
+export { RasterDemTerrainPlugin, type RasterDemTerrainPluginOptions } from './tiles/RasterDemTerrainPlugin.js'
+export { createRasterDemWorker } from './tiles/dem/DemMeshBuilder.js'
 export { ImageryCompositor, type CompositeDraw, type CompositionPriority, type CompositionRenderer } from './tiles/imagery/ImageryCompositor.js'
 export { ImageryStatistics, type ImageryFrameStatistics } from './tiles/imagery/ImageryStatistics.js'
 export { XYZImageryOverlay, type XYZImageryOverlayOptions } from './tiles/imagery/XYZImageryOverlay.js'

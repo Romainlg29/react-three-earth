@@ -12,6 +12,7 @@ import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
 import { sampleTerrainHeight } from '../tiles/terrainHeights.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { ViewMorph } from '../view/ViewMorph.js'
+import type { ExtrusionFrame, Extrusions, ExtrusionsInspection } from '../vector/extrusions/Extrusions.js'
 import type { ScreenLabelInspection, ScreenSymbols, ScreenSymbolsInspection, SymbolFrame } from '../vector/symbols/ScreenSymbols.js'
 import type { AttributionProvider } from './attribution.js'
 import type { Imagery } from './Imagery.js'
@@ -33,6 +34,12 @@ export interface TerrainOptions {
    * least one terrain tile is composed per frame regardless. Default: 2.
    */
   imageryCompositionBudgetMilliseconds?: number
+  /**
+   * Scales the terrain's heights, as MapLibre's terrain `exaggeration`: 1.5 draws mountains half again as high. Applied
+   * in the vertex shader, so changing it costs no reload. Controls, `queryTerrainElevation`, `unproject`, labels and
+   * markers read the heights as drawn. Default: 1.
+   */
+  exaggeration?: number
 }
 
 const MEGABYTE_BYTES = 2 ** 20
@@ -56,10 +63,13 @@ export class Terrain implements AttributionProvider {
   readonly flatMap: FlatMapPlugin
   /** Labels of its map style sources that face the viewer, drawn over the tiles. `Earth.setTerrain` adds it to the earth. */
   readonly symbols = new Group()
+  /** Buildings (`fill-extrusion` layers) of its map style sources standing in 3D. `Earth.setTerrain` adds it to the earth. */
+  readonly extrusions = new Group()
   protected readonly imagery = new Set<Imagery>()
   protected readonly source: TerrainSource
   /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
   protected updateRequested = false
+  protected visibleTilesVersionValue = 0
 
   constructor({
     sources,
@@ -68,6 +78,7 @@ export class Terrain implements AttributionProvider {
     fade = true,
     createMaterial,
     imageryCompositionBudgetMilliseconds,
+    exaggeration = 1,
   }: TerrainOptions) {
     const [source, ...ignored] = sources
     if (source === undefined) throw new Error('Terrain: needs one source, for example new QuantizedMeshSource({ url }).')
@@ -83,6 +94,9 @@ export class Terrain implements AttributionProvider {
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
 
+    ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('tile-visibility-change', () => {
+      this.visibleTilesVersionValue++
+    })
     // A failed load needs an update too, to see that nothing is loading any more.
     for (const type of ['needs-update', 'load-error']) {
       ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener(type, () => {
@@ -93,6 +107,24 @@ export class Terrain implements AttributionProvider {
     if (errorTargetPixels !== undefined) this.tiles.errorTarget = errorTargetPixels
     this.tiles.lruCache.maxBytesSize = memoryBudgetBytes
     this.tiles.lruCache.minBytesSize = memoryBudgetBytes * 0.75
+    this.exaggeration = exaggeration
+  }
+
+  /** How much heights are scaled when drawn (see `TerrainOptions.exaggeration`). */
+  get exaggeration(): number {
+    return this.flatMap.exaggeration
+  }
+
+  set exaggeration(value: number) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error(`Terrain: exaggeration must be a finite number of 0 or more (1 draws heights as they are), got ${value}.`)
+    }
+    if (value === this.flatMap.exaggeration) return
+    this.flatMap.exaggeration = value
+    this.tiles.exaggeration = value
+    this.visibleTilesVersionValue++
+    this.updateRequested = true
+    ;(this.tiles as unknown as { dispatchEvent(event: { type: string }): void }).dispatchEvent({ type: 'needs-update' })
   }
 
   /** The credits of the terrain source. */
@@ -140,6 +172,8 @@ export class Terrain implements AttributionProvider {
       this.overlays.addOverlay(overlay as never)
       const symbols = screenSymbolsOf(overlay)
       if (symbols !== null) this.symbols.add(symbols.object)
+      const extrusions = extrusionsOf(overlay)
+      if (extrusions !== null) this.extrusions.add(extrusions.object)
     }
   }
 
@@ -149,15 +183,22 @@ export class Terrain implements AttributionProvider {
       this.overlays.deleteOverlay(overlay as never)
       const symbols = screenSymbolsOf(overlay)
       if (symbols !== null) this.symbols.remove(symbols.object)
+      const extrusions = extrusionsOf(overlay)
+      if (extrusions !== null) this.extrusions.remove(extrusions.object)
     }
   }
 
+  /** Goes up whenever a terrain tile is shown or hidden or the exaggeration changes: heights read before may have changed. */
+  get visibleTilesVersion(): number {
+    return this.visibleTilesVersionValue
+  }
+
   /**
-   * Height of the terrain as drawn at a position (radians), in metres above the ellipsoid, from the deepest visible
+   * Height of the terrain as drawn (exaggerated) at a position (radians), in metres above the ellipsoid, from the deepest visible
    * tile there; null where no visible tile covers it. Cheaper than a raycast: for many reads per frame (labels).
    */
   sampleElevation(longitudeRadians: number, latitudeRadians: number): number | null {
-    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians)
+    return sampleTerrainHeight(this.tiles.visibleTiles, longitudeRadians, latitudeRadians, this.flatMap.exaggeration)
   }
 
   /** True when a map style source draws labels that face the viewer. */
@@ -173,6 +214,38 @@ export class Terrain implements AttributionProvider {
     let needsFrame = false
     for (const symbols of this.screenSymbols()) needsFrame = symbols.update(frame) || needsFrame
     return needsFrame
+  }
+
+  /** True when a map style source draws `fill-extrusion` layers in 3D. */
+  get hasExtrusions(): boolean {
+    return this.extrusions.children.length > 0
+  }
+
+  /** Sets the buildings standing in 3D for this frame (after `update`, so terrain heights are current). Returns true while they need another frame. */
+  updateExtrusions(frame: ExtrusionFrame): boolean {
+    let needsFrame = false
+    for (const extrusions of this.allExtrusions()) needsFrame = extrusions.update(frame) || needsFrame
+    return needsFrame
+  }
+
+  /** Buildings standing in 3D, summed over the map style sources. Null when none draws them. */
+  inspectExtrusions(): ExtrusionsInspection | null {
+    let total: ExtrusionsInspection | null = null
+    for (const extrusions of this.allExtrusions()) {
+      const inspection = extrusions.inspect()
+      if (total === null) total = inspection
+      else for (const key of Object.keys(total) as Array<keyof ExtrusionsInspection>) total[key] += inspection[key]
+    }
+    return total
+  }
+
+  protected *allExtrusions(): Iterable<Extrusions> {
+    for (const imagery of this.imagery) {
+      for (const overlay of imagery.overlays) {
+        const extrusions = extrusionsOf(overlay)
+        if (extrusions !== null) yield extrusions
+      }
+    }
   }
 
   /** Labels facing the viewer, summed over the map style sources. Null when none draws them. */
@@ -240,6 +313,7 @@ export class Terrain implements AttributionProvider {
     }
     if (rootLoadingState === ROOT_UNLOADED || rootLoadingState === ROOT_LOADING || isLoading) return true
     for (const symbols of this.screenSymbols()) if (symbols.loading) return true
+    for (const extrusions of this.allExtrusions()) if (extrusions.loading) return true
     const { queued, downloading, parsing } = stats
     return this.updateRequested || queued + downloading + parsing > 0 || this.imageryCompositionsPending > 0 || this.imageryRecompositionsPending > 0
   }
@@ -272,6 +346,10 @@ export class Terrain implements AttributionProvider {
   dispose(): void {
     this.tiles.dispose()
   }
+}
+
+function extrusionsOf(overlay: unknown): Extrusions | null {
+  return (overlay as { extrusions?: Extrusions | null }).extrusions ?? null
 }
 
 function screenSymbolsOf(overlay: unknown): ScreenSymbols | null {

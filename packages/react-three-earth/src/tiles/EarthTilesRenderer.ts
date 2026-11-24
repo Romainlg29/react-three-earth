@@ -31,7 +31,20 @@ const TilesRendererWithInternals = TilesRenderer as unknown as new (url?: string
   cameraInfo: CameraInfo[]
   prepareForTraversal(): void
   calculateTileViewError(tile: Tile, target: TileViewError): void
+  preprocessNode(tile: Tile, tilesetDirectory: string, parentTile?: Tile | null): void
+  parseTile(buffer: ArrayBuffer, tile: Tile, extension: string, url: string, abortSignal: AbortSignal): Promise<void>
+  traverse(before: ((tile: Tile) => boolean | void) | null, after: ((tile: Tile) => void) | null, ensureFullyProcessed?: boolean): void
 }
+
+/** The engine data of a tile whose bounding volume is a region (3DTilesRenderer's `TileBoundingVolume`). */
+interface RegionTile {
+  boundingVolume?: { region?: number[] }
+  engineData?: { boundingVolume?: { setRegionData(ellipsoid: unknown, ...region: number[]): void } }
+  [EXAGGERATED]?: boolean
+}
+
+/** Set on tiles whose bounding volume holds exaggerated heights, so a return to 1 restores them. */
+const EXAGGERATED = Symbol('EXAGGERATED')
 
 const flatBox = new Box3()
 const flatError: TileViewError = { inView: false, error: 0, distanceFromCamera: Infinity }
@@ -42,8 +55,10 @@ const groupToAnchor = new Matrix4()
  * region bounding volume (`[west, south, east, north, minimumHeight, maximumHeight]`, radians and metres).
  * Returns the largest Web Mercator scale factor over the tile, which scales its geometric error.
  */
-export function getFlatRegionBox(region: readonly number[], view: ViewMorph, target: Box3): number {
-  const [west, south, east, north, minimumHeight, maximumHeight] = region as [number, number, number, number, number, number]
+export function getFlatRegionBox(region: readonly number[], view: ViewMorph, target: Box3, exaggeration = 1): number {
+  const [west, south, east, north, regionMinimumHeight, regionMaximumHeight] = region as [number, number, number, number, number, number]
+  const minimumHeight = regionMinimumHeight * exaggeration
+  const maximumHeight = regionMaximumHeight * exaggeration
   // Take the copy of the world the meshes are drawn on (see FlatMapPlugin), relative to the anchor.
   const unwrappedEast = east < west ? east + 2 * Math.PI : east
   const centerX = longitudeToMercatorX((west + unwrappedEast) / 2)
@@ -74,11 +89,49 @@ export function getFlatRegionBox(region: readonly number[], view: ViewMorph, tar
  * either view needs it.
  *
  * Tiles without a region bounding volume (boxes, spheres) are selected as on the globe.
+ *
+ * With `exaggeration`, region volumes hold heights scaled like the drawn terrain, so tiles are culled, selected and
+ * raycast against the ground as drawn. The tile's own `region` keeps the data's heights.
  */
 export class EarthTilesRenderer extends TilesRendererWithInternals {
   /** The morph to follow. Null selects tiles for the globe only. */
   view: ViewMorph | null = null
   protected readonly flatCameraInfo: FlatCameraInfo[] = []
+  protected exaggerationValue = 1
+
+  /** How much terrain heights are scaled (see `Terrain.exaggeration`). Setting it refits every tile's bounding volume. */
+  get exaggeration(): number {
+    return this.exaggerationValue
+  }
+
+  set exaggeration(value: number) {
+    if (value === this.exaggerationValue) return
+    this.exaggerationValue = value
+    this.traverse(tile => void this.fitExaggeratedVolume(tile), null, false)
+  }
+
+  override preprocessNode(tile: Tile, tilesetDirectory: string, parentTile: Tile | null = null): void {
+    super.preprocessNode(tile, tilesetDirectory, parentTile)
+    this.fitExaggeratedVolume(tile)
+  }
+
+  /** Terrain plugins refit a tile's region to its heights when it parses: scale it again after them. */
+  override async parseTile(buffer: ArrayBuffer, tile: Tile, extension: string, url: string, abortSignal: AbortSignal): Promise<void> {
+    await super.parseTile(buffer, tile, extension, url, abortSignal)
+    if (this.exaggerationValue !== 1) this.fitExaggeratedVolume(tile)
+  }
+
+  protected fitExaggeratedVolume(tile: Tile): void {
+    const regionTile = tile as RegionTile
+    const region = regionTile.boundingVolume?.region
+    const volume = regionTile.engineData?.boundingVolume
+    if (region === undefined || volume === undefined) return
+    const exaggeration = this.exaggerationValue
+    if (exaggeration === 1 && regionTile[EXAGGERATED] !== true) return
+    const [west, south, east, north, minimumHeight, maximumHeight] = region as [number, number, number, number, number, number]
+    volume.setRegionData(this.ellipsoid, west, south, east, north, minimumHeight * exaggeration, maximumHeight * exaggeration)
+    regionTile[EXAGGERATED] = exaggeration !== 1
+  }
 
   override prepareForTraversal(): void {
     super.prepareForTraversal()
@@ -122,7 +175,7 @@ export class EarthTilesRenderer extends TilesRendererWithInternals {
   }
 
   protected calculateFlatTileViewError(tile: Tile, region: readonly number[], view: ViewMorph, target: TileViewError): void {
-    const scaleFactor = getFlatRegionBox(region, view, flatBox)
+    const scaleFactor = getFlatRegionBox(region, view, flatBox, this.exaggerationValue)
     const geometricError = tile.geometricError * view.scale * scaleFactor
     let inView = false
     let inViewError = 0
