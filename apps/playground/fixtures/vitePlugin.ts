@@ -4,7 +4,7 @@ import type { Plugin } from 'vite'
 import { imageryTile } from './png.ts'
 import { encodeQuantizedMeshTile, layerJson } from './quantizedMesh.ts'
 import { terrariumTile } from './dem.ts'
-import { fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
+import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
  * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
@@ -53,6 +53,11 @@ export function fixtureTiles(): Plugin {
           const live = new URLSearchParams(req.url?.split('?')[1] ?? '').has('live')
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(fixtureStyle({ live })))
+          return
+        }
+        if (url === '/fixtures/style-buildings.json') {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(fixtureBuildingStyle()))
           return
         }
         if (url === '/fixtures/style-labels.json') {

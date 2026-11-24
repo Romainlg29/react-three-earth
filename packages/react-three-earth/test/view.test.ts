@@ -303,6 +303,42 @@ describe('terrain exaggeration', () => {
   })
 })
 
+describe('terrain height reads', () => {
+  it('never reads a skirt wall on a tile edge', () => {
+    // A 0.01° square at 3000 m, with a 1000 m skirt along its south edge whose bottom vertices sit a hair off the edge
+    // (as float32 positions put them).
+    const top = [
+      [10, 20],
+      [10.01, 20],
+      [10.01, 20.01],
+      [10, 20.01],
+    ]
+    const bottom = [
+      [10 + 1e-9, 20 - 3e-9],
+      [10.01 - 1e-9, 20 + 2e-9],
+    ]
+    const points = [...top.map(point => [...point, 3000]), ...bottom.map(point => [...point, 2000])].map(([longitude, latitude, height]) =>
+      WGS84_ELLIPSOID.getCartographicToPosition(degrees(latitude!), degrees(longitude!), height!, new Vector3()),
+    )
+    const origin = points[0]!.clone()
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(points.flatMap(point => point.clone().sub(origin).toArray())), 3))
+    geometry.setIndex([0, 1, 2, 0, 2, 3, 0, 4, 1, 1, 4, 5])
+    const mesh = new Mesh(geometry, new MeshBasicMaterial())
+    mesh.position.copy(origin)
+    mesh.updateMatrixWorld()
+    const scene = new Group()
+    scene.add(mesh)
+    const tile = { boundingVolume: { region: [degrees(10), degrees(20), degrees(10.01), degrees(20.01), 0, 3000] }, engineData: { scene } }
+    for (let step = 1; step < 20; step++) {
+      for (const offset of [0, -1e-12, 1e-12]) {
+        const height = sampleTerrainHeight([tile], degrees(10 + step * 0.0005), degrees(20) + offset)
+        if (height !== null) expect(height).toBeGreaterThan(2999)
+      }
+    }
+  })
+})
+
 describe('flat map like MapLibre', () => {
   function flatMapCamera(longitudeDegrees: number, latitudeDegrees: number, distanceMeters: number) {
     const view = new ViewMorph()

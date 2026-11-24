@@ -225,7 +225,7 @@ An id no loaded style has warns once (`no style has a layer "…"`) and matches 
 
 ### MEDIUM: Expecting custom layer types, icons or rasters to answer
 
-Only `fill`, `fill-extrusion` (as flat fills), `line`, `circle` and text labels are hit-tested. Plugin layer
+Only `fill`, `fill-extrusion` (by its footprint on the ground, not its 3D shape), `line`, `circle` and text labels are hit-tested. Plugin layer
 types, raster sources and draped layers answer nothing.
 
 ### MEDIUM: Expecting hover to follow a camera move

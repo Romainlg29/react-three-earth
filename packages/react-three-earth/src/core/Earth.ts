@@ -14,7 +14,8 @@ import type { MapStyleSource } from './sources.js'
 import type { MercatorPoint, RenderedSourceFeature } from '../vector/worker/types.js'
 import type { ProjectedPosition, ScreenPosition } from './projection.js'
 import type { Terrain } from './Terrain.js'
-import type { ScreenSymbolsInspection } from '../vector/symbols/ScreenSymbols.js'
+import type { ExtrusionsInspection } from '../vector/extrusions/Extrusions.js'
+import type { ScreenSymbolsInspection, SymbolFrame } from '../vector/symbols/ScreenSymbols.js'
 import { GeographicAnchor, type GeographicAnchorOptions } from './GeographicAnchor.js'
 import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
@@ -25,6 +26,13 @@ import { RenderPassRegistry, type RenderPassInspection } from '../plugins/render
 /** Terrain height reads for labels per frame, and the time they may take. */
 const SYMBOL_ELEVATION_READS_PER_FRAME = 512
 const SYMBOL_ELEVATION_MILLISECONDS_PER_FRAME = 1
+/** The centre ray's sine against the ground is taken as at least this, so a view along the ground keeps a sane zoom. */
+const MINIMUM_CENTER_RAY_SINE = 0.2
+/** How many zoom levels the ground under the screen centre may add to the ellipsoid's zoom. */
+const MAXIMUM_GROUND_ZOOM_GAIN = 4
+/** Terrain height reads under 3D buildings per frame, and milliseconds of reading. */
+const EXTRUSION_ELEVATION_READS_PER_FRAME = 1024
+const EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME = 1
 
 /** An imagery overlay that can answer feature queries (`MapStyleOverlay`). */
 interface QueryableOverlay {
@@ -73,6 +81,8 @@ export interface EarthInspection {
     imageryMainThreadMillisecondsTotal: number
     /** Labels of map style sources that face the viewer, summed over the sources; null when none draws them. */
     symbols: ScreenSymbolsInspection | null
+    /** Buildings of map style sources standing in 3D (`fill-extrusion`), summed over the sources; null when none draws them. */
+    extrusions: ExtrusionsInspection | null
   }
   imageryLayers: number
   /** `earth.camera.getView()`, or null before the first `update`. */
@@ -113,6 +123,7 @@ function inspectImagery(terrain: Terrain) {
     imageryTilesCompositedTotal: total.tilesComposited,
     imageryMainThreadMillisecondsTotal: total.mainThreadMilliseconds,
     symbols: terrain.inspectSymbols(),
+    extrusions: terrain.inspectExtrusions(),
   }
 }
 
@@ -303,6 +314,7 @@ export class Earth extends Group<EarthEventMap> {
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
       this.remove(this.terrain.symbols)
+      this.remove(this.terrain.extrusions)
     }
     this.terrain = terrain
     if (terrain !== null) {
@@ -311,6 +323,7 @@ export class Earth extends Group<EarthEventMap> {
       terrain.setStyleLayerTypes(this.styleLayerTypes)
       this.add(terrain.object)
       this.add(terrain.symbols)
+      this.add(terrain.extrusions)
       // Imagery first: draped layers take the layer slots left after it (one that does not fit is logged).
       for (const imagery of this.imagery) {
         try {
@@ -402,17 +415,30 @@ export class Earth extends Group<EarthEventMap> {
     return morphing || this.view.transitioning || cameraMoved || animating || pluginsNeedFrame || symbolsNeedFrame
   }
 
-  /** Places the labels of map style sources that face the viewer. Returns true while they need another frame. */
+  /**
+   * Places the labels of map style sources that face the viewer, and sets their buildings standing in 3D. Returns
+   * true while they need another frame.
+   */
   protected updateSymbols(camera: Camera, deltaSeconds: number, timeMilliseconds: number): boolean {
     const terrain = this.terrain
-    if (terrain === null || !terrain.hasScreenSymbols || !this.camera.ready) return false
+    if (terrain === null || (!terrain.hasScreenSymbols && !terrain.hasExtrusions) || !this.camera.ready) return false
     const view = this.camera.readEllipsoidView()
-    return terrain.updateSymbols({
+    // The view on the ellipsoid (no raycast), brought up to the terrain at the screen centre with one height read: on a
+    // plateau the ground is nearer than the ellipsoid, so the zoom is deeper (MapLibre's zoom follows the terrain too).
+    const degrees = Math.PI / 180
+    const groundHeightMeters = terrain.sampleElevation(view.longitudeDegrees * degrees, view.latitudeDegrees * degrees) ?? 0
+    const sine = Math.max(MINIMUM_CENTER_RAY_SINE, Math.sin(-view.pitchDegrees * degrees))
+    // At most MAXIMUM_GROUND_ZOOM_GAIN levels deeper: ground at or above the camera (a ridge behind the ellipsoid point,
+    // seen from a valley) must not send the zoom to the maximum.
+    const centerDistanceMeters = Math.max(view.distanceMeters / 2 ** MAXIMUM_GROUND_ZOOM_GAIN, view.distanceMeters - groundHeightMeters / sine)
+    const centerHeightMeters = (view.distanceMeters - centerDistanceMeters) * sine
+    const frame = {
       camera,
       widthPixels: this.viewportSize.x,
       heightPixels: this.viewportSize.y,
-      zoom: view.zoom,
-      centerDistanceMeters: view.distanceMeters,
+      zoom: view.zoom + Math.log2(view.distanceMeters / centerDistanceMeters),
+      centerDistanceMeters,
+      centerHeightMeters,
       view: this.view,
       sampleTerrainElevation: (longitudeRadians, latitudeRadians) => terrain.sampleElevation(longitudeRadians, latitudeRadians),
       terrainExaggeration: terrain.exaggeration,
@@ -420,7 +446,13 @@ export class Earth extends Group<EarthEventMap> {
       timeMilliseconds,
       deltaSeconds,
       requestFrame: () => this.requestFrame(),
-    })
+    } satisfies SymbolFrame
+    const symbolsNeedFrame = terrain.hasScreenSymbols && terrain.updateSymbols(frame)
+    // Buildings read the terrain under them with a budget of their own.
+    const extrusionsNeedFrame =
+      terrain.hasExtrusions &&
+      terrain.updateExtrusions({ ...frame, terrainVersion: terrain.visibleTilesVersion, elevationBudget: { remaining: EXTRUSION_ELEVATION_READS_PER_FRAME, milliseconds: EXTRUSION_ELEVATION_MILLISECONDS_PER_FRAME } })
+    return symbolsNeedFrame || extrusionsNeedFrame
   }
 
   /** Places the anchors made by `createGeographicAnchor` for this frame's morph. */

@@ -297,6 +297,12 @@ export interface MapStyleSourceOptions {
   symbols?: 'screen' | 'draped'
   /** Seconds labels facing the viewer take to fade in or out (MapLibre's `fadeDuration`). 0 switches at once. Default: 0.3. */
   symbolFadeDurationSeconds?: number
+  /**
+   * How `fill-extrusion` layers draw. `'3d'` (default): as buildings standing on the terrain, lit by the sun and
+   * hazed by the atmosphere, morphing to the flat map with it, as MapLibre's 3D buildings. `'draped'`: their
+   * footprints drawn flat into the terrain's textures.
+   */
+  extrusions?: '3d' | 'draped'
 }
 
 /**
@@ -311,7 +317,7 @@ export interface MapStyleSourceOptions {
  * texture, at that texture's resolution, with 4× multisampling. Patterns (`fill-pattern`, `line-pattern`,
  * `background-pattern`) come from the style's sprite and from `addImage`. Heatmap layers sum their kernels
  * in a half-float target, then colour it with `heatmap-color`. Not supported yet: icons, right-to-left and
- * complex scripts, 3D extrusion (drawn flat). A raster-dem source in a style shades the drape; for terrain from
+ * complex scripts. `fill-extrusion` layers stand in 3D (`extrusions`). A raster-dem source in a style shades the drape; for terrain from
  * it, put a `RasterDemSource` in the `Terrain`.
  *
  * Attribution: the style's sources and their TileJSON or PMTiles metadata name their credit; it is read when

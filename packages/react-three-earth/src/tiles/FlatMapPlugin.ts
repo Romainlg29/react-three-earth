@@ -92,12 +92,26 @@ const unrollCrest = localMorph.mul(float(1).sub(localMorph)).mul(4)
 /** The crest lifts off the map, more the farther it has travelled. */
 const crestLift = vec3(0, 0, unrollCrest.mul(unrollCrest).mul(distanceFromAnchorMeters).mul(0.03))
 /**
+ * A position morphed between the globe and the flat map, as the terrain's: `globePosition` in the mesh's own frame,
+ * `flatMapPosition` in Web Mercator metres from the mesh's flat centre. For meshes set up with `enableFlatMorph`
+ * (their `positionFlat` attribute decides where the unroll front reaches them).
+ */
+export function morphPosition(globePosition: Node<'vec3'>, flatMapPosition: Node<'vec3'>): Node<'vec3'> {
+  return mix(globeToFlatUniform.mul(vec4(globePosition, 1)).xyz, flatMapPosition.add(worldCopyOffset), localMorph).add(crestLift) as unknown as Node<'vec3'>
+}
+/**
  * Exaggeration: on the globe, the height vector added again, scaled (0 times it at 1: the position bit for bit); on the
  * map, the flat height (already scaled by Mercator's factor) likewise.
  */
 const exaggeratedGlobePosition = positionGeometry.add(attribute(HEIGHT_OFFSET_ATTRIBUTE, 'vec3').mul(exaggerationLiftUniform))
 const exaggeratedFlatPosition = flatPosition.add(vec3(0, 0, flatPosition.z.add(flatCenterHeightUniform).mul(exaggerationLiftUniform)))
-const morphedPosition = mix(globeToFlatUniform.mul(vec4(exaggeratedGlobePosition, 1)).xyz, exaggeratedFlatPosition.add(worldCopyOffset), localMorph).add(crestLift)
+const morphedPosition = morphPosition(exaggeratedGlobePosition as unknown as Node<'vec3'>, exaggeratedFlatPosition as unknown as Node<'vec3'>)
+/** 0 where a mesh set up with `enableFlatMorph` is still on the globe, 1 where it lies on the flat map. */
+export const flatMorphFactor = localMorph
+/** Takes a direction of the mesh's own (globe) frame into its flat frame: the identity on the globe. */
+export const globeToFlatMatrix = globeToFlatUniform
+/** `ViewMorph.flatMapLuminance` for the mesh being drawn. */
+export const flatMapLuminanceNode = flatMapLuminanceUniform
 
 /**
  * The normal, turned with the geometry into the flat frame, so shading stays continuous when the morph
@@ -149,7 +163,7 @@ const centerOffset = new Matrix4()
  * Runs after the material replacement and imagery overlay plugins (priority 0), and again on the meshes
  * that imagery tile splitting creates (their attribute is interpolated by the splitter, then recomputed).
  */
-export class FlatMapPlugin {
+export class FlatMapPlugin implements FlatMorphHost {
   readonly name = 'FLAT_MAP_PLUGIN'
   readonly priority = 0
   /** The morph to follow. Null keeps tiles on the globe. */
@@ -183,34 +197,8 @@ export class FlatMapPlugin {
       if (node === scene) break
     }
     const center = computeFlatPositions(mesh.geometry, meshToTileScene, referenceLongitude)
-    mesh.geometry = toInstancedGeometry(mesh.geometry)
-    mesh[FLAT_STATE] = {
-      centerXMeters: center[0],
-      centerYMeters: center[1],
-      centerZMeters: center[2],
-      globeToFlat: new Matrix4(),
-      morph: 0,
-      flatMapLuminance: 1,
-      firstWorldCopyOffset: 0,
-      centerFromAnchorXMeters: 0,
-      centerFromAnchorYMeters: 0,
-      flattened: false,
-      exaggeration: 1,
-    }
+    enableFlatMorph(mesh, center, this)
     wrapMaterial(mesh.material as Material, mesh.geometry.hasAttribute('normal'))
-
-    // The flat matrix only lives for the draw: raycasts, pointer events and everything else between frames
-    // see the globe matrix.
-    const previousBeforeRender = mesh.onBeforeRender
-    mesh.onBeforeRender = (...args) => {
-      this.applyMorph(mesh)
-      previousBeforeRender.apply(mesh, args)
-    }
-    const previousAfterRender = mesh.onAfterRender
-    mesh.onAfterRender = (...args) => {
-      previousAfterRender.apply(mesh, args)
-      restoreGlobeMatrix(mesh)
-    }
   }
 
   /**
@@ -246,38 +234,88 @@ export class FlatMapPlugin {
     return true
   }
 
-  /** Puts a mesh in its globe or flat frame for this draw. */
-  protected applyMorph(mesh: FlatMesh): void {
-    const state = mesh[FLAT_STATE]
-    const view = this.view
-    if (state === undefined) return
-    const morph = view?.morph ?? 0
-    state.exaggeration = this.exaggeration
-    if (morph === 0 || view === null || this.tiles === null || mesh.parent === null) {
-      restoreGlobeMatrix(mesh)
-      state.morph = 0
-      state.globeToFlat.identity()
-      return
-    }
-    globeMatrix.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
-    // The map is one world wide: place each mesh within half a world of the camera (of the anchor during
-    // the morph), so the map has no seam near the camera and everything near it is in the mesh matrix, at
-    // full precision. The other copies are instances of the same draw, offset in the shader: they are at
-    // least a quarter of a world away, so only seen zoomed out, where float32 metres don't show.
-    const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.worldCopyReferenceXMeters)
-    state.firstWorldCopyOffset = view.firstWorldCopy
-    state.centerFromAnchorXMeters = centerXMeters - view.anchorMercatorXMeters
-    state.centerFromAnchorYMeters = state.centerYMeters - latitudeToMercatorY(view.anchorLatitudeRadians)
-    ;(mesh.geometry as InstancedBufferGeometry).instanceCount = view.worldCopyCount
-    flatMatrix
-      .multiplyMatrices(this.tiles.group.matrixWorld, view.flatToEarth)
-      .multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
-    state.globeToFlat.copy(flatMatrix).invert().multiply(globeMatrix)
-    mesh.matrixWorld.copy(flatMatrix)
-    state.flattened = true
-    state.morph = morph
-    state.flatMapLuminance = view.flatMapLuminance
+  /** The tile group, which places tiles in ECEF (`FlatMorphHost`). */
+  get frame(): Object3D | null {
+    return this.tiles?.group ?? null
   }
+}
+
+/** What a mesh morphed by `enableFlatMorph` follows. */
+export interface FlatMorphHost {
+  /** The morph to follow; null keeps the mesh on the globe. */
+  readonly view: ViewMorph | null
+  /** The object whose world matrix places ECEF in the scene (the earth's frame); null keeps the mesh on the globe. */
+  readonly frame: Object3D | null
+  /** The terrain's exaggeration, for meshes whose positions carry `heightOffset`. Default: 1. */
+  readonly exaggeration?: number
+}
+
+/**
+ * Morphs a mesh between the globe and the flat map, as terrain tiles: its geometry becomes instanced (one instance
+ * per world copy on the map), and while the morph is under way or done it is drawn with its flat frame's matrix,
+ * centred on `center` (Web Mercator metres). The geometry must hold `positionFlat` relative to `center`, and its
+ * material must place vertices with `morphPosition`. Its parent's world matrix must place it in ECEF.
+ */
+export function enableFlatMorph(mesh: Mesh, center: readonly [number, number, number], host: FlatMorphHost): void {
+  const flatMesh = mesh as FlatMesh
+  mesh.geometry = toInstancedGeometry(mesh.geometry)
+  flatMesh[FLAT_STATE] = {
+    centerXMeters: center[0],
+    centerYMeters: center[1],
+    centerZMeters: center[2],
+    globeToFlat: new Matrix4(),
+    morph: 0,
+    flatMapLuminance: 1,
+    firstWorldCopyOffset: 0,
+    centerFromAnchorXMeters: 0,
+    centerFromAnchorYMeters: 0,
+    flattened: false,
+    exaggeration: 1,
+  }
+  // The flat matrix only lives for the draw: raycasts, pointer events and everything else between frames
+  // see the globe matrix.
+  const previousBeforeRender = mesh.onBeforeRender
+  mesh.onBeforeRender = (...args) => {
+    applyMorph(flatMesh, host)
+    previousBeforeRender.apply(mesh, args)
+  }
+  const previousAfterRender = mesh.onAfterRender
+  mesh.onAfterRender = (...args) => {
+    previousAfterRender.apply(mesh, args)
+    restoreGlobeMatrix(flatMesh)
+  }
+}
+
+/** Puts a mesh in its globe or flat frame for this draw. */
+function applyMorph(mesh: FlatMesh, host: FlatMorphHost): void {
+  const state = mesh[FLAT_STATE]
+  if (state === undefined) return
+  const view = host.view
+  const frame = host.frame
+  const morph = view?.morph ?? 0
+  state.exaggeration = host.exaggeration ?? 1
+  if (morph === 0 || view === null || frame === null || mesh.parent === null) {
+    restoreGlobeMatrix(mesh)
+    state.morph = 0
+    state.globeToFlat.identity()
+    return
+  }
+  globeMatrix.multiplyMatrices(mesh.parent.matrixWorld, mesh.matrix)
+  // The map is one world wide: place each mesh within half a world of the camera (of the anchor during
+  // the morph), so the map has no seam near the camera and everything near it is in the mesh matrix, at
+  // full precision. The other copies are instances of the same draw, offset in the shader: they are at
+  // least a quarter of a world away, so only seen zoomed out, where float32 metres don't show.
+  const centerXMeters = wrapMercatorXNear(state.centerXMeters, view.worldCopyReferenceXMeters)
+  state.firstWorldCopyOffset = view.firstWorldCopy
+  state.centerFromAnchorXMeters = centerXMeters - view.anchorMercatorXMeters
+  state.centerFromAnchorYMeters = state.centerYMeters - latitudeToMercatorY(view.anchorLatitudeRadians)
+  ;(mesh.geometry as InstancedBufferGeometry).instanceCount = view.worldCopyCount
+  flatMatrix.multiplyMatrices(frame.matrixWorld, view.flatToEarth).multiply(centerOffset.makeTranslation(centerXMeters, state.centerYMeters, state.centerZMeters))
+  state.globeToFlat.copy(flatMatrix).invert().multiply(globeMatrix)
+  mesh.matrixWorld.copy(flatMatrix)
+  state.flattened = true
+  state.morph = morph
+  state.flatMapLuminance = view.flatMapLuminance
 }
 
 const raycastProxy = new Mesh()

@@ -13,6 +13,7 @@ import { HEATMAP_LAYER_TYPE } from './heatmap/heatmapWorker.js'
 import { MapStyle, type SequencedStyleChange } from './MapStyle.js'
 import { createVectorTileWorker, InlineMapStyleBackend, WorkerMapStyleBackend, type MapStyleBackend, type MapStyleBackendHost } from './MapStyleBackend.js'
 import { RefCountedCache, type Lease } from './RefCountedCache.js'
+import { Extrusions, extrusionTileKey, type ExtrusionsHost } from './extrusions/Extrusions.js'
 import { ScreenSymbols, symbolTileKey, type ScreenSymbolsHost } from './symbols/ScreenSymbols.js'
 import {
   BucketMeshes,
@@ -77,6 +78,11 @@ export interface MapStyleOverlayOptions {
   symbols?: 'screen' | 'draped'
   /** Seconds labels facing the viewer take to fade in or out (MapLibre's `fadeDuration`). Default: 0.3. */
   symbolFadeDurationSeconds?: number
+  /**
+   * How `fill-extrusion` layers draw. `'3d'`: as buildings standing on the terrain, lit by the sun, as in MapLibre.
+   * `'draped'`: their footprints drawn flat into the terrain's textures. Default: '3d'.
+   */
+  extrusions?: '3d' | 'draped'
   /** Called once the style is loaded and `summary` is set. */
   onLoad?: (summary: MapStyleSummary) => void
   /**
@@ -178,7 +184,7 @@ interface PlacedMesh {
  * Extends 3DTilesRenderer's `XYZTilesOverlay` only for its Web Mercator tiling; its image source is never
  * fetched from.
  */
-export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverlay, ScreenSymbolsHost {
+export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverlay, ScreenSymbolsHost, ExtrusionsHost {
   /** Set by `ImageOverlayPlugin` when the overlay is added to it. */
   compositor: ImageryCompositor | null = null
   /** The style's summary once loaded: sources, zoom ranges, background. */
@@ -191,7 +197,9 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   readonly mapStyle: MapStyle
   /** Labels that face the viewer (`symbols: 'screen'`), or null when every label is draped. `Terrain` adds its object to the scene and updates it. */
   readonly screenSymbols: ScreenSymbols | null
-  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style' | 'images' | 'onStyleImageMissing' | 'symbols' | 'symbolFadeDurationSeconds'>> & {
+  /** `fill-extrusion` layers standing in 3D (`extrusions: '3d'`), or null when they are draped. `Terrain` adds its object to the scene and updates it. */
+  readonly extrusions: Extrusions | null
+  protected readonly options: Required<Omit<MapStyleOverlayOptions, 'baseUrl' | 'opacity' | 'onLoad' | 'onSummaryChange' | 'style' | 'images' | 'onStyleImageMissing' | 'symbols' | 'symbolFadeDurationSeconds' | 'extrusions'>> & {
     baseUrl: string | undefined
   }
   protected readonly onLoad: ((summary: MapStyleSummary) => void) | undefined
@@ -289,6 +297,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     images,
     symbols = 'screen',
     symbolFadeDurationSeconds,
+    extrusions = '3d',
     onLoad,
     onSummaryChange,
     onStyleImageMissing,
@@ -322,6 +331,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.background.frustumCulled = false
     this.scene.matrixWorldAutoUpdate = true
     this.screenSymbols = symbols === 'screen' ? new ScreenSymbols(this, symbolFadeDurationSeconds === undefined ? {} : { fadeDurationSeconds: symbolFadeDurationSeconds }) : null
+    this.extrusions = extrusions === '3d' ? new Extrusions(this) : null
 
     this.buckets = new RefCountedCache<LoadedBucket>({
       load: async (key, signal) => {
@@ -384,6 +394,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.onLoad?.(this.summary)
     this.onSummaryChange?.(this.summary)
     this.screenSymbols?.summaryChanged()
+    this.extrusions?.summaryChanged()
   }
 
   protected async initBackend(): Promise<void> {
@@ -443,6 +454,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       images: [...this.images],
       layerTypes: this.styleLayerTypes?.describe() ?? [],
       screenSymbols: this.screenSymbols !== null,
+      extrusions: this.extrusions !== null,
     }
   }
 
@@ -459,6 +471,11 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   /** Locks a tile of labels facing the viewer in the tile cache (`ScreenSymbolsHost`). */
   acquireSymbolTile(request: TileRequest): Lease<LoadedBucket> {
     return this.buckets.acquire(bucketKey({ ...request, symbols: true }))
+  }
+
+  /** Locks a tile of 3D buildings in the tile cache (`ExtrusionsHost`). */
+  acquireExtrusionTile(request: TileRequest): Lease<LoadedBucket> {
+    return this.buckets.acquire(bucketKey({ ...request, extrusions: true }))
   }
 
   /**
@@ -638,6 +655,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.reportMissingImages(result.summary.missingBackgroundImages)
     this.reportMissingLayerTypes(result.summary)
     this.screenSymbols?.summaryChanged()
+    this.extrusions?.summaryChanged()
     this.onSummaryChange?.(result.summary)
   }
 
@@ -667,6 +685,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       this.rebuildTiles(() => true)
       this.markRegionsStale(() => true)
       this.screenSymbols?.summaryChanged()
+      this.extrusions?.summaryChanged()
       this.onSummaryChange?.(summary)
     })
   }
@@ -932,6 +951,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     if (this.disposed) return
     for (const key of [...this.buckets.keys()]) if (matches(parseBucketKey(key))) this.buckets.discard(key)
     this.screenSymbols?.refresh(matches)
+    this.extrusions?.refresh(matches)
     this.markRegionsStale(key => {
       const { range, level } = parseRegionKey(key)
       return this.getRegionTiles(range, level).some(tile => matches(tile.request) && !(shapesOnly && tile.textOnly))
@@ -1070,6 +1090,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   dispose(): void {
     this.disposed = true
     this.screenSymbols?.dispose()
+    this.extrusions?.dispose()
     this.unsubscribe?.()
     this.unsubscribe = null
     this.detachSourceQueries?.()
@@ -1461,13 +1482,16 @@ function parseRegionKey(key: string): { range: number[]; level: number } {
 
 export function bucketKey(request: TileRequest): string {
   const { sourceId, x, y, z, zoom } = request
-  return request.symbols === true ? symbolTileKey(request) : `${zoom}/${z}/${x}/${y}/${sourceId}`
+  if (request.symbols === true) return symbolTileKey(request)
+  if (request.extrusions === true) return extrusionTileKey(request)
+  return `${zoom}/${z}/${x}/${y}/${sourceId}`
 }
 
 function parseBucketKey(key: string): TileRequest {
   const symbols = key.startsWith('s:')
-  const [zoom, z, x, y, ...source] = (symbols ? key.slice(2) : key).split('/')
-  return { sourceId: source.join('/'), x: Number(x), y: Number(y), z: Number(z), zoom: Number(zoom), ...(symbols ? { symbols } : {}) }
+  const extrusions = key.startsWith('e:')
+  const [zoom, z, x, y, ...source] = (symbols || extrusions ? key.slice(2) : key).split('/')
+  return { sourceId: source.join('/'), x: Number(x), y: Number(y), z: Number(z), zoom: Number(zoom), ...(symbols ? { symbols } : {}), ...(extrusions ? { extrusions } : {}) }
 }
 
 /** Rejects with the signal's reason as soon as it aborts, without waiting for the promise. */
