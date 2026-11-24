@@ -178,8 +178,7 @@ draw.setStyle({ lineColor: '#000000' }) // redraws every feature
 Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixels`, `pointColor`, `pointRadiusPixels`,
 `pointOutlineColor`, `pointOutlineWidthPixels`, `solidOpacity` (3D solids, default 0.85; their edges use `lineColor`),
 and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
-With an atmosphere, see-through solids are drawn after it (`TRANSLUCENT_LAYER`), hazed at their own distance, whenever
-the render pipeline runs the translucent pass (`<Atmosphere>` hosts one); otherwise they are drawn with the scene.
+See-through solids are drawn after the atmosphere (`TRANSLUCENT_LAYER`, hazed at their own distance) when the pipeline runs that pass (`<Atmosphere>` does).
 
 ### Shapes and 3D solids
 
@@ -260,9 +259,8 @@ is drawn the other way, so arrows never lie on each other:
   (turn the camera a little). With `snapping: true`, Shift snaps turns to `snapDegrees` (15).
 - Drag a **cube** on an axis to scale along it (along up from the base, so it stays standing); drag the outer ring
   (or, with the scale tool, the center ring) to scale uniformly, a mesh in 3D from its base.
-- A press within reach of a handle takes the nearest handle, over the feature too (reach: 10 px with a mouse, 22 px
-  with a finger, so a 44 px touch target); anywhere else on the feature a press moves it on the ground. On a feature
-  small on the screen, zoom in or use `gizmoSizePixels` to leave it room.
+- A press within reach of a handle (10 px with a mouse, 22 px with a finger) takes the nearest one, over the feature
+  too; anywhere else on the feature it moves it on the ground. Small on the screen: zoom in or lower `gizmoSizePixels`.
 
 `draw.setGizmoTool('all' | 'move' | 'rotate' | 'scale')` shows every handle (default) or one tool's;
 `draw.setGizmoSpace('world' | 'local')` turns the axes to the feature's own (`featureAxes`: z a box's or prism's
