@@ -9,6 +9,7 @@ import {
   logarithmicDepthToViewZ,
   mix,
   perspectiveDepthToViewZ,
+  select,
   smoothstep,
   uniform,
   uv,
@@ -94,7 +95,12 @@ export class AerialPerspectiveNode extends Node {
       }).ElseIf(isBackgroundDepth(depth), () => {
         const sky = model.getSkyRadiance(textures, cameraPosition, viewDirectionModel, sunDirectionModel)
         const sun = sky.transmittance.mul(model.solarRadiance).mul(this.context.sunLuminanceFactor).mul(sunDisk)
-        luminance.assign(sky.radiance.mul(skyLuminanceFactor).add(sun))
+        const behind = sky.radiance.mul(skyLuminanceFactor).add(sun)
+        // Transparent geometry writes no depth: over the cleared background (alpha 0) it leaves premultiplied colour
+        // and its coverage in alpha, which go over the sky. A fully covered pixel there is a scene background
+        // colour (alpha 1), which the sky replaces as before.
+        const coverage = colorNode.a.toConst()
+        luminance.assign(select(coverage.greaterThanEqual(0.999), behind, colorNode.rgb.add(behind.mul(float(1).sub(coverage)))))
       }).Else(() => {
         const viewZ = logarithmicDepth ? logarithmicDepthToViewZ(depth, near, far) : perspectiveDepthToViewZ(depth, near, far)
         const distanceKilometers = viewZ.div(viewDirection.z).div(LENGTH_UNIT_METERS)
