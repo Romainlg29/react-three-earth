@@ -206,7 +206,7 @@ pnpm typecheck
 pnpm test                    # unit tests (vitest)
 pnpm --filter react-three-earth validate:skills   # skills: frontmatter, links, examples typechecked
 pnpm build
-xvfb-run -a node apps/playground/tests/run.mjs    # WebGPU browser checks (needs pnpm dev running; --changed or an area such as labels runs fewer)
+xvfb-run -a node apps/playground/tests/run.mjs    # WebGPU browser checks a change reaches (needs pnpm dev running; --list shows which, --all runs every one)
 node apps/playground/tests/assert-results.mjs     # fail if the browser checks are out of range
 ```
 

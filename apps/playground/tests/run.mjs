@@ -1,39 +1,28 @@
 // Browser checks on real WebGPU (Chromium, SwiftShader adapter). Needs `pnpm dev` running.
 // Frame times here measure a CPU rasteriser, not a GPU: correctness only.
+// By default only the checks a change can reach run: see selection.mjs for the options (--list, --all, names).
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { AREAS, selectAreas } from './areas.mjs'
+import { fileURLToPath } from 'node:url'
+
+import { CoverageRecorder } from './coverage.mjs'
+import { PENDING, checkRecord, emptyRecord, environmentHashes, selectChecks, writeRecord } from './selection.mjs'
+
+const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
+// Started first, so the coverage of this script's top level is complete
+const recorder = await new CoverageRecorder({ origin: new URL(BASE).origin, scripts: [fileURLToPath(import.meta.url)] }).start()
 
 // The pre-installed Playwright resolves through require (NODE_PATH), not ESM import.
 const { chromium } = createRequire(import.meta.url)('playwright')
 
-const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
 const OUT = new URL('../test-results/', import.meta.url)
-mkdirSync(OUT, { recursive: true })
-// A run that crashes leaves no results, so assert-results.mjs fails instead of reading an earlier run's.
-rmSync(new URL('results.json', OUT), { force: true })
-rmSync(new URL('selection.json', OUT), { force: true })
 
-// Areas: all by default, named ones (`labels buildings`), or those the branch's changes reach (`--changed`). See areas.mjs.
-const selected = new Set(selectAreas(process.argv.slice(2)))
-const want = area => selected.has(area)
-console.error(selected.size === AREAS.length ? 'Browser checks: every area' : `Browser checks: ${[...selected].join(', ') || 'none, no change reaches the playground'}`)
-/** Writes the results and the areas they cover: assert-results.mjs tells the checks a partial run skipped from missing ones. */
+/** Writes the results and the checks they cover: assert-results.mjs tells the checks a run skipped from missing ones. */
 function writeResults(results) {
-  writeFileSync(new URL('selection.json', OUT), JSON.stringify({ areas: [...selected], every: selected.size === AREAS.length }, null, 2))
+  writeFileSync(new URL('selection.json', OUT), JSON.stringify({ checks: [...selected.keys()], every: selected.size === CHECKS.length }, null, 2))
   writeFileSync(new URL('results.json', OUT), JSON.stringify(results, null, 2))
 }
-if (selected.size === 0) {
-  writeResults([])
-  process.exit(0)
-}
 
-// WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
-// canvas drops the GPU instance. Run under xvfb-run on machines without a display.
-const browser = await chromium.launch({
-  headless: false,
-  args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
-})
 const results = []
 
 async function open(path, viewport = { width: 800, height: 600 }) {
@@ -2510,233 +2499,233 @@ async function gestures() {
   results.push({ ...result, errors: [...desktop.errors, ...wheel.errors] })
 }
 
-const only = process.argv[2]
-try {
-  if (want('precision')) {
-    await precision(true)
-    await precision(false)
-  }
-  if (want('map')) {
-    await map(false)
-    await map(true)
-  }
-  if (want('2d')) {
-    await map(false, '2d')
-    await map(true, '2d')
-  }
-  if (want('vector')) {
-    await vectorMap('overview', '')
-    await vectorMap('close', '&camera=,,,9000,,-50')
-    await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
-  }
-  if (want('patterns')) {
-    await vectorPatterns('webgpu', '')
-    await vectorPatterns('webgl2', '&webgl')
-  }
-  if (want('attribution')) await attribution()
-  if (want('controls')) await controls()
-  if (want('accessibility')) await accessibility()
-  if (want('gestures')) await gestures()
-  if (want('invalidate')) await vectorInvalidate()
-  if (want('style')) await vectorStyleRuntime()
-  if (want('geojson')) {
-    await geoJsonSources('webgpu', '')
-    await geoJsonSources('webgl2', '&webgl')
-    await geoJsonSources('strict mode', '&strict')
-  }
-  if (want('heatmap')) {
-    const view = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
-    await heatmaps('2d', view)
-    await heatmaps('2d webgl2', `${view}&webgl`)
-    await heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')
-  }
-  if (want('query')) await featureQueries()
-  if (want('afterburner')) await afterburnerChecks()
-  if (want('camera')) await cameraAndEvents()
-  if (want('markers')) await markers()
-  if (want('animations')) await cameraAnimations()
-  if (want('sdf')) {
-    await sdfShapes('near, atmosphere off', '&atmosphere=0')
-    await sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })
-    await sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })
-    await sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })
-    await sdfShapes('webgl2', '&atmosphere=0&webgl')
-    await sdfShapes('strict mode', '&atmosphere=0&strict')
-  }
-  if (want('layers')) {
-    await styleLayerTypes('webgpu', '')
-    await styleLayerTypes('webgl2', '&webgl')
-    await styleLayerTypes('registered late', '', { late: true })
-  }
-  if (want('relief')) {
-    const fuji = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
-    await reliefMap('2d', `&map=relief${fuji}`)
-    await reliefMap('2d webgl2', `&map=relief${fuji}&webgl`)
-    await reliefMap('3d', '&map=relief&camera=138.75,35.42,0,15000,-20,-60')
-    await reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)
-    await reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)
-    await reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)
-  }
-  if (want('georef')) {
-    await georeferenced('image', '')
-    await georeferenced('image', '&webgl', 'image webgl2')
-    await georeferenced('video', '')
-  }
-  if (want('effects')) {
-    await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
-    await renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')
-    await renderPassesAndDrapedLayers('atmosphere on', '')
-  }
-  if (want('labels')) {
-    await screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')
-    await screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('2d', '&atmosphere=0&view=2d&camera=138.74,35.36,0,40000,0,-90')
-    await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
-  }
-  if (want('symbol-effects')) {
-    await symbolEffects('webgpu', '')
-    await symbolEffects('webgl2', '&webgl')
-  }
-  if (want('scripts')) {
-    await scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')
-    await scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')
-  }
-  if (want('buildings')) {
-    // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
-    const pitched = '&camera=-90,0,3900,700,20,-25'
-    await buildings('pitched', `&atmosphere=0${pitched}`)
-    await buildings('top-down', '&atmosphere=0&camera=-90,0,3900,1200,0,-90')
-    // Midday at -90° (19:00 UTC): lit by the sun, hazed.
-    await buildings('atmosphere on', `&date=2026-11-22T19:00:00Z${pitched}`)
-    await buildings('2d', '&atmosphere=0&view=2d&camera=-90,0,3900,1200,20,-90')
-    await buildings('webgl2', `&atmosphere=0&webgl${pitched}`)
-    await buildings('strict mode', `&atmosphere=0&strict${pitched}`)
-    await buildings('draped', `&atmosphere=0&extrusions=draped${pitched}`)
-  }
-  if (want('roads')) {
-    // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
-    await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
-    await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
-  }
-  if (want('dem')) {
-    await rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })
-    await rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })
-    await rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')
-    await rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')
-    await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
-    await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
-  }
-  if (want('style-root')) await styleRoot()
-  if (want('exaggeration')) {
-    await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
-    await terrainExaggeration('quantized-mesh', '&exaggeration=2')
-    await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
-  }
-  if (want('draw')) {
-    await drawing('globe, mouse')
-    await drawing('globe, touch', { touch: true })
-    await drawing('flat map, touch', { touch: true, flat: true })
-    await editing('globe, mouse')
-    await editing('globe, touch', { touch: true })
-    await editing('flat map, touch', { touch: true, flat: true })
-    await shapes('globe, mouse')
-    await transforming('globe, mouse')
-    await transforming('flat map, touch', { touch: true, flat: true })
-    await shapes('flat map, touch', { touch: true, flat: true })
-    await solidsOverSky()
-  }
-  if (want('examples')) {
-    await galleryExample('city')
-    await galleryExample('labels', '', async (page, idle) => {
-      await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
-      await page.waitForTimeout(500)
+// Every check, in suite order: `area/variant` (or the area alone), and what it runs. Ids name checks on the command
+// line (`run.mjs labels/webgl2`) and in the coverage records; renaming one makes it run once more.
+const HEATMAP_2D_VIEW = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
+const RELIEF_FUJI = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
+// Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
+const BUILDINGS_PITCHED = '&camera=-90,0,3900,700,20,-25'
+const CHECKS = [
+  ['precision/on', () => precision(true)],
+  ['precision/off', () => precision(false)],
+  ['map/atmosphere-off', () => map(false)],
+  ['map/atmosphere-on', () => map(true)],
+  ['2d/atmosphere-off', () => map(false, '2d')],
+  ['2d/atmosphere-on', () => map(true, '2d')],
+  ['vector/overview', () => vectorMap('overview', '')],
+  ['vector/close', () => vectorMap('close', '&camera=,,,9000,,-50')],
+  ['vector/webgl2', () => vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')],
+  ['patterns/webgpu', () => vectorPatterns('webgpu', '')],
+  ['patterns/webgl2', () => vectorPatterns('webgl2', '&webgl')],
+  ['attribution', () => attribution()],
+  ['controls', () => controls()],
+  ['accessibility', () => accessibility()],
+  ['gestures', () => gestures()],
+  ['invalidate', () => vectorInvalidate()],
+  ['style', () => vectorStyleRuntime()],
+  ['geojson/webgpu', () => geoJsonSources('webgpu', '')],
+  ['geojson/webgl2', () => geoJsonSources('webgl2', '&webgl')],
+  ['geojson/strict-mode', () => geoJsonSources('strict mode', '&strict')],
+  ['heatmap/2d', () => heatmaps('2d', HEATMAP_2D_VIEW)],
+  ['heatmap/2d-webgl2', () => heatmaps('2d webgl2', `${HEATMAP_2D_VIEW}&webgl`)],
+  ['heatmap/3d', () => heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')],
+  ['query', () => featureQueries()],
+  ['afterburner', () => afterburnerChecks()],
+  ['camera', () => cameraAndEvents()],
+  ['markers', () => markers()],
+  ['animations', () => cameraAnimations()],
+  ['sdf/near-atmosphere-off', () => sdfShapes('near, atmosphere off', '&atmosphere=0')],
+  ['sdf/near-atmosphere-on', () => sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })],
+  ['sdf/far-atmosphere-on', () => sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })],
+  ['sdf/2d', () => sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })],
+  ['sdf/webgl2', () => sdfShapes('webgl2', '&atmosphere=0&webgl')],
+  ['sdf/strict-mode', () => sdfShapes('strict mode', '&atmosphere=0&strict')],
+  ['layers/webgpu', () => styleLayerTypes('webgpu', '')],
+  ['layers/webgl2', () => styleLayerTypes('webgl2', '&webgl')],
+  ['layers/registered-late', () => styleLayerTypes('registered late', '', { late: true })],
+  ['relief/2d', () => reliefMap('2d', `&map=relief${RELIEF_FUJI}`)],
+  ['relief/2d-webgl2', () => reliefMap('2d webgl2', `&map=relief${RELIEF_FUJI}&webgl`)],
+  ['relief/3d', () => reliefMap('3d', '&map=relief&camera=138.75,35.42,0,15000,-20,-60')],
+  ['relief/hillshade-seams', () => reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)],
+  ['relief/hillshade-seams-webgl2', () => reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)],
+  ['relief/hillshade-globe', () => reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)],
+  ['georef/image', () => georeferenced('image', '')],
+  ['georef/image-webgl2', () => georeferenced('image', '&webgl', 'image webgl2')],
+  ['georef/video', () => georeferenced('video', '')],
+  ['effects/webgpu', () => renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')],
+  ['effects/webgl2', () => renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')],
+  ['effects/atmosphere-on', () => renderPassesAndDrapedLayers('atmosphere on', '')],
+  ['labels/top-down', () => screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')],
+  ['labels/pitched', () => screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/atmosphere-on', () => screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/2d', () => screenSymbols('2d', '&atmosphere=0&view=2d&camera=138.74,35.36,0,40000,0,-90')],
+  ['labels/webgl2', () => screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/strict-mode', () => screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/draped', () => screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')],
+  ['symbol-effects/webgpu', () => symbolEffects('webgpu', '')],
+  ['symbol-effects/webgl2', () => symbolEffects('webgl2', '&webgl')],
+  ['scripts/top-down', () => scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')],
+  ['scripts/webgl2', () => scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')],
+  ['buildings/pitched', () => buildings('pitched', `&atmosphere=0${BUILDINGS_PITCHED}`)],
+  ['buildings/top-down', () => buildings('top-down', '&atmosphere=0&camera=-90,0,3900,1200,0,-90')],
+  // Midday at -90° (19:00 UTC): lit by the sun, hazed.
+  ['buildings/atmosphere-on', () => buildings('atmosphere on', `&date=2026-11-22T19:00:00Z${BUILDINGS_PITCHED}`)],
+  ['buildings/2d', () => buildings('2d', '&atmosphere=0&view=2d&camera=-90,0,3900,1200,20,-90')],
+  ['buildings/webgl2', () => buildings('webgl2', `&atmosphere=0&webgl${BUILDINGS_PITCHED}`)],
+  ['buildings/strict-mode', () => buildings('strict mode', `&atmosphere=0&strict${BUILDINGS_PITCHED}`)],
+  ['buildings/draped', () => buildings('draped', `&atmosphere=0&extrusions=draped${BUILDINGS_PITCHED}`)],
+  // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
+  ['roads/pitched', () => screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')],
+  ['roads/top-down', () => screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')],
+  ['dem/heights', () => rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })],
+  ['dem/heights-quantized-mesh', () => rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })],
+  ['dem/pitched', () => rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')],
+  ['dem/pitched-webgl2', () => rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')],
+  ['dem/north-pole', () => rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')],
+  ['dem/2d', () => rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')],
+  ['style-root', () => styleRoot()],
+  ['exaggeration/raster-dem', () => terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')],
+  ['exaggeration/quantized-mesh', () => terrainExaggeration('quantized-mesh', '&exaggeration=2')],
+  ['exaggeration/2d', () => terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')],
+  ['draw/drawing-globe-mouse', () => drawing('globe, mouse')],
+  ['draw/drawing-globe-touch', () => drawing('globe, touch', { touch: true })],
+  ['draw/drawing-flat-touch', () => drawing('flat map, touch', { touch: true, flat: true })],
+  ['draw/editing-globe-mouse', () => editing('globe, mouse')],
+  ['draw/editing-globe-touch', () => editing('globe, touch', { touch: true })],
+  ['draw/editing-flat-touch', () => editing('flat map, touch', { touch: true, flat: true })],
+  ['draw/shapes-globe-mouse', () => shapes('globe, mouse')],
+  ['draw/transforming-globe-mouse', () => transforming('globe, mouse')],
+  ['draw/transforming-flat-touch', () => transforming('flat map, touch', { touch: true, flat: true })],
+  ['draw/shapes-flat-touch', () => shapes('flat map, touch', { touch: true, flat: true })],
+  ['draw/solids-over-sky', () => solidsOverSky()],
+  ['examples/city', () => galleryExample('city')],
+  ['examples/labels', () => galleryExample('labels', '', async (page, idle) => {
+    await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    await page.waitForTimeout(1500)
+    // A vertical label is taller than wide.
+    const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
+    return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
+  })],
+  ['examples/geojson', () => galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
+    // Manaslu stands alone at this zoom: a click on it opens its popup.
+    const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
+    await page.mouse.click(point.xPixels, point.yPixels)
+    await page.waitForTimeout(1000)
+    return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
+  })],
+  ['examples/heatmap', () => galleryExample('heatmap')],
+  ['examples/terrain', () => galleryExample('terrain', '', async (page, idle) => {
+    await page.locator('input[type=range]').fill('3')
+    await page.getByRole('button', { name: 'Map and hillshade' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+  })],
+  ['examples/overlay', () => galleryExample('overlay', '', async (page, idle) => {
+    const radarShare = async () => {
       await idle()
-      await page.waitForTimeout(1500)
-      // A vertical label is taller than wide.
-      const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
-      return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
-    })
-    await galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
-      // Manaslu stands alone at this zoom: a click on it opens its popup.
-      const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
-      await page.mouse.click(point.xPixels, point.yPixels)
       await page.waitForTimeout(1000)
-      return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
-    })
-    await galleryExample('heatmap')
-    await galleryExample('terrain', '', async (page, idle) => {
-      await page.locator('input[type=range]').fill('3')
-      await page.getByRole('button', { name: 'Map and hillshade' }).click()
-      await page.waitForTimeout(500)
-      await idle()
-      return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
-    })
-    await galleryExample('overlay', '', async (page, idle) => {
-      const radarShare = async () => {
-        await idle()
-        await page.waitForTimeout(1000)
-        return analyse(page, await page.screenshot(), `
-          // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
-          // of the rain moves between frames.
-          let radar = 0, sumX = 0
-          for (let y = Math.floor(height / 3); y < height - 40; y++) {
-            for (let x = 0; x < width; x++) {
-              const i = (y * width + x) * 4
-              if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
-            }
+      return analyse(page, await page.screenshot(), `
+        // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
+        // of the rain moves between frames.
+        let radar = 0, sumX = 0
+        for (let y = Math.floor(height / 3); y < height - 40; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4
+            if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
           }
-          return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
-        `)
-      }
-      const shown = await radarShare()
-      await page.getByRole('button', { name: 'Play' }).click()
-      await page.waitForTimeout(2000)
-      await page.getByRole('button', { name: 'Pause' }).click()
-      const played = await radarShare()
-      await page.locator('input[type=range]').fill('0')
-      const hidden = await radarShare()
-      return { radar: { shown, played, hidden } }
-    })
-    await galleryExample('night', '', async (page, idle) => {
-      // Glow pixels by hue, before and after the glow colour changes.
-      const glow = async () => analyse(page, await page.screenshot(), `
-        let amber = 0, cyan = 0, magenta = 0
-        for (let i = 0; i < px.length; i += 4) {
-          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
-          if (r > 80 && r > g * 1.5 && r > b * 2) amber++
-          if (b > 80 && g > 60 && b > r * 2) cyan++
-          // The neon outline (#ff2bd6) around the place names.
-          if (r > 170 && b > 150 && g < 110) magenta++
         }
-        return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+        return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
       `)
-      const before = await glow()
-      await page.getByRole('button', { name: 'Cyan glow' }).click()
-      // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
-      let after = null
-      for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
-        await page.waitForTimeout(1000)
-        await idle()
-        after = await glow()
+    }
+    const shown = await radarShare()
+    await page.getByRole('button', { name: 'Play' }).click()
+    await page.waitForTimeout(2000)
+    await page.getByRole('button', { name: 'Pause' }).click()
+    const played = await radarShare()
+    await page.locator('input[type=range]').fill('0')
+    const hidden = await radarShare()
+    return { radar: { shown, played, hidden } }
+  })],
+  ['examples/night', () => galleryExample('night', '', async (page, idle) => {
+    // Glow pixels by hue, before and after the glow colour changes.
+    const glow = async () => analyse(page, await page.screenshot(), `
+      let amber = 0, cyan = 0, magenta = 0
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+        if (r > 80 && r > g * 1.5 && r > b * 2) amber++
+        if (b > 80 && g > 60 && b > r * 2) cyan++
+        // The neon outline (#ff2bd6) around the place names.
+        if (r > 170 && b > 150 && g < 110) magenta++
       }
-      return { glow: { before, after } }
-    })
-    await galleryExample('embedded', '', async page => {
-      // A plain wheel over the map scrolls the page and leaves the camera where it was.
-      const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
-      const box = await page.locator('.example-embedded canvas').boundingBox()
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-      await page.mouse.wheel(0, 400)
-      await page.waitForTimeout(1500)
-      const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
-      return { wheel: { before, after } }
-    })
+      return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+    `)
+    const before = await glow()
+    await page.getByRole('button', { name: 'Cyan glow' }).click()
+    // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
+    let after = null
+    for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
+      await page.waitForTimeout(1000)
+      await idle()
+      after = await glow()
+    }
+    return { glow: { before, after } }
+  })],
+  ['examples/embedded', () => galleryExample('embedded', '', async page => {
+    // A plain wheel over the map scrolls the page and leaves the camera where it was.
+    const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+    const box = await page.locator('.example-embedded canvas').boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(0, 400)
+    await page.waitForTimeout(1500)
+    const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+    return { wheel: { before, after } }
+  })],
+]
+
+const arguments_ = process.argv.slice(2)
+const selected = selectChecks(arguments_, CHECKS.map(([id]) => id))
+if (arguments_.includes('--list')) {
+  for (const [id, reason] of selected) console.log(`${id.padEnd(36)} ${reason}`)
+  console.log(`${selected.size} of ${CHECKS.length} checks would run`)
+  process.exit(0)
+}
+mkdirSync(OUT, { recursive: true })
+// A run that crashes leaves no results, so assert-results.mjs fails instead of reading an earlier run's.
+rmSync(new URL('results.json', OUT), { force: true })
+rmSync(new URL('selection.json', OUT), { force: true })
+rmSync(PENDING, { force: true })
+console.error(selected.size === CHECKS.length ? 'Browser checks: every check' : `Browser checks: ${selected.size} of ${CHECKS.length}${selected.size === 0 ? ', no change reaches them since they last passed' : ''}`)
+for (const [id, reason] of selected) if (selected.size < CHECKS.length) console.error(`  ${id}: ${reason}`)
+if (selected.size === 0) {
+  writeResults([])
+  process.exit(0)
+}
+
+// WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
+// canvas drops the GPU instance. Run under xvfb-run on machines without a display.
+const browser = recorder.instrument(await chromium.launch({
+  headless: false,
+  args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
+}))
+
+const pending = emptyRecord()
+const environment = environmentHashes()
+try {
+  for (const [id, run] of CHECKS) {
+    if (!selected.has(id)) continue
+    console.error(`▸ ${id}`)
+    await recorder.beginCheck()
+    const first = results.length
+    await run()
+    pending.checks[id] = checkRecord(results.slice(first).map(result => result.check), await recorder.endCheck(), environment, pending.fingerprints)
   }
 } finally {
   await browser.close()
+  // assert-results.mjs keeps the checks that passed: next time, only a change to a line they ran runs them again.
+  writeRecord(PENDING, pending)
 }
 writeResults(results)
 console.log(JSON.stringify(results, null, 2))
