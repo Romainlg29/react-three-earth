@@ -1,106 +1,220 @@
 import { useThree } from '@react-three/fiber/extension'
-import { use, useLayoutEffect, useState, type ReactNode } from 'react'
+import { FiberProvider } from 'its-fine'
+import { use, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
-import { Controls as ControlsImpl, type ControlPosition, type ControlsItem } from '../controls/Controls.js'
-import { FullscreenControl as FullscreenControlImpl, type FullscreenControlOptions } from '../controls/FullscreenControl.js'
-import { GeolocateControl as GeolocateControlImpl, type GeolocateControlOptions, type GeolocateEventMap } from '../controls/GeolocateControl.js'
+import { CONTROLS_CLASS_NAME, Controls as ControlsImpl, type MapControl } from '../controls/Controls.js'
+import { FullscreenControl as FullscreenControlImpl, type FullscreenControlOptions, type FullscreenControlState } from '../controls/FullscreenControl.js'
+import { GeolocateControl as GeolocateControlImpl, type GeolocateControlOptions, type GeolocateControlState, type GeolocateEventMap } from '../controls/GeolocateControl.js'
 import type { ControlsLocale } from '../controls/locale.js'
-import { NavigationControl as NavigationControlImpl, type NavigationControlOptions } from '../controls/NavigationControl.js'
-import { ScaleControl as ScaleControlImpl, type ScaleControlOptions } from '../controls/ScaleControl.js'
-import { ViewControl as ViewControlImpl, type ViewControlOptions } from '../controls/ViewControl.js'
+import { NavigationControl as NavigationControlImpl, type NavigationControlOptions, type NavigationControlState } from '../controls/NavigationControl.js'
+import { ScaleControl as ScaleControlImpl, type ScaleControlOptions, type ScaleControlState } from '../controls/ScaleControl.js'
+import { ViewControl as ViewControlImpl, type ViewControlOptions, type ViewControlState } from '../controls/ViewControl.js'
 import type { ViewMode } from '../view/ViewMorph.js'
 import { ControlsContext, useEarth } from './context.js'
+import { useDomRoot } from './domRoot.js'
 
 export interface ControlsProps {
-  /** The corner of the map. Default: 'top-right'. */
-  position?: ControlPosition
-  /** Where the controls go. Default: the element around the canvas. */
+  /** Class names for the element, added to `react-three-earth-controls`. Place it over the map with them. */
+  className?: string
+  /** Inline style of the element. */
+  style?: CSSProperties
+  /** Where the element goes. Default: the element around the canvas. */
   container?: HTMLElement | null
-  /** `<NavigationControl>`, `<ScaleControl>`, `<GeolocateControl>`, `<FullscreenControl>`, `<ViewControl>` or your own. */
+  /** Your controls, as HTML: buttons built with `useNavigationControl`, `useScaleControl` and the other hooks. */
   children?: ReactNode
 }
 
 /**
- * A corner of the map with controls in it. Place it inside `<Earth>`; two `<Controls>` in one corner stack.
+ * An unstyled `<div>` over the map for your controls, from inside `<Earth>`: its children are rendered as HTML in the
+ * element around the canvas, where hooks such as `useNavigationControl` and `useEarth` work. It has no CSS of its own:
+ * place it with `className` or `style`. Presses, clicks and wheel turns inside it never reach the map.
  *
  * ```tsx
- * <Controls position="top-right">
- *   <NavigationControl />
- *   <ViewControl />
+ * <Controls className="top-right">
+ *   <MyZoomButtons />
  * </Controls>
  * ```
  */
-export function Controls({ position = 'top-right', container, children }: ControlsProps) {
-  const earth = useEarth()
-  const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
+export function Controls(props: ControlsProps) {
+  return (
+    <FiberProvider>
+      <ControlsContent {...props} />
+    </FiberProvider>
+  )
+}
+
+function ControlsContent({ className, style, container, children }: ControlsProps) {
+  const parent = useControlsContainer(container)
   const [controls, setControls] = useState<ControlsImpl | null>(null)
-  const parent = container ?? renderer.domElement.parentElement
 
   useLayoutEffect(() => {
     if (parent === null) return
-    const created = new ControlsImpl({ earth, container: parent, position })
+    const created = new ControlsImpl({ container: parent })
     setControls(created)
     return () => {
       setControls(null)
       created.dispose()
     }
-  }, [earth, parent, position])
+  }, [parent])
 
-  // The children add themselves once their corner exists
-  return controls === null ? null : <ControlsContext value={controls}>{children}</ControlsContext>
-}
-
-/** The vanilla `Controls` of the nearest `<Controls>`, for a control of your own. */
-export function useControls(): ControlsImpl {
-  const controls = use(ControlsContext)
-  if (controls === null) throw new Error('useControls: put this component inside <Controls>, for example <Controls><NavigationControl /></Controls>.')
-  return controls
-}
-
-/** Adds a control to the nearest `<Controls>` for as long as the component is mounted, and rebuilds it when `dependencies` change. */
-function useControl<T extends ControlsItem & { dispose?(): void }>(name: string, create: () => T, dependencies: readonly unknown[], onCreate?: (control: T) => (() => void) | void): T | null {
-  const controls = use(ControlsContext)
-  if (controls === null) throw new Error(`<${name}> must sit inside <Controls>, for example <Controls><${name} /></Controls>.`)
-  const [control, setControl] = useState<T | null>(null)
   useLayoutEffect(() => {
-    const created = create()
-    ;(created as unknown as { addTo(controls: ControlsImpl): void }).addTo(controls)
-    const release = onCreate?.(created)
-    setControl(created)
-    return () => {
-      setControl(null)
-      // Disposed first: it may still report an event (the end of following) to the listeners
-      created.dispose?.()
-      release?.()
+    if (controls === null) return
+    controls.element.className = className === undefined ? CONTROLS_CLASS_NAME : `${CONTROLS_CLASS_NAME} ${className}`
+  }, [controls, className])
+
+  const appliedStyle = useRef<string[]>([])
+  useLayoutEffect(() => {
+    if (controls === null) return
+    const elementStyle = controls.element.style
+    for (const property of appliedStyle.current) elementStyle.removeProperty(property)
+    appliedStyle.current = []
+    for (const [key, value] of Object.entries(style ?? {}) as Array<[string, unknown]>) {
+      if (value === undefined || value === null || value === false) continue
+      const property = cssPropertyName(key)
+      elementStyle.setProperty(property, cssValue(key, value))
+      appliedStyle.current.push(property)
     }
-    // `create` and `onCreate` close over `dependencies`
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controls, ...dependencies])
-  return control
+  })
+
+  useDomRoot(controls?.element ?? null, <ControlsContext value={controls}>{children}</ControlsContext>)
+  return null
+}
+
+/** Properties whose numbers take no unit, as React treats them. */
+const UNITLESS_PROPERTIES = new Set(['opacity', 'zIndex', 'flex', 'flexGrow', 'flexShrink', 'order', 'fontWeight', 'lineHeight', 'zoom', 'gridRow', 'gridColumn', 'aspectRatio'])
+
+/** `marginTop` → `margin-top`, `WebkitBackdropFilter` → `-webkit-backdrop-filter`; custom properties stay as they are. */
+function cssPropertyName(key: string): string {
+  if (key.startsWith('--')) return key
+  return key.replace(/^(Webkit|Moz|ms)(?=[A-Z])/, prefix => `-${prefix.toLowerCase()}`).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+}
+
+/** A style value as React writes it: numbers get `px` unless the property is unitless or custom. */
+function cssValue(key: string, value: unknown): string {
+  if (typeof value === 'number' && value !== 0 && !key.startsWith('--') && !UNITLESS_PROPERTIES.has(key)) return `${value}px`
+  return String(value)
+}
+
+/** The vanilla `Controls` of the nearest `<Controls>`, or null outside one. */
+export function useControls(): ControlsImpl | null {
+  return use(ControlsContext)
+}
+
+/** `container`, or the element around the canvas. */
+function useControlsContainer(container: HTMLElement | null | undefined): HTMLElement | null {
+  const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
+  return container ?? renderer.domElement.parentElement
+}
+
+/** What to spread on a `<button>`: its type, accessible name, tooltip, and press. */
+export interface ControlButtonProps {
+  type: 'button'
+  'aria-label': string
+  title: string
+  onClick: () => void
+  disabled?: boolean
+  hidden?: boolean
+  'aria-pressed'?: boolean
+  'aria-busy'?: boolean
+}
+
+function buttonProps(label: string, onClick: () => void, extra?: Partial<ControlButtonProps>): ControlButtonProps {
+  return { type: 'button', 'aria-label': label, title: label, onClick, ...extra }
+}
+
+/** Follows a headless control's state; the control listens to the earth while the component is mounted. */
+function useControlState<State extends object>(control: MapControl<State>): State {
+  return useSyncExternalStore(control.subscribe, control.getState, control.getState)
+}
+
+/** The latest value, for handlers read when an event fires: a new function each render never rebuilds the control. */
+function useLatest<T>(value: T): { current: T } {
+  const [latest] = useState(() => ({ current: value }))
+  useLayoutEffect(() => {
+    latest.current = value
+  })
+  return latest
 }
 
 function localeKey(locale: Partial<ControlsLocale> | undefined): string | undefined {
   return locale === undefined ? undefined : JSON.stringify(locale)
 }
 
-export type NavigationControlProps = NavigationControlOptions
+export type UseNavigationControlOptions = Omit<NavigationControlOptions, 'earth'>
 
-/** Zoom in, zoom out and compass buttons. See the vanilla `NavigationControl`. */
-export function NavigationControl(props: NavigationControlProps) {
-  useControl('NavigationControl', () => new NavigationControlImpl(props), [props.showZoom, props.showCompass, props.visualizePitch, props.zoomStep, props.durationSeconds, localeKey(props.locale)])
-  return null
+export interface NavigationControlResult extends NavigationControlState {
+  control: NavigationControlImpl
+  zoomIn: () => void
+  zoomOut: () => void
+  zoomBy: (levels: number) => void
+  resetNorth: () => void
+  /** Spread on the element around the buttons: `role="group"` and its name. */
+  groupProps: { role: 'group'; 'aria-label': string }
+  zoomInButtonProps: ControlButtonProps
+  zoomOutButtonProps: ControlButtonProps
+  compassButtonProps: ControlButtonProps
 }
 
-export type ScaleControlProps = ScaleControlOptions
-
-/** A scale bar with a round length in metres, miles or nautical miles. See the vanilla `ScaleControl`. */
-export function ScaleControl(props: ScaleControlProps) {
-  useControl('ScaleControl', () => new ScaleControlImpl(props), [props.unit, props.maximumWidthPixels, localeKey(props.locale)])
-  return null
+/**
+ * Zoom in, zoom out and compass, headless: the state and actions of the vanilla `NavigationControl`, and props to
+ * spread on your own buttons. Use it inside `<Earth>` (HTML goes inside `<Controls>`).
+ *
+ * ```tsx
+ * function Zoom() {
+ *   const navigation = useNavigationControl({ visualizePitch: true })
+ *   return (
+ *     <div {...navigation.groupProps}>
+ *       <button {...navigation.zoomInButtonProps}>+</button>
+ *       <button {...navigation.zoomOutButtonProps}>−</button>
+ *       <button {...navigation.compassButtonProps}><span style={{ transform: navigation.compassTransform }}>▲</span></button>
+ *     </div>
+ *   )
+ * }
+ * ```
+ */
+export function useNavigationControl(options: UseNavigationControlOptions = {}): NavigationControlResult {
+  const earth = useEarth()
+  const { visualizePitch, zoomStep, durationSeconds, locale } = options
+  // `locale` is compared by content, so an inline object never rebuilds the control
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const control = useMemo(() => new NavigationControlImpl({ earth, visualizePitch, zoomStep, durationSeconds, locale }), [earth, visualizePitch, zoomStep, durationSeconds, localeKey(locale)])
+  const state = useControlState(control)
+  return {
+    ...state,
+    control,
+    zoomIn: control.zoomIn,
+    zoomOut: control.zoomOut,
+    zoomBy: control.zoomBy,
+    resetNorth: control.resetNorth,
+    groupProps: { role: 'group', 'aria-label': state.groupLabel },
+    zoomInButtonProps: buttonProps(state.zoomInLabel, control.zoomIn),
+    zoomOutButtonProps: buttonProps(state.zoomOutLabel, control.zoomOut),
+    compassButtonProps: buttonProps(state.compassLabel, control.resetNorth),
+  }
 }
 
-export interface GeolocateControlProps extends GeolocateControlOptions {
+export type UseScaleControlOptions = Omit<ScaleControlOptions, 'earth'>
+
+export interface ScaleControlResult extends ScaleControlState {
+  control: ScaleControlImpl
+  /** Spread on the bar: `role="img"`, its name, and `hidden` while there is no scale. Set its width to `widthPixels`. */
+  scaleProps: { role: 'img'; 'aria-label': string; hidden: boolean }
+}
+
+/** A scale bar, headless: the width and label of the vanilla `ScaleControl`, following the camera. */
+export function useScaleControl(options: UseScaleControlOptions = {}): ScaleControlResult {
+  const earth = useEarth()
+  const { unit, maximumWidthPixels, locale } = options
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const control = useMemo(() => new ScaleControlImpl({ earth, unit, maximumWidthPixels, locale }), [earth, unit, maximumWidthPixels, localeKey(locale)])
+  const state = useControlState(control)
+  return { ...state, control, scaleProps: { role: 'img', 'aria-label': state.accessibleLabel, hidden: !state.visible } }
+}
+
+export interface UseGeolocateControlOptions extends Omit<GeolocateControlOptions, 'earth' | 'container'> {
+  /** The element whose presses pause following. Default: the element around the canvas. */
+  container?: HTMLElement | null
   /** A position arrived. */
   onGeolocate?: (event: GeolocateEventMap['geolocate']) => void
   /** The browser could not tell the position. */
@@ -111,64 +225,125 @@ export interface GeolocateControlProps extends GeolocateControlOptions {
   onTrackUserLocationEnd?: () => void
 }
 
-/** Finds the user and flies there. See the vanilla `GeolocateControl`. */
-export function GeolocateControl({ onGeolocate, onError, onTrackUserLocationStart, onTrackUserLocationEnd, ...options }: GeolocateControlProps) {
-  const handlers = { onGeolocate, onError, onTrackUserLocationStart, onTrackUserLocationEnd }
-  // The handlers are read when an event fires, so a new function each render never rebuilds the control
-  const [latest] = useState(() => ({ current: handlers }))
-  useLayoutEffect(() => {
-    latest.current = handlers
-  })
-  useControl(
-    'GeolocateControl',
-    () => new GeolocateControlImpl(options),
-    [options.trackUser, options.fitMaximumZoom, options.showUserLocation, options.showAccuracyCircle, JSON.stringify(options.positionOptions), localeKey(options.locale)],
-    control => {
-      const geolocate = (event: GeolocateEventMap['geolocate']) => latest.current.onGeolocate?.(event)
-      const error = (event: GeolocateEventMap['error']) => latest.current.onError?.(event)
-      const start = () => latest.current.onTrackUserLocationStart?.()
-      const end = () => latest.current.onTrackUserLocationEnd?.()
-      control.events.addEventListener('geolocate', geolocate)
-      control.events.addEventListener('error', error)
-      control.events.addEventListener('trackuserlocationstart', start)
-      control.events.addEventListener('trackuserlocationend', end)
-      return () => {
-        control.events.removeEventListener('geolocate', geolocate)
-        control.events.removeEventListener('error', error)
-        control.events.removeEventListener('trackuserlocationstart', start)
-        control.events.removeEventListener('trackuserlocationend', end)
-      }
-    },
+export interface GeolocateControlResult extends GeolocateControlState {
+  control: GeolocateControlImpl
+  trigger: () => void
+  stop: () => void
+  /** Spread on the button: name (which explains the status), `disabled`, `hidden` where geolocation is missing, `aria-pressed` with `trackUser`, `aria-busy`. */
+  buttonProps: ControlButtonProps
+}
+
+/**
+ * Finds the user and flies there, headless: the vanilla `GeolocateControl`'s status and actions. Draw the user's dot
+ * yourself from `userLocation`, for example with a `<Marker>`.
+ */
+export function useGeolocateControl(options: UseGeolocateControlOptions = {}): GeolocateControlResult {
+  const earth = useEarth()
+  const { container, trackUser, positionOptions, fitMaximumZoom, locale, onGeolocate, onError, onTrackUserLocationStart, onTrackUserLocationEnd } = options
+  const parent = useControlsContainer(container) ?? undefined
+  const positionKey = positionOptions === undefined ? undefined : JSON.stringify(positionOptions)
+  const control = useMemo(
+    () => new GeolocateControlImpl({ earth, container: parent, trackUser, positionOptions, fitMaximumZoom, locale }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [earth, parent, trackUser, positionKey, fitMaximumZoom, localeKey(locale)],
   )
-  return null
+  const handlers = useLatest({ onGeolocate, onError, onTrackUserLocationStart, onTrackUserLocationEnd })
+  useLayoutEffect(() => {
+    const geolocate = (event: GeolocateEventMap['geolocate']) => handlers.current.onGeolocate?.(event)
+    const error = (event: GeolocateEventMap['error']) => handlers.current.onError?.(event)
+    const start = () => handlers.current.onTrackUserLocationStart?.()
+    const end = () => handlers.current.onTrackUserLocationEnd?.()
+    control.events.addEventListener('geolocate', geolocate)
+    control.events.addEventListener('error', error)
+    control.events.addEventListener('trackuserlocationstart', start)
+    control.events.addEventListener('trackuserlocationend', end)
+    return () => {
+      // Stopped first, so the end of following still reaches the handler
+      control.stop()
+      control.events.removeEventListener('geolocate', geolocate)
+      control.events.removeEventListener('error', error)
+      control.events.removeEventListener('trackuserlocationstart', start)
+      control.events.removeEventListener('trackuserlocationend', end)
+    }
+  }, [control, handlers])
+  const state = useControlState(control)
+  return {
+    ...state,
+    control,
+    trigger: control.trigger,
+    stop: control.stop,
+    buttonProps: buttonProps(state.label, control.trigger, { disabled: state.disabled, hidden: !state.available, 'aria-pressed': state.pressed, 'aria-busy': state.busy }),
+  }
 }
 
-export type FullscreenControlProps = FullscreenControlOptions
-
-/** A fullscreen button; covers the page where the browser cannot (iPhone). See the vanilla `FullscreenControl`. */
-export function FullscreenControl(props: FullscreenControlProps) {
-  useControl('FullscreenControl', () => new FullscreenControlImpl(props), [props.container, props.unsupported, localeKey(props.locale)])
-  return null
+export interface UseFullscreenControlOptions extends Omit<FullscreenControlOptions, 'earth' | 'container'> {
+  /** The element that goes fullscreen. Default: the element around the canvas. */
+  container?: HTMLElement | null
 }
 
-export interface ViewControlProps extends ViewControlOptions {
+export interface FullscreenControlResult extends FullscreenControlState {
+  control: FullscreenControlImpl | null
+  enter: () => void
+  exit: () => void
+  toggle: () => void
+  /** Spread on the button: name, `aria-pressed`, `hidden` where it would do nothing. */
+  buttonProps: ControlButtonProps
+}
+
+const NOTHING = (): void => {}
+const NO_FULLSCREEN: FullscreenControlState = { active: false, available: false, label: '' }
+const noSubscription = () => NOTHING
+
+/** Fullscreen, headless: the vanilla `FullscreenControl`'s state and actions, for the element around the canvas. */
+export function useFullscreenControl(options: UseFullscreenControlOptions = {}): FullscreenControlResult {
+  const earth = useEarth()
+  const { container, unsupported, locale } = options
+  const parent = useControlsContainer(container)
+  const control = useMemo(
+    () => (parent === null ? null : new FullscreenControlImpl({ earth, container: parent, unsupported, locale })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [earth, parent, unsupported, localeKey(locale)],
+  )
+  const state = useSyncExternalStore(control?.subscribe ?? noSubscription, control?.getState ?? (() => NO_FULLSCREEN), control?.getState ?? (() => NO_FULLSCREEN))
+  const enter = control === null ? NOTHING : () => void control.enter()
+  const toggle = control?.toggle ?? NOTHING
+  return {
+    ...state,
+    control,
+    enter,
+    exit: control?.exit ?? NOTHING,
+    toggle,
+    buttonProps: buttonProps(state.label, toggle, { 'aria-pressed': state.active, hidden: !state.available }),
+  }
+}
+
+export interface UseViewControlOptions extends Omit<ViewControlOptions, 'earth'> {
   /**
-   * The user pressed the button and asked for this view. If your own state holds `<Earth view>`, set it here so the prop
-   * and the button agree.
+   * `toggle` asked for this view. If your own state holds `<Earth view>`, set it here so the prop and the button
+   * agree.
    */
   onViewChange?: (mode: ViewMode) => void
 }
 
-/** A 2D / 3D button. See the vanilla `ViewControl`. */
-export function ViewControl({ onViewChange, ...options }: ViewControlProps) {
-  const [latest] = useState(() => ({ current: onViewChange }))
+export interface ViewControlResult extends ViewControlState {
+  control: ViewControlImpl
+  toggle: () => void
+  /** Spread on the button: its accessible name ("Switch to the flat map") and press. Its text is `label`. */
+  buttonProps: ControlButtonProps
+}
+
+/** A 2D / 3D switch, headless: the vanilla `ViewControl`'s state and `toggle`. */
+export function useViewControl(options: UseViewControlOptions = {}): ViewControlResult {
+  const earth = useEarth()
+  const { transition, locale, onViewChange } = options
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const control = useMemo(() => new ViewControlImpl({ earth, transition, locale }), [earth, transition?.durationSeconds, transition?.essential, localeKey(locale)])
+  const latest = useLatest(onViewChange)
   useLayoutEffect(() => {
-    latest.current = onViewChange
-  })
-  useControl('ViewControl', () => new ViewControlImpl(options), [options.transition?.durationSeconds, localeKey(options.locale)], control => {
     const listener = (event: { mode: ViewMode }) => latest.current?.(event.mode)
     control.events.addEventListener('viewchange', listener)
     return () => control.events.removeEventListener('viewchange', listener)
-  })
-  return null
+  }, [control, latest])
+  const state = useControlState(control)
+  return { ...state, control, toggle: control.toggle, buttonProps: buttonProps(state.accessibleLabel, control.toggle) }
 }

@@ -13,27 +13,6 @@ import { ScaleControl } from '../src/controls/ScaleControl.js'
 import { ViewControl } from '../src/controls/ViewControl.js'
 import type { Earth } from '../src/core/Earth.js'
 
-// Markers need a real camera and renderer to place themselves; the control only adds, moves and removes them
-vi.mock('../src/core/Marker.js', () => ({
-  Marker: class {
-    element: HTMLElement
-    constructor(options: { element: HTMLElement }) {
-      this.element = options.element
-    }
-    addTo(_earth: unknown, container: HTMLElement) {
-      container.append(this.element)
-      return this
-    }
-    setPosition() {
-      return this
-    }
-    remove() {
-      this.element.remove()
-      return this
-    }
-  },
-}))
-
 describe('roundScaleLength', () => {
   it('uses 1, 2, 3 and 5 times a power of ten, rounding down', () => {
     const cases: Array<[number, number]> = [
@@ -139,12 +118,10 @@ function createFakeEarth() {
   return { earth: earth as unknown as Earth & { view: { mode: string }; setView: ReturnType<typeof vi.fn> }, state, camera }
 }
 
-function setup(position: 'top-right' | 'bottom-left' = 'top-right') {
+function setup() {
   const container = document.createElement('div')
   document.body.append(container)
-  const fake = createFakeEarth()
-  const controls = new Controls({ earth: fake.earth, container, position })
-  return { container, controls, ...fake }
+  return { container, ...createFakeEarth() }
 }
 
 afterEach(() => {
@@ -153,162 +130,177 @@ afterEach(() => {
 })
 
 describe('Controls', () => {
-  it('stacks controls in a corner and shares the corner between Controls', () => {
-    const { container, controls, earth } = setup()
-    const second = new Controls({ earth, container, position: 'top-right' })
-    new NavigationControl().addTo(controls)
-    new ViewControl().addTo(second)
-    const corners = container.querySelectorAll('.react-three-earth-controls')
-    expect(corners).toHaveLength(1)
-    expect(corners[0]!.children).toHaveLength(2)
-    expect((corners[0] as HTMLElement).dataset.position).toBe('top-right')
-    controls.dispose()
-    expect(corners[0]!.children).toHaveLength(1)
-    second.dispose()
-    expect(container.querySelector('.react-three-earth-controls')).toBeNull()
-  })
-
-  it('does not pass clicks and presses on to the map', () => {
-    const { container, controls } = setup()
-    const control = new NavigationControl()
-    control.addTo(controls)
+  it('adds an unstyled element that keeps presses from the map, and removes it', () => {
+    const { container } = setup()
+    const controls = new Controls({ container })
+    expect(controls.element.className).toBe('react-three-earth-controls')
+    expect(controls.element.getAttribute('style')).toBeNull()
+    expect(document.head.querySelector('style')).toBeNull()
+    const button = document.createElement('button')
+    controls.element.append(button)
     const onContainer = vi.fn()
     container.addEventListener('click', onContainer)
     container.addEventListener('pointerdown', onContainer)
-    control.element.querySelector('button')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    control.element.querySelector('button')!.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(onContainer).not.toHaveBeenCalled()
-  })
-
-  it('refuses controls after dispose, with the fix', () => {
-    const { controls } = setup()
     controls.dispose()
-    expect(() => new ViewControl().addTo(controls)).toThrow(/Create new Controls/)
+    expect(container.querySelector('.react-three-earth-controls')).toBeNull()
+  })
+})
+
+describe('MapControl', () => {
+  it('listens to the earth only while subscribed, and keeps the state object until it changes', () => {
+    const { earth, state } = setup()
+    const navigation = new NavigationControl({ earth })
+    const first = navigation.getState()
+    earth.dispatchEvent({ type: 'rotate' } as never)
+    expect(navigation.getState()).toBe(first)
+    const listener = vi.fn()
+    const unsubscribe = navigation.subscribe(listener)
+    earth.dispatchEvent({ type: 'rotate' } as never)
+    expect(listener).not.toHaveBeenCalled()
+    expect(navigation.getState()).toBe(first)
+    state.headingDegrees = 40
+    earth.dispatchEvent({ type: 'rotate' } as never)
+    expect(listener).toHaveBeenCalledOnce()
+    unsubscribe()
+    state.headingDegrees = 50
+    earth.dispatchEvent({ type: 'rotate' } as never)
+    expect(listener).toHaveBeenCalledOnce()
+    expect(navigation.getState().headingDegrees).toBe(40)
   })
 })
 
 describe('NavigationControl', () => {
-  it('zooms by one level a press and adds presses made during the ease', async () => {
-    const { controls, camera, state } = setup()
-    const navigation = new NavigationControl().addTo(controls)
-    const [zoomIn, zoomOut] = navigation.element.querySelectorAll('button')
-    expect(zoomIn!.getAttribute('aria-label')).toBe('Zoom in')
-    zoomIn!.click()
+  it('zooms by one level a call and adds calls made during the ease', async () => {
+    const { earth, camera, state } = setup()
+    const navigation = new NavigationControl({ earth })
+    expect(navigation.getState().zoomInLabel).toBe('Zoom in')
+    navigation.zoomIn()
     expect(camera.zoomTo).toHaveBeenLastCalledWith(6, { durationSeconds: 0.3 })
-    zoomIn!.click()
+    navigation.zoomIn()
     expect(camera.zoomTo).toHaveBeenLastCalledWith(7, { durationSeconds: 0.3 })
-    zoomOut!.click()
+    navigation.zoomOut()
     expect(camera.zoomTo).toHaveBeenLastCalledWith(6, { durationSeconds: 0.3 })
     ;(camera.zoomTo as unknown as { finish: () => void }).finish()
     await Promise.resolve()
     state.animating = false
-    zoomOut!.click()
+    navigation.zoomOut()
     expect(camera.zoomTo).toHaveBeenLastCalledWith(5, { durationSeconds: 0.3 })
   })
 
-  it('turns the compass with the map and resets north on press', () => {
-    const { earth, controls, camera, state } = setup()
-    const navigation = new NavigationControl().addTo(controls)
-    const compass = navigation.element.querySelectorAll('button')[2]!
+  it('turns the compass with the map and resets north', () => {
+    const { earth, camera, state } = setup()
+    const navigation = new NavigationControl({ earth })
+    navigation.subscribe(() => {})
     state.headingDegrees = 40
     earth.dispatchEvent({ type: 'rotate' } as never)
-    expect(compass.querySelector('svg')!.style.transform).toBe('rotate(-40deg)')
-    expect(compass.dataset.north).toBe('false')
-    compass.click()
+    expect(navigation.getState()).toMatchObject({ compassTransform: 'rotate(-40deg)', compassRotateDegrees: -40, north: false })
+    navigation.resetNorth()
     expect(camera.resetNorth).toHaveBeenCalledOnce()
     expect(camera.resetNorthPitch).not.toHaveBeenCalled()
   })
 
-  it('also resets the pitch with visualizePitch, and can leave buttons out', () => {
-    const { controls, camera } = setup()
-    const navigation = new NavigationControl({ visualizePitch: true, showZoom: false }).addTo(controls)
-    const buttons = navigation.element.querySelectorAll('button')
-    expect(buttons).toHaveLength(1)
-    buttons[0]!.click()
+  it('also resets the pitch with visualizePitch, and takes translated labels', () => {
+    const { earth, camera } = setup()
+    const navigation = new NavigationControl({ earth, visualizePitch: true, locale: { zoomIn: 'Agrandir' } })
+    navigation.resetNorth()
     expect(camera.resetNorthPitch).toHaveBeenCalledOnce()
-  })
-
-  it('takes translated labels and stops listening once removed', () => {
-    const { earth, controls, state } = setup()
-    const navigation = new NavigationControl({ locale: { zoomIn: 'Agrandir' } }).addTo(controls)
-    expect(navigation.element.querySelector('button')!.getAttribute('aria-label')).toBe('Agrandir')
-    navigation.remove()
-    expect(navigation.element.isConnected).toBe(false)
-    state.headingDegrees = 90
-    expect(() => earth.dispatchEvent({ type: 'rotate' } as never)).not.toThrow()
+    expect(navigation.getState()).toMatchObject({ zoomInLabel: 'Agrandir', compassLabel: 'Reset bearing to north and look straight down' })
   })
 })
 
 describe('ScaleControl', () => {
-  it('draws a round scale for the centre of the screen and follows the camera', () => {
-    const { earth, controls } = setup('bottom-left')
-    const scale = new ScaleControl({ maximumWidthPixels: 100 }).addTo(controls)
+  it('gives a round scale for the centre of the screen and follows the camera', () => {
+    const { earth } = setup()
+    const scale = new ScaleControl({ earth, maximumWidthPixels: 100 })
+    scale.subscribe(() => {})
     // 100 m a pixel, 100 pixels: 10 km exactly
-    expect(scale.element.textContent).toBe('10 km')
-    expect(scale.element.style.width).toBe('100px')
-    expect(scale.element.getAttribute('aria-label')).toBe('Map scale: 10 km')
+    expect(scale.getState()).toMatchObject({ visible: true, label: '10 km', widthPixels: 100, accessibleLabel: 'Map scale: 10 km' })
     ;(earth.camera as unknown as { getGroundResolutionMetersPerPixel: () => number }).getGroundResolutionMetersPerPixel = () => 2.5
     earth.dispatchEvent({ type: 'zoom' } as never)
-    expect(scale.element.textContent).toBe('200 m')
+    expect(scale.getState().label).toBe('200 m')
     scale.setUnit('imperial')
-    expect(scale.element.textContent).toBe('500 ft')
+    expect(scale.getState().label).toBe('500 ft')
   })
 })
 
 describe('ViewControl', () => {
-  it('switches the view, says which one it switches to, and reports the press', () => {
-    const { earth, controls } = setup()
-    const view = new ViewControl({ transition: { durationSeconds: 1 } }).addTo(controls)
-    const button = view.element.querySelector('button')!
-    expect(button.textContent).toBe('2D')
+  it('switches the view, says which one it switches to, and reports the call', () => {
+    const { earth } = setup()
+    const view = new ViewControl({ earth, transition: { durationSeconds: 1 } })
+    view.subscribe(() => {})
+    expect(view.getState()).toMatchObject({ mode: '3d', label: '2D', accessibleLabel: 'Switch to the flat map' })
     const changed = vi.fn()
     view.events.addEventListener('viewchange', event => changed(event.mode))
-    button.click()
+    view.toggle()
     expect(earth.setView).toHaveBeenCalledWith('2d', { durationSeconds: 1 })
     expect(changed).toHaveBeenCalledWith('2d')
-    expect(button.textContent).toBe('3D')
-    expect(button.getAttribute('aria-label')).toBe('Switch to the globe')
-    // Other code changes the view: the button follows in the next update
+    expect(view.getState()).toMatchObject({ mode: '2d', label: '3D', accessibleLabel: 'Switch to the globe' })
+    // Other code changes the view: the state follows in the next update
     earth.view.mode = '3d'
     earth.dispatchEvent({ type: 'update' } as never)
-    expect(button.textContent).toBe('2D')
+    expect(view.getState().label).toBe('2D')
+  })
+
+  it('toggles from the view the earth shows, even without a listener', () => {
+    const { earth } = setup()
+    const view = new ViewControl({ earth })
+    earth.view.mode = '2d'
+    view.toggle()
+    expect(earth.setView).toHaveBeenLastCalledWith('3d', undefined)
   })
 })
 
 describe('FullscreenControl', () => {
-  it('covers the page where the browser has no fullscreen for elements, and Escape leaves', () => {
-    const { container, controls } = setup()
-    const fullscreen = new FullscreenControl().addTo(controls)
-    const button = fullscreen.element.querySelector('button')!
-    expect(fullscreen.element.hidden).toBe(false)
-    button.click()
-    expect(container.classList.contains('react-three-earth-pseudo-fullscreen')).toBe(true)
-    expect(button.getAttribute('aria-pressed')).toBe('true')
-    expect(button.getAttribute('aria-label')).toBe('Exit fullscreen')
+  it('covers the page with an inline style where the browser has no fullscreen for elements, and Escape leaves', () => {
+    const { earth, container } = setup()
+    container.style.width = '300px'
+    const fullscreen = new FullscreenControl({ earth, container })
+    fullscreen.subscribe(() => {})
+    expect(fullscreen.getState()).toMatchObject({ active: false, available: true, label: 'Enter fullscreen' })
+    fullscreen.toggle()
+    expect(container.style.position).toBe('fixed')
+    expect(fullscreen.getState()).toMatchObject({ active: true, label: 'Exit fullscreen' })
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    expect(container.classList.contains('react-three-earth-pseudo-fullscreen')).toBe(false)
-    expect(button.getAttribute('aria-pressed')).toBe('false')
+    expect(container.style.position).toBe('')
+    expect(container.style.width).toBe('300px')
+    expect(fullscreen.getState().active).toBe(false)
   })
 
-  it('can hide itself instead, and leaves fullscreen when removed', () => {
-    const { container, controls } = setup()
-    expect(new FullscreenControl({ unsupported: 'hide' }).addTo(controls).element.hidden).toBe(true)
-    const fullscreen = new FullscreenControl().addTo(controls)
-    fullscreen.element.querySelector('button')!.click()
-    fullscreen.remove()
-    expect(container.classList.contains('react-three-earth-pseudo-fullscreen')).toBe(false)
+  it('puts back only the properties it covered, keeping changes made meanwhile', () => {
+    const { earth, container } = setup()
+    container.style.top = '5px'
+    const fullscreen = new FullscreenControl({ earth, container })
+    fullscreen.toggle()
+    container.style.setProperty('color', 'red')
+    fullscreen.toggle()
+    expect(container.style.top).toBe('5px')
+    expect(container.style.color).toBe('red')
+    expect(container.style.position).toBe('')
+  })
+
+  it('reports itself unavailable with unsupported: hide, and leaves fullscreen when the last listener goes', () => {
+    const { earth, container } = setup()
+    expect(new FullscreenControl({ earth, container, unsupported: 'hide' }).getState().available).toBe(false)
+    const fullscreen = new FullscreenControl({ earth, container })
+    const unsubscribe = fullscreen.subscribe(() => {})
+    fullscreen.toggle()
+    unsubscribe()
+    expect(container.style.position).toBe('')
   })
 
   it('uses the Fullscreen API where it exists', async () => {
-    const { container, controls } = setup()
+    const { earth, container } = setup()
     Object.defineProperty(document, 'fullscreenEnabled', { value: true, configurable: true })
     const request = vi.fn(() => Promise.resolve())
     container.requestFullscreen = request
-    const fullscreen = new FullscreenControl().addTo(controls)
-    fullscreen.element.querySelector('button')!.click()
+    const fullscreen = new FullscreenControl({ earth, container })
+    fullscreen.toggle()
     await Promise.resolve()
     expect(request).toHaveBeenCalledOnce()
-    expect(container.classList.contains('react-three-earth-pseudo-fullscreen')).toBe(false)
+    expect(container.style.position).toBe('')
     Reflect.deleteProperty(document, 'fullscreenEnabled')
   })
 })
@@ -330,107 +322,117 @@ describe('GeolocateControl', () => {
     return { geolocation, watchers, position }
   }
 
-  it('is hidden where the browser has no geolocation', () => {
+  function geolocateSetup(trackUser = false) {
+    const fake = setup()
+    const geolocate = new GeolocateControl({ earth: fake.earth, container: fake.container, trackUser })
+    const unsubscribe = geolocate.subscribe(() => {})
+    return { ...fake, geolocate, unsubscribe }
+  }
+
+  it('is unavailable where the browser has no geolocation', () => {
     vi.stubGlobal('navigator', {})
-    const { controls } = setup()
-    expect(new GeolocateControl().addTo(controls).element.hidden).toBe(true)
+    const { geolocate } = geolocateSetup()
+    expect(geolocate.getState()).toMatchObject({ available: false, disabled: true, label: 'This browser cannot tell where you are' })
   })
 
-  it('asks only when pressed, flies to the first fix and shows a dot', () => {
+  it('asks only when triggered, flies to the first fix and gives the position', () => {
     const { watchers, geolocation, position } = stubGeolocation()
-    const { container, controls, camera } = setup()
-    const geolocate = new GeolocateControl().addTo(controls)
+    const { geolocate, camera, unsubscribe } = geolocateSetup()
     expect(geolocation.getCurrentPosition).not.toHaveBeenCalled()
     const located = vi.fn()
     geolocate.events.addEventListener('geolocate', located)
-    geolocate.element.querySelector('button')!.click()
-    expect(geolocate.currentState).toBe('waiting')
+    geolocate.trigger()
+    expect(geolocate.getState()).toMatchObject({ status: 'waiting', busy: true, label: 'Finding your location' })
     watchers[0]!.success(position(2.35, 48.85))
     expect(camera.flyTo).toHaveBeenCalledWith(expect.objectContaining({ longitudeDegrees: 2.35, latitudeDegrees: 48.85 }), {})
     expect(located).toHaveBeenCalledOnce()
-    expect(container.querySelector('.react-three-earth-user-dot')).not.toBeNull()
-    expect(geolocate.currentState).toBe('off')
-    geolocate.remove()
-    expect(container.querySelector('.react-three-earth-user-dot')).toBeNull()
+    // 20 m of accuracy at 100 m a pixel: under a pixel
+    expect(geolocate.getState()).toMatchObject({ status: 'off', userLocation: { longitudeDegrees: 2.35, latitudeDegrees: 48.85, accuracyMeters: 20 }, accuracyDiameterPixels: 0 })
+    unsubscribe()
+    expect(geolocate.getState().userLocation).toBeNull()
   })
 
-  it('follows with trackUser, pauses when the user moves the map, and stops on a press', () => {
+  it('ignores a one-off answer that arrives after it stopped', () => {
+    const { watchers, position } = stubGeolocation()
+    const { geolocate, camera, unsubscribe } = geolocateSetup()
+    geolocate.trigger()
+    unsubscribe()
+    watchers[0]!.success(position(1, 1))
+    expect(camera.flyTo).not.toHaveBeenCalled()
+  })
+
+  it('follows with trackUser, pauses when the user moves the map, and stops on a second trigger', () => {
     const { watchers, geolocation, position } = stubGeolocation()
-    const { container, controls, camera } = setup()
-    const geolocate = new GeolocateControl({ trackUser: true }).addTo(controls)
-    const button = geolocate.element.querySelector('button')!
+    const { geolocate, container, camera } = geolocateSetup(true)
     const started = vi.fn()
     const ended = vi.fn()
     geolocate.events.addEventListener('trackuserlocationstart', started)
     geolocate.events.addEventListener('trackuserlocationend', ended)
-    button.click()
+    geolocate.trigger()
     expect(started).toHaveBeenCalledOnce()
     watchers[0]!.success(position(1, 1))
-    expect(geolocate.currentState).toBe('tracking')
-    expect(button.getAttribute('aria-pressed')).toBe('true')
+    expect(geolocate.getState()).toMatchObject({ status: 'tracking', pressed: true })
     watchers[0]!.success(position(1.1, 1.1))
     expect(camera.easeTo).toHaveBeenCalledWith({ longitudeDegrees: 1.1, latitudeDegrees: 1.1 }, expect.anything())
-    // The user touches the map (the corner stops events from the buttons themselves)
+    // A press inside the controls is not the user taking the map
+    const controls = new Controls({ container })
+    const button = document.createElement('button')
+    controls.element.append(button)
+    button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    expect(geolocate.getState().status).toBe('tracking')
+    // The user touches the map
     container.dispatchEvent(new Event('pointerdown', { bubbles: true }))
-    expect(geolocate.currentState).toBe('background')
+    expect(geolocate.getState().status).toBe('background')
     camera.easeTo.mockClear()
     watchers[0]!.success(position(1.2, 1.2))
     expect(camera.easeTo).not.toHaveBeenCalled()
-    button.click()
-    expect(geolocate.currentState).toBe('tracking')
-    button.click()
+    geolocate.trigger()
+    expect(geolocate.getState().status).toBe('tracking')
+    geolocate.trigger()
     expect(geolocation.clearWatch).toHaveBeenCalled()
     expect(ended).toHaveBeenCalled()
-    expect(geolocate.currentState).toBe('off')
+    expect(geolocate.getState()).toMatchObject({ status: 'off', userLocation: null })
   })
 
-  it('disables the button when access is denied and tells why', () => {
+  it('disables itself when access is denied and tells why', () => {
     const { watchers } = stubGeolocation()
-    const { controls } = setup()
-    const geolocate = new GeolocateControl().addTo(controls)
-    const button = geolocate.element.querySelector('button')!
+    const { geolocate } = geolocateSetup()
     const failed = vi.fn()
     geolocate.events.addEventListener('error', failed)
-    button.click()
+    geolocate.trigger()
     watchers[0]!.error({ code: 1, message: 'denied' } as GeolocationPositionError)
     expect(failed).toHaveBeenCalledOnce()
-    expect(button.disabled).toBe(true)
-    expect(button.getAttribute('aria-label')).toBe('Location access is turned off for this site')
+    expect(geolocate.getState()).toMatchObject({ disabled: true, permissionDenied: true, label: 'Location access is turned off for this site' })
   })
 
-  it('never leaves a watch running: a second press while waiting stops, and a lost fix keeps the user\'s choice', () => {
+  it("never leaves a watch running: a second trigger while waiting stops, and a lost fix keeps the user's choice", () => {
     const { watchers, geolocation, position } = stubGeolocation()
-    const { container, controls } = setup()
-    const geolocate = new GeolocateControl({ trackUser: true }).addTo(controls)
-    const button = geolocate.element.querySelector('button')!
+    const { geolocate, container, unsubscribe } = geolocateSetup(true)
     const ended = vi.fn()
     geolocate.events.addEventListener('trackuserlocationend', ended)
-    button.click()
-    button.click()
+    geolocate.trigger()
+    geolocate.trigger()
     expect(geolocation.watchPosition).toHaveBeenCalledOnce()
     expect(geolocation.clearWatch).toHaveBeenCalledOnce()
     expect(ended).toHaveBeenCalledOnce()
     // Follow, pan away, lose the fix, get it back: still panned away
-    button.click()
+    geolocate.trigger()
     watchers[1]!.success(position(1, 1))
     container.dispatchEvent(new Event('wheel', { bubbles: true }))
-    expect(geolocate.currentState).toBe('background')
+    expect(geolocate.getState().status).toBe('background')
     watchers[1]!.error({ code: 3, message: 'timeout' } as GeolocationPositionError)
-    expect(geolocate.currentState).toBe('error')
+    expect(geolocate.getState()).toMatchObject({ status: 'error', stale: true })
     watchers[1]!.success(position(1.1, 1.1))
-    expect(geolocate.currentState).toBe('background')
-    geolocate.remove()
+    expect(geolocate.getState()).toMatchObject({ status: 'background', stale: false })
+    unsubscribe()
     expect(geolocation.clearWatch).toHaveBeenCalledTimes(2)
   })
 
   it('lets the user try again after a timeout', () => {
     const { watchers } = stubGeolocation()
-    const { controls } = setup()
-    const geolocate = new GeolocateControl().addTo(controls)
-    const button = geolocate.element.querySelector('button')!
-    button.click()
+    const { geolocate } = geolocateSetup()
+    geolocate.trigger()
     watchers[0]!.error({ code: 3, message: 'timeout' } as GeolocationPositionError)
-    expect(button.disabled).toBe(false)
-    expect(button.dataset.state).toBe('error')
+    expect(geolocate.getState()).toMatchObject({ status: 'error', disabled: false, label: 'Your location could not be found, try again' })
   })
 })

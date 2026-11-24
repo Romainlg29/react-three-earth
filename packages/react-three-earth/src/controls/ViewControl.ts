@@ -2,92 +2,81 @@ import { EventDispatcher } from 'three'
 
 import type { Earth } from '../core/Earth.js'
 import type { ViewMode, ViewTransitionOptions } from '../view/ViewMorph.js'
-import { Controls, MapControl } from './Controls.js'
-import { createControlButton, setButtonLabel } from './controlsStyle.js'
+import { MapControl } from './Controls.js'
 import { resolveLocale, type ControlsLocale } from './locale.js'
 
 export interface ViewControlOptions {
-  /** Options of the morph a press starts, such as `durationSeconds`. */
+  earth: Earth
+  /** Options of the morph `toggle` starts, such as `durationSeconds`. */
   transition?: ViewTransitionOptions
   locale?: Partial<ControlsLocale>
 }
 
 export interface ViewControlEventMap {
-  /** The user pressed the button: the view it asked for. Apps that keep the view in state set it here. */
+  /** `toggle` was called: the view it asked for. Apps that keep the view in state set it here. */
   viewchange: { mode: ViewMode }
 }
 
+export interface ViewControlState {
+  /** The view the earth shows (or is morphing to). */
+  mode: ViewMode
+  /** The view `toggle` switches to. */
+  nextMode: ViewMode
+  /** The short text of a button that switches to `nextMode`: "2D" while the globe shows, "3D" while the flat map does. */
+  label: string
+  /** The accessible name of that button, "Switch to the flat map". */
+  accessibleLabel: string
+}
+
 /**
- * A button that switches between the globe and the flat map, MapLibre's `GlobeControl` for both ways. It shows
- * the view it switches to ("2D" while the globe shows, "3D" while the flat map does) and follows the earth's
- * view when other code changes it.
+ * Switches between the globe and the flat map, MapLibre's `GlobeControl` for both ways, without any DOM. It follows
+ * the earth's view when other code changes it.
+ *
+ * ```ts
+ * const view = new ViewControl({ earth })
+ * button.onclick = view.toggle
+ * view.subscribe(state => (button.textContent = state.label))
+ * ```
  */
-export class ViewControl extends MapControl {
-  readonly element: HTMLElement
-  /** Fires `viewchange` when the user presses the button. */
+export class ViewControl extends MapControl<ViewControlState> {
+  /** Fires `viewchange` when `toggle` is called. */
   readonly events = new EventDispatcher<ViewControlEventMap>()
-  protected readonly button: HTMLButtonElement
-  protected readonly textElement: HTMLSpanElement
   protected readonly transition: ViewTransitionOptions | undefined
   protected readonly locale: ControlsLocale
-  protected listeningTo: Earth | null = null
-  protected shownMode: ViewMode | null = null
 
-  constructor({ transition, locale }: ViewControlOptions = {}) {
-    super()
+  constructor({ earth, transition, locale }: ViewControlOptions) {
+    super(earth)
     this.transition = transition
     this.locale = resolveLocale(locale)
-    const document = globalThis.document
-    this.element = document.createElement('div')
-    this.element.className = 'react-three-earth-control-group'
-    this.button = createControlButton(document, this.locale.switchTo2D)
-    this.textElement = document.createElement('span')
-    this.button.append(this.textElement)
-    this.button.addEventListener('click', this.onClick)
-    this.element.append(this.button)
+    this.initializeState()
   }
 
-  protected attach(controls: Controls): void {
-    this.listeningTo = controls.earth
+  protected attach(): void {
     // The mode changes inside `earth.update`, which always ends with this event
-    controls.earth.addEventListener('update', this.update)
-    this.update()
+    this.earth.addEventListener('update', this.update)
   }
 
   protected detach(): void {
-    this.listeningTo?.removeEventListener('update', this.update)
-    this.listeningTo = null
-    this.shownMode = null
+    this.earth.removeEventListener('update', this.update)
   }
 
-  /** Switches to the other view, as pressing the button does. */
-  toggle(): void {
-    const earth = this.earth
-    if (earth === null) return
-    const mode: ViewMode = earth.view.mode === '3d' ? '2d' : '3d'
-    earth.setView(mode, this.transition)
-    earth.requestFrame()
+  /** Switches to the other view. */
+  toggle = (): void => {
+    const mode: ViewMode = this.earth.view.mode === '3d' ? '2d' : '3d'
+    this.earth.setView(mode, this.transition)
+    this.earth.requestFrame()
     this.events.dispatchEvent({ type: 'viewchange', mode })
     this.update()
   }
 
-  protected onClick = (): void => this.toggle()
-
-  protected update = (): void => {
-    const earth = this.earth
-    if (earth === null || earth.view.mode === this.shownMode) return
-    this.shownMode = earth.view.mode
-    const toFlat = earth.view.mode === '3d'
-    this.textElement.textContent = toFlat ? this.locale.view2D : this.locale.view3D
-    setButtonLabel(this.button, toFlat ? this.locale.switchTo2D : this.locale.switchTo3D)
-    this.button.dataset.view = earth.view.mode
-  }
-
-  /** Removes the control and its listeners for good. */
-  dispose(): void {
-    this.remove()
-    this.button.removeEventListener('click', this.onClick)
-    this.element.remove()
+  protected computeState(): ViewControlState {
+    const mode = this.earth.view.mode
+    const toFlat = mode === '3d'
+    return {
+      mode,
+      nextMode: toFlat ? '2d' : '3d',
+      label: toFlat ? this.locale.view2D : this.locale.view3D,
+      accessibleLabel: toFlat ? this.locale.switchTo2D : this.locale.switchTo3D,
+    }
   }
 }
-

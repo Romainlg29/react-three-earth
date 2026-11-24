@@ -13,22 +13,17 @@ import {
 import {
   Atmosphere,
   AttributionControl,
-  Controls,
   Earth,
   EarthControls,
-  FullscreenControl,
-  GeolocateControl,
   ImageSource,
   Imagery,
   MapStyleSource,
   Marker,
-  NavigationControl,
   PerformanceStats,
   Popup,
   QuantizedMeshSource,
   RasterDemSource,
   RasterTileSource,
-  ScaleControl,
   StyleLayer,
   Terrain,
   useEarth,
@@ -37,7 +32,6 @@ import {
   useHoverFeatureState,
   useLayerCursor,
   VideoSource,
-  ViewControl,
 } from 'react-three-earth/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
@@ -47,6 +41,7 @@ import { SdfShape } from './sdf/SdfShape'
 import { sdfShapes } from './sdf/sdfShapes'
 import { selectionGlow } from './effects/selectionGlow'
 import { vignette } from './effects/vignette'
+import { MapControls } from './controls/MapControls'
 import { sdfGlow } from './styleLayers/sdfGlow'
 import { stripedFill } from './styleLayers/stripedFill'
 import { neonLabels } from './symbolEffects/neonLabels'
@@ -410,15 +405,7 @@ export function MapDemo() {
           )}
           <EarthControls cooperativeGestures={cooperativeGestures} />
           <AttributionControl />
-          <Controls position="top-right">
-            <NavigationControl visualizePitch />
-            <ViewControl onViewChange={setView} />
-            <GeolocateControl trackUser />
-            <FullscreenControl />
-          </Controls>
-          <Controls position="bottom-left">
-            <ScaleControl />
-          </Controls>
+          <MapControls onViewChange={setView} geolocate />
           {showMarkers ? <Markers /> : null}
           {showSdfShapes ? <SdfShapes /> : null}
           {showHover && mapStyleUrl !== undefined ? <FeatureInteractions /> : null}

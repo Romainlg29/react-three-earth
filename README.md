@@ -180,7 +180,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `coordinates-and-units` | placing objects or the camera at a longitude, latitude and height |
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, `easeTo` / `flyTo` / `fitBounds`, padding, bounds, project / unproject, clicks with their position, `initialView`, URL hash, events |
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
-| `map-controls` | zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle, translated labels, phone use, keyboard and screen readers |
+| `map-controls` | headless hooks for zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle; translated labels, phone use, keyboard and screen readers |
 | `terrain-and-imagery-sources` | choosing terrain (quantized-mesh, raster-dem) and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, GeoJSON and clusters, `invalidate` after data changes |
 | `map-labels` | labels facing the viewer or on the ground, collision, priorities, fades, reading labels in tests |
