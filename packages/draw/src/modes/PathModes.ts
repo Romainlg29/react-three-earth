@@ -12,6 +12,11 @@ const IN_PROGRESS_ID = 'draw:in-progress'
 export interface PlacementModeOptions {
   /** Properties given to each feature the mode creates. Default: none. */
   properties?: Record<string, unknown>
+  /**
+   * Line string and polygon modes: extrudes each feature into a solid this many metres tall (a polygon into a prism, a
+   * line into a wall), kept as `properties.extrusionHeightMeters`. Change it any time on the mode. Default: none.
+   */
+  extrusionHeightMeters?: number
 }
 
 /** Places a point at each tap. */
@@ -46,21 +51,29 @@ export class PointMode extends DrawMode {
  */
 export abstract class PathMode extends DrawMode {
   protected readonly properties: Record<string, unknown>
+  extrusionHeightMeters: number | undefined
   protected readonly vertices: LongitudeLatitude[] = []
   /** Where the mouse is, for the segment to the next vertex. Null on touch screens and off the map. */
   protected hoverPosition: LongitudeLatitude | null = null
   /** Fewest vertices of a finished feature. */
   protected abstract readonly minimumVertices: number
 
-  constructor({ properties = {} }: PlacementModeOptions = {}) {
+  constructor({ properties = {}, extrusionHeightMeters }: PlacementModeOptions = {}) {
     super()
     this.properties = properties
+    this.extrusionHeightMeters = extrusionHeightMeters
   }
 
   override enter(context: DrawModeContext): void {
     super.enter(context)
     context.setCursor('crosshair')
     context.holdDoubleClickZoom()
+  }
+
+  /** The properties of a finished feature: the mode's, with the extrusion height when set. */
+  protected featureProperties(): Record<string, unknown> {
+    const extrusion = this.extrusionHeightMeters
+    return extrusion !== undefined && extrusion > 0 ? { ...this.properties, extrusionHeightMeters: extrusion } : { ...this.properties }
   }
 
   /** The geometry for these vertices: a line string, or a closed polygon. */
@@ -128,7 +141,7 @@ export abstract class PathMode extends DrawMode {
   override finish(): void {
     const context = this.context
     if (context === null || this.vertices.length < this.minimumVertices) return
-    const feature: DrawFeature = { type: 'Feature', id: context.createId(), properties: { ...this.properties }, geometry: this.toGeometry([...this.vertices]) }
+    const feature: DrawFeature = { type: 'Feature', id: context.createId(), properties: this.featureProperties(), geometry: this.toGeometry([...this.vertices]) }
     this.vertices.length = 0
     context.create([feature])
     context.changed()

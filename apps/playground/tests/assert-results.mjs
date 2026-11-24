@@ -467,6 +467,15 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
   ]
 }
 
+for (const name of ['globe, mouse', 'flat map, touch']) {
+  expectations[`shapes, ${name}`] = r => [
+    ['the six starting shapes stand as solids', r.startingSolids === 6],
+    ['two taps draw a circle and two more a rectangle, extruded by the height picked', JSON.stringify(r.drawn) === '[{"type":"circle","extrusionHeightMeters":600},{"type":"rectangle","extrusionHeightMeters":600}]' && r.solids === 8],
+    ['the solids draw over the map (orange prisms, magenta sphere)', r.orangePixels > 8000 && r.magentaPixels > 300],
+    ['clearing removes every solid from the scene', r.solidsAfterClear === 0 && r.solidObjectsAfterClear === 0 && r.orangeAfterClear < 50],
+  ]
+}
+
 let failures = 0
 let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {

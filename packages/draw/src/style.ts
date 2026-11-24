@@ -12,6 +12,7 @@ export const DEFAULT_DRAW_STYLE: Readonly<DrawStyle> = {
   pointRadiusPixels: 6,
   pointOutlineColor: '#ffffff',
   pointOutlineWidthPixels: 2,
+  solidOpacity: 0.85,
   vertexColor: '#ffffff',
   vertexRadiusPixels: 5,
   vertexOutlineColor: '#3b82f6',

@@ -1688,6 +1688,70 @@ async function drawing(name, { touch = false, flat = false } = {}) {
 }
 
 /**
+ * Shapes and solids (`?example=shapes`): six starting solids (a cylinder, a box, a hexagonal tower, a slab at 2.5 km,
+ * a sphere and a wall) stand on the terrain, on the globe and the flat map; two taps draw an extruded circle and two
+ * more a rectangle, each kept as GeoJSON with its shape and height. Clearing them leaves the map as it was.
+ */
+async function shapes(name, { touch = false, flat = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=shapes`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  if (flat) {
+    await page.evaluate(() => window.earth.setView('2d', { durationSeconds: 0 }))
+    await page.waitForTimeout(500)
+    await idle()
+  }
+  await page.waitForTimeout(1500) // terrain heights reach the solids
+  const result = { check: `shapes, ${name}`, errors }
+  result.startingSolids = await page.evaluate(() => window.draw.inspect().solids)
+  const tap = (x, y) => (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
+  await page.evaluate(() => window.draw.setMode('circle'))
+  await tap(560, 470)
+  await page.waitForTimeout(150)
+  await tap(620, 470)
+  await page.waitForTimeout(150)
+  await page.evaluate(() => window.draw.setMode('rectangle'))
+  await tap(660, 330)
+  await page.waitForTimeout(150)
+  await tap(760, 400)
+  await page.waitForTimeout(800)
+  result.drawn = await page.evaluate(() => window.draw.getFeatures().features.slice(6).map(feature => ({ type: feature.properties.shape?.type, extrusionHeightMeters: feature.properties.extrusionHeightMeters })))
+  result.solids = await page.evaluate(() => window.draw.inspect().solids)
+  await idle()
+  const png = await page.screenshot()
+  writeFileSync(new URL(`shapes-${name.replaceAll(' ', '-')}.png`, OUT), png)
+  await analyse(page, png, 'window.shapesPixels = px; return {}')
+  await page.evaluate(() => window.draw.clear())
+  await page.waitForTimeout(500)
+  await idle()
+  result.solidsAfterClear = await page.evaluate(() => window.draw.inspect().solids)
+  result.solidObjectsAfterClear = await page.evaluate(() => window.earth.getObjectByName('DrawSolids')?.children.length ?? -1)
+  // Right of the card: the orange solids (shaded by the sun on the globe) and the magenta sphere, against the bare map.
+  Object.assign(result, await analyse(page, await page.screenshot(), `
+    const shapes = window.shapesPixels
+    let orange = 0, magenta = 0, leftover = 0
+    for (let y = 0; y < height; y++) for (let x = 360; x < width; x++) {
+      const i = (y * width + x) * 4
+      const [r, g, b] = [shapes[i], shapes[i + 1], shapes[i + 2]]
+      const changed = Math.abs(r - px[i]) + Math.abs(g - px[i + 1]) + Math.abs(b - px[i + 2]) > 30
+      if (changed && r > g + 30 && g > b + 20) orange++
+      else if (changed && r > g + 40 && b > g + 40) magenta++
+      if (px[i] > px[i + 1] + 30 && px[i + 1] > px[i + 2] + 20) leftover++
+    }
+    return { orangePixels: orange, magentaPixels: magenta, orangeAfterClear: leftover }
+  `))
+  await page.close()
+  results.push(result)
+}
+
+/**
  * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
  * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
  */
@@ -2264,6 +2328,8 @@ try {
     await drawing('globe, mouse')
     await drawing('globe, touch', { touch: true })
     await drawing('flat map, touch', { touch: true, flat: true })
+    await shapes('globe, mouse')
+    await shapes('flat map, touch', { touch: true, flat: true })
   }
   if (want('examples')) {
     await galleryExample('city')
