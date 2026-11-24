@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process'
 
 export const AREAS = [
   'precision', 'map', '2d', 'vector', 'patterns', 'attribution', 'controls', 'invalidate', 'style', 'geojson', 'heatmap',
-  'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'effects', 'labels', 'buildings',
+  'query', 'afterburner', 'camera', 'markers', 'animations', 'sdf', 'layers', 'relief', 'georef', 'effects', 'labels', 'buildings',
   'roads', 'dem', 'exaggeration',
 ]
 
@@ -31,7 +31,8 @@ const PLAYGROUND = 'apps/playground/src/'
  * coverage. Files outside those folders (docs, skills, unit tests, workflows) need no browser check.
  */
 export const RULES = [
-  [/^apps\/playground\/(tests|fixtures)\//, ALL],
+  [/^apps\/playground\/public\/georef\//, ['georef']],
+  [/^apps\/playground\/(tests|fixtures|public)\//, ALL],
   [/^apps\/playground\/(index\.html|vite\.config\.ts|package\.json)$/, ALL],
   [new RegExp(`^${LIBRARY}vector/extrusions/`), ['buildings']],
   [new RegExp(`^${LIBRARY}vector/raster/`), ['relief', 'dem', 'exaggeration']],
@@ -45,6 +46,7 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}(core/(EarthControls|TouchGestures)\\.ts|react/EarthControls\\.tsx)$`), ['camera', 'animations', 'controls']],
   [new RegExp(`^${LIBRARY}core/(featureQuery|LayerEvents)\\.ts$`), ['query', 'labels', 'roads']],
   [new RegExp(`^${LIBRARY}(plugins/(drapedLayers|renderPasses)\\.ts|tiles/imagery/DrapedLayerOverlay\\.ts|core/ScreenOverlay\\.ts)$`), ['effects']],
+  [new RegExp(`^${LIBRARY}tiles/imagery/GeoreferencedImageOverlay\\.ts$`), ['georef']],
   [new RegExp(`^${LIBRARY}plugins/styleLayerTypes\\.ts$`), ['layers']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
   [new RegExp(`^${PLAYGROUND}geojson/`), ['geojson']],

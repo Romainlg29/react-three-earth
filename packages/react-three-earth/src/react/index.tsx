@@ -8,14 +8,18 @@ export { PerformanceStats, formatStatistics, type PerformanceStatsProps } from '
 export {
   MapStyleSource,
   QuantizedMeshSource,
+  ImageSource,
   RasterDemSource,
   RasterTileSource,
+  VideoSource,
   StyleLayer,
   type MapStyleSourceProps,
   type StyleLayerProps,
   type QuantizedMeshSourceProps,
+  type ImageSourceProps,
   type RasterDemSourceProps,
   type RasterTileSourceProps,
+  type VideoSourceProps,
 } from './sources.js'
 export { GeoJsonSource, type GeoJsonSourceProps } from './GeoJsonSource.js'
 export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
