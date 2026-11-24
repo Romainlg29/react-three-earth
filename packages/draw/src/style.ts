@@ -19,11 +19,22 @@ export const DEFAULT_DRAW_STYLE: Readonly<DrawStyle> = {
   vertexOutlineWidthPixels: 2,
 }
 
-/** The full style of a feature: the input's values over the defaults. */
+/** What changes on a selected feature by default: amber lines, points and handle rings. */
+export const DEFAULT_SELECTED_STYLE: Readonly<Partial<DrawStyle>> = {
+  fillColor: '#f59e0b',
+  lineColor: '#f59e0b',
+  pointColor: '#f59e0b',
+  vertexOutlineColor: '#f59e0b',
+}
+
+const DEFAULT_SELECTED_DRAW_STYLE: Readonly<DrawStyle> = { ...DEFAULT_DRAW_STYLE, ...DEFAULT_SELECTED_STYLE }
+
+/** The full style of a feature: the input's values over the defaults (amber when selected). */
 export function resolveStyle(input: DrawStyleInput | undefined, feature: DrawFeature, state: DrawStyleState): DrawStyle {
-  if (input === undefined) return DEFAULT_DRAW_STYLE
+  const defaults = state.selected ? DEFAULT_SELECTED_DRAW_STYLE : DEFAULT_DRAW_STYLE
+  if (input === undefined) return defaults
   const values = typeof input === 'function' ? input(feature, state) : input
-  return { ...DEFAULT_DRAW_STYLE, ...values }
+  return { ...defaults, ...values }
 }
 
 const colors = new Map<string, readonly [number, number, number]>()

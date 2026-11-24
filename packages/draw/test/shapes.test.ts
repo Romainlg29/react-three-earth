@@ -221,6 +221,8 @@ function createContext() {
     changed: vi.fn(),
     create: features => void created.push(...features),
     update: vi.fn(),
+    remove: vi.fn(),
+    projectAtHeight: ([longitude, latitude]) => ({ x: longitude * 1000, y: latitude * 1000 }),
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
   }

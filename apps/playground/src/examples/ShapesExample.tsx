@@ -11,6 +11,7 @@ import {
   LineStringMode,
   PolygonMode,
   RectangleMode,
+  SelectMode,
   SphereMode,
   StaticMode,
 } from 'react-three-earth-draw'
@@ -24,6 +25,7 @@ const CENTER: [number, number] = [6.6, 46.45]
 
 const TOOLS = [
   { mode: 'static', label: 'Pan' },
+  { mode: 'select', label: 'Select' },
   { mode: 'circle', label: 'Circle' },
   { mode: 'rectangle', label: 'Rectangle' },
   { mode: 'sphere', label: 'Sphere' },
@@ -81,6 +83,12 @@ function ShapesToolbar({ draw, setExtrusion }: { draw: Draw; setExtrusion: (mete
         <button type="button" disabled={!state.drawing} onClick={() => draw.cancel()}>
           Cancel
         </button>
+        <button type="button" disabled={state.selectedIds.length === 0} onClick={() => draw.deleteSelected()}>
+          Delete
+        </button>
+        <button type="button" disabled={!state.canUndo} onClick={() => draw.undo()}>
+          Undo
+        </button>
         <button type="button" disabled={state.features.features.length === 0} onClick={() => draw.clear()}>
           Clear
         </button>
@@ -106,7 +114,7 @@ export function ShapesExample() {
     }
     setExtrusion(600)
     const created = new Draw({
-      modes: [new StaticMode(), ...extruded, new SphereMode()],
+      modes: [new StaticMode(), new SelectMode(), ...extruded, new SphereMode()],
       features: startingShapes(),
       style: feature => ({
         fillColor: feature.geometry.type === 'Point' ? '#d946ef' : '#f97316',
