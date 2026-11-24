@@ -1872,10 +1872,15 @@ async function terrainExaggeration(name, query) {
  */
 async function georeferenced(kind, query, label = kind) {
   const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&georef=${kind}&camera=-90,0,0,8000,0,-90${query}`)
-  await page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 4 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0
-  }, null, { timeout: 240_000, polling: 500 })
+  // Tile counts can read settled for a moment between two levels of the terrain: wait for `idle`, which also covers
+  // queued tiles and redraws. A playing video redraws without end and never goes idle: it waits for the tiles only.
+  await page.waitForFunction(kind => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    if (!t || t.tilesLoaded <= 4) return false
+    return kind === 'video' ? t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && window.earth.terrain.tiles.stats.queued === 0 && !window.earth.terrain.tiles.isLoading : inspection.idle
+  }, kind, { timeout: 240_000, polling: 500 })
+  // `idle` does not cover the picture's own download: give it time to arrive and redraw.
   await page.waitForTimeout(3000)
   // Where picture coordinates (u right, v up) land on the screen.
   const locate = () => page.evaluate(() => {
@@ -2275,6 +2280,73 @@ try {
       return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
     })
     await galleryExample('heatmap')
+    await galleryExample('terrain', '', async (page, idle) => {
+      await page.locator('input[type=range]').fill('3')
+      await page.getByRole('button', { name: 'Map and hillshade' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+    })
+    await galleryExample('overlay', '', async (page, idle) => {
+      const radarShare = async () => {
+        await idle()
+        await page.waitForTimeout(1000)
+        return analyse(page, await page.screenshot(), `
+          // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
+          // of the rain moves between frames.
+          let radar = 0, sumX = 0
+          for (let y = Math.floor(height / 3); y < height - 40; y++) {
+            for (let x = 0; x < width; x++) {
+              const i = (y * width + x) * 4
+              if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
+            }
+          }
+          return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
+        `)
+      }
+      const shown = await radarShare()
+      await page.getByRole('button', { name: 'Play' }).click()
+      await page.waitForTimeout(2000)
+      await page.getByRole('button', { name: 'Pause' }).click()
+      const played = await radarShare()
+      await page.locator('input[type=range]').fill('0')
+      const hidden = await radarShare()
+      return { radar: { shown, played, hidden } }
+    })
+    await galleryExample('night', '', async (page, idle) => {
+      // Glow pixels by hue, before and after the glow colour changes.
+      const glow = async () => analyse(page, await page.screenshot(), `
+        let amber = 0, cyan = 0, magenta = 0
+        for (let i = 0; i < px.length; i += 4) {
+          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+          if (r > 80 && r > g * 1.5 && r > b * 2) amber++
+          if (b > 80 && g > 60 && b > r * 2) cyan++
+          // The neon outline (#ff2bd6) around the place names.
+          if (r > 170 && b > 150 && g < 110) magenta++
+        }
+        return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+      `)
+      const before = await glow()
+      await page.getByRole('button', { name: 'Cyan glow' }).click()
+      // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
+      let after = null
+      for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
+        await page.waitForTimeout(1000)
+        await idle()
+        after = await glow()
+      }
+      return { glow: { before, after } }
+    })
+    await galleryExample('embedded', '', async page => {
+      // A plain wheel over the map scrolls the page and leaves the camera where it was.
+      const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      const box = await page.locator('.example-embedded canvas').boundingBox()
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+      await page.mouse.wheel(0, 400)
+      await page.waitForTimeout(1500)
+      const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+      return { wheel: { before, after } }
+    })
   }
 } finally {
   await browser.close()
