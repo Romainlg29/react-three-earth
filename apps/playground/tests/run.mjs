@@ -2004,6 +2004,8 @@ async function transforming(name, { touch = false, flat = false } = {}) {
   await tap(top)
   result.selected = await page.evaluate(() => window.draw.getState().selectedIds.includes('box'))
   result.gizmoShown = await page.evaluate(() => !window.draw.getState().editingVertices && window.draw.getMode().gizmoHandles().length > 0)
+  // The panel folded to its title, so the gizmo's handles are never under it.
+  await page.getByRole('button', { name: 'Hide details' }).click()
   // Closer, seen from the south-west so every arc shows on the globe (the flat map is seen from above).
   await page.evaluate(({ longitudeDegrees, latitudeDegrees }) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 14_000, headingDegrees: 35, pitchDegrees: -40 }), top)
   await page.waitForTimeout(500)
