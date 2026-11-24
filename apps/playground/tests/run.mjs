@@ -1622,6 +1622,8 @@ async function drawing(name, { touch = false, flat = false } = {}) {
     await page.waitForTimeout(500)
     await idle()
   }
+  // The map before drawing, to compare with: the globe is lit, so the draped colours are measured as changes.
+  await analyse(page, await page.screenshot(), 'window.drawingBase = px; return {}')
   // Collapse the card so taps reach the map, then drive the tools through the plugin (the toolbar is the example's).
   const tap = (x, y) => (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
   const result = { check: `drawing, ${name}`, errors }
@@ -1669,13 +1671,15 @@ async function drawing(name, { touch = false, flat = false } = {}) {
   result.vertices = await page.evaluate(() => window.draw.getFeatures().features.map(feature => feature.geometry.type === 'Polygon' ? feature.geometry.coordinates[0].length : feature.geometry.type === 'LineString' ? feature.geometry.coordinates.length : 1))
   result.drapedLayers = await page.evaluate(() => window.earth.inspect().drapedLayers)
   Object.assign(result, await analyse(page, png, `
-    // Right of the card: the draped fill (green over the checker) and the red line and point.
+    // Right of the card, against the map before drawing: the red line and point, and the green fill over the checker.
+    const base = window.drawingBase
     let red = 0, green = 0
     for (let y = 0; y < height; y++) for (let x = 360; x < width; x++) {
       const i = (y * width + x) * 4
       const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
-      if (r > 110 && g < 70 && b < 90) red++
-      if (g > 120 && g > r + 40 && b > 50 && b < g) green++
+      const [dr, dg, db] = [r - base[i], g - base[i + 1], b - base[i + 2]]
+      if (dr > 40 && r > g + 40) red++
+      else if (dg > 10 && dr <= 5 && db > 0 && g > r) green++
     }
     return { redPixels: red, greenPixels: green }
   `))
