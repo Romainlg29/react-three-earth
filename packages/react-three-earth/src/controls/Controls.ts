@@ -1,167 +1,136 @@
 import type { Earth } from '../core/Earth.js'
 import { holdContainerPosition, releaseContainerPosition } from '../core/containerPosition.js'
-import { ensureControlsStyle } from './controlsStyle.js'
 
-export type ControlPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
-
-/** What `Controls.add` takes: a piece of map UI with a root element. Extend `MapControl` for the common parts. */
-export interface ControlsItem {
-  /** The control's root element, put in the corner. */
-  readonly element: HTMLElement
-  /** Called after the element is in the corner. */
-  onAdd?(controls: Controls): void
-  /** Called before the element is taken out. Release listeners here. */
-  onRemove?(controls: Controls): void
-}
+/**
+ * The class that marks map UI: presses inside an element with it are not the user taking the map (a following
+ * `GeolocateControl` keeps following, cooperative gestures leave its touches and wheel alone). `Controls` puts it on
+ * its element; put it on your own buttons when they sit over the map outside a `Controls`.
+ */
+export const CONTROLS_CLASS_NAME = 'react-three-earth-controls'
 
 export interface ControlsOptions {
-  earth: Earth
   /** The element the controls go in: the one around the canvas. It is made `position: relative` if it is static. */
   container: HTMLElement
-  /** The corner. Default: 'top-right'. */
-  position?: ControlPosition
-}
-
-interface Corner {
-  element: HTMLElement
-  count: number
-}
-const corners = new WeakMap<HTMLElement, Map<ControlPosition, Corner>>()
-
-function acquireCorner(container: HTMLElement, position: ControlPosition): HTMLElement {
-  let byPosition = corners.get(container)
-  if (byPosition === undefined) corners.set(container, (byPosition = new Map()))
-  let corner = byPosition.get(position)
-  if (corner === undefined) {
-    const element = container.ownerDocument.createElement('div')
-    element.className = 'react-three-earth-controls'
-    element.dataset.position = position
-    // Buttons never start a map gesture or count as a click on the map
-    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart']) {
-      element.addEventListener(type, stop, { passive: true })
-    }
-    container.append(element)
-    byPosition.set(position, (corner = { element, count: 0 }))
-  }
-  corner.count++
-  return corner.element
-}
-
-function releaseCorner(container: HTMLElement, position: ControlPosition): void {
-  const byPosition = corners.get(container)
-  const corner = byPosition?.get(position)
-  if (byPosition === undefined || corner === undefined) return
-  if (--corner.count > 0) return
-  corner.element.remove()
-  byPosition.delete(position)
 }
 
 function stop(event: Event): void {
   event.stopPropagation()
 }
 
+const STOPPED_EVENTS = ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart'] as const
+
 /**
- * A corner of the map that holds controls (`NavigationControl`, `ScaleControl`, `GeolocateControl`,
- * `FullscreenControl`, `ViewControl`, or your own), stacked in the order they were added. Two `Controls` in the same
- * corner of the same container share it, so they stack instead of overlapping. Clicks on the controls do not reach the
- * map, and the corners keep clear of the notch and home indicator on phones.
+ * An unstyled element over the map for your controls: a `<div class="react-three-earth-controls">` added to the
+ * container, with no CSS of its own. Presses, clicks and wheel turns inside it never reach the map. Place and style it
+ * yourself (`element.style`, or a class), and put your buttons in it.
  *
  * ```ts
- * const controls = new Controls({ earth, container: canvas.parentElement!, position: 'top-right' })
- * new NavigationControl().addTo(controls)
- * new ViewControl().addTo(controls)
+ * const controls = new Controls({ container: canvas.parentElement! })
+ * controls.element.className += ' my-top-right-corner'
+ * controls.element.append(zoomInButton)
  * ```
  */
 export class Controls {
-  readonly earth: Earth
   readonly container: HTMLElement
-  readonly position: ControlPosition
-  protected readonly corner: HTMLElement
-  protected readonly items: ControlsItem[] = []
+  /** The element to put your controls in. */
+  readonly element: HTMLElement
   protected disposed = false
 
-  constructor({ earth, container, position = 'top-right' }: ControlsOptions) {
-    this.earth = earth
+  constructor({ container }: ControlsOptions) {
     this.container = container
-    this.position = position
-    ensureControlsStyle(container.ownerDocument)
     holdContainerPosition(container)
-    this.corner = acquireCorner(container, position)
+    this.element = container.ownerDocument.createElement('div')
+    this.element.className = CONTROLS_CLASS_NAME
+    for (const type of STOPPED_EVENTS) this.element.addEventListener(type, stop, { passive: true })
+    container.append(this.element)
   }
 
-  /** Puts a control in the corner, after the ones already there. */
-  add(item: ControlsItem): void {
-    if (this.disposed) throw new Error('Controls.add: these Controls were disposed. Create new Controls first.')
-    if (this.items.includes(item)) return
-    this.items.push(item)
-    this.corner.append(item.element)
-    item.onAdd?.(this)
-  }
-
-  /** Takes a control out. It can be added again. */
-  remove(item: ControlsItem): void {
-    const index = this.items.indexOf(item)
-    if (index < 0) return
-    this.items.splice(index, 1)
-    item.onRemove?.(this)
-    item.element.remove()
-  }
-
-  /** The controls in this corner that were added through this object. */
-  getControls(): readonly ControlsItem[] {
-    return this.items
-  }
-
-  /** Removes every control it added, and the corner when nothing else uses it. */
+  /** Removes the element. */
   dispose(): void {
     if (this.disposed) return
-    for (const item of [...this.items]) this.remove(item)
     this.disposed = true
-    releaseCorner(this.container, this.position)
+    for (const type of STOPPED_EVENTS) this.element.removeEventListener(type, stop)
+    this.element.remove()
     releaseContainerPosition(this.container)
   }
 }
 
+/** Called with the new state whenever a control's state changes. */
+export type ControlStateListener<State> = (state: State) => void
+
 /**
- * Base for controls: it owns the root element and the add and remove steps. A subclass builds `element` in its
- * constructor and listens in `onAdd` (where `this.earth` is set), and lets go in `onRemove`.
+ * Base of the headless controls: a state object, the actions that change the map, and nothing drawn. Read the state
+ * with `getState()` and follow it with `subscribe(listener)`; the control listens to the earth only while it has a
+ * listener. The state object is replaced, never changed in place, so it can be compared by identity (React's
+ * `useSyncExternalStore` takes `subscribe` and `getState` as they are).
+ *
+ * A subclass computes its state in `computeState`, and subscribes to the earth in `attach` and lets go in `detach`.
  */
-export abstract class MapControl implements ControlsItem {
-  abstract readonly element: HTMLElement
-  protected controls: Controls | null = null
+export abstract class MapControl<State extends object> {
+  readonly earth: Earth
+  protected state: State
+  protected readonly listeners = new Set<ControlStateListener<State>>()
+  protected attached = false
 
-  /** The earth of the `Controls` this control is in, or null before `addTo`. */
-  protected get earth(): Earth | null {
-    return this.controls?.earth ?? null
+  constructor(earth: Earth) {
+    this.earth = earth
+    // Subclasses set their fields before reading the first state: see `initializeState`
+    this.state = undefined as unknown as State
   }
 
-  /** Puts the control in `controls`. A control in one place moves. */
-  addTo(controls: Controls): this {
-    this.controls?.remove(this)
-    controls.add(this)
-    return this
+  /** Call at the end of the subclass constructor, once the fields `computeState` reads are set. */
+  protected initializeState(): void {
+    this.state = this.computeState()
   }
 
-  /** Takes the control out of its `Controls`. */
-  remove(): this {
-    this.controls?.remove(this)
-    return this
+  /** The current state. The same object until something changes. */
+  getState = (): State => this.state
+
+  /** Calls `listener` on every change of state, and returns the function that stops it. */
+  subscribe = (listener: ControlStateListener<State>): (() => void) => {
+    this.listeners.add(listener)
+    if (!this.attached) {
+      this.attached = true
+      this.attach()
+      this.update()
+    }
+    return () => {
+      if (!this.listeners.delete(listener) || this.listeners.size > 0 || !this.attached) return
+      this.attached = false
+      this.detach()
+    }
   }
 
-  onAdd(controls: Controls): void {
-    // Added straight to a second Controls with `controls.add`: leave the first one properly
-    if (this.controls !== null && this.controls !== controls) this.detach()
-    this.controls = controls
-    this.attach(controls)
+  /** Recomputes the state, and tells the listeners when it changed. Called for you when the earth changes. */
+  update = (): void => {
+    this.setState(this.computeState())
   }
 
-  onRemove(): void {
+  /** Stops every listener and lets go of the earth. */
+  dispose(): void {
+    this.listeners.clear()
+    if (!this.attached) return
+    this.attached = false
     this.detach()
-    this.controls = null
   }
 
-  /** The control is in a corner: subscribe to the earth and draw the first state. */
-  protected abstract attach(controls: Controls): void
-  /** The control is leaving: unsubscribe. */
+  protected setState(next: State): void {
+    if (shallowEqual(this.state, next)) return
+    this.state = next
+    for (const listener of [...this.listeners]) listener(next)
+  }
+
+  /** The state from the earth and the control's own fields. */
+  protected abstract computeState(): State
+  /** The first listener arrived: subscribe to the earth. */
+  protected abstract attach(): void
+  /** The last listener left: unsubscribe. */
   protected abstract detach(): void
+}
+
+function shallowEqual(a: object, b: object): boolean {
+  const aKeys = Object.keys(a)
+  if (aKeys.length !== Object.keys(b).length) return false
+  for (const key of aKeys) if (!Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) return false
+  return true
 }

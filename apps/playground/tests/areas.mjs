@@ -51,6 +51,7 @@ export const RULES = [
   [new RegExp(`^${LIBRARY}tiles/imagery/GeoreferencedImageOverlay\\.ts$`), ['georef']],
   [new RegExp(`^${LIBRARY}plugins/styleLayerTypes\\.ts$`), ['layers']],
   [new RegExp(`^${LIBRARY}plugins/symbolEffects\\.ts$`), ['symbol-effects']],
+  [new RegExp(`^${PLAYGROUND}controls/`), ['controls', 'accessibility', 'gestures', 'examples']],
   [new RegExp(`^${PLAYGROUND}examples/`), ['examples']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
   [new RegExp(`^${PLAYGROUND}geojson/`), ['geojson']],

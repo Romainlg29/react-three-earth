@@ -22,23 +22,36 @@ export {
   type VideoSourceProps,
 } from './sources.js'
 export { GeoJsonSource, type GeoJsonSourceProps } from './GeoJsonSource.js'
-export { AttributionControl, type AttributionControlProps } from './AttributionControl.js'
+export {
+  AttributionControl,
+  AttributionText,
+  useAttributionControl,
+  type AttributionControlProps,
+  type AttributionControlResult,
+  type UseAttributionControlOptions,
+} from './AttributionControl.js'
 export { MarkerContext, useEarth, useRegisterImagerySource, useRegisterTerrainSource } from './context.js'
 export { useEarthCamera, useEarthEvent, useEarthFrame, useEarthState, useHoverFeatureState, useLayerCursor, usePlugin } from './hooks.js'
 export { Marker, useMarker, type MarkerProps } from './Marker.js'
 export { Popup, type PopupProps } from './Popup.js'
 export {
   Controls,
-  FullscreenControl,
-  GeolocateControl,
-  NavigationControl,
-  ScaleControl,
   useControls,
-  ViewControl,
+  useFullscreenControl,
+  useGeolocateControl,
+  useNavigationControl,
+  useScaleControl,
+  useViewControl,
+  type ControlButtonProps,
   type ControlsProps,
-  type FullscreenControlProps,
-  type GeolocateControlProps,
-  type NavigationControlProps,
-  type ScaleControlProps,
-  type ViewControlProps,
+  type FullscreenControlResult,
+  type GeolocateControlResult,
+  type NavigationControlResult,
+  type ScaleControlResult,
+  type UseFullscreenControlOptions,
+  type UseGeolocateControlOptions,
+  type UseNavigationControlOptions,
+  type UseScaleControlOptions,
+  type UseViewControlOptions,
+  type ViewControlResult,
 } from './controls.js'

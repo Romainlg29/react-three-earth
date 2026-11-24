@@ -72,14 +72,14 @@ export function App() {
         </Imagery>
         <Atmosphere />
         <EarthControls />
-        <AttributionControl />
+        <AttributionControl style={{ position: 'absolute', right: 0, bottom: 0, background: '#fffc' }} />
       </Earth>
     </Canvas>
   )
 }
 ```
 
-The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` shows them all (compact on small screens); tile providers such as OpenStreetMap require visible credit.
+The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` renders them all as unstyled HTML (compact on small screens; place it with a `style` or `className`, the library ships no CSS); tile providers such as OpenStreetMap require visible credit.
 
 ## Quick start (vanilla three.js)
 
@@ -139,7 +139,7 @@ renderer.setAnimationLoop(() => {
 | `<RasterTileSource url levels tileDimensionPixels projection attribution>` | `new RasterTileSource({ … })` | XYZ raster tiles |
 | `<Atmosphere exposure parameters>` | `new Atmosphere({ parameters })`, `install`, `createAerialPerspective` | sky, sun, haze |
 | `<EarthControls enableDamping>` | `new EarthControls(scene, camera, element)` | orbit, pan, zoom |
-| `<AttributionControl compact customAttribution>` | `new AttributionControl({ earth, container, compact })`, `earth.getAttributions()`, `attributionchange` | credit line, compact on small screens |
+| `<AttributionControl className compact customAttribution>`, `useAttributionControl()` | `new AttributionControl({ earth, container, compact })` (`getState`, `subscribe`), `appendAttribution`, `earth.getAttributions()` | credit line, unstyled, compact on small screens |
 | `<Marker longitudeDegrees latitudeDegrees draggable>`, `<Popup>` | `new Marker({ … })`, `new Popup({ … })`, `marker.addTo(earth, container)` | HTML pinned to a place; popups open on click |
 | `useEarth`, `useEarthFrame`, `useEarthState` | | hooks |
 | | `setCameraView`, `toCartesian`, `AtmosphereParameters` | helpers |
@@ -180,7 +180,7 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `coordinates-and-units` | placing objects or the camera at a longitude, latitude and height |
 | `camera-and-events` | MapLibre-style centre and zoom, `jumpTo`, `easeTo` / `flyTo` / `fitBounds`, padding, bounds, project / unproject, clicks with their position, `initialView`, URL hash, events |
 | `markers-and-popups` | HTML pins and labels at a place, popups on click, draggable markers, tooltips, terrain and horizon occlusion |
-| `map-controls` | zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle, translated labels, phone use, keyboard and screen readers |
+| `map-controls` | headless hooks for zoom buttons, compass, scale bar, geolocate, fullscreen, 2D / 3D toggle; translated labels, phone use, keyboard and screen readers |
 | `terrain-and-imagery-sources` | choosing terrain (quantized-mesh, raster-dem) and imagery providers, stacking layers, custom sources |
 | `map-styles` | MapLibre vector styles: sources, fonts, sprite patterns, `addImage`, GeoJSON and clusters, `invalidate` after data changes |
 | `map-labels` | labels facing the viewer or on the ground, collision, priorities, fades, reading labels in tests |

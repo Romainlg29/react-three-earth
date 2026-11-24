@@ -218,7 +218,7 @@ async function controls() {
     page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
     page.on('pageerror', e => errors.push(String(e)))
     await page.goto(BASE + '/?fixtures&stats=0&atmosphere=0')
-    await page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('.react-three-earth-control-button'), null, { timeout: 120_000 })
+    await page.waitForFunction(() => window.earth?.camera.ready === true && document.querySelector('.map-control-button'), null, { timeout: 120_000 })
     return { page, context, errors }
   }
   const buttonSelector = label => `button[aria-label="${label}"]`
@@ -230,9 +230,9 @@ async function controls() {
   const desktop = await openIn({ permissions: ['geolocation'], geolocation: { longitude: -90, latitude: 0.02, accuracy: 60 } }, { width: 1000, height: 640 })
   const { page } = desktop
   const result = {}
-  result.labels = await page.evaluate(() => [...document.querySelectorAll('.react-three-earth-controls button')].map(b => b.getAttribute('aria-label')))
+  result.labels = await page.evaluate(() => [...document.querySelectorAll('.map-corner button')].map(b => b.getAttribute('aria-label')))
   result.corner = await page.evaluate(() => {
-    const box = document.querySelector('.react-three-earth-controls[data-position="top-right"]').getBoundingClientRect()
+    const box = document.querySelector('.map-corner-top-right').getBoundingClientRect()
     return { right: Math.round(innerWidth - box.right), top: Math.round(box.top) }
   })
 
@@ -247,22 +247,22 @@ async function controls() {
   result.zoomOutDelta = (await view(page)).zoom - startZoom
 
   await page.evaluate(() => window.earth.camera.jumpTo({ headingDegrees: 45, pitchDegrees: -50 }))
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-compass-needle')?.style.transform.includes('rotateZ(-45'), null, { timeout: 10_000 })
-  result.compassTurned = await page.evaluate(() => document.querySelector('.react-three-earth-compass-needle').style.transform)
+  await page.waitForFunction(() => document.querySelector('.map-compass-needle')?.style.transform.includes('rotateZ(-45'), null, { timeout: 10_000 })
+  result.compassTurned = await page.evaluate(() => document.querySelector('.map-compass-needle').style.transform)
   await page.click(buttonSelector('Reset bearing to north and look straight down'))
   await settle(page)
   const reset = await view(page)
   result.resetHeading = reset.headingDegrees
   result.resetPitch = reset.pitchDegrees
 
-  result.scaleText = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.textContent ?? null)
-  result.scaleWidth = await page.evaluate(() => document.querySelector('.react-three-earth-scale')?.getBoundingClientRect().width ?? 0)
+  result.scaleText = await page.evaluate(() => document.querySelector('.map-scale')?.textContent ?? null)
+  result.scaleWidth = await page.evaluate(() => document.querySelector('.map-scale')?.getBoundingClientRect().width ?? 0)
   const scaleBefore = result.scaleText
   await page.click(buttonSelector('Zoom in'))
   await page.click(buttonSelector('Zoom in'))
   await settle(page)
-  await page.waitForFunction(before => document.querySelector('.react-three-earth-scale')?.textContent !== before, scaleBefore, { timeout: 10_000 })
-  result.scaleAfterZoom = await page.evaluate(() => document.querySelector('.react-three-earth-scale').textContent)
+  await page.waitForFunction(before => document.querySelector('.map-scale')?.textContent !== before, scaleBefore, { timeout: 10_000 })
+  result.scaleAfterZoom = await page.evaluate(() => document.querySelector('.map-scale').textContent)
 
   await page.click(buttonSelector('Switch to the flat map'))
   await settle(page)
@@ -278,33 +278,33 @@ async function controls() {
 
   // Geolocate: follows the user, dot on the map, a second press stops
   await page.click(buttonSelector('Show my location'))
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-user-dot') !== null, null, { timeout: 20_000 })
+  await page.waitForFunction(() => document.querySelector('.map-user-dot') !== null, null, { timeout: 20_000 })
   await settle(page)
   const found = await view(page)
   result.geolocate = {
     longitude: found.longitudeDegrees,
     latitude: found.latitudeDegrees,
-    pressed: await page.getAttribute('.react-three-earth-control-button[aria-label="Stop following my location"]', 'aria-pressed'),
-    circle: await page.evaluate(() => document.querySelector('.react-three-earth-accuracy-circle') !== null),
+    pressed: await page.getAttribute('.map-control-button[aria-label="Stop following my location"]', 'aria-pressed'),
+    circle: await page.evaluate(() => document.querySelector('.map-accuracy-circle') !== null),
   }
   await page.click(buttonSelector('Stop following my location'))
-  result.geolocate.dotAfterStop = await page.evaluate(() => document.querySelector('.react-three-earth-user-dot') !== null)
+  result.geolocate.dotAfterStop = await page.evaluate(() => document.querySelector('.map-user-dot') !== null)
   writeFileSync(new URL('controls-desktop.png', OUT), await page.screenshot())
 
   // Fullscreen (a user gesture is needed, a click is one)
   await page.click(buttonSelector('Enter fullscreen'))
-  await page.waitForFunction(() => document.fullscreenElement !== null || document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
-  result.fullscreen = await page.evaluate(() => ({ native: document.fullscreenElement !== null, pseudo: document.querySelector('.react-three-earth-pseudo-fullscreen') !== null, pressed: document.querySelector('button[aria-label="Exit fullscreen"]')?.getAttribute('aria-pressed') }))
+  await page.waitForFunction(() => document.fullscreenElement !== null || (() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), null, { timeout: 10_000 })
+  result.fullscreen = await page.evaluate(() => ({ native: document.fullscreenElement !== null, pseudo: (() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), pressed: document.querySelector('button[aria-label="Exit fullscreen"]')?.getAttribute('aria-pressed') }))
   await page.click(buttonSelector('Exit fullscreen'))
-  await page.waitForFunction(() => document.fullscreenElement === null && !document.querySelector('.react-three-earth-pseudo-fullscreen'), null, { timeout: 10_000 })
+  await page.waitForFunction(() => document.fullscreenElement === null && !(() => { const target = document.querySelector('canvas')?.parentElement; return target?.style.position === 'fixed' })(), null, { timeout: 10_000 })
   result.fullscreenExited = true
   await desktop.context.close()
 
   // A phone: touch, 390 × 700. Buttons are 44 pixels and a tap works
   const phone = await openIn({ isMobile: true, hasTouch: true, deviceScaleFactor: 3 }, { width: 390, height: 700 })
   result.phone = await phone.page.evaluate(() => {
-    const sizes = [...document.querySelectorAll('.react-three-earth-controls button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
-    const inside = [...document.querySelectorAll('.react-three-earth-controls')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
+    const sizes = [...document.querySelectorAll('.map-corner button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
+    const inside = [...document.querySelectorAll('.map-corner')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
     return { sizes, inside }
   })
   await settle(phone.page)

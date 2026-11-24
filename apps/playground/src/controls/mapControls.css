@@ -1,0 +1,71 @@
+/*
+ * The playground's look for the library's headless controls: the library ships no CSS, so this file is an example of
+ * styling `useNavigationControl` and the other hooks. Copy it into an app and change it freely.
+ */
+.map-corner {
+  position: absolute; z-index: 2; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
+  max-width: 100%; max-height: 100%; pointer-events: none;
+  --map-control-size: 29px;
+}
+@media (pointer: coarse) { .map-corner { --map-control-size: 44px; } }
+.map-corner-top-right { top: 0; right: 0; align-items: flex-end; padding: calc(10px + env(safe-area-inset-top, 0px)) calc(10px + env(safe-area-inset-right, 0px)) 0 0; }
+.map-corner-bottom-left {
+  bottom: 0; left: 0; align-items: flex-start; justify-content: flex-end;
+  padding: 0 0 calc(28px + env(safe-area-inset-bottom, 0px)) calc(10px + env(safe-area-inset-left, 0px));
+}
+.map-control-group {
+  display: flex; flex-direction: column; overflow: hidden; pointer-events: auto; border-radius: 6px;
+  background: #fff; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1); touch-action: manipulation;
+}
+.map-control-group:has(> .map-control-button[hidden]:only-child) { display: none; }
+.map-control-button {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: center; cursor: pointer;
+  width: var(--map-control-size); height: var(--map-control-size); color: #333; font: 600 12px/1 system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none;
+}
+.map-control-button[hidden] { display: none; }
+.map-control-button + .map-control-button { border-top: 1px solid rgba(0, 0, 0, 0.1); }
+.map-control-button svg { width: 20px; height: 20px; fill: currentColor; pointer-events: none; }
+@media (hover: hover) { .map-control-button:not(:disabled):hover { background: rgba(0, 0, 0, 0.05); } }
+.map-control-button:not(:disabled):active { background: rgba(0, 0, 0, 0.1); }
+.map-control-button:focus-visible { outline: 2px solid #33b5e5; outline-offset: -2px; }
+.map-control-button:disabled { opacity: 0.4; cursor: not-allowed; }
+.map-control-button[data-status="tracking"] { color: #33b5e5; }
+.map-control-button[data-status="background"] { color: #33b5e5; opacity: 0.7; }
+.map-control-button[data-status="waiting"] svg { animation: map-control-pulse 1s ease-in-out infinite; }
+.map-control-button[data-status="error"] { color: #e58978; }
+.map-compass-needle { transition: transform 0.05s linear; transform-origin: 50% 50%; }
+.map-control-button[data-north="true"] .map-compass-needle { opacity: 0.75; }
+.map-scale {
+  box-sizing: border-box; pointer-events: none; white-space: nowrap; text-align: center; padding: 0 5px; min-width: 20px;
+  font: 11px/18px system-ui, sans-serif; color: #333; background: rgba(255, 255, 255, 0.75);
+  border: 2px solid #333; border-top: none; border-radius: 0 0 3px 3px;
+}
+.map-scale[hidden] { display: none; }
+.map-user-dot {
+  width: 15px; height: 15px; box-sizing: border-box; border-radius: 50%; border: 2px solid #fff;
+  background: #33b5e5; box-shadow: 0 0 3px rgba(0, 0, 0, 0.35);
+}
+.map-user-dot[data-stale="true"] { background: #a8a8a8; }
+.map-accuracy-circle { box-sizing: border-box; border-radius: 50%; pointer-events: none; background: rgba(51, 181, 229, 0.2); border: 1px solid rgba(51, 181, 229, 0.5); }
+@keyframes map-control-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .map-control-button[data-status="waiting"] svg { animation: none; }
+  .map-compass-needle { transition: none; }
+}
+
+/* The credits in the bottom-right corner, for <AttributionControl className="map-attribution">. */
+.map-attribution { position: absolute; right: 0; bottom: 0; z-index: 2; max-width: 100%; }
+.map-attribution [role="group"] {
+  box-sizing: border-box; display: flex; align-items: center; justify-content: flex-end; gap: 4px; padding: 2px 6px;
+  font: 11px/1.4 system-ui, sans-serif; color: #333; background: rgba(255, 255, 255, 0.75); border-top-left-radius: 4px;
+}
+.map-attribution [hidden] { display: none; }
+.map-attribution a { color: inherit; text-decoration: underline; }
+.map-attribution .react-three-earth-attribution-text { min-width: 0; text-align: right; }
+.map-attribution .react-three-earth-attribution-toggle {
+  all: unset; box-sizing: border-box; cursor: pointer; font-size: 15px; line-height: 1; width: 20px; height: 20px;
+  display: inline-flex; align-items: center; justify-content: center; border-radius: 50%;
+}
+.map-attribution .react-three-earth-attribution-toggle[hidden] { display: none; }
+.map-attribution .react-three-earth-attribution-toggle:focus-visible { outline: 2px solid currentColor; }

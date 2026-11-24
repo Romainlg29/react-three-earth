@@ -1,48 +1,100 @@
-import { useThree } from '@react-three/fiber/extension'
-import { useLayoutEffect, useRef } from 'react'
-import type { WebGPURenderer } from 'three/webgpu'
+import { useLayoutEffect, useMemo, type CSSProperties } from 'react'
 
-import { AttributionControl as AttributionControlImpl } from '../controls/AttributionControl.js'
+import { AttributionControl as AttributionControlImpl, type AttributionControlOptions, type AttributionControlState } from '../controls/AttributionControl.js'
+import { buttonProps, Controls, localeKey, useControlsContainer, useControlState, type ControlButtonProps } from './controls.js'
 import { useEarth } from './context.js'
 
-export interface AttributionControlProps {
-  /**
-   * `true` shows only a "ⓘ" button that expands the credits, `false` always shows them. Default: automatic,
-   * compact while the container is narrower than 640 CSS pixels.
-   */
-  compact?: boolean
-  /** Credits of your own, shown after the earth's. Text, or HTML where only `<a href="https://…">` links are kept. */
-  customAttribution?: string | readonly string[]
-  /** Where the control goes. Default: the element around the canvas. */
+export interface UseAttributionControlOptions extends Omit<AttributionControlOptions, 'earth' | 'container'> {
+  /** The element whose width decides the automatic compact mode. Default: the element around the canvas. */
   container?: HTMLElement | null
 }
 
+export interface AttributionControlResult extends AttributionControlState {
+  control: AttributionControlImpl
+  toggle: () => void
+  /** Spread on the element around the credits: `role="group"`, its name, `hidden` when there is nothing to credit. */
+  groupProps: { role: 'group'; 'aria-label': string; hidden: boolean }
+  /** Spread on the compact mode's "ⓘ" button: name, `aria-expanded`, press, `hidden` when not compact. */
+  toggleButtonProps: ControlButtonProps & { 'aria-expanded': boolean }
+}
+
 /**
- * Shows the credits of the sources inside `<Earth>` in the bottom-right corner of the canvas, with links, and
- * follows them as sources come and go. Place it anywhere inside `<Earth>`.
+ * The credits of the sources inside `<Earth>`, headless: the vanilla `AttributionControl`'s entries (text and safe
+ * links) and compact mode. Render each entry's segments as text and `<a href>` elements, never as HTML.
  */
-export function AttributionControl({ compact, customAttribution, container }: AttributionControlProps) {
+export function useAttributionControl(options: UseAttributionControlOptions = {}): AttributionControlResult {
   const earth = useEarth()
-  const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
-  const control = useRef<AttributionControlImpl | null>(null)
-  const customKey = typeof customAttribution === 'string' ? customAttribution : customAttribution?.join('\0')
-
-  const parent = container ?? renderer.domElement.parentElement
-  useLayoutEffect(() => {
-    if (parent === null) return
-    const created = new AttributionControlImpl({ earth, container: parent, compact, customAttribution })
-    control.current = created
-    return () => {
-      control.current = null
-      created.dispose()
-    }
-    // compact and customAttribution are applied below without rebuilding the DOM
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [earth, parent])
-
-  useLayoutEffect(() => control.current?.setCompact(compact), [compact])
+  const { container, compact, customAttribution, locale } = options
+  const parent = useControlsContainer(container) ?? undefined
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useLayoutEffect(() => control.current?.setCustomAttribution(customAttribution), [customKey])
+  const control = useMemo(() => new AttributionControlImpl({ earth, container: parent, compact, customAttribution, locale }), [earth, parent, localeKey(locale)])
+  const customKey = typeof customAttribution === 'string' ? customAttribution : customAttribution?.join('\0')
+  // Applied without rebuilding, so the user's expanded state stays
+  useLayoutEffect(() => control.setCompact(compact), [control, compact])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useLayoutEffect(() => control.setCustomAttribution(customAttribution), [control, customKey])
+  const state = useControlState(control)
+  return {
+    ...state,
+    control,
+    toggle: control.toggle,
+    groupProps: { role: 'group', 'aria-label': state.groupLabel, hidden: !state.visible },
+    toggleButtonProps: { ...buttonProps(state.toggleLabel, control.toggle, { hidden: !state.compact }), 'aria-expanded': state.textVisible },
+  }
+}
 
-  return null
+/** The credits as text and links, `separator` between entries. */
+export function AttributionText({ entries, separator = ' | ' }: { entries: AttributionControlState['entries']; separator?: string }) {
+  return (
+    <>
+      {entries.map((entry, index) => (
+        <span key={index}>
+          {index > 0 ? separator : null}
+          {entry.map((segment, segmentIndex) =>
+            segment.href === undefined ? (
+              segment.text
+            ) : (
+              <a key={segmentIndex} href={segment.href} target="_blank" rel="noopener noreferrer">
+                {segment.text}
+              </a>
+            ),
+          )}
+        </span>
+      ))}
+    </>
+  )
+}
+
+export interface AttributionControlProps extends UseAttributionControlOptions {
+  /** Class names for the control's element, added to `react-three-earth-controls react-three-earth-attribution`. Place it with them. */
+  className?: string
+  /** Inline style of the control's element. */
+  style?: CSSProperties
+}
+
+/**
+ * The credits of the sources inside `<Earth>`, as unstyled HTML: a `role="group"` element with the text and links
+ * (`.react-three-earth-attribution-text`) and, in compact mode, an "ⓘ" toggle (`.react-three-earth-attribution-toggle`).
+ * No CSS ships: place and style it with `className`. For markup of your own, use `useAttributionControl`.
+ */
+export function AttributionControl({ className, style, container, ...options }: AttributionControlProps) {
+  return (
+    <Controls className={className === undefined ? 'react-three-earth-attribution' : `react-three-earth-attribution ${className}`} style={style} container={container}>
+      <AttributionContent {...options} container={container} />
+    </Controls>
+  )
+}
+
+function AttributionContent(options: UseAttributionControlOptions) {
+  const attribution = useAttributionControl(options)
+  return (
+    <div {...attribution.groupProps}>
+      <span className="react-three-earth-attribution-text" hidden={!attribution.textVisible}>
+        <AttributionText entries={attribution.entries} />
+      </span>
+      <button className="react-three-earth-attribution-toggle" {...attribution.toggleButtonProps}>
+        ⓘ
+      </button>
+    </div>
+  )
 }
