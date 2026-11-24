@@ -6,6 +6,7 @@ import type { MeshBasicNodeMaterial, NodeMaterial, WebGPURenderer } from 'three/
 import type { GeographicBounds } from '../core/camera.js'
 import type { ImageryCompositor } from '../tiles/imagery/ImageryCompositor.js'
 import type { StyleLayerTypeDefinition, StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
+import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
 import { createCompositeMaterial, createCustomLayerMaterial, setCustomLayerDrawValues } from './customLayerMaterials.js'
 import { HeatmapLayers } from './heatmap/HeatmapLayers.js'
@@ -264,6 +265,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   protected disposed = false
   /** Custom style layer types from plugins (`earth.styleLayerTypes`), handed over by `ImageOverlayPlugin`. */
   protected styleLayerTypes: StyleLayerTypeRegistry | null = null
+  protected removeStyleDataListener: (() => void) | null = null
   protected unsubscribeLayerTypes: (() => void) | null = null
   protected layerTypesScheduled = false
   protected readonly customLayerTypes = new Map<string, CustomLayerType>()
@@ -401,6 +403,10 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     await this.mapStyle.load(typeof this.fetch === 'function' ? (url, init) => this.fetch(String(url), init) : undefined)
     if (this.disposed) return
     this.unsubscribe = this.mapStyle.subscribe(this.receiveStyleChanges)
+    // A layer's metadata can name another symbol effect (after `setStyle`): the labels drawn pick it up.
+    const onStyleData = () => this.screenSymbols?.styleChanged()
+    this.mapStyle.addEventListener('styledata', onStyleData)
+    this.removeStyleDataListener = () => this.mapStyle.removeEventListener('styledata', onStyleData)
     const host: MapStyleBackendHost = {
       onAtlasUpdate: update => this.atlas.apply(update),
       onFeatureColorUpdate: update => this.featureColors.apply(update),
@@ -490,6 +496,14 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.styleLayerTypes = registry
     if (registry !== null) this.unsubscribeLayerTypes = registry.subscribe(() => this.scheduleLayerTypes())
     this.scheduleLayerTypes()
+  }
+
+  /**
+   * The symbol effects (plugins) labels facing the viewer are drawn with, or null for none. `ImageOverlayPlugin`
+   * calls it with `earth.symbolEffects`. Draped labels (`symbols: 'draped'`) keep the standard look.
+   */
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void {
+    this.screenSymbols?.setSymbolEffects(registry)
   }
 
   /** Sends the layer types once per task: plugins installed together cost one recompile. */
@@ -1092,6 +1106,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.screenSymbols?.dispose()
     this.extrusions?.dispose()
     this.unsubscribe?.()
+    this.removeStyleDataListener?.()
+    this.removeStyleDataListener = null
     this.unsubscribe = null
     this.detachSourceQueries?.()
     this.detachSourceQueries = null

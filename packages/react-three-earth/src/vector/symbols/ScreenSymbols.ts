@@ -3,6 +3,7 @@ import { Group, Matrix4, Vector2, Vector3, type Camera, type Mesh } from 'three'
 import type { MeshBasicNodeMaterial } from 'three/webgpu'
 
 import { isOccludedByEllipsoid } from '../../core/projection.js'
+import { getLayerSymbolEffect, type SymbolEffectDefinition, type SymbolEffectRegistry } from '../../plugins/symbolEffects.js'
 import type { ViewMorph } from '../../view/ViewMorph.js'
 import { cameraHeightAboveSurface, computeViewTilePyramid, tileRowToLatitude, toScenePosition } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
@@ -48,6 +49,8 @@ export interface ScreenSymbolsHost {
   readonly opacity: number
   /** Locks a processed symbol tile in the overlay's tile cache. */
   acquireSymbolTile(request: TileRequest): Lease<{ bucket: TileBucket }>
+  /** The style's layers by id, for the symbol effect a layer names in its metadata. */
+  readonly mapStyle?: { getLayerMetadata(layerId: string): unknown }
 }
 
 export interface ScreenSymbolsInspection {
@@ -277,6 +280,12 @@ export class ScreenSymbols {
   protected readonly viewportPixels = { value: new Vector2(1, 1) }
   protected readonly luminance = { value: 1 }
   protected readonly material: MeshBasicNodeMaterial
+  /** Symbol effects from plugins (`earth.symbolEffects`), and one material per effect in use. */
+  protected symbolEffects: SymbolEffectRegistry | null = null
+  protected unsubscribeSymbolEffects: (() => void) | null = null
+  protected readonly effectMaterials = new Map<string, { definition: SymbolEffectDefinition; material: MeshBasicNodeMaterial }>()
+  /** Effect names a layer asked for that no plugin provides, warned about once each. */
+  protected readonly missingEffects = new Set<string>()
   protected requestedKeys = new Set<string>()
   protected lastPyramidMilliseconds = -Infinity
   protected lastPlacementMilliseconds = -Infinity
@@ -495,11 +504,111 @@ export class ScreenSymbols {
     }
   }
 
+  /**
+   * The symbol effects (plugins) to draw with, or null for none. `MapStyleOverlay` calls it with
+   * `earth.symbolEffects`. Changes apply to the tiles already drawn, without processing them again.
+   */
+  setSymbolEffects(registry: SymbolEffectRegistry | null): void {
+    if (registry === this.symbolEffects) return
+    this.unsubscribeSymbolEffects?.()
+    this.unsubscribeSymbolEffects = registry === null ? null : registry.subscribe(() => this.symbolEffectsChanged())
+    this.symbolEffects = registry
+    this.symbolEffectsChanged()
+  }
+
+  /** The style changed: a layer's metadata may name another effect. Free without effects installed. */
+  styleChanged(): void {
+    if (this.symbolEffects === null || (this.symbolEffects.size === 0 && this.effectMaterials.size === 0)) return
+    this.regroupTiles()
+  }
+
+  protected symbolEffectsChanged(): void {
+    if (this.disposed) return
+    // Detached from the earth (a terrain swap, StrictMode): keep the materials for when it comes back.
+    if (this.symbolEffects !== null) {
+      // A material whose effect was removed or registered again is rebuilt on its next use.
+      for (const [name, entry] of this.effectMaterials) {
+        if (this.symbolEffects.get(name) === entry.definition) continue
+        entry.material.dispose()
+        this.effectMaterials.delete(name)
+      }
+    }
+    this.missingEffects.clear()
+    this.regroupTiles()
+  }
+
+  protected regroupTiles(): void {
+    for (const tile of this.tiles.values()) {
+      if (tile.mesh !== null && tile.symbols !== null) this.applySymbolEffects(tile.mesh, tile.symbols)
+    }
+    this.requestFrame?.()
+  }
+
+  /** The material of the effect a layer names, or null for the standard look (none named, or not installed). */
+  protected getEffectMaterial(layerId: string): MeshBasicNodeMaterial | null {
+    // Not attached to an earth yet: no registry to look in, and nothing to warn about.
+    if (this.symbolEffects === null) return null
+    const name = getLayerSymbolEffect({ metadata: this.host.mapStyle?.getLayerMetadata(layerId) })
+    if (name === null) return null
+    const definition = this.symbolEffects.get(name)
+    if (definition === undefined) {
+      if (!this.missingEffects.has(name)) {
+        this.missingEffects.add(name)
+        console.warn(`MapStyleSource: style layer "${layerId}" asks for the symbol effect "${name}", which no installed plugin provides; install the plugin that registers it (context.registerSymbolEffect). Drawing it without the effect.`)
+      }
+      return null
+    }
+    let entry = this.effectMaterials.get(name)
+    if (entry === undefined) {
+      const host = this.host
+      const material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } }, definition)
+      entry = { definition, material }
+      this.effectMaterials.set(name, entry)
+    }
+    return entry.material
+  }
+
+  /**
+   * Gives each label the material of its layer's effect: the tile's triangles are split into consecutive runs
+   * (geometry groups) that share a material, so labels still draw in style order. Without effects, one draw.
+   */
+  protected applySymbolEffects(mesh: Mesh, symbols: SymbolMesh): void {
+    const labelMaterials: Array<MeshBasicNodeMaterial | null> = []
+    const byLayer = new Map<string, MeshBasicNodeMaterial | null>()
+    let anyEffect = false
+    for (const key of symbols.keys) {
+      const layerId = key.slice(0, key.indexOf('\u0000'))
+      let material = byLayer.get(layerId)
+      if (material === undefined) byLayer.set(layerId, (material = this.getEffectMaterial(layerId)))
+      labelMaterials.push(material)
+      if (material !== null) anyEffect = true
+    }
+    const geometry = mesh.geometry
+    geometry.clearGroups()
+    if (!anyEffect) {
+      mesh.material = this.material
+      return
+    }
+    const materials: MeshBasicNodeMaterial[] = [this.material]
+    const groups = splitSymbolDrawRuns(symbols.indices, symbols.labelIndices, label => {
+      const material = labelMaterials[label] ?? this.material
+      let index = materials.indexOf(material)
+      if (index === -1) index = materials.push(material) - 1
+      return index
+    })
+    for (const group of groups) geometry.addGroup(group.start, group.count, group.materialIndex)
+    mesh.material = materials
+  }
+
   dispose(): void {
     this.disposed = true
     for (const tile of this.tiles.values()) this.releaseTile(tile)
     this.tiles.clear()
     this.material.dispose()
+    this.unsubscribeSymbolEffects?.()
+    this.unsubscribeSymbolEffects = null
+    for (const { material } of this.effectMaterials.values()) material.dispose()
+    this.effectMaterials.clear()
     this.state.dispose()
     this.glyphState.dispose()
     this.object.removeFromParent()
@@ -723,6 +832,7 @@ export class ScreenSymbols {
     tile.slotBase = this.state.allocate(count * 2)
     if (symbols.glyphOffsets.length > 0) tile.glyphSlotBase = this.glyphState.allocate(symbols.glyphOffsets.length)
     const mesh = createSymbolTileMesh(symbols, this.material)
+    this.applySymbolEffects(mesh, symbols)
     ;(mesh.userData as SymbolMeshUserData).symbolSlotBase = tile.slotBase
     ;(mesh.userData as SymbolMeshUserData).symbolGlyphSlotBase = Math.max(0, tile.glyphSlotBase)
     mesh.visible = tile.drawn
@@ -1220,6 +1330,21 @@ export class ScreenSymbols {
 
 function meetsBox(left: number, top: number, right: number, bottom: number, box: readonly [number, number, number, number], tolerancePixels: number): boolean {
   return right >= box[0] - tolerancePixels && left <= box[2] + tolerancePixels && bottom >= box[1] - tolerancePixels && top <= box[3] + tolerancePixels
+}
+
+/**
+ * Splits a label mesh's triangles into consecutive runs whose labels share a material index (`materialOf`, per
+ * label index), as geometry groups: `start` and `count` in indices. Draw order is unchanged.
+ */
+export function splitSymbolDrawRuns(indices: ArrayLike<number>, labelIndices: ArrayLike<number>, materialOf: (labelIndex: number) => number): Array<{ start: number; count: number; materialIndex: number }> {
+  const runs: Array<{ start: number; count: number; materialIndex: number }> = []
+  for (let triangle = 0; triangle + 2 < indices.length; triangle += 3) {
+    const materialIndex = materialOf(labelIndices[indices[triangle]!]!)
+    const last = runs.at(-1)
+    if (last !== undefined && last.materialIndex === materialIndex) last.count += 3
+    else runs.push({ start: triangle, count: 3, materialIndex })
+  }
+  return runs
 }
 
 /** Same labels at the same anchors, in the same order. */

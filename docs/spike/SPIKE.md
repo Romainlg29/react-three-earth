@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), complex scripts such as Indic and Thai (right-to-left text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below; right-to-left, complex scripts and vertical text are covered in W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1015,6 +1015,40 @@ could not ship a `<MySource>` component: the layer contexts were internal. `reac
 registration the built-in source components use (registration order, `<Name> must sit inside <Layer>` outside one).
 Unit tests: 4 new (registration and removal for both layers, a new instance replacing the old, the error outside them).
 
+## Plugins (W17), part 5: symbol effects
+
+The design's slot for SDF text and icon effects (section 9), now that labels facing the viewer exist (W6).
+
+- **`context.registerSymbolEffect({ name, shade })`**, kept in `earth.symbolEffects` and handed down like the style
+  layer types (`Earth` → `Terrain` → `ImageOverlayPlugin` → `MapStyleOverlay` → `ScreenSymbols`). `shade` is a TSL
+  function from `{ distance, edge, haloEdge, pixelWidth, fillColor, haloColor, isIcon, scale, standardColor }` to
+  a straight-alpha linear colour; the library still applies the label's fade, the layer's opacity and the flat
+  map's luminance, so an effect cannot break fades. Colour icons are not shaded.
+- **Picked per layer by style metadata**: `"metadata": { "react-three-earth:symbol-effect": "neon" }` on a `symbol`
+  layer. Metadata is the specification's place for extensions, so the style still validates and renders in
+  MapLibre. A name no plugin provides draws the standard look with one warning naming the layer and the effect.
+- **Draw order kept.** One material per effect per source, built on first use. A tile whose labels all use the
+  standard look stays one draw; otherwise its triangles split into consecutive runs per material (geometry
+  groups), so layers still draw in style order. Registering or removing an effect, or a `setStyle` that changes
+  a layer's metadata (MapLibre's diff leaves metadata out, so `MapStyle` copies it over), regroups the tiles
+  already drawn: no tile is processed again. Detached from the earth (terrain swaps, StrictMode), the materials
+  are kept and nothing is warned. A `shade` that throws or returns no node draws the standard look, with an
+  error naming the effect, instead of failing the frame.
+- **Limits.** An effect draws inside each glyph's quad, which reaches the distance field's padding (3 px of a
+  24 px font): wider glows are cut. Draped labels (`symbols: 'draped'`) keep the standard look; their text
+  meshes carry no layer per vertex yet. Per-feature effect parameters beyond the style's colours and halo
+  width are left for later (a `paint` specification like style layer types', without a version bump).
+
+| Check (`?fixtures&map=labels&neon=late`, 40 km, pitched; SwiftShader) | Result |
+| --- | --- |
+| Before the plugin | standard towns, no neon; one warning naming `town-label` and `neon` |
+| Installed at runtime | green text (0.56 % of pixels) with a magenta outline (2.8 %); the same 36 towns placed; no tile processed |
+| Removed | the standard look again (text pixels as before), the warning once more |
+| WebGL2 fallback | the same shares as WebGPU |
+| Unit tests | 10 new: registry, plugin undo, metadata lookup, draw runs, one draw without effects, groups in style order, one material per effect rebuilt when registered again, materials kept while detached, the missing-effect warning, metadata taken from `setStyle` |
+
+![Neon town labels from a symbol effect plugin](symbol-effects.png)
+
 ## Heatmap layers (W11)
 
 MapLibre `heatmap` layers, with every paint property and `heatmap-density`. The plugin design (W17, section 11)
@@ -1336,7 +1370,47 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - Unit tests: `test/scripts.test.ts` (joining forms, ligatures, marks, sections; classes; Hebrew with digits, Latin
   inside right-to-left and the reverse, Arabic numbers and decimals; glyph order, mirroring, wrapping and letter
   spacing in `shapeText`).
-- Next (part 2, 3): Indic and Thai drawn per grapheme cluster with the local font; vertical CJK (`text-writing-mode`).
+
+## W13, part 2: complex scripts (Indic, Thai)
+
+- **Clusters drawn whole** (`worker/clusters.ts`). Devanagari and the other Indic scripts, Thai, Lao, Tibetan,
+  Myanmar, Khmer and Tai Tham are split into grapheme clusters with `Intl.Segmenter` (which keeps Indic conjuncts
+  together, GB9c). Each cluster stands in the text as one plane-15 private-use code point, so glyph loading, the
+  atlas, bidi and line breaking need no change; the glyph provider draws the cluster string with TinySDF on the
+  local font, where the browser's canvas shapes it (MapLibre's local-ideograph path, extended to clusters). Clusters
+  never go to the glyph server, which cannot shape. A cluster can be taller than the 24 px em box TinySDF sizes its
+  canvas for, so clusters use a renderer built for 48 px drawing at 24 px (it sets TinySDF's untyped `ctx.font`;
+  re-check when bumping `@mapbox/tiny-sdf`).
+- **Word breaks.** Thai, Lao, Khmer, Myanmar and Tai Tham get a zero-width space between the words
+  `Intl.Segmenter` finds, a break opportunity for `text-max-width`.
+- No letter spacing on these labels (it would cut the Devanagari headstroke between clusters).
+- Limits: shaping is per cluster, so the rare ligatures across clusters are not formed, and clusters are found per
+  `format` section. The code point registry lives for the worker (65,534 clusters, then text falls back to code
+  points). Each cluster takes an atlas slot per font stack and the glyph atlas never evicts, as for CJK: panning
+  across many South Asian cities in several weights can fill it (new glyphs are then skipped with a warning).
+  Grouping a conjunct like ल्ली into one cluster needs Unicode 15.1 segmentation (ICU 74: current Chrome, Node 22);
+  older engines split it and draw a visible virama. A worker with no OffscreenCanvas keeps the code points and
+  draws the glyph server's unshaped letters, as before.
+- `@mapbox/tiny-sdf` is now pinned (2.3.0) and listed in AGENTS.md with the other private-API overrides.
+- Browser check: `?map=scripts` adds नई दिल्ली and ถนนสุขุมวิท. Unit tests: clusters, reuse, Thai word breaks,
+  `shapeText` with clusters.
+
+## W13, part 3: vertical text (`text-writing-mode`)
+
+- `shapeText` with `vertical` (point labels whose `text-writing-mode` lists `vertical` first, and that hold a CJK
+  character and no right-to-left text) lays lines out as columns, right to left. Upright characters (UAX #50
+  U / Tu, simplified to the CJK, Hangul and fullwidth blocks) advance one em and sit centred on the column;
+  punctuation swaps to its vertical form (U+FE10–U+FE48) when the font has the glyph; runs of other characters
+  are laid out as horizontal text and turned 90° clockwise. A turned glyph is a `ShapedGlyph` with `rotated`,
+  whose quad `layoutPointLabel` turns, so screen labels, collisions and draped labels need no other change.
+- Limits: lines break only at spaces, so a long CJK name stays one tall column where MapLibre breaks between
+  ideographs; turned Latin runs sit on the horizontal line box, a few pixels off the column centre (MapLibre adds
+  a fixed correction); UAX #50 orientation is simplified to block ranges with a short list of turned exceptions.
+- Deviation from MapLibre: only the first writing mode is used (MapLibre places the next mode when the first
+  collides, which would mean shipping two layouts to the main thread). Line labels stay horizontal.
+- Browser check: `?map=scripts` adds two vertical Japanese names (one with a Latin letter); they must stand more
+  than twice as tall as wide. Unit tests: upright stacking, turned Latin runs, columns, vertical forms, horizontal
+  fallback, turned quads.
 
 ## W14: image and video sources
 

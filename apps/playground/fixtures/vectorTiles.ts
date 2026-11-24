@@ -24,13 +24,19 @@ const TOWNS = Array.from({ length: 12 * 10 }, (_, index) => {
 
 /**
  * Place names in other scripts (`?map=scripts`), in a column west of the mountain, for the right-to-left and
- * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, and Latin mixed with Hebrew.
+ * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, Latin mixed with Hebrew,
+ * Hindi (conjuncts, vowel signs) and Thai (marks above and below); further west, two vertical Japanese names, one
+ * with a Latin letter turned in its column.
  */
 export const SCRIPT_PLACES = [
   { name: 'القاهرة', position: [138.62, 35.42] },
   { name: 'תל אביב', position: [138.62, 35.39] },
   { name: 'شارع السلام 12', position: [138.62, 35.36] },
   { name: 'Haifa (חיפה)', position: [138.62, 35.33] },
+  { name: 'नई दिल्ली', position: [138.62, 35.30] },
+  { name: 'ถนนสุขุมวิท', position: [138.62, 35.27] },
+  { name: '東京都庁', position: [138.55, 35.38], vertical: true },
+  { name: '富士Q', position: [138.52, 35.38], vertical: true },
 ] as const
 
 /** A road grid every 0.05 degrees; every other road is a primary. */
@@ -131,7 +137,7 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
   const scripts: EncodedFeature[] = []
   for (const place of SCRIPT_PLACES) {
     const point = project(place.position[0], place.position[1], z, x, y)
-    if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) scripts.push({ type: 'Point', geometry: [[point]], properties: { name: place.name } })
+    if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) scripts.push({ type: 'Point', geometry: [[point]], properties: { name: place.name, vertical: 'vertical' in place } })
   }
   const buildings: EncodedFeature[] = []
   if (z >= 13) {
@@ -281,7 +287,7 @@ export function fixtureStyle({ live = false }: { live?: boolean } = {}): object 
  * the places, sort by rank, grow with zoom (12 px at zoom 9 to 16 px at zoom 13) and try five anchors. Places
  * have icons from the fixture sprite: a red pin, and Mount Fuji a blue SDF disc with a white halo, text below.
  */
-export function fixtureLabelStyle(): object {
+export function fixtureLabelStyle({ symbolEffect }: { symbolEffect?: string | null } = {}): object {
   const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
   const placeIndex = base.layers.findIndex(layer => layer.id === 'place-label')
   const towns = {
@@ -299,6 +305,8 @@ export function fixtureLabelStyle(): object {
       'text-variable-anchor': ['center', 'left', 'right', 'top', 'bottom'],
     },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+    // A symbol effect from a plugin (`?neon` in the playground), named in the layer's metadata.
+    ...(symbolEffect ? { metadata: { 'react-three-earth:symbol-effect': symbolEffect } } : {}),
   }
   const places = base.layers[placeIndex] as { layout: Record<string, unknown>; paint: Record<string, unknown> }
   const placesWithIcons = {
@@ -317,10 +325,12 @@ export function fixtureScriptStyle(): object {
     type: 'symbol',
     source: 'fixture',
     'source-layer': 'scripts',
+    filter: ['!', ['get', 'vertical']],
     layout: { 'text-field': ['get', 'name'], 'text-size': 22, 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': true, 'text-ignore-placement': true },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
   }
-  return { ...base, layers: [...base.layers, scripts] }
+  const verticalScripts = { ...scripts, id: 'script-vertical-label', filter: ['get', 'vertical'], layout: { ...scripts.layout, 'text-writing-mode': ['vertical'] } }
+  return { ...base, layers: [...base.layers, scripts, verticalScripts] }
 }
 
 /**

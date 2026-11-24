@@ -6,6 +6,7 @@ import type { EarthEventMap, EarthEventType } from '../core/events.js'
 import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js'
 import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
+import type { SymbolEffectDefinition } from './symbolEffects.js'
 import { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugin.js'
 
 /** Per-plugin statistics in `earth.inspect().plugins`. */
@@ -98,6 +99,13 @@ export class PluginInstallation implements PluginContext {
   registerStyleLayerType(definition: StyleLayerTypeDefinition): () => void {
     this.requireActive('registerStyleLayerType')
     const remove = this.earth.styleLayerTypes.register(definition)
+    this.undoSteps.push(remove)
+    return remove
+  }
+
+  registerSymbolEffect(definition: SymbolEffectDefinition): () => void {
+    this.requireActive('registerSymbolEffect')
+    const remove = this.earth.symbolEffects.register(definition)
     this.undoSteps.push(remove)
     return remove
   }

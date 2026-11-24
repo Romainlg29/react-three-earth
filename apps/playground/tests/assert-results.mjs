@@ -3,6 +3,11 @@
 import { readFileSync } from 'node:fs'
 
 const results = JSON.parse(readFileSync(new URL('../test-results/results.json', import.meta.url), 'utf8'))
+// A run of some areas (run.mjs labels, run.mjs --changed) skips the other checks: only a full run reports them missing.
+let selection = { every: true }
+try {
+  selection = JSON.parse(readFileSync(new URL('../test-results/selection.json', import.meta.url), 'utf8'))
+} catch {}
 
 /** check name → assertions on its result, each [description, passes]. */
 const expectations = {
@@ -337,6 +342,19 @@ function effectExpectations(r, { glowIsMagenta }) {
   ]
 }
 
+// The symbol effect example (src/symbolEffects/): towns turn neon when the plugin is installed, back when removed.
+for (const name of ['webgpu', 'webgl2']) {
+  expectations[`symbol effects, ${name}`] = r => [
+    ['before the plugin, towns draw the standard look, with no neon', r.before.towns > 10 && r.before.standardShare > 0.003 && r.before.greenShare < 0.0005],
+    // Once while the plugin is missing, once again after it was removed.
+    ['a warning names the layer and the missing effect, once per absence', r.warnings.length === 2 && r.warnings.every(warning => warning.includes('"town-label"') && warning.includes('"neon"'))],
+    ['installed, towns draw neon: green text with a magenta outline, fewer pixels of the standard text colour (roads share it)', r.installed.greenShare > 0.002 && r.installed.magentaShare > 0.005 && r.installed.standardShare < r.before.standardShare * 0.9],
+    ['the same towns show (placement is unchanged)', Math.abs(r.installed.towns - r.before.towns) <= 2],
+    ['installing processes no tile again', r.tilesProcessedOnInstall === 0],
+    ['removed, the standard look is back', r.removed.greenShare < 0.0005 && r.removed.standardShare > r.before.standardShare * 0.8],
+  ]
+}
+
 // Screen-space labels on a dense grid of towns (124 labels, a third fit at 40 km).
 const screenLabels = (r, textShare = 0.005) => [
   ...(textShare === null ? [] : [[`text draws (over ${textShare * 100} % text pixels)`, r.textShare > textShare]]),
@@ -358,11 +376,12 @@ expectations['screen-space labels, atmosphere on'] = r => screenLabels(r, null)
 // Unlit on the flat map: the same placement as the top-down globe, thinner text against the grey land.
 expectations['screen-space labels, 2d'] = r => screenLabels(r, 0.002)
 // Place names in other scripts: each shows, reported as the style gives it, and draws text.
-const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)']
+const SCRIPT_NAMES = ['القاهرة', 'תל אביב', 'شارع السلام 12', 'Haifa (חיפה)', 'नई दिल्ली', 'ถนนสุขุมวิท']
 for (const name of ['top-down', 'webgl2']) {
   expectations[`script labels, ${name}`] = r => [
     ['every script label shows, with its text in reading order', SCRIPT_NAMES.every(text => r.labels.some(l => l.text === text))],
     ['every script label draws text pixels', r.labels.length > 0 && r.labels.every(l => l.textPixels > 30)],
+    ['the vertical Japanese labels stand taller than wide', ['東京都庁', '富士Q'].every(text => (r.labels.find(l => l.text === text)?.heightOverWidth ?? 0) > 2)],
   ]
 }
 for (const name of ['road names, pitched', 'road names, top-down']) {
@@ -404,8 +423,13 @@ expectations['3d buildings, draped'] = r => [
 ]
 
 let failures = 0
+let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)
+  if (result === undefined && !selection.every) {
+    skipped++
+    continue
+  }
   if (result === undefined) {
     console.error(`✗ ${check}: missing from results.json`)
     failures++
@@ -418,6 +442,8 @@ for (const [check, assertions] of Object.entries(expectations)) {
   }
   if (result.errors.length > 0) console.error(result.errors.join('\n'))
 }
+
+if (skipped > 0) console.log(`\n${skipped} check(s) outside ${selection.areas.join(', ') || 'the selected areas'} skipped: run the full suite before merging.`)
 
 if (failures > 0) {
   console.error(`\n${failures} browser check assertion(s) failed.`)

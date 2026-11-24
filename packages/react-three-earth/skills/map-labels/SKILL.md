@@ -5,10 +5,11 @@ description: >
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
-  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, reading the labels on the screen in tests
-  (earth.terrain.getScreenLabels), and what labels do not do yet.
+  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, Hindi and Thai, vertical CJK
+  (text-writing-mode), reading the labels on the screen in tests (earth.terrain.getScreenLabels), custom label
+  looks from a plugin (registerSymbolEffect: neon, glow, outline, gradient text), and what labels do not do yet.
 metadata:
-  purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, and current limits.'
+  purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, symbol effects from plugins, and current limits.'
   type: core
   library: 'react-three-earth'
   library_version: '0.0.0'
@@ -18,9 +19,13 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/SymbolPlacement.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/symbolEffects.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/symbolMaterial.ts'
+  - 'Romainlg29/react-three-earth:apps/playground/src/symbolEffects/neonLabels.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/labels.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/bidi.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/arabic.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/clusters.ts'
 requires:
   - map-styles
 ---
@@ -120,6 +125,86 @@ orders the text itself.
 - Not covered: explicit direction controls (U+202A–U+202E, U+2066–U+2069 are ignored), and bracket pairing
   (UAX #9 rule N0), which rarely matters in a name.
 
+### Hindi, Thai and other complex scripts
+
+Devanagari and the other Indic scripts, Thai, Lao, Tibetan, Myanmar and Khmer need a shaping engine, which glyph
+servers do not have. Each grapheme cluster (a conjunct with its vowel signs, a Thai consonant with its marks) is
+drawn whole by the local font, as MapLibre does for local CJK ideographs:
+
+- `localFontFamily` (default `sans-serif`) must cover these scripts; system fonts usually do. The style's glyph
+  server is not asked for them.
+- Thai, Lao, Khmer and Myanmar have no spaces between words: lines (`text-max-width`) may break between words found
+  by `Intl.Segmenter`. Without `Intl.Segmenter` the text draws code point by code point, unshaped.
+- `text-letter-spacing` is ignored on these labels, which would break the clusters' joins.
+- Shaping across clusters (a few Indic ligatures span two) is not done: each cluster is shaped on its own.
+
+### Vertical Japanese, Chinese and Korean
+
+`"text-writing-mode": ["vertical"]` on a point-placed symbol layer stands CJK names in columns, read top to bottom,
+the next line in a column to the left. CJK characters stand upright, one em each, punctuation takes its vertical
+form (、 → ︑, 「 → ﹁) when the font has it, and other characters (Latin, digits) turn 90° clockwise inside the
+column. Names with no CJK character, or with right-to-left text, stay horizontal.
+
+```json
+{
+  "id": "station-label",
+  "type": "symbol",
+  "source": "openmaptiles",
+  "source-layer": "poi",
+  "layout": { "text-field": ["get", "name:ja"], "text-font": ["Noto Sans Regular"], "text-writing-mode": ["vertical", "horizontal"] }
+}
+```
+
+Only the first mode is used: MapLibre tries the next one when the first collides, here a vertical label that
+collides hides. Line-placed labels stay horizontal.
+
+### Give labels a custom look (symbol effects)
+
+A plugin registers a symbol effect: a TSL function from the glyph's signed distance to a colour. A `symbol`
+layer opts in through its `metadata`, so the style stays valid for MapLibre, which ignores it:
+
+```json
+{ "id": "town-label", "type": "symbol", "metadata": { "react-three-earth:symbol-effect": "neon" }, "layout": {}, "paint": {} }
+```
+
+```ts
+import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { Color } from 'three'
+import { max, min, mix, smoothstep, uniform, vec4 } from 'three/tsl'
+
+export function neonLabels(): EarthPlugin {
+  const core = uniform(new Color('#39ff14')) // a uniform: recolouring needs no new pipeline
+  const outline = uniform(new Color('#ff2bd6'))
+  return {
+    name: 'neon-labels',
+    apiVersion: PLUGIN_API_VERSION,
+    install(context) {
+      context.registerSymbolEffect({
+        name: 'neon',
+        // Linear RGB, straight alpha. The library applies fades, layer opacity and the flat map's luminance.
+        shade: ({ distance, edge, haloEdge, distancePerPixel, fillColor }) => {
+          const smoothing = distancePerPixel.mul(0.7)
+          const inside = smoothstep(edge.sub(smoothing), edge.add(smoothing), distance)
+          const outlineEdge = max(min(haloEdge, edge.sub(distancePerPixel)), 0.05) // the halo's band, or 1 px
+          const outlined = smoothstep(outlineEdge.sub(smoothing), outlineEdge.add(smoothing), distance)
+          return vec4(mix(outline, core, inside), max(inside, outlined).mul(fillColor.a))
+        },
+      })
+    },
+  }
+}
+```
+
+The inputs are `distance` (0 far outside, `edge` = 0.75 on the outline, 1 inside), `haloEdge` (where
+`text-halo-width` ends), `distancePerPixel` (distance units per screen pixel), `fillColor` and `haloColor`
+(the style's data-driven colours, linear), `isIcon` (1 for SDF icons), `scale` (`text-size` / 24, or the
+icon's scale) and `standardColor` (the default fill over halo, to wrap rather than replace). Placement,
+collision and colour icons are unchanged. One material per effect per map style source; a tile mixing
+layers with and without effects draws in a few calls, in style order. Installing or removing the plugin,
+or a `setStyle` that changes a layer's metadata, restyles the labels on the screen without processing
+tiles again. A `shade` that throws draws the standard look and logs an error naming the effect. The
+playground example is `?fixtures&map=labels&neon`.
+
 ### Read the labels on the screen (tests, devtools)
 
 ```ts
@@ -137,6 +222,17 @@ Each entry has `text` (as the style gives it, in reading order), `xPixels` / `yP
 count; collided ones do not.
 
 ## Common Mistakes
+
+### HIGH: A glow wider than the glyph's padding
+
+An effect draws inside each glyph's quad, which reaches 3 pixels of a 24 px font past the glyph (the
+distance field's padding, 1.5 px at 12 px). A wider glow or outline is cut at the quad's edge, in a square.
+For a wide glow around roads or areas, register a style layer type with reach (write-a-plugin).
+
+### MEDIUM: Expecting a symbol effect on draped labels
+
+Effects apply to labels facing the viewer (the default). With `symbols="draped"`, labels keep the standard
+look; the layer's effect name is ignored.
 
 ### MEDIUM: Expecting a label to hide the instant a ridge covers it
 
