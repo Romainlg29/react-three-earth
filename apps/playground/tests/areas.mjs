@@ -33,19 +33,17 @@ const PLAYGROUND = 'apps/playground/src/'
 export const RULES = [
   [/^apps\/playground\/(tests|fixtures)\//, ALL],
   [/^apps\/playground\/(index\.html|vite\.config\.ts|package\.json)$/, ALL],
-  [new RegExp(`^${LIBRARY}vector/heatmap/`), ['heatmap']],
   [new RegExp(`^${LIBRARY}vector/extrusions/`), ['buildings']],
-  [new RegExp(`^${LIBRARY}vector/symbols/`), ['labels', 'roads']],
-  [new RegExp(`^${LIBRARY}vector/raster/`), ['relief']],
-  [new RegExp(`^${LIBRARY}(vector|react)/GeoJsonSource\\.tsx?$`), ['geojson']],
+  [new RegExp(`^${LIBRARY}vector/raster/`), ['relief', 'dem', 'exaggeration']],
+  [new RegExp(`^${LIBRARY}(vector|react)/GeoJsonSource\\.tsx?$`), ['geojson', 'heatmap']],
   [new RegExp(`^${LIBRARY}vector/`), VECTOR_CORE],
-  [new RegExp(`^${LIBRARY}tiles/(dem/|RasterDemTerrainPlugin\\.ts$|terrainHeights\\.ts$)`), ['dem', 'exaggeration', 'relief']],
-  [new RegExp(`^${LIBRARY}(controls/AttributionControl\\.ts|core/attribution\\.ts|react/AttributionControl\\.tsx)$`), ['attribution']],
+  [new RegExp(`^${LIBRARY}tiles/(dem/|RasterDemTerrainPlugin\\.ts$)`), ['dem', 'exaggeration', 'relief']],
+  [new RegExp(`^${LIBRARY}(controls/AttributionControl\\.ts|react/AttributionControl\\.tsx)$`), ['attribution']],
   [new RegExp(`^${LIBRARY}(controls/|react/controls\\.tsx$)`), ['controls']],
-  [new RegExp(`^${LIBRARY}(core/(Marker|Popup|markerLayout|GeographicAnchor|containerPosition)\\.ts|react/(Marker|Popup|domRoot)\\.tsx)$`), ['markers']],
-  [new RegExp(`^${LIBRARY}core/cameraAnimation\\.ts$`), ['animations']],
+  [new RegExp(`^${LIBRARY}(core/(Marker|Popup|markerLayout)\\.ts|react/(Marker|Popup|domRoot)\\.tsx)$`), ['markers']],
+  [new RegExp(`^${LIBRARY}core/cameraAnimation\\.ts$`), ['animations', 'camera', 'controls']],
   [new RegExp(`^${LIBRARY}(core/(EarthControls|TouchGestures)\\.ts|react/EarthControls\\.tsx)$`), ['camera', 'animations', 'controls']],
-  [new RegExp(`^${LIBRARY}core/(featureQuery|LayerEvents)\\.ts$`), ['query']],
+  [new RegExp(`^${LIBRARY}core/(featureQuery|LayerEvents)\\.ts$`), ['query', 'labels', 'roads']],
   [new RegExp(`^${LIBRARY}(plugins/(drapedLayers|renderPasses)\\.ts|tiles/imagery/DrapedLayerOverlay\\.ts|core/ScreenOverlay\\.ts)$`), ['effects']],
   [new RegExp(`^${LIBRARY}plugins/styleLayerTypes\\.ts$`), ['layers']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
@@ -72,16 +70,22 @@ export function areasForFiles(files) {
 
 /** Files changed since the merge base with `base`, plus uncommitted and untracked ones. */
 export function changedFiles(base = 'origin/master') {
-  const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).split('\n').filter(Boolean)
-  const mergeBase = git('merge-base', base, 'HEAD')[0]
-  return [...new Set([...git('diff', '--name-only', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])]
+  const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).split('\n').filter(Boolean)
+  let mergeBase
+  try {
+    mergeBase = git('merge-base', base, 'HEAD')[0]
+  } catch {
+    throw new Error(`No merge base with ${base}: run \`git fetch origin master\` (unshallow a shallow clone with \`git fetch --unshallow\`), or pass --changed=<base>`)
+  }
+  return [...new Set([...git('diff', '--name-only', '--no-renames', mergeBase), ...git('ls-files', '--others', '--exclude-standard')])]
 }
 
-/** Areas from command-line arguments: `null` runs every area. Unknown names throw with the list of valid ones. */
+/** Areas from command-line arguments, every area when none is named. Unknown names throw with the list of valid ones. */
 export function selectAreas(argv) {
   const changed = argv.find(argument => argument.startsWith('--changed'))
   if (changed !== undefined) {
-    const files = changedFiles(changed.includes('=') ? changed.slice(changed.indexOf('=') + 1) : undefined)
+    if (argv.some(argument => !argument.startsWith('-'))) throw new Error('Pass either --changed or area names, not both')
+    const files = changedFiles(changed.slice(changed.indexOf('=') + 1 || changed.length) || undefined)
     return areasForFiles(files)
   }
   const names = argv.filter(argument => !argument.startsWith('-'))
