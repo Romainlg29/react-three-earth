@@ -44,6 +44,8 @@ export interface ExampleShellProps {
   controls?: ComponentProps<typeof EarthControls>
   /** Receives the vanilla `Earth` once mounted: the panel's buttons drive `earth.camera`. */
   onEarth?: (earth: EarthImpl) => void
+  /** Shows the card with the title and panel. Default: true. */
+  showCard?: boolean
   /** The DOM around the canvas, for an example that embeds the map in a page. Default: the whole window. */
   className?: string
 }
@@ -53,7 +55,7 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, panel, controls, onEarth, className = 'example-canvas' }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, panel, controls, onEarth, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
@@ -67,23 +69,25 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
           <MapControls />
         </Earth>
       </Canvas>
-      <section className="example-card" aria-label={title} data-collapsed={collapsed}>
-        <header>
-          <a className="example-back" href={`${import.meta.env.BASE_URL}examples.html`} aria-label="All examples">
-            ‹
-          </a>
-          <h1>{title}</h1>
-          <button type="button" className="example-toggle" aria-expanded={!collapsed} aria-label={collapsed ? 'Show details' : 'Hide details'} onClick={() => setCollapsed(value => !value)}>
-            {collapsed ? '+' : '−'}
-          </button>
-        </header>
-        {collapsed ? null : (
-          <div className="example-body">
-            <p>{description}</p>
-            {panel}
-          </div>
-        )}
-      </section>
+      {showCard ? (
+        <section className="example-card" aria-label={title} data-collapsed={collapsed}>
+          <header>
+            <a className="example-back" href={`${import.meta.env.BASE_URL}examples.html`} aria-label="All examples">
+              ‹
+            </a>
+            <h1>{title}</h1>
+            <button type="button" className="example-toggle" aria-expanded={!collapsed} aria-label={collapsed ? 'Show details' : 'Hide details'} onClick={() => setCollapsed(value => !value)}>
+              {collapsed ? '+' : '−'}
+            </button>
+          </header>
+          {collapsed ? null : (
+            <div className="example-body">
+              <p>{description}</p>
+              {panel}
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   )
 }
