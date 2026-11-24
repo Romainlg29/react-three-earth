@@ -1138,32 +1138,39 @@ cooperativeGestures>`), skill `map-controls`.
 
 - **Box zoom.** A capture `pointerdown` listener on the controls' element (it runs before 3DTilesRenderer's own
   listener there, whatever the order of registration) takes `Shift` + left drag with a mouse or pen, draws a DOM box,
-  and on release unprojects nine points of the box (centre, corners, edge middles; sky points are dropped), takes
-  the longitude-latitude box around them (`boundsAroundPositions`, unwrapped around the centre, so a box over the
-  antimeridian comes back with west > east) and calls `camera.fitBounds(..., { linear: true })`, which keeps heading
-  and pitch and honours reduced motion. Under 3 pixels it is a click; `Escape` cancels. On by default, as in MapLibre.
-  It replaces 3DTilesRenderer's `Shift` + left drag rotation; the right button still rotates.
+  and on release eases (`camera.easeTo`, so reduced motion is honoured) to the ground under the box's centre, zoomed
+  by `log2(min(viewport / box))` on each side (`boxZoomLevels`, as MapLibre's `fitScreenCoordinates`), keeping heading
+  and pitch. Measured on screen, it holds when the map is turned or tilted, where a longitude-latitude fit (the first
+  version) under-zoomed by up to a level. When the centre is sky, it fits the box around nine ground samples instead
+  (`boundsAroundPositions`, antimeridian-aware). Under 3 pixels it is a click; `Escape` or leaving the window cancels.
+  The click the release fires is swallowed (it would be a map `click`). Only on the map itself: a `Shift` + press on
+  a marker, popup or control stays theirs. On by default, as in MapLibre. It replaces 3DTilesRenderer's `Shift` + left
+  drag rotation; the right button still rotates. `GeolocateControl` now listens for user input in the capture phase
+  (ignoring presses on controls), so a box zoom also stops following the user.
 - **Cooperative gestures.** Off by default. A capture `wheel` listener stops wheel turns without `Ctrl` / `⌘` before
   the pointer controls see them, without `preventDefault`, so the page scrolls. For touch, `TouchGestures` already
   listens on the window in the capture phase, sees every finger, and takes the gesture over at the second finger
   (the controls get a synthetic `pointerup` for the first). So cooperative mode only stops every touch `pointerdown`
   from reaching the pointer controls (one finger never drags, and the finger handed back after a pinch never drags
-  either), sets `touch-action: pan-x pan-y` (after the controls' `none`) so one finger scrolls the page, and cancels
+  either; draggable markers, popups and controls keep their touches, a plain marker's tap still opens its popup),
+  sets `touch-action: pan-x pan-y` (after the controls' `none`) so one finger scrolls the page, and cancels
   `touchstart` / `touchmove` with two touches so the page neither pans nor zooms then. Two-finger gestures run
   through the same `TouchGestures` code as before; with the option off nothing changes for touch.
 - **Hint.** A `role="status"` overlay with `aria-live="polite"`, created when the mode turns on (a live region must
-  exist before its text changes), shown for 1.5 s; texts in `CooperativeGesturesLocale`, `⌘` on Apple platforms.
+  exist before its text changes), shown for 1.5 s and emptied when it fades (no stale text for screen readers, and
+  the next hint is announced again); texts in `CooperativeGesturesLocale`, `⌘` on Apple platforms.
 
 Changed from the brief: no pointer-move filtering for touch (the first idea); stopping `pointerdown` at the element is
 enough because `TouchGestures` sees fingers on the window first.
 
-Not supported yet: box zoom by touch (MapLibre has none either); one-finger double-tap zoom in cooperative mode; a
+Not supported yet: box zoom by touch (MapLibre has none either); the sky fallback samples nine points, so a pole
+inside the box can be cut off; one-finger double-tap zoom in cooperative mode; a
 finger that has already started scrolling the page keeps scrolling when the second lands (the browser owns it).
 
 | Check | Result |
 | --- | --- |
 | Unit tests | `test/gestures.test.ts`: bounds around points, across the antimeridian, too few points; sample points; box zoom fits the ground under the box and hides the drag from the pointer controls; plain, right-button and touch drags pass through; tiny box, `Escape`, disabled and mid-morph do nothing; wheel and touch decisions; plain wheel not prevented and hidden from the controls with a hint that fades; `Ctrl` + wheel passes; touch `pointerdown` stopped, mouse passes; one-finger `touchmove` not prevented (hint), two-finger prevented; off changes nothing and turning off restores `touch-action` |
-| Browser (`box zoom and cooperative gestures`, SwiftShader) | `Shift` + drag of a 200 × 120 px box on 1000 × 640 zooms +2.15 (ideal fit 2.32), centred 0.004° from the box centre, heading kept, box removed |
+| Browser (`box zoom and cooperative gestures`, SwiftShader) | `Shift` + drag of a 200 × 120 px box on 1000 × 640 zooms by log2 5 = 2.32, centred on the box, heading kept, box removed, no map `click` |
 | | cooperative: a plain wheel zooms 0 with the hint shown; `Ctrl` + wheel zooms +0.41 |
 | | cooperative on a 390 px phone (CDP touch events): one finger moves the map 0° with the hint; two fingers spreading zoom +1.78 |
 | | default on the phone: one finger still pans (0.13°), two fingers zoom +2.18, no hint |

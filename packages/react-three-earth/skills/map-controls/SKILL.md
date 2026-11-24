@@ -177,14 +177,15 @@ override for other bindings); `keyboardAction(press, steps)` is the binding tabl
 
 ### Box zoom and cooperative gestures
 
-`Shift` + drag with the mouse draws a box; releasing eases the camera to fit the ground inside it, keeping heading and
-pitch (`Escape` cancels). It takes `Shift` + drag over from rotating: rotate with the right button, as in MapLibre.
+`Shift` + drag with the mouse on the map draws a box; releasing eases the camera to centre the box and zoom until it
+fills the screen, keeping heading and pitch (`Escape` cancels; the release is not a map `click`). It takes `Shift` + drag over from rotating: rotate with the right button, as in MapLibre.
 `boxZoom={false}` gives `Shift` + drag back to rotation. The box is `.react-three-earth-box-zoom`, styled by
 `--react-three-earth-box-zoom-border` and `--react-three-earth-box-zoom-background`.
 
 For a map inside a page that scrolls, turn on `cooperativeGestures`: the wheel then zooms only with `Ctrl` (`⌘` on
 Apple systems), and one finger scrolls the page while two fingers pinch, twist, pan and tilt the map. A hint over the
 map says so, in a `role="status"` region screen readers announce. One-finger double-tap zoom is off in this mode.
+Draggable markers, popups and controls keep their own touches, and popups and controls their wheel.
 
 ```tsx
 import { EarthControls } from 'react-three-earth/react'

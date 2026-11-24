@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { boundsAroundPositions, BoxZoom, boxSamplePoints } from '../src/core/BoxZoom.js'
+import { boundsAroundPositions, BoxZoom, boxSamplePoints, boxZoomLevels } from '../src/core/BoxZoom.js'
 import type { GeographicBounds } from '../src/core/camera.js'
 import { CooperativeGestures, touchDecision, wheelDecision } from '../src/core/CooperativeGestures.js'
 import type { Earth } from '../src/core/Earth.js'
@@ -37,6 +37,13 @@ describe('boundsAroundPositions', () => {
   it('is null with fewer than two points', () => {
     expect(boundsAroundPositions([])).toBeNull()
     expect(boundsAroundPositions([{ longitudeDegrees: 0, latitudeDegrees: 0 }])).toBeNull()
+  })
+})
+
+describe('boxZoomLevels', () => {
+  it('zooms until the box fills the narrower side of the viewport', () => {
+    expect(boxZoomLevels({ xPixels: 0, yPixels: 0 }, { xPixels: 250, yPixels: 100 }, 1000, 600)).toBeCloseTo(2)
+    expect(boxZoomLevels({ xPixels: 300, yPixels: 400 }, { xPixels: 100, yPixels: 100 }, 800, 600)).toBeCloseTo(1)
   })
 })
 
@@ -103,6 +110,38 @@ describe('BoxZoom', () => {
     expect(fits[0]!.northDegrees).toBeCloseTo(-1)
     expect(fits[0]!.southDegrees).toBeCloseTo(-2)
     expect(element.querySelector('.react-three-earth-box-zoom')).toBeNull()
+  })
+
+  it('swallows the click that the release of a box fires, but not a plain Shift + click', async () => {
+    const { canvas } = setUp()
+    const clicks = vi.fn()
+    canvas.addEventListener('click', clicks)
+    pointer('pointerdown', canvas, { shiftKey: true, clientX: 100, clientY: 100 })
+    pointer('pointerup', canvas, { clientX: 300, clientY: 200 })
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(clicks).not.toHaveBeenCalled()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    pointer('pointerdown', canvas, { shiftKey: true, clientX: 100, clientY: 100 })
+    pointer('pointerup', canvas, { clientX: 100, clientY: 100 })
+    canvas.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    expect(clicks).toHaveBeenCalledOnce()
+  })
+
+  it('leaves Shift + drag on a marker or control to it', () => {
+    const { element, controlsSaw, boxZoom } = setUp()
+    const marker = document.createElement('button')
+    marker.className = 'react-three-earth-marker'
+    element.append(marker)
+    pointer('pointerdown', marker, { shiftKey: true })
+    expect(boxZoom.active).toBe(false)
+    expect(controlsSaw).toHaveBeenCalledOnce()
+  })
+
+  it('cancels when the window loses focus', () => {
+    const { canvas, boxZoom } = setUp()
+    pointer('pointerdown', canvas, { shiftKey: true, clientX: 100, clientY: 100 })
+    window.dispatchEvent(new Event('blur'))
+    expect(boxZoom.active).toBe(false)
   })
 
   it('leaves drags without Shift, right drags and touches to the pointer controls', () => {
@@ -174,6 +213,8 @@ describe('cooperative gestures', () => {
     expect(hint.style.opacity).toBe('1')
     vi.advanceTimersByTime(1600)
     expect(hint.style.opacity).toBe('0')
+    // Emptied, so it is not read stale and the next hint is announced
+    expect(hint.textContent).toBe('')
     const withControl = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 100 })
     // happy-dom's WheelEvent drops the modifier keys of its init
     Object.defineProperty(withControl, 'ctrlKey', { value: true })
@@ -188,6 +229,15 @@ describe('cooperative gestures', () => {
     expect(controlsSaw.pointerdown).not.toHaveBeenCalled()
     pointer('pointerdown', canvas, { pointerType: 'mouse', pointerId: 2 })
     expect(controlsSaw.pointerdown).toHaveBeenCalledOnce()
+    // A plain marker is stopped like the map; a draggable one keeps its touches
+    const marker = document.createElement('div')
+    marker.className = 'react-three-earth-marker'
+    element.append(marker)
+    pointer('pointerdown', marker, { pointerType: 'touch', pointerId: 3 })
+    expect(controlsSaw.pointerdown).toHaveBeenCalledOnce()
+    marker.toggleAttribute('data-draggable', true)
+    pointer('pointerdown', marker, { pointerType: 'touch', pointerId: 4 })
+    expect(controlsSaw.pointerdown).toHaveBeenCalledTimes(2)
 
     const touch = (count: number) => {
       const event = new Event('touchmove', { bubbles: true, cancelable: true }) as TouchEvent

@@ -29,6 +29,21 @@ export function boundsAroundPositions(positions: readonly GeographicPosition[]):
   return { westDegrees: wrapLongitudeDegrees(west), southDegrees: south, eastDegrees: wrapLongitudeDegrees(east), northDegrees: north }
 }
 
+/**
+ * True when a pointer event landed on the map itself (its element or the canvas), not on a marker, popup or control
+ * inside it, which keep their own handling.
+ */
+export function isMapSurface(target: EventTarget | null, domElement: HTMLElement): boolean {
+  return target === domElement || (typeof HTMLCanvasElement !== 'undefined' && target instanceof HTMLCanvasElement)
+}
+
+/** Zoom levels that make a screen box fill a viewport, as MapLibre's `fitScreenCoordinates`. */
+export function boxZoomLevels(start: ScreenPosition, end: ScreenPosition, viewportWidthPixels: number, viewportHeightPixels: number): number {
+  const width = Math.max(Math.abs(end.xPixels - start.xPixels), 1)
+  const height = Math.max(Math.abs(end.yPixels - start.yPixels), 1)
+  return Math.log2(Math.min(viewportWidthPixels / width, viewportHeightPixels / height))
+}
+
 /** Nine points of a screen box: corners, edge middles and centre, in CSS pixels. */
 export function boxSamplePoints(start: ScreenPosition, end: ScreenPosition): ScreenPosition[] {
   const xs = [start.xPixels, (start.xPixels + end.xPixels) / 2, end.xPixels]
@@ -40,9 +55,9 @@ export function boxSamplePoints(start: ScreenPosition, end: ScreenPosition): Scr
 }
 
 /**
- * Zooms to a box drawn with `Shift` + drag, as MapLibre's box zoom: the camera eases to fit the ground inside the
- * box, keeping its heading and pitch. `Escape` or releasing `Shift`'s drag over a tiny box cancels. Mouse and pen
- * only. It takes `Shift` + drag from the pointer controls, where it used to rotate: rotate with the right button.
+ * Zooms to a box drawn with `Shift` + drag, as MapLibre's box zoom (`fitScreenCoordinates`): the camera eases to
+ * centre the box and zoom until it fills the screen, keeping its heading and pitch. `Escape`, leaving the window
+ * or a tiny box cancels. Mouse and pen only, on the map itself (not on markers, popups or controls). It takes `Shift` + drag from the pointer controls, where it used to rotate: rotate with the right button.
  * `EarthViewControls` owns one.
  */
 export class BoxZoom {
@@ -84,6 +99,7 @@ export class BoxZoom {
     window.removeEventListener('pointerup', this.onPointerUp, { capture: true })
     window.removeEventListener('pointercancel', this.onPointerCancel, { capture: true })
     window.removeEventListener('keydown', this.onKeyDown, { capture: true })
+    window.removeEventListener('blur', this.onBlur)
     if (this.box !== null && this.domElement !== null) {
       this.box.remove()
       releaseContainerPosition(this.domElement)
@@ -99,6 +115,7 @@ export class BoxZoom {
   protected onPointerDown = (event: PointerEvent): void => {
     const earth = this.earth
     if (!this.enabled || this.pointerId !== null || !event.shiftKey || event.button !== 0 || event.pointerType === 'touch') return
+    if (this.domElement === null || !isMapSurface(event.target, this.domElement)) return
     if (!earth.camera.ready || earth.view.transitioning) return
     // The box's, not the pointer controls' (which would rotate)
     event.stopImmediatePropagation()
@@ -112,6 +129,7 @@ export class BoxZoom {
     window.addEventListener('pointerup', this.onPointerUp, { capture: true })
     window.addEventListener('pointercancel', this.onPointerCancel, { capture: true })
     window.addEventListener('keydown', this.onKeyDown, { capture: true })
+    window.addEventListener('blur', this.onBlur)
   }
 
   protected onPointerMove = (event: PointerEvent): void => {
@@ -126,9 +144,20 @@ export class BoxZoom {
     const start = this.start
     const end = this.end
     this.cancel()
+    // A tiny box is a click, and stays one
     if (Math.abs(end.xPixels - start.xPixels) < MINIMUM_BOX_PIXELS && Math.abs(end.yPixels - start.yPixels) < MINIMUM_BOX_PIXELS) return
+    // The release still fires `click` (the map's `click` event would follow every box): swallow that one
+    window.addEventListener('click', this.swallowClick, { capture: true, once: true })
+    setTimeout(() => window.removeEventListener('click', this.swallowClick, { capture: true }), 0)
     this.zoomTo(start, end)
   }
+
+  protected swallowClick = (event: MouseEvent): void => {
+    event.stopPropagation()
+    event.preventDefault()
+  }
+
+  protected onBlur = (): void => this.cancel()
 
   protected onPointerCancel = (event: PointerEvent): void => {
     if (event.pointerId === this.pointerId) this.cancel()
@@ -168,9 +197,23 @@ export class BoxZoom {
     this.box.style.height = `${Math.abs(this.end.yPixels - this.start.yPixels)}px`
   }
 
-  /** Eases to fit the ground inside the screen box. Override to zoom differently. */
+  /**
+   * Eases to centre the box and zoom until it fills the screen, measured on screen so it holds when the map is turned
+   * or tilted. When the box's centre is sky, fits the ground seen inside the box instead. Override to zoom differently.
+   */
   protected zoomTo(start: ScreenPosition, end: ScreenPosition): void {
     const camera = this.earth.camera
+    const rect = this.domElement?.getBoundingClientRect()
+    const centre = camera.unproject({ xPixels: (start.xPixels + end.xPixels) / 2, yPixels: (start.yPixels + end.yPixels) / 2 })
+    if (centre !== null && rect !== undefined && rect.width > 0 && rect.height > 0) {
+      const zoomLevels = boxZoomLevels(start, end, rect.width, rect.height)
+      void camera.easeTo(
+        { longitudeDegrees: centre.longitudeDegrees, latitudeDegrees: centre.latitudeDegrees, heightMeters: centre.heightMeters, zoom: camera.getView().zoom + zoomLevels },
+        { durationSeconds: this.durationSeconds },
+      )
+      this.earth.requestFrame()
+      return
+    }
     const positions: GeographicPosition[] = []
     for (const point of boxSamplePoints(start, end)) {
       const position = camera.unproject(point)

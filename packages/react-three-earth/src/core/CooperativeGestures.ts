@@ -35,6 +35,18 @@ export function touchDecision(touchCount: number): CooperativeDecision {
   return touchCount >= 2 ? 'map' : 'page'
 }
 
+/** Overlays that take the wheel themselves: a popup's or a control's scrolling. */
+const WHEEL_OVERLAYS = '.react-three-earth-popup, .react-three-earth-controls'
+/** Overlays that take touches themselves: a draggable marker, a popup's content, a control. */
+const TOUCH_OVERLAYS = '.react-three-earth-marker[data-draggable], .react-three-earth-popup, .react-three-earth-controls'
+
+/** True for targets inside one of the overlays over the map that `selector` names. */
+function isInsideOverlay(target: EventTarget | null, selector: string): boolean {
+  const element = target as Element | null
+  if (element === null || typeof element.closest !== 'function') return false
+  return element.closest(selector) !== null
+}
+
 /** True on macOS, iOS and iPadOS, where the modifier is `⌘`. */
 function isApplePlatform(): boolean {
   const navigatorWithData = globalThis.navigator as (Navigator & { userAgentData?: { platform?: string } }) | undefined
@@ -154,11 +166,14 @@ export class CooperativeGestures {
     this.hintTimer = setTimeout(() => {
       this.hintTimer = null
       hint.style.opacity = '0'
+      // Emptied once hidden: screen readers find no stale hint, and the next one is announced again
+      hint.textContent = ''
     }, this.hintDurationSeconds * 1000)
   }
 
   protected onWheel = (event: WheelEvent): void => {
-    if (wheelDecision(event) === 'map') return
+    // A popup or control scrolls itself
+    if (wheelDecision(event) === 'map' || isInsideOverlay(event.target, WHEEL_OVERLAYS)) return
     // Not prevented: the page scrolls. Stopped: the pointer controls do not zoom.
     event.stopImmediatePropagation()
     this.showHint(isApplePlatform() ? this.locale.wheelApple : this.locale.wheel)
@@ -169,7 +184,9 @@ export class CooperativeGestures {
    * Here every touch that reaches the pointer controls is stopped, so one finger never drags the map.
    */
   protected onPointerDown = (event: PointerEvent): void => {
-    if (event.pointerType === 'touch') event.stopImmediatePropagation()
+    // A draggable marker, a popup or a control keeps its touches (a slider in a popup); a plain marker does not, so a
+    // finger on it never drags the map (its tap still opens its popup: `click` is not stopped)
+    if (event.pointerType === 'touch' && !isInsideOverlay(event.target, TOUCH_OVERLAYS)) event.stopImmediatePropagation()
   }
 
   protected onTouch = (event: TouchEvent): void => {

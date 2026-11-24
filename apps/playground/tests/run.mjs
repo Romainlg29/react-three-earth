@@ -1830,6 +1830,7 @@ async function gestures() {
   await settle(desktop.page)
   const before = await view(desktop.page)
   const boxCentre = await desktop.page.evaluate(() => window.earth.camera.unproject({ xPixels: 400, yPixels: 260 }))
+  await desktop.page.evaluate(() => { window.boxMapClicks = 0; window.earth.addEventListener('click', () => window.boxMapClicks++) })
   await desktop.page.keyboard.down('Shift')
   await desktop.page.mouse.move(300, 200)
   await desktop.page.mouse.down()
@@ -1846,6 +1847,7 @@ async function gestures() {
   result.boxCentreOffsetDegrees = Math.hypot(after.longitudeDegrees - boxCentre.longitudeDegrees, after.latitudeDegrees - boxCentre.latitudeDegrees)
   result.boxHeadingChange = after.headingDegrees - before.headingDegrees
   result.boxRemoved = await desktop.page.evaluate(() => document.querySelector('.react-three-earth-box-zoom') === null)
+  result.boxMapClicks = await desktop.page.evaluate(() => window.boxMapClicks)
   await desktop.page.close()
 
   // Cooperative gestures, wheel

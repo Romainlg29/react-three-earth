@@ -65,7 +65,8 @@ const expectations = {
   ],
   'box zoom and cooperative gestures': r => [
     ['Shift + drag draws the box and removes it on release', r.boxShown && r.boxRemoved],
-    ['the box zoom zooms in about two levels, centred on the box, heading kept', r.boxZoomDelta > 1.8 && r.boxZoomDelta < 2.6 && r.boxCentreOffsetDegrees < 0.02 && Math.abs(r.boxHeadingChange) < 0.01],
+    ['the box fills the screen: +2.32 levels (1000 / 200 = 5 = 2^2.32), centred on the box, heading kept', Math.abs(r.boxZoomDelta - Math.log2(5)) < 0.1 && r.boxCentreOffsetDegrees < 0.02 && Math.abs(r.boxHeadingChange) < 0.01],
+    ['the box is not a map click', r.boxMapClicks === 0],
     ['cooperative: a plain wheel leaves the zoom, with a hint', r.plainWheelZoomDelta === 0 && r.wheelHint?.opacity === '1' && /Ctrl \+ scroll/.test(r.wheelHint.text) && r.wheelHint.role === 'status'],
     ['cooperative: Ctrl + wheel zooms', r.controlWheelZoomDelta > 0.1],
     ['cooperative: one finger leaves the map, with a hint', r.touchCooperative.oneFingerMovedDegrees === 0 && r.touchCooperative.hint === 'Use two fingers to move the map'],
