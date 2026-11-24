@@ -54,7 +54,9 @@ function coverageSweep(functions, topLevelRan) {
     const innermost = stack.at(-1)
     const functionIndex = stack.findLastIndex(range => range.functionRange)
     const topLevel = stack[functionIndex]?.topLevel === true
+    const inFunctionNeverCalled = functionIndex !== -1 && !topLevel && stack[functionIndex].count === 0
     if (innermost === undefined) return { ran: false, topLevel }
+    if (!topLevelRan && inFunctionNeverCalled) return { ran: false, topLevel, inFunctionNeverCalled }
     if (innermost.count > 0) return { ran: true, topLevel }
     if (!topLevelRan) return { ran: false, topLevel }
     // A block of the top level that did not run this time still counts
@@ -143,6 +145,7 @@ export function linesRan(scriptCoverage, source, file, { topLevelRan = false, wh
     return new Map([[file, lines]])
   }
   const map = JSON.parse(Buffer.from(sourceMap[1], 'base64').toString('utf8'))
+  const lineStates = new Map()
   const directory = path.dirname(path.join(ROOT, file))
   const sources = map.sources.map(source => {
     if (source.startsWith('file://')) return repositoryPath(fileURLToPath(source))
@@ -151,8 +154,16 @@ export function linesRan(scriptCoverage, source, file, { topLevelRan = false, wh
   for (const [line, column, sourceIndex, originalLine] of decodeMappings(map.mappings)) {
     const original = sources[sourceIndex]
     if (original === null || original === undefined) continue
-    if (!byFile.has(original)) byFile.set(original, new Set())
-    if (at(starts[line] + column).ran) byFile.get(original).add(originalLine + 1)
+    if (!lineStates.has(original)) lineStates.set(original, new Map())
+    const states = lineStates.get(original)
+    const { ran, topLevel, inFunctionNeverCalled } = at(starts[line] + column)
+    // Bit 1: code inside a function ran. Bit 2: top-level code ran. Bit 4: a function that never ran.
+    states.set(originalLine + 1, (states.get(originalLine + 1) ?? 0) | (ran ? (topLevel ? 2 : 1) : 0) | (inFunctionNeverCalled ? 4 : 0))
+  }
+  // `export function shapeText(`: the `export` is top-level code that ran, the function never did. A line where a
+  // function that never ran starts counts as run only when code inside a function on it ran.
+  for (const [original, states] of lineStates) {
+    byFile.set(original, new Set([...states].filter(([, state]) => state & 1 || (state & 2 && !(state & 4))).map(([line]) => line)))
   }
   return byFile
 }
