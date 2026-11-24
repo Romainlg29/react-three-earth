@@ -179,6 +179,7 @@ Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixel
 and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
 With an atmosphere, see-through solids are drawn after it (`TRANSLUCENT_LAYER`), hazed at their own distance, whenever
 the render pipeline runs the translucent pass (`<Atmosphere>` hosts one); otherwise they are drawn with the scene.
+On the globe, solids get a soft fill light (30% of their colour), so faces turned from the sun stay coloured.
 
 ### Shapes and 3D solids
 

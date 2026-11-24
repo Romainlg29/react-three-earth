@@ -1,6 +1,6 @@
 import earcut from 'earcut'
 import type { MultiPolygon, Polygon, Position } from 'geojson'
-import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from 'react-three-earth'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from 'react-three-earth'
 import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, type Object3D } from 'three'
 import { uniform, vec4 } from 'three/tsl'
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
@@ -24,6 +24,11 @@ const PREVIEW_COARSENESS = 4
 const EDGE_THRESHOLD_DEGREES = 30
 /** Faces meeting at less than this angle are shaded smoothly across their edge (a cylinder's wall, a sphere). */
 const SMOOTH_THRESHOLD_DEGREES = 30
+/**
+ * On the globe, solids glow with this share of their colour as the flat map shows it, a fill light: faces turned from
+ * the sun get only skylight, and the haze over them hid their colour (a green box's shaded side came out blue-grey).
+ */
+const SOLID_FILL_SHARE = 0.3
 
 /**
  * Whether a feature is drawn in 3D rather than draped on the terrain: a line string, polygon or multipolygon with an
@@ -866,8 +871,11 @@ export class SolidFeatures {
       const colorNode = vec4(uniform(new Color(style.fillColor)), 1)
       const material = new MeshStandardNodeMaterial({ side: doubleSided ? DoubleSide : FrontSide, transparent: style.solidOpacity < 1, opacity: style.solidOpacity, depthWrite: style.solidOpacity >= 1 })
       material.colorNode = colorNode
-      // On the flat map the sun fades out: keep the colour, like the flat terrain.
-      material.emissiveNode = createFlatMapEmissionNode(colorNode, this.earth.view)
+      // A fill light on the globe (`SOLID_FILL_SHARE`); on the flat map the sun fades out, so the colour shows whole, like
+      // the flat terrain.
+      const view = this.earth.view
+      const emission = uniform(0).onRenderUpdate(() => view.flatMapLuminance * (view.morph + (1 - view.morph) * SOLID_FILL_SHARE))
+      material.emissiveNode = colorNode.rgb.mul(emission)
       const edgeMaterial = new LineBasicNodeMaterial({ color: new Color(style.lineColor), transparent: style.lineOpacity < 1, opacity: style.lineOpacity })
       shared = { key, material, edgeMaterial, users: 0 }
       this.materials.set(key, shared)
