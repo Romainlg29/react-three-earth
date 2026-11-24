@@ -1,6 +1,7 @@
 import { WGS84_ELLIPSOID } from '3d-tiles-renderer'
 import { MathUtils, Matrix4, Plane, Quaternion, Ray, Vector3, type Camera } from 'three'
 
+import { prefersReducedMotion } from '../core/cameraAnimation.js'
 import {
   latitudeToMercatorY,
   longitudeToMercatorX,
@@ -19,6 +20,11 @@ export interface ViewTransitionOptions {
    * Default: 1.8.
    */
   durationSeconds?: number
+  /**
+   * Morph even when the user asked the system to reduce motion (`prefers-reduced-motion`). Without it, the
+   * view switches at once for those users, as camera animations jump. Default: false.
+   */
+  essential?: boolean
 }
 
 const DEFAULT_TRANSITION_SECONDS = 1.8
@@ -168,9 +174,11 @@ export class ViewMorph {
 
   /**
    * Starts a transition to a view; it begins on the next `update`. Switching back halfway plays it in
-   * reverse from where it is. Asking for the view already shown or headed to only changes the length.
+   * reverse from where it is. Asking for the view already shown or headed to only changes the length. With
+   * `prefers-reduced-motion`, it switches at once unless `essential`.
    */
-  setMode(mode: ViewMode, { durationSeconds = DEFAULT_TRANSITION_SECONDS }: ViewTransitionOptions = {}): void {
+  setMode(mode: ViewMode, { durationSeconds = DEFAULT_TRANSITION_SECONDS, essential = false }: ViewTransitionOptions = {}): void {
+    if (!essential && prefersReducedMotion()) durationSeconds = 0
     const transition = this.transition
     if (mode === this.mode) {
       // Already headed there: only a running transition changes speed (a pending one keeps its own length).
