@@ -422,6 +422,18 @@ expectations['3d buildings, draped'] = r => [
   ['footprints are drawn on the ground instead', r.redShare > 0.004 && r.redShare < 0.02],
 ]
 
+// Gallery examples (`?example=<name>`, src/examples/) on the fixtures.
+expectations['gallery example, city'] = r => [['buildings stand in 3D', r.buildings > 10]]
+expectations['gallery example, labels'] = r => [
+  ['names in Arabic, Hebrew, Hindi and Thai show', ['القاهرة', 'תל אביב', 'नई दिल्ली', 'ถนนสุขุมวิท'].every(name => r.labels.includes(name))],
+  ['the vertical button stands Japanese names in columns', r.verticalLabel !== null && r.verticalLabel.height > r.verticalLabel.width],
+]
+expectations['gallery example, geojson'] = r => [
+  ['peak names and cluster counts from the GeoJSON source show', r.labels.includes('Shishapangma') && r.labels.some(text => /^\d+$/.test(text))],
+  ['a click on a peak opens its popup', /Manaslu.*8,163 m/.test(r.popup ?? '')],
+]
+expectations['gallery example, heatmap'] = r => [['the heat draws', r.heatShare > 0.007]]
+
 let failures = 0
 let skipped = 0
 for (const [check, assertions] of Object.entries(expectations)) {

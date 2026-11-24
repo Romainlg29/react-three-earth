@@ -8,6 +8,7 @@ import { boundBoxes, moveToAnchor, CollisionGrid, SymbolPlacement, type Placemen
 import { SymbolStateTexture, SYMBOL_STATE_WIDTH } from '../src/vector/symbols/symbolMaterial.js'
 import type { Glyph } from '../src/vector/worker/glyphs.js'
 import { lineLabelPaths, radialAnchorOffset, textOffsetForAnchor, variableAnchorShifts } from '../src/vector/worker/labels.js'
+import { featureKey } from '../src/vector/worker/featureState.js'
 import { iconPaddingPixels, MapStyleProcessor } from '../src/vector/worker/MapStyleProcessor.js'
 import { ICON_GLYPH_INDEX, SDF_ICON_GLYPH_INDEX, SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_KEEP_UPRIGHT, SYMBOL_LINE } from '../src/vector/worker/symbols.js'
 import { createFakeFetch } from './helpers/encodeArchives.js'
@@ -132,6 +133,23 @@ describe('labels facing the viewer, in the worker', () => {
     const request = { sourceId: 'base', x: 1, y: 2, z: 10, zoom: 10 }
     expect((await draped.processTile(request)).text?.indices.length).toBeGreaterThan(0)
     expect((await screen.processTile(request)).text).toBeNull()
+  })
+
+  it('lays out labels of GeoJSON sources, whose layers have no source-layer, with the query and state keys of their single layer', async () => {
+    const { fetch } = createFakeFetch({})
+    const data = { type: 'FeatureCollection', features: [{ type: 'Feature', id: 7, properties: { name: 'Peak' }, geometry: { type: 'Point', coordinates: [10, 10] } }] }
+    const style = {
+      version: 8,
+      sources: { peaks: { type: 'geojson', data } },
+      layers: [{ id: 'peak-names', type: 'symbol', source: 'peaks', layout: { 'text-field': ['get', 'name'] }, paint: { 'text-color': ['case', ['boolean', ['feature-state', 'hover'], false], '#ff0000', '#000000'] } }],
+    }
+    const processor = await MapStyleProcessor.create({ style, baseUrl, requestHeaders: {}, localFontFamily: 'x', screenSymbols: true }, { fetch, drawLocalGlyph })
+    const bucket = await processor.processTile({ sourceId: 'peaks', x: 0, y: 0, z: 0, zoom: 0, symbols: true })
+    expect(bucket.symbols?.keys).toEqual(['peak-names\u0000Peak'])
+    expect(bucket.rebuildFeatureKeys).toEqual([featureKey('peaks', undefined, 7)])
+    const hit = { sourceId: 'peaks', x: 0, y: 0, z: 0, zoom: 0, layerId: 'peak-names', sourceLayer: bucket.symbols!.sourceLayers[0]!, featureIndex: 0 }
+    const features = await processor.queryRenderedFeatures({ geometry: [{ x: 0, y: 0 }], tiles: [], layers: null, filter: null, tolerancePixels: 0, screenLabels: [hit] })
+    expect(features.map(feature => [feature.id, feature.properties.name])).toEqual([[7, 'Peak']])
   })
 
   it('stores the road around each line label anchor and every glyph offset along it', async () => {

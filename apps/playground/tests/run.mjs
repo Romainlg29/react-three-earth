@@ -1573,6 +1573,35 @@ async function heatmaps(name, query) {
 }
 
 /**
+ * The gallery examples (`?example=<name>`, src/examples/) on the fixtures: each loads without an error and draws what
+ * it is about. `interact` runs in the page once it is idle and returns extra facts.
+ */
+async function galleryExample(name, query = '', interact = null) {
+  const { page, errors } = await open(`/?fixtures&atmosphere=0&example=${name}${query}`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  await page.waitForTimeout(2000) // tile and label fades
+  const facts = interact === null ? {} : await interact(page, idle)
+  const png = await page.screenshot()
+  writeFileSync(new URL(`example-${name}.png`, OUT), png)
+  const inspection = await page.evaluate(() => {
+    const { terrain } = window.earth.inspect()
+    return { buildings: terrain?.extrusions?.buildings ?? 0, labels: window.earth.terrain.getScreenLabels().filter(label => label.opacity > 0.5).map(label => label.text) }
+  })
+  // Heat: purple to orange pixels, far from the grey fixture ground (green well under red or blue).
+  const colours = await analyse(page, png, `
+    let heat = 0
+    for (let i = 0; i < px.length; i += 4) if (Math.max(px[i], px[i + 2]) - px[i + 1] > 60) heat++
+    return { heatShare: heat / (width * height) }
+  `)
+  await page.close()
+  results.push({ check: `gallery example, ${name}`, ...inspection, ...colours, ...facts, errors })
+}
+
+/**
  * Seams: a column (or row) whose step to the next one is larger than its neighbours' steps on over 30 % of the
  * rows. Sensitive enough to find the terrain's faint seam at 90° W (so the views below stay clear of it).
  */
@@ -2114,6 +2143,26 @@ try {
     await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
     await terrainExaggeration('quantized-mesh', '&exaggeration=2')
     await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
+  }
+  if (want('examples')) {
+    await galleryExample('city')
+    await galleryExample('labels', '', async (page, idle) => {
+      await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      await page.waitForTimeout(1500)
+      // A vertical label is taller than wide.
+      const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
+      return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
+    })
+    await galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
+      // Manaslu stands alone at this zoom: a click on it opens its popup.
+      const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
+      await page.mouse.click(point.xPixels, point.yPixels)
+      await page.waitForTimeout(1000)
+      return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
+    })
+    await galleryExample('heatmap')
   }
 } finally {
   await browser.close()

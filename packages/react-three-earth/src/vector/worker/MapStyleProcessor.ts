@@ -853,24 +853,28 @@ export class MapStyleProcessor {
     const { sourceId, zoom } = request
     const layers = this.layers
     const promoteId = (this.document.sources[sourceId] as VectorSourceSpecification | undefined)?.promoteId
+    // GeoJSON tiles have one layer, which every layer of the source reads; feature-state keys have no source layer.
+    const singleLayer = this.fetchers.get(sourceId)?.singleLayer
     const symbols: SymbolCandidate[] = []
     const rebuildKeys = new Set<string>()
     for (const layer of layers) {
       if (layer.source !== sourceId || layer.type !== 'symbol' || layer.custom !== null || !layer.isVisibleAtZoom(zoom)) continue
-      const sourceLayer = layer.sourceLayer === undefined ? undefined : tile.layers[layer.sourceLayer]
+      const layerName = singleLayer ?? layer.sourceLayer
+      const sourceLayer = layerName === undefined ? undefined : tile.layers[layerName]
       if (sourceLayer === undefined) continue
+      const stateLayer = singleLayer === undefined ? layer.sourceLayer : undefined
       const factor = TILE_EXTENT / sourceLayer.extent
-      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layer.sourceLayer!]
+      const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layerName!]
       for (let index = 0; index < sourceLayer.length; index++) {
         const vectorFeature = sourceLayer.feature(index)
         const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
         const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
         if (!layer.accepts(zoom, feature)) continue
-        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, layer.sourceLayer, id)
+        const key = layer.featureStateDependence === 'none' || id === undefined ? undefined : featureKey(sourceId, stateLayer, id)
         const state = key === undefined ? NO_STATE : (this.featureStates.get(key) ?? NO_STATE)
         // Text paint is baked in the tile: a state change processes it again.
         if (key !== undefined) rebuildKeys.add(key)
-        const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, scaleGeometry(vectorFeature.loadGeometry(), factor), zoom, symbols.length, layer.sourceLayer!, index)
+        const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, scaleGeometry(vectorFeature.loadGeometry(), factor), zoom, symbols.length, layerName!, index)
         if (candidate !== null) symbols.push(candidate)
       }
     }
