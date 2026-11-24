@@ -1427,9 +1427,11 @@ async function heatmaps(name, query) {
   const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0&map=vector&heatmap${query}`)
   const warnings = []
   page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()) })
+  // `idle`, not zero download, parse and composition counts: those also hold between two refinement steps, and the
+  // slower WebGL2 path sometimes stopped there and screenshotted the heat of coarse tiles, with a seam at their edge.
   await page.waitForFunction(() => {
-    const t = window.earth?.inspect()?.terrain
-    return t && t.tilesLoaded > 10 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && t.imageryRecompositionsPending === 0
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 10 && inspection.idle
   }, null, { timeout: 240_000, polling: 300 })
   await page.waitForTimeout(3000) // tile fades
   // The tile edge the quake heat straddles (z8 column 227) at the cloud's latitude.
