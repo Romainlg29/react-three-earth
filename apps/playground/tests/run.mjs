@@ -2221,6 +2221,24 @@ try {
       const hidden = await radarShare()
       return { radar: { shown, played, hidden } }
     })
+    await galleryExample('night', '', async (page, idle) => {
+      // Glow pixels by hue, before and after the glow colour changes.
+      const glow = async () => analyse(page, await page.screenshot(), `
+        let amber = 0, cyan = 0
+        for (let i = 0; i < px.length; i += 4) {
+          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+          if (r > 80 && r > g * 1.5 && r > b * 2) amber++
+          if (b > 80 && g > 60 && b > r * 2) cyan++
+        }
+        return { amber: amber / (width * height), cyan: cyan / (width * height) }
+      `)
+      const before = await glow()
+      await page.getByRole('button', { name: 'Cyan glow' }).click()
+      await page.waitForTimeout(500)
+      await idle()
+      await page.waitForTimeout(1500)
+      return { glow: { before, after: await glow() } }
+    })
     await galleryExample('embedded', '', async page => {
       // A plain wheel over the map scrolls the page and leaves the camera where it was.
       const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
