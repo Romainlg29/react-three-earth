@@ -22,6 +22,17 @@ const TOWNS = Array.from({ length: 12 * 10 }, (_, index) => {
   return { name: `Town ${String.fromCharCode(65 + row)}${column + 1}`, position: [138.6 + column * 0.025, 35.25 + row * 0.025] as const, rank: (column % 3) + (row % 2) * 3 }
 })
 
+/**
+ * Place names in other scripts (`?map=scripts`), in a column west of the mountain, for the right-to-left and
+ * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, and Latin mixed with Hebrew.
+ */
+export const SCRIPT_PLACES = [
+  { name: 'القاهرة', position: [138.62, 35.42] },
+  { name: 'תל אביב', position: [138.62, 35.39] },
+  { name: 'شارع السلام 12', position: [138.62, 35.36] },
+  { name: 'Haifa (חיפה)', position: [138.62, 35.33] },
+] as const
+
 /** A road grid every 0.05 degrees; every other road is a primary. */
 function roads(): Array<{ name: string; kind: string; line: Array<[number, number]> }> {
   const result: Array<{ name: string; kind: string; line: Array<[number, number]> }> = []
@@ -117,6 +128,11 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
       if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) towns.push({ type: 'Point', geometry: [[point]], properties: { name: town.name, rank: town.rank } })
     }
   }
+  const scripts: EncodedFeature[] = []
+  for (const place of SCRIPT_PLACES) {
+    const point = project(place.position[0], place.position[1], z, x, y)
+    if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) scripts.push({ type: 'Point', geometry: [[point]], properties: { name: place.name } })
+  }
   const buildings: EncodedFeature[] = []
   if (z >= 13) {
     for (const [index, building] of BUILDINGS.entries()) {
@@ -134,6 +150,7 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
     { name: 'roads', features: roadFeatures },
     { name: 'places', features: places },
     { name: 'towns', features: towns },
+    { name: 'scripts', features: scripts },
   ])
 }
 
@@ -290,6 +307,20 @@ export function fixtureLabelStyle(): object {
     paint: { ...places.paint, 'icon-color': '#1040e0', 'icon-halo-color': '#ffffff', 'icon-halo-width': 1.5 },
   }
   return { ...base, sprite: '/fixtures/sprite', layers: [...base.layers.slice(0, placeIndex), towns, placesWithIcons, ...base.layers.slice(placeIndex + 1)] }
+}
+
+/** The fixture style with the place names in other scripts (layer `script-label`), large and never hidden by collisions. */
+export function fixtureScriptStyle(): object {
+  const base = fixtureStyle() as { layers: Array<Record<string, unknown>> } & Record<string, unknown>
+  const scripts = {
+    id: 'script-label',
+    type: 'symbol',
+    source: 'fixture',
+    'source-layer': 'scripts',
+    layout: { 'text-field': ['get', 'name'], 'text-size': 22, 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': true, 'text-ignore-placement': true },
+    paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
+  }
+  return { ...base, layers: [...base.layers, scripts] }
 }
 
 /**

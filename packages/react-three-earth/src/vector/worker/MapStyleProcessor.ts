@@ -15,6 +15,8 @@ import {
   textOffsetForAnchor,
   variableAnchorShifts,
   layoutPointLabel,
+  mirroredCodePoints,
+  shapeSectionsForScripts,
   shapeText,
   TextBuilder,
   type Box,
@@ -1045,6 +1047,7 @@ export class MapStyleProcessor {
         let set = codePoints.get(section.fontStack)
         if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
         for (const character of section.text) set.add(character.codePointAt(0)!)
+        for (const codePoint of mirroredCodePoints(section.text)) set.add(codePoint)
       }
     }
     await Promise.all([...codePoints].map(([fontStack, set]) => this.glyphs.load(fontStack, set)))
@@ -1299,13 +1302,15 @@ export class MapStyleProcessor {
     const fonts = layer.evaluate<string[]>('layout', 'text-font', zoom, feature)
     const fontStack = fonts.join(',')
     const transform = layer.evaluate<'none' | 'uppercase' | 'lowercase'>('layout', 'text-transform', zoom, feature)
-    return formatted.sections
-      .filter(section => section.text.length > 0)
-      .map(section => ({
-        text: transform === 'uppercase' ? section.text.toLocaleUpperCase() : transform === 'lowercase' ? section.text.toLocaleLowerCase() : section.text,
-        fontStack: section.fontStack ?? fontStack,
-        scale: section.scale ?? 1,
-      }))
+    return shapeSectionsForScripts(
+      formatted.sections
+        .filter(section => section.text.length > 0)
+        .map(section => ({
+          text: transform === 'uppercase' ? section.text.toLocaleUpperCase() : transform === 'lowercase' ? section.text.toLocaleLowerCase() : section.text,
+          fontStack: section.fontStack ?? fontStack,
+          scale: section.scale ?? 1,
+        })),
+    )
   }
 
   /**

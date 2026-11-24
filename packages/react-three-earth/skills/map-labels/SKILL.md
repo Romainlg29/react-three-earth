@@ -5,8 +5,8 @@ description: >
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
-  (symbolFadeDurationSeconds), reading the labels on the screen in tests (earth.terrain.getScreenLabels), and what
-  labels do not do yet.
+  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, reading the labels on the screen in tests
+  (earth.terrain.getScreenLabels), and what labels do not do yet.
 metadata:
   purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, and current limits.'
   type: core
@@ -18,6 +18,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/ScreenSymbols.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/symbols/SymbolPlacement.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/labels.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/bidi.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/arabic.ts'
 requires:
   - map-styles
 ---
@@ -100,6 +103,20 @@ export function GroundLabels() {
 - `earth.queryRenderedFeatures`, layer events and hover hit them by their box on the screen
   (`query-features-and-layer-events`).
 
+### Arabic, Hebrew and other right-to-left names
+
+Nothing to turn on, and no plugin to load (MapLibre needs `@mapbox/mapbox-gl-rtl-text`): the worker shapes and
+orders the text itself.
+
+- Arabic and Persian letters take their joined forms (initial, medial, final, isolated) and lam-alef becomes one
+  ligature, as Unicode presentation forms (U+FB50–U+FEFF): the glyph server must carry those ranges (OpenMapTiles
+  and MapLibre demo fonts do), else the local font (`localFontFamily`) draws them.
+- Each line is reordered by the Unicode bidirectional algorithm: right-to-left words read right to left, numbers
+  and Latin runs inside them left to right, brackets mirror. Wrapping (`text-max-width`) breaks in reading order
+  first, so the first word read stays on the first line. Road names work the same way.
+- Not covered: explicit direction controls (U+202A–U+202E, U+2066–U+2069 are ignored), and bracket pairing
+  (UAX #9 rule N0), which rarely matters in a name.
+
 ### Read the labels on the screen (tests, devtools)
 
 ```ts
@@ -110,7 +127,7 @@ export function labelsOnScreen(earth: Earth): string[] {
 }
 ```
 
-Each entry has `text`, `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
+Each entry has `text` (as drawn: Arabic in presentation forms, still in reading order), `xPixels` / `yPixels` (anchor point), `box` (at the variable anchor placement chose) (left, top, right, bottom, padding included),
 `opacity`, `layerIndex`, `allowOverlap` and `ignorePlacement`. Labels that collide as several boxes have
 `collisionBoxes` (a road name's glyphs, or a place's icon then text); it is null for a single box.
 `glyphAnglesRadians` (0 reads left to right) is set for road names only. Labels fading in

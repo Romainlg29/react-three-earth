@@ -74,6 +74,7 @@ const initialView: ViewMode = params.get('view') === '2d' ? '2d' : '3d'
 // `?map=patterns` (with `?fixtures`) is the fixture style with sprite patterns; images it lacks are listed in
 // `window.styleImagesMissing` for the browser check, which adds one with `window.mapStyleSource.addImage`.
 // `?map=labels` (with `?fixtures`) adds a dense grid of town labels to the fixture style, for collision and fades.
+// `?map=scripts` (with `?fixtures`) adds place names in Arabic, Hebrew and mixed scripts.
 // `?symbols=draped` lays labels on the ground instead of facing the viewer.
 const liveFixtures = useFixtures && params.get('test') === 'invalidate'
 // `?map=relief` (with `?fixtures`) adds a raster layer, colour relief and hillshade from Terrarium elevation tiles;
@@ -83,6 +84,8 @@ const fixtureStyleUrl =
     ? '/fixtures/style-patterns.json'
     : params.get('map') === 'labels'
       ? '/fixtures/style-labels.json'
+      : params.get('map') === 'scripts'
+        ? '/fixtures/style-scripts.json'
       : params.get('map') === 'buildings'
         ? '/fixtures/style-buildings.json'
       : params.get('map') === 'relief'
@@ -90,7 +93,7 @@ const fixtureStyleUrl =
         : params.get('map') === 'hillshade'
           ? '/fixtures/style-relief.json?only=hillshade'
           : `/fixtures/style.json${liveFixtures ? '?live' : ''}`
-const fixtureOnlyStyles = ['patterns', 'labels', 'buildings', 'relief', 'hillshade']
+const fixtureOnlyStyles = ['patterns', 'labels', 'scripts', 'buildings', 'relief', 'hillshade']
 const mapStyleUrl = params.get('map') === 'vector' || (useFixtures && fixtureOnlyStyles.includes(params.get('map') ?? '')) ? (useFixtures ? fixtureStyleUrl : import.meta.env.VITE_MAP_STYLE_URL) : undefined
 const symbolPlacement = params.get('symbols') === 'draped' ? 'draped' : 'screen'
 // `?map=buildings` (with `?fixtures`) adds 3D buildings on the fixture peak (-90°, 0°, 3900 m); `?extrusions=draped`

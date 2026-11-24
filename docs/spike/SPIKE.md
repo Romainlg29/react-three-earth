@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), right-to-left and complex scripts (`fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), complex scripts such as Indic and Thai (right-to-left text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1216,6 +1216,32 @@ sun, one air and one haze. Playground: `/?test=afterburner&fixtures`.
   run it on 0.187, and it works in the browser check. The proper fix is an @aeronautic release for 0.187.
 
 ![afterburner over terrain](afterburner-on.png)
+
+## W13, part 1: right-to-left text (Arabic, Hebrew)
+
+Arabic and Hebrew labels read in the right order and Arabic letters join, in the worker, with no dependency.
+
+- **Deviation from the brief.** The brief offered two paths: the app passes MapLibre's `@mapbox/mapbox-gl-rtl-text`
+  (ICU in wasm) through a `textShaping` option, or a built-in bidi and Arabic joining tables. We took the second.
+  The plugin is ICU compiled to wasm, which the app must host and the worker must load before any right-to-left label
+  can lay out (MapLibre re-lays every tile when it arrives); functions cannot cross into our worker, so it would
+  need a URL and a loading state. `@pmndrs/glyph` was also ruled out: it shapes with HarfBuzz in wasm (MBs) and
+  draws its own glyphs, while MapLibre styles bring PBF glyphs. The built-in path is two files of compact
+  tables, synchronous, and does what the plugin does for map labels.
+- **Arabic** (`worker/arabic.ts`): Unicode joining types for U+0621–U+064A and the common Persian and Urdu letters,
+  harakat transparent to joining, lam-alef ligatures, out to presentation forms (U+FB50–U+FEFF). Shaping runs on
+  the whole `text-field` across its `format` sections, before glyphs load, so the glyph server's presentation-form
+  ranges are what is fetched, as with the MapLibre plugin.
+- **Bidi** (`worker/bidi.ts`): UAX #9 rules P2–P3, W1–W7, N1–N2, I1–I2, L1–L2 and L4 (mirrored brackets), from a
+  compact table of bidi classes (anything unlisted is L). Levels resolve per paragraph (explicit newlines); lines
+  wrap in logical order and each line is then reordered, as ICU's `ubidi_setLine`. Labels without a right-to-left
+  character skip it. Left out: explicit embeddings and isolates (stripped to BN) and bracket pairs (N0).
+- **Browser check** (`run.mjs scripts`, `?map=scripts`): four names (Arabic with a lam-alef, Hebrew, Arabic with
+  digits, Latin with bracketed Hebrew) show, in presentation forms, drawing text, on WebGPU and WebGL 2.
+  Screenshots `map-scripts-*.png`.
+- Unit tests: `test/scripts.test.ts` (joining forms, ligatures, marks, sections; classes; Hebrew with digits, Latin
+  inside right-to-left and the reverse, Arabic numbers and decimals; glyph order, mirroring and wrapping in `shapeText`).
+- Next (part 2, 3): Indic and Thai drawn per grapheme cluster with the local font; vertical CJK (`text-writing-mode`).
 
 ## W14: image and video sources
 

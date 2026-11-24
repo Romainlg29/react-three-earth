@@ -1,3 +1,5 @@
+import { needsArabicShaping, shapeArabicCodePoints } from './arabic.js'
+import { hasRightToLeft, mirrorCodePoint, resolveLevels, visualOrder } from './bidi.js'
 import { GLYPH_BUFFER, GLYPH_EDGE, GLYPH_FONT_SIZE, type AtlasGlyph } from './glyphs.js'
 import type { Point } from './ShapeBuilder.js'
 import type { Rgba } from './styleLayers.js'
@@ -28,6 +30,8 @@ export interface ShapingOptions {
 /** A glyph positioned in pixels of a 24 px font, relative to the label anchor (y down). */
 export interface ShapedGlyph {
   glyph: AtlasGlyph
+  /** The code point drawn (after Arabic shaping and bracket mirroring). */
+  codePoint: number
   /** Top-left of the padded glyph bitmap. */
   x: number
   y: number
@@ -56,6 +60,8 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     section: TextSection
     glyph: AtlasGlyph | null
     advance: number
+    /** Bidi embedding level: odd runs right to left. */
+    level: number
   }
   const spacing = options.letterSpacingEms * GLYPH_FONT_SIZE
   const characters: Character[] = []
@@ -63,9 +69,11 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     for (const character of section.text) {
       const codePoint = character.codePointAt(0)!
       const glyph = getGlyph(section.fontStack, codePoint)
-      characters.push({ codePoint, section, glyph, advance: glyph === null ? 0 : glyph.advance * section.scale + spacing })
+      characters.push({ codePoint, section, glyph, advance: glyph === null ? 0 : glyph.advance * section.scale + spacing, level: 0 })
     }
   }
+  const bidirectional = hasRightToLeft(characters.map(character => character.codePoint))
+  if (bidirectional) resolveParagraphLevels(characters)
 
   // Lines: explicit newlines, then greedy wrapping at breakable characters.
   const maximumWidth = options.maximumWidthEms > 0 ? options.maximumWidthEms * GLYPH_FONT_SIZE : Infinity
@@ -94,7 +102,18 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     }
   }
   lines.push(line)
-  const trimmed = lines.map(items => trimSpaces(items))
+  // Lines break in logical order, then each is drawn in visual order with brackets mirrored on right-to-left runs.
+  const trimmed = lines.map(items => {
+    const line = trimSpaces(items)
+    if (!bidirectional) return line
+    return visualOrder(line.map(item => item.level)).map(index => {
+      const item = line[index]!
+      const mirrored = item.level % 2 === 1 ? mirrorCodePoint(item.codePoint) : item.codePoint
+      if (mirrored === item.codePoint) return item
+      const glyph = getGlyph(item.section.fontStack, mirrored) ?? item.glyph
+      return { ...item, codePoint: mirrored, glyph, advance: glyph === null ? 0 : glyph.advance * item.section.scale + spacing }
+    })
+  })
   if (trimmed.every(items => items.length === 0)) return null
 
   const lineHeight = options.lineHeightEms * GLYPH_FONT_SIZE
@@ -109,10 +128,11 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
   trimmed.forEach((items, lineIndex) => {
     let penX = shiftX + (blockWidth - widths[lineIndex]!) * justify
     const baseline = lineIndex * lineHeight + shiftY + BASELINE_OFFSET
-    for (const { glyph, section, advance } of items) {
+    for (const { glyph, section, advance, codePoint } of items) {
       if (glyph !== null && glyph.width > 0) {
         glyphs.push({
           glyph,
+          codePoint,
           x: penX + (glyph.left - GLYPH_BUFFER) * section.scale,
           y: baseline + (-glyph.top - GLYPH_BUFFER) * section.scale,
           scale: section.scale,
@@ -129,6 +149,49 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     top: shiftY - lineHeight / 2,
     bottom: shiftY - lineHeight / 2 + trimmed.length * lineHeight,
   }
+}
+
+/** Resolves bidi levels paragraph by paragraph (between explicit newlines), in place. */
+function resolveParagraphLevels(characters: Array<{ codePoint: number; level: number }>): void {
+  let start = 0
+  for (let index = 0; index <= characters.length; index++) {
+    if (index < characters.length && characters[index]!.codePoint !== 0x0a) continue
+    const paragraph = characters.slice(start, index)
+    const levels = resolveLevels(paragraph.map(character => character.codePoint))
+    paragraph.forEach((character, offset) => (character.level = levels[offset]!))
+    start = index + 1
+  }
+}
+
+/**
+ * Text sections with Arabic letters in their contextual presentation forms (lam-alef ligatures too), joined
+ * across section boundaries: what glyphs are loaded and drawn for. Sections without Arabic are returned as they are.
+ */
+export function shapeSectionsForScripts(sections: readonly TextSection[]): TextSection[] {
+  if (!sections.some(section => needsArabicShaping(section.text))) return [...sections]
+  const codePoints: number[] = []
+  const owners: number[] = []
+  sections.forEach((section, sectionIndex) => {
+    for (const character of section.text) {
+      codePoints.push(character.codePointAt(0)!)
+      owners.push(sectionIndex)
+    }
+  })
+  const shaped = shapeArabicCodePoints(codePoints)
+  const texts = sections.map(() => '')
+  shaped.codePoints.forEach((codePoint, index) => (texts[owners[shaped.sources[index]!]!] += String.fromCodePoint(codePoint)))
+  return sections.map((section, index) => ({ ...section, text: texts[index]! })).filter(section => section.text.length > 0)
+}
+
+/** Code points to load glyphs for besides a text's own: the mirrored brackets right-to-left runs draw. */
+export function mirroredCodePoints(text: string): number[] {
+  const extra: number[] = []
+  for (const character of text) {
+    const codePoint = character.codePointAt(0)!
+    const mirrored = mirrorCodePoint(codePoint)
+    if (mirrored !== codePoint) extra.push(mirrored)
+  }
+  return extra
 }
 
 function trimSpaces<T extends { codePoint: number }>(items: T[]): T[] {
