@@ -1259,8 +1259,14 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - **Word breaks.** Thai, Lao, Khmer, Myanmar and Tai Tham get a zero-width space between the words
   `Intl.Segmenter` finds, a break opportunity for `text-max-width`.
 - No letter spacing on these labels (it would cut the Devanagari headstroke between clusters).
-- Limits: shaping is per cluster, so the rare ligatures across clusters are not formed; the code point registry
-  lives for the worker (65,534 clusters, then text falls back to code points).
+- Limits: shaping is per cluster, so the rare ligatures across clusters are not formed, and clusters are found per
+  `format` section. The code point registry lives for the worker (65,534 clusters, then text falls back to code
+  points). Each cluster takes an atlas slot per font stack and the glyph atlas never evicts, as for CJK: panning
+  across many South Asian cities in several weights can fill it (new glyphs are then skipped with a warning).
+  Grouping a conjunct like ल्ली into one cluster needs Unicode 15.1 segmentation (ICU 74: current Chrome, Node 22);
+  older engines split it and draw a visible virama. A worker with no OffscreenCanvas keeps the code points and
+  draws the glyph server's unshaped letters, as before.
+- `@mapbox/tiny-sdf` is now pinned (2.3.0) and listed in AGENTS.md with the other private-API overrides.
 - Browser check: `?map=scripts` adds नई दिल्ली and ถนนสุขุมวิท. Unit tests: clusters, reuse, Thai word breaks,
   `shapeText` with clusters.
 

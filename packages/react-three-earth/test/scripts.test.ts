@@ -163,6 +163,10 @@ describe('complex scripts', () => {
     expect(substituteClusters('Mount Fuji 富士山')).toBe('Mount Fuji 富士山')
   })
 
+  it('keeps code points where no local font can draw clusters', () => {
+    expect(shapeSectionsForScripts([{ text: 'दिल्ली', fontStack: 'f', scale: 1 }], { clusters: false })[0]!.text).toBe('दिल्ली')
+  })
+
   it('shapes a label with clusters as single glyphs', () => {
     const sections = shapeSectionsForScripts([{ text: 'दिल्ली', fontStack: 'f', scale: 1 }])
     const shaped = shapeText(sections, options, lookup)!

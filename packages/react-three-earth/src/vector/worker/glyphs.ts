@@ -172,6 +172,11 @@ export class GlyphProvider {
     }
   }
 
+  /** Whether glyphs can be drawn with the local font here (an OffscreenCanvas in the worker, or the test hook). */
+  canDrawLocally(): boolean {
+    return this.options.drawLocalGlyph !== undefined || typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined'
+  }
+
   /** A loaded glyph, or null if neither the server nor the local font has it. */
   get(fontStack: string, codePoint: number): AtlasGlyph | null {
     return this.placed.get(glyphKey(fontStack, codePoint)) ?? null
@@ -208,7 +213,7 @@ export class GlyphProvider {
 
   protected drawLocal(fontStack: string, codePoint: number): Glyph | null {
     if (this.options.drawLocalGlyph !== undefined) return this.options.drawLocalGlyph(fontStack, codePoint)
-    if (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined') return null
+    if (!this.canDrawLocally()) return null
     const cluster = isClusterCodePoint(codePoint) ? clusterRegistry.clusterOf(codePoint) : undefined
     if (isClusterCodePoint(codePoint) && cluster === undefined) return null
     const { fontWeight, fontStyle } = parseFontName(fontStack)

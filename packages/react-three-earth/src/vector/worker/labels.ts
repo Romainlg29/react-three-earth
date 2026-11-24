@@ -177,9 +177,10 @@ function resolveParagraphLevels(characters: Array<{ codePoint: number; level: nu
  * joined across section boundaries, and each grapheme cluster of a complex script (Devanagari, Thai…) as one
  * glyph drawn by the local font. Sections with neither are returned as they are.
  */
-export function shapeSectionsForScripts(sections: readonly TextSection[]): TextSection[] {
+export function shapeSectionsForScripts(sections: readonly TextSection[], { clusters = true }: { clusters?: boolean } = {}): TextSection[] {
   const joined = shapeArabicSections(sections)
-  if (!joined.some(section => needsClusters(section.text))) return joined
+  // Without a local font to draw clusters with, complex scripts keep their code points (the glyph server's, unshaped).
+  if (!clusters || !joined.some(section => needsClusters(section.text))) return joined
   return joined.map(section => ({ ...section, text: substituteClusters(section.text) }))
 }
 

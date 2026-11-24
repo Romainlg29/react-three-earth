@@ -1288,7 +1288,7 @@ export class MapStyleProcessor {
     const iconId = symbolIcon(layer, feature, zoom)
     if (text.length === 0 && iconId === null) return null
     const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    const sections = shapeSectionsForScripts(text)
+    const sections = shapeSectionsForScripts(text, { clusters: this.glyphs.canDrawLocally() })
     return { layer, feature, sourceLayer, featureIndex, state, type, geometry, text: text.map(section => section.text).join(''), sections, iconId, sortKey, order }
   }
 
