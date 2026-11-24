@@ -811,7 +811,7 @@ export class SelectMode extends DrawMode {
       gizmoSpace: this.space,
       selectedVertex: this.selectedVertex === null ? null : { featureId: this.selectedVertex.feature.id, path: this.selectedVertex.path },
       drag: this.drag === null ? null : { kind: this.drag.kind, featureId: this.drag.feature.id, dragging: this.dragging, handle: this.drag.kind === 'transform' ? this.drag.handle : null },
-      keyboardTransform: transform === null ? null : { kind: transform.kind, axis: transform.axis === null ? null : 'xyz'[transform.axis], featureId: transform.base.id },
+      keyboardTransform: transform === null ? null : { kind: transform.kind, axis: transform.axis === null ? null : 'xyz'[transform.axis], featureId: transform.base.id, start: transform.start, pointer: transform.pointer, changed: transform.feature !== transform.base },
       undo: this.undoStack.length,
     }
   }

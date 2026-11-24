@@ -1802,7 +1802,14 @@ async function editing(name, { touch = false, flat = false } = {}) {
     const keyState = () => page.evaluate(() => {
       const element = window.earth.pointerEventsElement
       const active = document.activeElement
-      return { focused: active === element || element.contains(active), documentFocused: document.hasFocus(), transform: window.draw.inspect().modeState.keyboardTransform }
+      return { focused: active === element || element.contains(active), documentFocused: document.hasFocus(), transform: window.draw.inspect().modeState.keyboardTransform, pointerMoves: window.keyCheckPointerMoves, lastPointerMove: window.keyCheckLastPointerMove }
+    })
+    await page.evaluate(() => {
+      window.keyCheckPointerMoves = 0
+      window.earth.pointerEventsElement.addEventListener('pointermove', event => {
+        window.keyCheckPointerMoves++
+        window.keyCheckLastPointerMove = { x: event.clientX, y: event.clientY, buttons: event.buttons, pointerType: event.pointerType }
+      })
     })
     const keySteps = { beforeG: await keyState() }
     await page.keyboard.press('g')
@@ -1814,6 +1821,8 @@ async function editing(name, { touch = false, flat = false } = {}) {
     keySteps.afterX = await keyState()
     await page.keyboard.press('Enter')
     await page.waitForTimeout(300)
+    keySteps.afterEnter = await keyState()
+    keySteps.middle = middle
     const afterKeys = await ring()
     const shift = afterKeys.map((position, index) => [position[0] - beforeKeys[index][0], position[1] - beforeKeys[index][1]])
     result.keyboardMove = {
