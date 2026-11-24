@@ -102,7 +102,7 @@ export function useControls(): ControlsImpl | null {
 }
 
 /** `container`, or the element around the canvas. */
-function useControlsContainer(container: HTMLElement | null | undefined): HTMLElement | null {
+export function useControlsContainer(container: HTMLElement | null | undefined): HTMLElement | null {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   return container ?? renderer.domElement.parentElement
 }
@@ -119,12 +119,12 @@ export interface ControlButtonProps {
   'aria-busy'?: boolean
 }
 
-function buttonProps(label: string, onClick: () => void, extra?: Partial<ControlButtonProps>): ControlButtonProps {
+export function buttonProps(label: string, onClick: () => void, extra?: Partial<ControlButtonProps>): ControlButtonProps {
   return { type: 'button', 'aria-label': label, title: label, onClick, ...extra }
 }
 
 /** Follows a headless control's state; the control listens to the earth while the component is mounted. */
-function useControlState<State extends object>(control: MapControl<State>): State {
+export function useControlState<State extends object>(control: MapControl<State>): State {
   return useSyncExternalStore(control.subscribe, control.getState, control.getState)
 }
 
@@ -137,7 +137,7 @@ function useLatest<T>(value: T): { current: T } {
   return latest
 }
 
-function localeKey(locale: Partial<ControlsLocale> | undefined): string | undefined {
+export function localeKey(locale: Partial<ControlsLocale> | undefined): string | undefined {
   return locale === undefined ? undefined : JSON.stringify(locale)
 }
 

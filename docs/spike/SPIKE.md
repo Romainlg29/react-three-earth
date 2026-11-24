@@ -1247,12 +1247,15 @@ Every source can carry a credit, and a control shows them all (`src/core/attribu
   `<script>`, `<style>`, `<iframe>` and similar, whose content goes too. Parsing is linear (sticky regex, 100 KB of pathological tags in a few ms) and each entry is capped at 2048 characters. Attributes other than `href` are never read.
   Entities decode to plain text and are not parsed again. The control builds text nodes and `<a>` elements
   (`target="_blank" rel="noopener noreferrer"`) and never uses `innerHTML`. App-provided strings take the same path.
-- **Control.** Role `group`; resizes rebuild only when the compact state flips; several controls may share a container. Vanilla `new AttributionControl({ earth, container, compact?, customAttribution? })` adds a bottom-right
-  element to `container` (made `position: relative` if static) and injects one small `<style>` per document (needs `style-src 'unsafe-inline'` under a strict CSP), themed by
-  `--react-three-earth-attribution-background`, `-color`, `-link-color` and `-font-size`. `compact` true or false forces
-  the mode; undefined is automatic, compact while the container is under 640 px wide (a `ResizeObserver` follows it; the
-  rule is the pure `resolveCompact`). Compact shows a "ⓘ" button that expands the text. `<AttributionControl compact
-  customAttribution container />` wraps it, mounting into the canvas's parent unless `container` is given.
+- **Control.** Headless since the controls went headless: `AttributionControl({ earth, container?, compact?,
+  customAttribution?, locale? })` is a `MapControl` whose state holds `entries` (each credit parsed into segments, the
+  same array while the credits do not change), `visible`, `compact`, `expanded`, `textVisible` and the labels. `compact`
+  true or false forces the mode; undefined is automatic, compact while the container is under 640 px wide (a
+  `ResizeObserver` follows it while subscribed; the rule is the pure `resolveCompact`). `appendAttribution(element,
+  entries)` builds text nodes and links for vanilla apps. React: `useAttributionControl` (state, `groupProps`,
+  `toggleButtonProps`), `<AttributionText>`, and `<AttributionControl className style>`, which renders the group, the
+  text and the "ⓘ" toggle as unstyled HTML through `<Controls>`. No `<style>` is injected any more (so no
+  `style-src 'unsafe-inline'` is needed); the playground's `mapControls.css` places it bottom-right.
 
 Deviations from the brief: the sources' `attribution` accepts an array as well as a string; `Earth.getAttributions()`
 needs sources to expose an optional change listener (`addAttributionListener`) next to `getAttributions()`, so the

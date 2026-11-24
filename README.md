@@ -72,14 +72,14 @@ export function App() {
         </Imagery>
         <Atmosphere />
         <EarthControls />
-        <AttributionControl />
+        <AttributionControl className="credits" />
       </Earth>
     </Canvas>
   )
 }
 ```
 
-The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` shows them all (compact on small screens); tile providers such as OpenStreetMap require visible credit.
+The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`). Every source takes an `attribution`, and `<AttributionControl />` renders them all as unstyled HTML (compact on small screens; place it with a `className`, the library ships no CSS); tile providers such as OpenStreetMap require visible credit.
 
 ## Quick start (vanilla three.js)
 
@@ -139,7 +139,7 @@ renderer.setAnimationLoop(() => {
 | `<RasterTileSource url levels tileDimensionPixels projection attribution>` | `new RasterTileSource({ … })` | XYZ raster tiles |
 | `<Atmosphere exposure parameters>` | `new Atmosphere({ parameters })`, `install`, `createAerialPerspective` | sky, sun, haze |
 | `<EarthControls enableDamping>` | `new EarthControls(scene, camera, element)` | orbit, pan, zoom |
-| `<AttributionControl compact customAttribution>` | `new AttributionControl({ earth, container, compact })`, `earth.getAttributions()`, `attributionchange` | credit line, compact on small screens |
+| `<AttributionControl className compact customAttribution>`, `useAttributionControl()` | `new AttributionControl({ earth, container, compact })` (`getState`, `subscribe`), `appendAttribution`, `earth.getAttributions()` | credit line, unstyled, compact on small screens |
 | `<Marker longitudeDegrees latitudeDegrees draggable>`, `<Popup>` | `new Marker({ … })`, `new Popup({ … })`, `marker.addTo(earth, container)` | HTML pinned to a place; popups open on click |
 | `useEarth`, `useEarthFrame`, `useEarthState` | | hooks |
 | | `setCameraView`, `toCartesian`, `AtmosphereParameters` | helpers |

@@ -68,7 +68,8 @@ export function App() {
         </Imagery>
         <Atmosphere />
         <EarthControls />
-        <AttributionControl />
+        {/* Unstyled: place it with a class of yours, e.g. .credits { position: absolute; right: 0; bottom: 0 } */}
+        <AttributionControl className="credits" />
       </Earth>
     </Canvas>
   )
@@ -79,8 +80,8 @@ The canvas needs a sized parent: give `html, body, #root` `height: 100%` and `ma
 
 Attribution is part of the setup: most tile providers require visible credit. Give every source an
 `attribution` (plain text, or HTML where only `<a href="https://…">` links survive) and add
-`<AttributionControl />`, which shows the credits of all sources, de-duplicated, in the canvas's
-bottom-right corner (see "Show attribution" below).
+`<AttributionControl />`, which renders the credits of all sources, de-duplicated, as unstyled HTML over the
+canvas: the library ships no CSS, so give it a `className` that places it (see "Show attribution" below).
 
 What each piece does:
 
@@ -94,7 +95,7 @@ What each piece does:
   mapping at `exposure={10}` by default (see `atmosphere-and-sun`). Without it, add
   your own lights (`<ambientLight>`, `<directionalLight>`), or the terrain renders black.
 - `<EarthControls>`: orbit, pan and zoom with mouse or touch. On touch screens it works like Apple Maps: one finger pans, and two fingers pinch, twist and pan together, with the ground staying under them. A two-finger drag up or down tilts the globe. With the keyboard, once the map has focus: arrows pan, `+` / `-` zoom, `Shift` + arrows turn and tilt. `Shift` + drag zooms to a box; the right button rotates (see `map-controls`, also for cooperative gestures in a scrolling page).
-- `<AttributionControl>`: the credit line, compact (a "ⓘ" button) on containers narrower than 640 px.
+- `<AttributionControl>`: the credit line as unstyled HTML, compact (a "ⓘ" button) on containers narrower than 640 px.
 
 ### Render the same globe in vanilla three.js
 
@@ -102,7 +103,7 @@ What each piece does:
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, appendAttribution, prefersWebGLBackend, setCameraView } from 'react-three-earth'
 
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
@@ -135,8 +136,13 @@ earth.addImagery(
     ],
   }),
 )
-// The credit line, bottom-right of the canvas's parent; dispose() it on teardown
-const attributionControl = new AttributionControl({ earth, container })
+// The credits, drawn by you: text and safe links, kept up to date
+const credits = document.createElement('div')
+credits.style.cssText = 'position: absolute; right: 0; bottom: 0; font: 11px system-ui; background: #fffc'
+container.append(credits)
+const attributionControl = new AttributionControl({ earth, container, compact: false })
+const stopAttribution = attributionControl.subscribe(state => appendAttribution(credits, state.entries))
+appendAttribution(credits, attributionControl.getState().entries)
 
 const atmosphere = new Atmosphere()
 atmosphere.install(renderer)
@@ -169,7 +175,7 @@ addEventListener('resize', () => {
 
 The order inside the loop matters: controls, then `earth.update`, then render. Without an atmosphere,
 call `renderer.render(scene, camera)` instead of the pipeline and add lights. Call `earth.dispose()`
-`attributionControl.dispose()` and `controls.dispose()` on teardown.
+`stopAttribution()` and `controls.dispose()` on teardown.
 
 ### Show attribution
 
@@ -179,17 +185,34 @@ metadata once the style has loaded, so a style from a provider usually needs no 
 de-duplicated and ordered terrain first, then imagery layers in order.
 
 ```tsx
-import { AttributionControl } from 'react-three-earth/react'
+import { AttributionControl, AttributionText, useAttributionControl } from 'react-three-earth/react'
 
 // Inside <Earth>. compact: undefined (automatic) | true (always a "ⓘ" button) | false (always the text)
-export const Credits = () => <AttributionControl compact customAttribution="Flights: <a href='https://example.com/data'>Example data</a>" />
+export const Credits = () => (
+  <AttributionControl className="credits" compact customAttribution="Flights: <a href='https://example.com/data'>Example data</a>" />
+)
+
+// Or markup of your own (inside <Controls>, which renders HTML from inside <Earth>)
+export function MyCredits() {
+  const attribution = useAttributionControl()
+  return (
+    <div {...attribution.groupProps}>
+      {attribution.textVisible ? <AttributionText entries={attribution.entries} /> : null}
+      <button {...attribution.toggleButtonProps}>ⓘ</button>
+    </div>
+  )
+}
 ```
 
-Vanilla: `new AttributionControl({ earth, container, compact, customAttribution })`, and `earth.getAttributions()`
-returns the strings. Listen to `earth.addEventListener('attributionchange', …)` to render your own. Only
-text and `<a href>` links with `http` or `https` URLs are kept; any other markup is dropped, so provider
-strings are safe to pass. Restyle with CSS variables on an ancestor:
-`--react-three-earth-attribution-background`, `-color`, `-link-color`, `-font-size`.
+`<AttributionControl>` ships no CSS: its element has the classes `react-three-earth-controls react-three-earth-attribution`
+plus yours, and holds a `role="group"` element with `.react-three-earth-attribution-text` and, in compact mode, the
+`.react-three-earth-attribution-toggle` button (`hidden` otherwise; make `[hidden]` `display: none` if your CSS sets
+`display`). `useAttributionControl` gives `entries` (each a list of `{ text, href? }` segments), `visible`, `compact`,
+`textVisible`, `toggle`, and props for the group and the toggle. Vanilla: `new AttributionControl({ earth, container,
+compact, customAttribution })` with `getState()` and `subscribe()`, and `appendAttribution(element, entries)` builds
+the text and links; `earth.getAttributions()` returns the raw strings. Only text and `<a href>` links with `http` or
+`https` URLs are kept; any other markup is dropped, so provider strings are safe to pass. Render segments as text and
+`<a>` elements, never through `innerHTML`.
 
 The control injects one `<style>` tag, which a strict Content Security Policy blocks unless it allows
 `style-src 'unsafe-inline'`; otherwise write the rules yourself for the class names

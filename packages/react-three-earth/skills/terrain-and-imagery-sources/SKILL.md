@@ -330,7 +330,8 @@ For a smooth ellipsoid, use a quantized-mesh `ellipsoid` tileset or a flat-heigh
 ### MEDIUM: Missing attribution
 
 Most providers require visible credit. Set `attribution` on the source and render `<AttributionControl />`
-(vanilla: `new AttributionControl({ earth, container })`); without both nothing is shown.
+placed with a `className` (vanilla: `new AttributionControl({ earth, container })` and draw its state); without both
+nothing is shown.
 
 ### MEDIUM: Exaggeration expected to change `hillshade-exaggeration`
 

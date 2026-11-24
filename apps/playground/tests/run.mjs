@@ -230,7 +230,7 @@ async function controls() {
   const desktop = await openIn({ permissions: ['geolocation'], geolocation: { longitude: -90, latitude: 0.02, accuracy: 60 } }, { width: 1000, height: 640 })
   const { page } = desktop
   const result = {}
-  result.labels = await page.evaluate(() => [...document.querySelectorAll('.react-three-earth-controls button')].map(b => b.getAttribute('aria-label')))
+  result.labels = await page.evaluate(() => [...document.querySelectorAll('.map-corner button')].map(b => b.getAttribute('aria-label')))
   result.corner = await page.evaluate(() => {
     const box = document.querySelector('.map-corner-top-right').getBoundingClientRect()
     return { right: Math.round(innerWidth - box.right), top: Math.round(box.top) }
@@ -303,8 +303,8 @@ async function controls() {
   // A phone: touch, 390 × 700. Buttons are 44 pixels and a tap works
   const phone = await openIn({ isMobile: true, hasTouch: true, deviceScaleFactor: 3 }, { width: 390, height: 700 })
   result.phone = await phone.page.evaluate(() => {
-    const sizes = [...document.querySelectorAll('.react-three-earth-controls button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
-    const inside = [...document.querySelectorAll('.react-three-earth-controls')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
+    const sizes = [...document.querySelectorAll('.map-corner button')].map(b => Math.round(Math.min(b.getBoundingClientRect().width, b.getBoundingClientRect().height)))
+    const inside = [...document.querySelectorAll('.map-corner')].every(c => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })
     return { sizes, inside }
   })
   await settle(phone.page)

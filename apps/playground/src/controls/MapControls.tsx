@@ -3,7 +3,7 @@
  * The library draws no buttons and ships no CSS; the look lives in `mapControls.css`.
  */
 import type { ViewMode } from 'react-three-earth'
-import { Controls, Marker, useFullscreenControl, useMarker, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from 'react-three-earth/react'
+import { AttributionControl, Controls, Marker, useFullscreenControl, useMarker, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from 'react-three-earth/react'
 
 import { useLayoutEffect } from 'react'
 
@@ -132,7 +132,8 @@ export interface MapControlsProps {
 }
 
 /**
- * Zoom, compass, (2D / 3D), (geolocate), fullscreen in the top-right corner, and the scale in the bottom-left.
+ * Zoom, compass, (2D / 3D), (geolocate), fullscreen in the top-right corner, the scale in the bottom-left, and the
+ * credits in the bottom-right.
  * Place it inside `<Earth>`.
  */
 export function MapControls({ onViewChange, viewSwitch = onViewChange !== undefined, geolocate = false }: MapControlsProps) {
@@ -147,6 +148,7 @@ export function MapControls({ onViewChange, viewSwitch = onViewChange !== undefi
       <Controls className="map-corner map-corner-bottom-left">
         <Scale />
       </Controls>
+      <AttributionControl className="map-attribution" />
     </>
   )
 }

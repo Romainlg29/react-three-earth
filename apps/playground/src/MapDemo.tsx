@@ -12,7 +12,6 @@ import {
 } from 'react-three-earth'
 import {
   Atmosphere,
-  AttributionControl,
   Earth,
   EarthControls,
   ImageSource,
@@ -404,7 +403,6 @@ export function MapDemo() {
             <PlainLights />
           )}
           <EarthControls cooperativeGestures={cooperativeGestures} />
-          <AttributionControl />
           <MapControls onViewChange={setView} geolocate />
           {showMarkers ? <Markers /> : null}
           {showSdfShapes ? <SdfShapes /> : null}
