@@ -109,6 +109,14 @@ export abstract class DrawMode {
     return false
   }
 
+  /**
+   * A press of the mouse's secondary (right) button on the map, while the `Draw`'s `keyboard` option is on: return true
+   * to take it (the camera controls and the context menu then ignore it). The select mode cancels a keyboard move.
+   */
+  secondaryPress(): boolean {
+    return false
+  }
+
   /** Completes the feature being drawn, if it can be. */
   finish(): void {}
 

@@ -30,9 +30,13 @@ if (selected.size === 0) {
 
 // WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
 // canvas drops the GPU instance. Run under xvfb-run on machines without a display.
+// `BROWSER_CHECKS_GPU=1` runs on the machine's own GPU instead (much faster; proves the same correctness).
+const useGpu = process.env.BROWSER_CHECKS_GPU === '1'
 const browser = await chromium.launch({
   headless: false,
-  args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
+  args: useGpu
+    ? ['--enable-unsafe-webgpu', '--force_high_performance_gpu', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling']
+    : ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
 })
 const results = []
 

@@ -15,7 +15,7 @@ import { EventDispatcher, Matrix4 } from 'three'
 import { createFeatureId, FeatureStore, type FeatureStoreChange } from './FeatureStore.js'
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
-import { SelectMode } from './modes/SelectMode.js'
+import { GIZMO_SPACES, GIZMO_TOOLS, SelectMode, type GizmoSpace, type GizmoTool } from './modes/SelectMode.js'
 import { LineStringMode, PointMode, PolygonMode } from './modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from './modes/ShapeModes.js'
 import { DrapedFeatures } from './render/DrapedFeatures.js'
@@ -41,7 +41,11 @@ export interface DrawOptions {
   style?: DrawStyleInput
   /** Features to start with. */
   features?: DrawFeatureInput
-  /** Escape, Enter and Backspace act on the mode while the map has focus. Default: true. */
+  /**
+   * Keys act on the mode while the map has focus: Escape, Enter, Backspace and Delete, and in the select mode G, R and
+   * S (move, rotate, scale under the pointer), then X, Y and Z (lock to an axis); a right click cancels such a move.
+   * Default: false (opt-in).
+   */
   keyboard?: boolean
   /** Makes the id of each new feature. Default: a random UUID. */
   createId?: () => string
@@ -59,6 +63,10 @@ export interface DrawState extends DrawModeStatus {
   selectedIds: readonly string[]
   /** The select mode shows the selected feature's vertex handles; false while it shows the gizmo (or in other modes). */
   editingVertices: boolean
+  /** The gizmo's handles: `'all'` (the default), or only those of `'move'`, `'rotate'` or `'scale'`. See `setGizmoTool`. */
+  gizmoTool: GizmoTool
+  /** The gizmo's axes: east, north and up (`'world'`, the default), or the feature's own (`'local'`). See `setGizmoSpace`. */
+  gizmoSpace: GizmoSpace
 }
 
 /** Events a `Draw` fires (`draw.addEventListener('create', listener)`). */
@@ -108,7 +116,12 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /** The mode holding the press it took from the camera controls, if any. */
   protected pressMode: DrawMode | null = null
   protected styleInput: DrawStyleInput | undefined
-  protected readonly keyboard: boolean
+  /** Whether keys act on the mode (`DrawOptions.keyboard`). */
+  readonly keyboard: boolean
+  protected gizmoTool: GizmoTool = 'all'
+  protected gizmoSpace: GizmoSpace = 'world'
+  /** A secondary press the mode took: the context menu it opens is not shown. */
+  protected swallowContextMenu = false
   protected readonly makeId: () => string
   protected readonly listeners = new Set<DrawStateListener>()
   protected state: DrawState
@@ -130,7 +143,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   protected doubleClickZoomRelease: (() => void) | null = null
   protected readonly modeContext: DrawModeContext
 
-  constructor({ name = 'draw', modes, mode = 'static', style, features, keyboard = true, createId = createFeatureId }: DrawOptions = {}) {
+  constructor({ name = 'draw', modes, mode = 'static', style, features, keyboard = false, createId = createFeatureId }: DrawOptions = {}) {
     super()
     this.name = name
     this.styleInput = style
@@ -143,6 +156,12 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     const first = this.modes.get(mode)
     if (first === undefined) throw new Error(`Draw: no mode named "${mode}"; pick one of ${[...this.modes.keys()].join(', ')}, or add it to \`modes\`.`)
     this.mode = first
+    // The gizmo settings start as the first select mode's.
+    const select = [...this.modes.values()].find((each): each is SelectMode => each instanceof SelectMode)
+    if (select !== undefined) {
+      this.gizmoTool = select.gizmoTool
+      this.gizmoSpace = select.gizmoSpace
+    }
     this.modeContext = this.createModeContext()
     if (features !== undefined) this.store.replace(this.withIds(features))
     this.store.subscribe(this.onStoreChange)
@@ -193,6 +212,27 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /** Removes the last vertex of the feature being drawn, or takes back the last edit in the select mode. */
   undo(): void {
     this.mode.undo()
+  }
+
+  // ---- Gizmo ----
+
+  /**
+   * Which handles the select mode's gizmo shows: `'all'` (arrows, planes, the center ring, rotation arcs and scale cubes
+   * together), or only those of `'move'`, `'rotate'` or `'scale'`. Headless: build the buttons from `state.gizmoTool`.
+   */
+  setGizmoTool(tool: GizmoTool): void {
+    if (!GIZMO_TOOLS.includes(tool)) throw new Error(`Draw.setGizmoTool: "${String(tool)}" is no gizmo tool; pick one of ${GIZMO_TOOLS.join(', ')}.`)
+    this.gizmoTool = tool
+    for (const mode of this.modes.values()) if (mode instanceof SelectMode) mode.setGizmoTool(tool)
+    this.refresh()
+  }
+
+  /** The gizmo's axes: east, north and up (`'world'`), or the selected feature's own (`'local'`, see `featureAxes`). */
+  setGizmoSpace(space: GizmoSpace): void {
+    if (!GIZMO_SPACES.includes(space)) throw new Error(`Draw.setGizmoSpace: "${String(space)}" is no gizmo space; pick 'world' or 'local'.`)
+    this.gizmoSpace = space
+    for (const mode of this.modes.values()) if (mode instanceof SelectMode) mode.setGizmoSpace(space)
+    this.refresh()
   }
 
   // ---- Selection ----
@@ -318,7 +358,14 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     })
     if (this.keyboard && typeof window !== 'undefined') {
       window.addEventListener('keydown', this.onKeyDown)
-      context.onDispose(() => window.removeEventListener('keydown', this.onKeyDown))
+      // Captured on the window, before the camera controls see a right press.
+      window.addEventListener('pointerdown', this.onSecondaryPress, true)
+      window.addEventListener('contextmenu', this.onContextMenu, true)
+      context.onDispose(() => {
+        window.removeEventListener('keydown', this.onKeyDown)
+        window.removeEventListener('pointerdown', this.onSecondaryPress, true)
+        window.removeEventListener('contextmenu', this.onContextMenu, true)
+      })
     }
     context.onUpdate(frame => this.updateOverlay(frame))
     context.onDispose(() => {
@@ -432,6 +479,22 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     if (this.mode.keyDown(event)) event.preventDefault()
   }
 
+  /** A right press on the map goes to the mode first (it cancels a keyboard move); taken, the camera never sees it. */
+  protected onSecondaryPress = (event: PointerEvent): void => {
+    const element = this.earth?.pointerEventsElement
+    if (event.button !== 2 || element === null || element === undefined || !(event.target instanceof Node) || !element.contains(event.target)) return
+    if (!this.mode.secondaryPress()) return
+    this.swallowContextMenu = true
+    event.stopPropagation()
+    event.preventDefault()
+  }
+
+  protected onContextMenu = (event: MouseEvent): void => {
+    if (!this.swallowContextMenu) return
+    this.swallowContextMenu = false
+    event.preventDefault()
+  }
+
   protected fromEarthEvent(event: EarthPointerEvent): DrawPointerEvent {
     return { screen: event.screen, get geographic() { return event.geographic }, pointerType: (event.originalEvent as PointerEvent).pointerType ?? 'mouse', originalEvent: event.originalEvent }
   }
@@ -499,7 +562,16 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
 
   protected computeState(): DrawState {
     const status = this.mode.status()
-    return { mode: this.mode.name, modes: this.modeNames(), features: this.store.toFeatureCollection(), selectedIds: this.mode.selectedFeatureIds(), ...status, editingVertices: status.editingVertices ?? false }
+    return {
+      mode: this.mode.name,
+      modes: this.modeNames(),
+      features: this.store.toFeatureCollection(),
+      selectedIds: this.mode.selectedFeatureIds(),
+      ...status,
+      editingVertices: status.editingVertices ?? false,
+      gizmoTool: this.gizmoTool,
+      gizmoSpace: this.gizmoSpace,
+    }
   }
 
   protected cachedModeNames: readonly string[] = []
@@ -522,7 +594,9 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.lastProjectionMatrix.copy(camera.projectionMatrix)
     this.lastMorph = morph
     this.overlayDirty = false
-    const content: OverlayContent = { features: [], lines: [], handles: [] }
+    const content: OverlayContent = { features: [], lines: [], handles: [], polygons: [] }
+    // The mode measures the screen with this frame's camera (the gizmo's size in metres).
+    overlay.prepare(camera)
     // The mode samples terrain too (a shape's base on the ground): with this frame's budget, and drawn again until
     // every height it asked for is known.
     overlay.heights.startFrame()
