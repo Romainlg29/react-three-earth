@@ -24,6 +24,8 @@ export interface FeatureMidpoint {
   /** Where the new vertex goes (after the edge's first vertex). */
   path: VertexPath
   position: LongitudeLatitude
+  /** The middle's altitude above the WGS84 ellipsoid, when both ends of the edge have one (where an inserted vertex goes). */
+  heightMeters?: number
 }
 
 /** Fewest vertices of a line string, and of a polygon ring (without the closing position). */
@@ -84,7 +86,9 @@ export function featureMidpoints(feature: DrawFeature): FeatureMidpoint[] {
       const from = ring[index]!
       const to = ring[(index + 1) % ring.length]!
       const toLongitude = unwrapLongitudeNear(to[0]!, from[0]!)
-      midpoints.push({ path: { ring: ringIndex, index: index + 1 }, position: [(from[0]! + toLongitude) / 2, (from[1]! + to[1]!) / 2] })
+      const midpoint: FeatureMidpoint = { path: { ring: ringIndex, index: index + 1 }, position: [(from[0]! + toLongitude) / 2, (from[1]! + to[1]!) / 2] }
+      if (from.length > 2 && to.length > 2 && Number.isFinite(from[2]) && Number.isFinite(to[2])) midpoint.heightMeters = (from[2]! + to[2]!) / 2
+      midpoints.push(midpoint)
     }
   })
   return midpoints

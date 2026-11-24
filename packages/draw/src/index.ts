@@ -1,15 +1,22 @@
 export { Draw, type DrawEventMap, type DrawFeatureInput, type DrawOptions, type DrawState, type DrawStateListener } from './Draw.js'
 export { DrawMode, StaticMode, hitTolerancePixels, IDLE_STATUS, NO_FEATURE_IDS, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
-export { SelectMode, type SelectDrag, type SelectModeOptions } from './modes/SelectMode.js'
-export { TransformMode, type TransformModeOptions } from './modes/TransformMode.js'
+export { SelectMode, type GizmoHandle, type SelectDrag, type SelectModeOptions } from './modes/SelectMode.js'
 export {
+  baseAltitudeOf,
   featureCenter,
   featureRotationDegrees,
+  firstAltitudeOf,
+  liftFeature,
+  placeOnTerrain,
   rotateFeature,
   scaleFeature,
   setExtrusionHeight,
+  stretchFeature,
   transformFrame,
+  type GroundHeight,
+  type TransformAxis,
   type TransformFrame,
+  type TransformSideHandle,
 } from './transform.js'
 export {
   featureMidpoints,

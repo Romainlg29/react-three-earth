@@ -18,6 +18,10 @@ export interface OverlayHandle {
   faded?: boolean
   /** Height above the WGS84 ellipsoid, in metres. Default: on the terrain. */
   heightMeters?: number
+  /** Drawn this many pixels below where its position is on the screen (above when negative). Default: 0. */
+  offsetYPixels?: number
+  /** With an offset, a line this many pixels wide joins the handle to its position, in `outlineColor`. Default: none. */
+  stemWidthPixels?: number
 }
 
 /** A line drawn over the map in screen pixels: a guide, a gizmo ring. */
@@ -239,6 +243,11 @@ export class LiveOverlay {
     if (point === null) return
     const radius = handle.radiusPixels ?? 5
     const alpha = handle.faded === true ? 0.6 : 1
+    const offset = handle.offsetYPixels ?? 0
+    if (offset !== 0) {
+      if (handle.stemWidthPixels !== undefined && handle.stemWidthPixels > 0) this.batch.segment(point.x, point.y, point.x, point.y + offset, handle.stemWidthPixels, linearColor(handle.outlineColor), alpha)
+      point.y += offset
+    }
     this.batch.circle(point.x, point.y, radius + handle.outlineWidthPixels, linearColor(handle.outlineColor), alpha)
     this.batch.circle(point.x, point.y, radius, linearColor(handle.color), alpha)
   }

@@ -11,6 +11,10 @@ const DEGREES = Math.PI / 180
  */
 export type ShapeDescription =
   | { type: 'circle'; center: LongitudeLatitude; radiusMeters: number }
+  /**
+   * `semiMajorAxisMeters` is the semi-axis along `rotationDegrees` and `semiMinorAxisMeters` the one across it; either
+   * may be the longer (a circle stretched across has the longer one across).
+   */
   | { type: 'ellipse'; center: LongitudeLatitude; semiMajorAxisMeters: number; semiMinorAxisMeters: number; rotationDegrees: number }
   | { type: 'rectangle'; center: LongitudeLatitude; widthMeters: number; lengthMeters: number; rotationDegrees: number }
   | { type: 'regular-polygon'; center: LongitudeLatitude; radiusMeters: number; sides: number; rotationDegrees: number }
@@ -92,7 +96,7 @@ export function ellipseRing(center: LongitudeLatitude, semiMajorAxisMeters: numb
   const ring: LongitudeLatitude[] = []
   for (let step = 0; step < steps; step++) {
     const angle = (step / steps) * 2 * Math.PI
-    // x across (minor axis), y along (major axis, towards the rotation).
+    // x across (the "minor" semi-axis), y along (the "major" one, towards the rotation); either may be the longer.
     const [east, north] = rotate(semiMinorAxisMeters * Math.cos(angle), semiMajorAxisMeters * Math.sin(angle), rotationDegrees)
     ring.push(offset(center, east, north))
   }
@@ -106,7 +110,10 @@ export function createCircle(center: LongitudeLatitude, radiusMeters: number, op
   return polygonFeature(ring, { type: 'circle', center: [center[0], center[1]], radiusMeters }, options)
 }
 
-/** An ellipse on the ground; its major axis points towards `rotationDegrees` (0: north). */
+/**
+ * An ellipse on the ground: `semiMajorAxisMeters` along `rotationDegrees` (0: north), `semiMinorAxisMeters` across it.
+ * Nothing requires the first to be the longer.
+ */
 export function createEllipse(
   center: LongitudeLatitude,
   semiMajorAxisMeters: number,

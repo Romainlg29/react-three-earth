@@ -46,9 +46,11 @@ export interface DrawModeStatus {
   canFinish: boolean
   /** `undo()` would remove the last vertex. */
   canUndo: boolean
+  /** The select mode shows the selected feature's vertex handles rather than its gizmo. Default: false. */
+  editingVertices?: boolean
 }
 
-export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false })
+export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false, editingVertices: false })
 
 /** No selected features: one shared empty list, so states compare equal by identity. */
 export const NO_FEATURE_IDS: readonly string[] = Object.freeze([])
