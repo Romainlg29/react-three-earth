@@ -76,7 +76,7 @@
   },
   "dependencies": {
     "3d-tiles-renderer": "0.5.4",
-    "@mapbox/tiny-sdf": "^2.3.0",
+    "@mapbox/tiny-sdf": "2.3.0",
     "@mapbox/vector-tile": "^2.0.5",
     "@maplibre/maplibre-gl-style-spec": "^26.9.0",
     "@types/geojson": "^7946.0.16",

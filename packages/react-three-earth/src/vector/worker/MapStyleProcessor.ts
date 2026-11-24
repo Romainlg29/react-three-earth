@@ -136,7 +136,7 @@ interface SymbolCandidate {
   geometry: Point[][]
   /** The text as the style gives it, in reading order: the label's identity and what `getScreenLabels` reports. */
   text: string
-  /** The text to draw (Arabic letters joined), empty for an icon alone. */
+  /** The text to draw (Arabic joined, complex-script clusters as local glyphs), empty for an icon alone. */
   sections: TextSection[]
   /** `icon-image`, or null without an icon. */
   iconId: string | null
@@ -1288,7 +1288,7 @@ export class MapStyleProcessor {
     const iconId = symbolIcon(layer, feature, zoom)
     if (text.length === 0 && iconId === null) return null
     const sortKey = layer.has('layout', 'symbol-sort-key') ? (layer.evaluate<number | undefined>('layout', 'symbol-sort-key', zoom, feature) ?? 0) : 0
-    const sections = shapeSectionsForScripts(text)
+    const sections = shapeSectionsForScripts(text, { clusters: this.glyphs.canDrawLocally() })
     return { layer, feature, sourceLayer, featureIndex, state, type, geometry, text: text.map(section => section.text).join(''), sections, iconId, sortKey, order }
   }
 

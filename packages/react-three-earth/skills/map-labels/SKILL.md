@@ -5,7 +5,7 @@ description: >
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
-  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, reading the labels on the screen in tests
+  (symbolFadeDurationSeconds), right-to-left Arabic and Hebrew names, Hindi and Thai, reading the labels on the screen in tests
   (earth.terrain.getScreenLabels), and what labels do not do yet.
 metadata:
   purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, and current limits.'
@@ -21,6 +21,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/labels.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/bidi.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/arabic.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/worker/clusters.ts'
 requires:
   - map-styles
 ---
@@ -119,6 +120,19 @@ orders the text itself.
   glyph; their neighbours still join to them.
 - Not covered: explicit direction controls (U+202A–U+202E, U+2066–U+2069 are ignored), and bracket pairing
   (UAX #9 rule N0), which rarely matters in a name.
+
+### Hindi, Thai and other complex scripts
+
+Devanagari and the other Indic scripts, Thai, Lao, Tibetan, Myanmar and Khmer need a shaping engine, which glyph
+servers do not have. Each grapheme cluster (a conjunct with its vowel signs, a Thai consonant with its marks) is
+drawn whole by the local font, as MapLibre does for local CJK ideographs:
+
+- `localFontFamily` (default `sans-serif`) must cover these scripts; system fonts usually do. The style's glyph
+  server is not asked for them.
+- Thai, Lao, Khmer and Myanmar have no spaces between words: lines (`text-max-width`) may break between words found
+  by `Intl.Segmenter`. Without `Intl.Segmenter` the text draws code point by code point, unshaped.
+- `text-letter-spacing` is ignored on these labels, which would break the clusters' joins.
+- Shaping across clusters (a few Indic ligatures span two) is not done: each cluster is shaped on its own.
 
 ### Read the labels on the screen (tests, devtools)
 

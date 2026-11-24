@@ -24,13 +24,16 @@ const TOWNS = Array.from({ length: 12 * 10 }, (_, index) => {
 
 /**
  * Place names in other scripts (`?map=scripts`), in a column west of the mountain, for the right-to-left and
- * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, and Latin mixed with Hebrew.
+ * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, Latin mixed with Hebrew,
+ * Hindi (conjuncts, vowel signs) and Thai (marks above and below).
  */
 export const SCRIPT_PLACES = [
   { name: 'القاهرة', position: [138.62, 35.42] },
   { name: 'תל אביב', position: [138.62, 35.39] },
   { name: 'شارع السلام 12', position: [138.62, 35.36] },
   { name: 'Haifa (חיפה)', position: [138.62, 35.33] },
+  { name: 'नई दिल्ली', position: [138.62, 35.30] },
+  { name: 'ถนนสุขุมวิท', position: [138.62, 35.27] },
 ] as const
 
 /** A road grid every 0.05 degrees; every other road is a primary. */

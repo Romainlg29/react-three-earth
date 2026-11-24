@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), complex scripts such as Indic and Thai (right-to-left text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), vertical text (right-to-left and complex scripts: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1292,7 +1292,31 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - Unit tests: `test/scripts.test.ts` (joining forms, ligatures, marks, sections; classes; Hebrew with digits, Latin
   inside right-to-left and the reverse, Arabic numbers and decimals; glyph order, mirroring, wrapping and letter
   spacing in `shapeText`).
-- Next (part 2, 3): Indic and Thai drawn per grapheme cluster with the local font; vertical CJK (`text-writing-mode`).
+- Next (part 3): vertical CJK (`text-writing-mode`).
+
+## W13, part 2: complex scripts (Indic, Thai)
+
+- **Clusters drawn whole** (`worker/clusters.ts`). Devanagari and the other Indic scripts, Thai, Lao, Tibetan,
+  Myanmar, Khmer and Tai Tham are split into grapheme clusters with `Intl.Segmenter` (which keeps Indic conjuncts
+  together, GB9c). Each cluster stands in the text as one plane-15 private-use code point, so glyph loading, the
+  atlas, bidi and line breaking need no change; the glyph provider draws the cluster string with TinySDF on the
+  local font, where the browser's canvas shapes it (MapLibre's local-ideograph path, extended to clusters). Clusters
+  never go to the glyph server, which cannot shape. A cluster can be taller than the 24 px em box TinySDF sizes its
+  canvas for, so clusters use a renderer built for 48 px drawing at 24 px (it sets TinySDF's untyped `ctx.font`;
+  re-check when bumping `@mapbox/tiny-sdf`).
+- **Word breaks.** Thai, Lao, Khmer, Myanmar and Tai Tham get a zero-width space between the words
+  `Intl.Segmenter` finds, a break opportunity for `text-max-width`.
+- No letter spacing on these labels (it would cut the Devanagari headstroke between clusters).
+- Limits: shaping is per cluster, so the rare ligatures across clusters are not formed, and clusters are found per
+  `format` section. The code point registry lives for the worker (65,534 clusters, then text falls back to code
+  points). Each cluster takes an atlas slot per font stack and the glyph atlas never evicts, as for CJK: panning
+  across many South Asian cities in several weights can fill it (new glyphs are then skipped with a warning).
+  Grouping a conjunct like ल्ली into one cluster needs Unicode 15.1 segmentation (ICU 74: current Chrome, Node 22);
+  older engines split it and draw a visible virama. A worker with no OffscreenCanvas keeps the code points and
+  draws the glyph server's unshaped letters, as before.
+- `@mapbox/tiny-sdf` is now pinned (2.3.0) and listed in AGENTS.md with the other private-API overrides.
+- Browser check: `?map=scripts` adds नई दिल्ली and ถนนสุขุมวิท. Unit tests: clusters, reuse, Thai word breaks,
+  `shapeText` with clusters.
 
 ## W14: image and video sources
 
