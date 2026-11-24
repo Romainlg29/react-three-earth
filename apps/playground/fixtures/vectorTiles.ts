@@ -25,7 +25,8 @@ const TOWNS = Array.from({ length: 12 * 10 }, (_, index) => {
 /**
  * Place names in other scripts (`?map=scripts`), in a column west of the mountain, for the right-to-left and
  * complex script check: Arabic (joined letters, a lam-alef), Hebrew, Arabic with digits, Latin mixed with Hebrew,
- * Hindi (conjuncts, vowel signs) and Thai (marks above and below).
+ * Hindi (conjuncts, vowel signs) and Thai (marks above and below); further west, two vertical Japanese names, one
+ * with a Latin letter turned in its column.
  */
 export const SCRIPT_PLACES = [
   { name: 'القاهرة', position: [138.62, 35.42] },
@@ -34,6 +35,8 @@ export const SCRIPT_PLACES = [
   { name: 'Haifa (חיפה)', position: [138.62, 35.33] },
   { name: 'नई दिल्ली', position: [138.62, 35.30] },
   { name: 'ถนนสุขุมวิท', position: [138.62, 35.27] },
+  { name: '東京都庁', position: [138.55, 35.38], vertical: true },
+  { name: '富士Q', position: [138.52, 35.38], vertical: true },
 ] as const
 
 /** A road grid every 0.05 degrees; every other road is a primary. */
@@ -134,7 +137,7 @@ export function vectorTile(z: number, x: number, y: number, waterColor?: string)
   const scripts: EncodedFeature[] = []
   for (const place of SCRIPT_PLACES) {
     const point = project(place.position[0], place.position[1], z, x, y)
-    if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) scripts.push({ type: 'Point', geometry: [[point]], properties: { name: place.name } })
+    if (point[0] >= 0 && point[0] < 4096 && point[1] >= 0 && point[1] < 4096) scripts.push({ type: 'Point', geometry: [[point]], properties: { name: place.name, vertical: 'vertical' in place } })
   }
   const buildings: EncodedFeature[] = []
   if (z >= 13) {
@@ -320,10 +323,12 @@ export function fixtureScriptStyle(): object {
     type: 'symbol',
     source: 'fixture',
     'source-layer': 'scripts',
+    filter: ['!', ['get', 'vertical']],
     layout: { 'text-field': ['get', 'name'], 'text-size': 22, 'text-font': ['Noto Sans Regular'], 'text-allow-overlap': true, 'text-ignore-placement': true },
     paint: { 'text-color': '#4a3b22', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 },
   }
-  return { ...base, layers: [...base.layers, scripts] }
+  const verticalScripts = { ...scripts, id: 'script-vertical-label', filter: ['get', 'vertical'], layout: { ...scripts.layout, 'text-writing-mode': ['vertical'] } }
+  return { ...base, layers: [...base.layers, scripts, verticalScripts] }
 }
 
 /**

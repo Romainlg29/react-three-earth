@@ -19,6 +19,7 @@ import {
   shapeSectionsForScripts,
   shapeText,
   TextBuilder,
+  verticalFormCodePoints,
   type Box,
   type TextAnchor,
   type TextJustify,
@@ -951,6 +952,7 @@ export class MapStyleProcessor {
               // Variable anchors: laid out centred, then shifted to the anchor placement picks.
               anchor: variableAnchors.length > 0 ? 'center' : firstAnchor(layer, zoom, feature),
               justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
+              vertical: prefersVerticalText(layer, zoom, feature),
             },
             getGlyph,
           )
@@ -1044,12 +1046,14 @@ export class MapStyleProcessor {
   /** Loads the glyphs the candidates' text needs, per font stack. */
   protected async loadGlyphs(symbols: readonly SymbolCandidate[]): Promise<void> {
     const codePoints = new Map<string, Set<number>>()
-    for (const { sections } of symbols) {
+    for (const { sections, layer } of symbols) {
+      const vertical = layer.has('layout', 'text-writing-mode')
       for (const section of sections) {
         let set = codePoints.get(section.fontStack)
         if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
         for (const character of section.text) set.add(character.codePointAt(0)!)
         for (const codePoint of mirroredCodePoints(section.text)) set.add(codePoint)
+        if (vertical) for (const codePoint of verticalFormCodePoints(section.text)) set.add(codePoint)
       }
     }
     await Promise.all([...codePoints].map(([fontStack, set]) => this.glyphs.load(fontStack, set)))
@@ -1367,6 +1371,7 @@ export class MapStyleProcessor {
             letterSpacingEms,
             anchor: firstAnchor(layer, zoom, feature),
             justify: layer.evaluate<TextJustify>('layout', 'text-justify', zoom, feature),
+            vertical: prefersVerticalText(layer, zoom, feature),
           },
           getGlyph,
         )
@@ -1823,6 +1828,16 @@ function firstAnchor(layer: CompiledStyleLayer, zoom: number, feature: StyleFeat
 }
 
 /** Replaces `{name}` with the feature's `name` property (empty when missing). */
+/**
+ * Whether a point label lays its text out vertically: `text-writing-mode` lists `vertical` first. MapLibre falls back
+ * to the next mode when the first collides; here the first mode is used.
+ */
+function prefersVerticalText(layer: CompiledStyleLayer, zoom: number, feature: StyleFeature): boolean {
+  if (!layer.has('layout', 'text-writing-mode')) return false
+  const modes = layer.evaluate<string[] | undefined>('layout', 'text-writing-mode', zoom, feature)
+  return modes?.[0] === 'vertical'
+}
+
 export function resolveTokens(text: string, properties: Record<string, unknown>): string {
   return text.replace(/{([^{}]+)}/g, (_, key: string) => {
     const value = properties[key]

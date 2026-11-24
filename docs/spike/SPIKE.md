@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), vertical text (right-to-left and complex scripts: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below), (right-to-left, complex scripts and vertical text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1244,7 +1244,6 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - Unit tests: `test/scripts.test.ts` (joining forms, ligatures, marks, sections; classes; Hebrew with digits, Latin
   inside right-to-left and the reverse, Arabic numbers and decimals; glyph order, mirroring, wrapping and letter
   spacing in `shapeText`).
-- Next (part 3): vertical CJK (`text-writing-mode`).
 
 ## W13, part 2: complex scripts (Indic, Thai)
 
@@ -1269,6 +1268,20 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
 - `@mapbox/tiny-sdf` is now pinned (2.3.0) and listed in AGENTS.md with the other private-API overrides.
 - Browser check: `?map=scripts` adds नई दिल्ली and ถนนสุขุมวิท. Unit tests: clusters, reuse, Thai word breaks,
   `shapeText` with clusters.
+
+## W13, part 3: vertical text (`text-writing-mode`)
+
+- `shapeText` with `vertical` (point labels whose `text-writing-mode` lists `vertical` first, and that hold a CJK
+  character and no right-to-left text) lays lines out as columns, right to left. Upright characters (UAX #50
+  U / Tu, simplified to the CJK, Hangul and fullwidth blocks) advance one em and sit centred on the column;
+  punctuation swaps to its vertical form (U+FE10–U+FE48) when the font has the glyph; runs of other characters
+  are laid out as horizontal text and turned 90° clockwise. A turned glyph is a `ShapedGlyph` with `rotated`,
+  whose quad `layoutPointLabel` turns, so screen labels, collisions and draped labels need no other change.
+- Deviation from MapLibre: only the first writing mode is used (MapLibre places the next mode when the first
+  collides, which would mean shipping two layouts to the main thread). Line labels stay horizontal.
+- Browser check: `?map=scripts` adds two vertical Japanese names (one with a Latin letter); they must stand more
+  than twice as tall as wide. Unit tests: upright stacking, turned Latin runs, columns, vertical forms, horizontal
+  fallback, turned quads.
 
 ## W14: image and video sources
 

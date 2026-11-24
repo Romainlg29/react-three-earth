@@ -26,6 +26,11 @@ export interface ShapingOptions {
   letterSpacingEms: number
   anchor: TextAnchor
   justify: TextJustify
+  /**
+   * `text-writing-mode` vertical: lines become columns read top to bottom, right to left; CJK characters stand
+   * upright, others turn 90° clockwise. Text with no CJK character, or with right-to-left text, stays horizontal.
+   */
+  vertical?: boolean
 }
 
 /** A glyph positioned in pixels of a 24 px font, relative to the label anchor (y down). */
@@ -39,6 +44,11 @@ export interface ShapedGlyph {
   scale: number
   /** Horizontal centre of the glyph's advance, for placing glyphs along a line. */
   centerX: number
+  /**
+   * Turned 90° clockwise (a Latin letter in vertical text): the bitmap's top-left corner is at `x`, `y`, its width
+   * runs down and its height runs left.
+   */
+  rotated?: boolean
 }
 
 export interface ShapedText {
@@ -83,6 +93,20 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
   }
   const bidirectional = hasRightToLeft(characters.map(character => character.codePoint))
   if (bidirectional) resolveParagraphLevels(characters)
+  const vertical = options.vertical === true && !bidirectional && characters.some(character => isUprightInVerticalText(character.codePoint))
+  if (vertical) {
+    // Upright characters take their vertical form (punctuation) and advance one em down the column.
+    for (const character of characters) {
+      if (!isUprightInVerticalText(character.codePoint)) continue
+      const verticalForm = VERTICAL_FORMS.get(character.codePoint)
+      const glyph = verticalForm === undefined ? null : getGlyph(character.section.fontStack, verticalForm)
+      if (glyph !== null) {
+        character.codePoint = verticalForm!
+        character.glyph = glyph
+      }
+      character.advance = character.glyph === null ? 0 : GLYPH_FONT_SIZE * character.section.scale + spacing
+    }
+  }
 
   // Lines: explicit newlines, then greedy wrapping at breakable characters.
   const maximumWidth = options.maximumWidthEms > 0 ? options.maximumWidthEms * GLYPH_FONT_SIZE : Infinity
@@ -124,6 +148,7 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     })
   })
   if (trimmed.every(items => items.length === 0)) return null
+  if (vertical) return layoutColumns(trimmed, options, spacing)
 
   const lineHeight = options.lineHeightEms * GLYPH_FONT_SIZE
   const widths = trimmed.map(items => items.reduce((sum, item) => sum + item.advance, 0) - (items.length > 0 ? spacing : 0))
@@ -158,6 +183,130 @@ export function shapeText(sections: readonly TextSection[], options: ShapingOpti
     top: shiftY - lineHeight / 2,
     bottom: shiftY - lineHeight / 2 + trimmed.length * lineHeight,
   }
+}
+
+/**
+ * Vertical text: each line a column, the first on the right; upright characters centred on the column, one em
+ * each, runs of other characters laid as horizontal text and turned 90° clockwise. The block aligns to the anchor
+ * as horizontal text does, and `justify` moves short columns down their length.
+ */
+function layoutColumns(
+  columns: ReadonlyArray<ReadonlyArray<{ codePoint: number; glyph: AtlasGlyph | null; section: TextSection; advance: number }>>,
+  options: ShapingOptions,
+  spacing: number,
+): ShapedText {
+  const columnWidth = options.lineHeightEms * GLYPH_FONT_SIZE
+  const lengths = columns.map(items => items.reduce((sum, item) => sum + item.advance, 0) - (items.length > 0 ? spacing : 0))
+  const blockWidth = columns.length * columnWidth
+  const blockHeight = Math.max(...lengths)
+  const [horizontalAlign, verticalAlign] = anchorAlignment(options.anchor)
+  const justify = options.justify === 'auto' ? verticalAlign : options.justify === 'left' ? 0 : options.justify === 'right' ? 1 : 0.5
+  const shiftX = -horizontalAlign * blockWidth
+  const shiftY = -verticalAlign * blockHeight
+  const glyphs: ShapedGlyph[] = []
+  columns.forEach((items, columnIndex) => {
+    const centerX = shiftX + blockWidth - (columnIndex + 0.5) * columnWidth
+    let penY = shiftY + (blockHeight - lengths[columnIndex]!) * justify
+    for (const { glyph, section, advance, codePoint } of items) {
+      if (glyph !== null && glyph.width > 0) {
+        if (isUprightInVerticalText(codePoint)) {
+          // A horizontal glyph in an em square centred on the column (the baseline as horizontal text puts it).
+          const centerY = penY + (GLYPH_FONT_SIZE * section.scale) / 2
+          glyphs.push({
+            glyph,
+            codePoint,
+            x: centerX - (glyph.advance * section.scale) / 2 + (glyph.left - GLYPH_BUFFER) * section.scale,
+            y: centerY + BASELINE_OFFSET + (-glyph.top - GLYPH_BUFFER) * section.scale,
+            scale: section.scale,
+            centerX,
+          })
+        } else {
+          // Laid out as horizontal text with its baseline row centred on y = 0, then turned clockwise onto the column.
+          const unrotatedY = BASELINE_OFFSET + (-glyph.top - GLYPH_BUFFER) * section.scale
+          glyphs.push({
+            glyph,
+            codePoint,
+            x: centerX - unrotatedY,
+            y: penY + (glyph.left - GLYPH_BUFFER) * section.scale,
+            scale: section.scale,
+            centerX,
+            rotated: true,
+          })
+        }
+      }
+      penY += advance
+    }
+  })
+  return { glyphs, left: shiftX, right: shiftX + blockWidth, top: shiftY, bottom: shiftY + blockHeight }
+}
+
+/** Code point ranges that stand upright in vertical text (UAX #50 Vertical_Orientation U or Tu, simplified). */
+const UPRIGHT_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x11ff], // Hangul Jamo
+  [0x2e80, 0x2fdf], // CJK radicals, Kangxi radicals
+  [0x2ff0, 0x303f], // ideographic description, CJK symbols and punctuation
+  [0x3040, 0x30fb], // Hiragana, Katakana (the prolonged sound mark U+30FC turns)
+  [0x30fd, 0x312f], // Katakana, Bopomofo
+  [0x3130, 0x318f], // Hangul compatibility Jamo
+  [0x3190, 0x31ff], // Kanbun, Bopomofo extended, CJK strokes, Katakana extensions
+  [0x3200, 0x4dbf], // enclosed CJK, compatibility, CJK extension A
+  [0x4e00, 0x9fff], // CJK unified ideographs
+  [0xa960, 0xa97f], // Hangul Jamo extended A
+  [0xac00, 0xd7ff], // Hangul syllables, Jamo extended B
+  [0xf900, 0xfaff], // CJK compatibility ideographs
+  [0xfe10, 0xfe1f], // vertical forms
+  [0xfe30, 0xfe4f], // CJK compatibility forms
+  [0xff01, 0xff60], // fullwidth forms
+  [0xffe0, 0xffe6], // fullwidth signs
+  [0x20000, 0x3ffff], // CJK extensions B and later
+]
+
+/** Whether a character stands upright in a vertical column; others turn 90° clockwise. */
+export function isUprightInVerticalText(codePoint: number): boolean {
+  if (codePoint < 0x1100) return false
+  for (const [start, end] of UPRIGHT_RANGES) if (codePoint >= start && codePoint <= end) return true
+  return false
+}
+
+/** Punctuation that has a vertical form (Unicode Vertical Forms and CJK Compatibility Forms), as MapLibre swaps it. */
+const VERTICAL_FORMS = new Map<number, number>([
+  [0xff0c, 0xfe10], // fullwidth comma
+  [0x3001, 0xfe11], // ideographic comma
+  [0x3002, 0xfe12], // ideographic full stop
+  [0xff1a, 0xfe13], // fullwidth colon
+  [0xff1b, 0xfe14], // fullwidth semicolon
+  [0xff01, 0xfe15], // fullwidth exclamation mark
+  [0xff1f, 0xfe16], // fullwidth question mark
+  [0x3016, 0xfe17], // white lenticular brackets
+  [0x3017, 0xfe18],
+  [0xff08, 0xfe35], // fullwidth parentheses
+  [0xff09, 0xfe36],
+  [0xff5b, 0xfe37], // fullwidth braces
+  [0xff5d, 0xfe38],
+  [0x3014, 0xfe39], // tortoise shell brackets
+  [0x3015, 0xfe3a],
+  [0x3010, 0xfe3b], // black lenticular brackets
+  [0x3011, 0xfe3c],
+  [0x300a, 0xfe3d], // double angle brackets
+  [0x300b, 0xfe3e],
+  [0x3008, 0xfe3f], // angle brackets
+  [0x3009, 0xfe40],
+  [0x300c, 0xfe41], // corner brackets
+  [0x300d, 0xfe42],
+  [0x300e, 0xfe43], // white corner brackets
+  [0x300f, 0xfe44],
+  [0xff3b, 0xfe47], // fullwidth square brackets
+  [0xff3d, 0xfe48],
+])
+
+/** Code points to load glyphs for in vertical text besides a text's own: the vertical forms of its punctuation. */
+export function verticalFormCodePoints(text: string): number[] {
+  const extra: number[] = []
+  for (const character of text) {
+    const verticalForm = VERTICAL_FORMS.get(character.codePointAt(0)!)
+    if (verticalForm !== undefined) extra.push(verticalForm)
+  }
+  return extra
 }
 
 /** Resolves bidi levels paragraph by paragraph (between explicit newlines), in place. */
@@ -305,10 +454,14 @@ export function layoutPointLabel(
     const py = (y + offset.y) * pixelsToUnits
     return { x: anchor.x + px * cosine - py * sine, y: anchor.y + px * sine + py * cosine }
   }
-  const quads = shaped.glyphs.map(({ glyph, x, y, scale }) => {
+  const quads = shaped.glyphs.map(({ glyph, x, y, scale, rotated }) => {
     const width = (glyph.width + GLYPH_BUFFER * 2) * scale
     const height = (glyph.height + GLYPH_BUFFER * 2) * scale
-    return { glyph, corners: [transform(x, y), transform(x + width, y), transform(x + width, y + height), transform(x, y + height)] } as GlyphQuad
+    // Corners in the bitmap's order (top-left, top-right, bottom-right, bottom-left); turned clockwise when rotated.
+    const corners: GlyphQuad['corners'] = rotated
+      ? [transform(x, y), transform(x, y + width), transform(x - height, y + width), transform(x - height, y)]
+      : [transform(x, y), transform(x + width, y), transform(x + width, y + height), transform(x, y + height)]
+    return { glyph, corners }
   })
   const corners = [transform(shaped.left, shaped.top), transform(shaped.right, shaped.top), transform(shaped.right, shaped.bottom), transform(shaped.left, shaped.bottom)]
   const box = boundsOf(corners, paddingUnits)
