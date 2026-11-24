@@ -413,7 +413,7 @@ describe('the gizmo of the select mode', () => {
     const second = new SelectMode()
     second.enter(other.context)
     second.setSelection(['other'])
-    const ground = pointerAt(other, CENTER)
+    const ground = pointerAt(other, CENTER, { heightMeters: 700 })
     const press: DrawPointerEvent = { ...ground, screen: { xPixels: ground.screen.xPixels, yPixels: ground.screen.yPixels + 24 }, geographic: { ...ground.geographic!, heightMeters: 700 } }
     expect(second.pointerDown(press)).toBe(true)
     second.pointerMove({ ...press, screen: { xPixels: press.screen.xPixels, yPixels: press.screen.yPixels - 20 } })

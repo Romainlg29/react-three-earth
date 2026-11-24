@@ -694,7 +694,8 @@ export class SelectMode extends DrawMode {
 
   /**
    * Whether the gizmo is too small on the screen for its side handles and middle knob: its box is under a few knob
-   * diameters across or along. They are hidden then, so a press inside always moves the feature.
+   * diameters across or along (or the feature has no extent at all). They are hidden then, so a press inside always
+   * moves the feature.
    */
   protected gizmoIsSmall(feature: DrawFeature, frame: TransformFrame, style: DrawStyle, fallbackHeightMeters: number): boolean {
     if (frame.corners.length !== 4) return false
@@ -703,7 +704,15 @@ export class SelectMode extends DrawMode {
     const along = this.gizmoOnScreen(feature, frame.corners[3]!, fallbackHeightMeters)
     if (origin === null || across === null || along === null) return false
     const minimum = SMALL_GIZMO_KNOB_DIAMETERS * 2 * this.knobRadiusPixels(style)
-    return Math.hypot(across.x - origin.x, across.y - origin.y) < minimum || Math.hypot(along.x - origin.x, along.y - origin.y) < minimum
+    // An axis without side handles (across a straight line) does not count: the line is as small as it is long.
+    let hasWidth = false
+    let hasLength = false
+    for (const side of frame.sideHandles) {
+      if (side.axis === 'across') hasWidth = true
+      else hasLength = true
+    }
+    if (!hasWidth && !hasLength) return true
+    return (hasWidth && Math.hypot(across.x - origin.x, across.y - origin.y) < minimum) || (hasLength && Math.hypot(along.x - origin.x, along.y - origin.y) < minimum)
   }
 
   /** Adds the gizmo of a selected feature (as dragged so far) to the overlay. */
@@ -794,9 +803,11 @@ export class SelectMode extends DrawMode {
       const consider = (handle: GizmoHandle, screen: { x: number; y: number } | null, tolerance: number, side: TransformSideHandle | null = null, offsetYPixels = 0) => {
         if (screen === null) return
         const distance = Math.hypot(screen.x - pointerX, screen.y + offsetYPixels - pointerY)
-        // The first among equals wins: side handles before the corners they meet on a straight line.
-        if (distance <= tolerance && distance < bestDistance) {
-          bestDistance = distance
+        if (distance > tolerance) return
+        // Side handles win ties (half a pixel) over the corners they meet on a straight line.
+        const ranked = handle === 'stretch' ? distance - 0.5 : distance
+        if (ranked < bestDistance) {
+          bestDistance = ranked
           best = { feature, frame, handle, side }
         }
       }

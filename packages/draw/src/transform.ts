@@ -168,8 +168,11 @@ function positionInFrame(center: LongitudeLatitude, position: Position, rotation
   return toFrame(distance * Math.sin(bearing), distance * Math.cos(bearing), rotationDegrees)
 }
 
-/** Box extents below which an axis counts as having none (a straight line has no width). */
-const MINIMUM_EXTENT_METERS = 1e-6
+/**
+ * Box extents below this fraction of the other axis's count as none: a straight line has no width (a line along a
+ * parallel bulges a few centimetres off the great circle through its center).
+ */
+const MINIMUM_EXTENT_FRACTION = 1e-3
 
 /**
  * Where a feature's gizmo handles go: a box around it, turned with its shape, with a scale handle at each corner, a
@@ -212,16 +215,19 @@ export function transformFrame(feature: DrawFeature): TransformFrame {
     const right = fromFrame(center, maximumX, middleY, rotationDegrees)
     const top = fromFrame(center, middleX, maximumY, rotationDegrees)
     const left = fromFrame(center, minimumX, middleY, rotationDegrees)
-    if (maximumY - minimumY > MINIMUM_EXTENT_METERS) {
+    const largest = Math.max(maximumX - minimumX, maximumY - minimumY)
+    const hasLength = maximumY - minimumY > largest * MINIMUM_EXTENT_FRACTION
+    const hasWidth = maximumX - minimumX > largest * MINIMUM_EXTENT_FRACTION
+    if (hasLength) {
       sideHandles.push({ position: bottom, oppositePosition: top, axis: 'along', sideMeters: minimumY, fixedMeters: maximumY })
     }
-    if (maximumX - minimumX > MINIMUM_EXTENT_METERS) {
+    if (hasWidth) {
       sideHandles.push({ position: right, oppositePosition: left, axis: 'across', sideMeters: maximumX, fixedMeters: minimumX })
     }
-    if (maximumY - minimumY > MINIMUM_EXTENT_METERS) {
+    if (hasLength) {
       sideHandles.push({ position: top, oppositePosition: bottom, axis: 'along', sideMeters: maximumY, fixedMeters: minimumY })
     }
-    if (maximumX - minimumX > MINIMUM_EXTENT_METERS) {
+    if (hasWidth) {
       sideHandles.push({ position: left, oppositePosition: right, axis: 'across', sideMeters: minimumX, fixedMeters: maximumX })
     }
   }

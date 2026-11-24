@@ -227,14 +227,16 @@ gizmo:
 - Drag the knob beyond the box's top edge to turn it; hold Shift to snap to 15°. Circles and spheres have no turning knob.
 - Drag the knob in the middle of a line or polygon up to extrude it: a rectangle becomes a box, a circle a cylinder, a
   line a wall. On a solid the knob sits on top: drag it up or down to change the height, down to the ground to flatten it.
-- Drag the knob on a short stem under the feature's base up or down to lift it into the air. Every position gets an
-  altitude (the GeoJSON third coordinate), the extrusion is kept, and down to the ground puts it back on the terrain.
-  A sphere lifts by its center.
+- Drag the knob on a short stem under the feature's base up or down to move it vertically. Every position gets an
+  altitude (the GeoJSON third coordinate); positions on the terrain start from its height under each, so the shape
+  keeps the relief's offsets. The extrusion is kept, and a sphere lifts by its center. A feature in the air keeps its
+  altitudes when lowered; use `placeOnTerrain` to drape it again.
 - Seen from straight above, as on the flat map, dragging the height or lift knob up the screen raises it.
 
 Tap the selected line or polygon again to edit its vertices instead of the gizmo (`state.editingVertices` is then true):
 
-- Drag a vertex handle to move it. Tap or drag a faded midpoint handle to insert a vertex there.
+- Drag a vertex handle to move it. Tap or drag a faded midpoint handle to insert a vertex there. A vertex at an
+  altitude is drawn there and moves level under the pointer, keeping its altitude.
 - Tap a vertex to pick it, then press Delete or Backspace, or call `draw.deleteSelected()`. A line keeps 2 vertices and a ring keeps 3.
 - Shapes can be edited too, but an edited outline drops `properties.shape`: the circle becomes a plain polygon.
 - Tap the feature again, or press Escape, for the gizmo. Selecting another feature always starts with the gizmo.
@@ -246,7 +248,8 @@ Points have no gizmo and no vertices: they move whole. For all features:
 - Solids are picked where they are drawn: their faces and walls at their altitude, a sphere by its outline on the screen.
 - A solid stays in 3D while selected and while it changes; a polygon or wall solid has its footprint outlined.
 - A tap inside a selected polygon still selects a point or line under it. Among polygons, the one containing the tap wins over a neighbour whose edge is near.
-- On a small feature a press inside it moves it unless it lands right on a knob, so it can always be moved.
+- Inside a feature, a knob takes a press only where it is drawn; elsewhere the press moves the feature. A feature only a
+  few knobs wide on the screen hides its edge handles and middle knob, so it can always be moved (zoom in to use them).
 - Changes made elsewhere (`addFeatures`, `clear`, another tool) clear the undo history, drop a picked vertex, and cancel a drag on that feature.
 
 ```tsx
@@ -298,8 +301,8 @@ draw.addFeatures([liftFeature(stretchFeature(turned, frame, bottom.axis, bottom.
 ```
 
 `liftFeature(feature, deltaMeters, groundHeightMeters)` raises positions that have an altitude by `deltaMeters`, and
-gives the others `groundHeightMeters + deltaMeters` (pass the terrain's height, `earth.queryTerrainElevation`).
-`placeOnTerrain` drops the altitudes again. The editing helpers (`moveVertex`, `insertVertex`, `removeVertex`,
+gives the others the terrain's height plus `deltaMeters`. `groundHeightMeters` is one height, or a function of
+longitude and latitude, such as one calling `earth.queryTerrainElevation`. `placeOnTerrain` drops the altitudes again. The editing helpers (`moveVertex`, `insertVertex`, `removeVertex`,
 `translateFeature`, `featureVertices`, `hitFeature`) are exported for custom modes too.
 
 The extrusion height and the altitude are two different things. A position's third coordinate is where the feature
