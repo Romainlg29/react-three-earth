@@ -449,6 +449,10 @@ expectations['gallery example, overlay'] = r => [
   ['playing steps to other frames: the rain moves', r.radar.played.share > 0.003 && Math.abs(r.radar.played.centreX - r.radar.shown.centreX) > 4],
   ['the opacity slider hides it', r.radar.hidden.share < r.radar.shown.share * 0.1],
 ]
+expectations['gallery example, night'] = r => [
+  ['the sdf-glow plugin lights the major roads, in the colour the buttons pick', r.glow.before.amber > 0.01 && r.glow.after.cyan > 0.01 && r.glow.after.amber < r.glow.before.amber / 4],
+  ['the neon symbol effect draws the place names with their magenta outline', r.labels.length > 0 && r.glow.before.magenta > 0.0005],
+]
 expectations['gallery example, embedded'] = r => [
   ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],
 ]

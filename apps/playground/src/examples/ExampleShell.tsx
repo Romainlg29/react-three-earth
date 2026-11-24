@@ -1,5 +1,5 @@
 import { Canvas, useThree } from '@react-three/fiber'
-import { setCameraView, type CameraView, type Earth as EarthImpl } from 'react-three-earth'
+import { setCameraView, type CameraView, type Earth as EarthImpl, type EarthPlugin } from 'react-three-earth'
 import {
   Atmosphere,
   Earth,
@@ -40,6 +40,10 @@ export interface ExampleShellProps {
   exaggeration?: number
   /** Buttons and inputs under the description. */
   panel?: ReactNode
+  /** `<Earth plugins>`: create them once, outside render. */
+  plugins?: readonly EarthPlugin[]
+  /** The physically based sky and sun; false lights the map evenly instead. Default: true unless `?atmosphere=0`. */
+  atmosphere?: boolean
   /** Props for `<EarthControls>`. */
   controls?: ComponentProps<typeof EarthControls>
   /** Receives the vanilla `Earth` once mounted: the panel's buttons drive `earth.camera`. */
@@ -55,16 +59,16 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, panel, controls, onEarth, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, panel, controls, onEarth, plugins, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth>
+        <Earth plugins={plugins}>
           <InitialView view={camera} onEarth={onEarth} />
           <Terrain exaggeration={exaggeration}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
-          {withAtmosphere ? <Atmosphere /> : <PlainLights />}
+          {atmosphere ? <Atmosphere /> : <PlainLights />}
           <EarthControls {...controls} />
           <MapControls />
         </Earth>
