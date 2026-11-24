@@ -66,14 +66,34 @@ function ControlsContent({ className, style, container, children }: ControlsProp
   const appliedStyle = useRef<string[]>([])
   useLayoutEffect(() => {
     if (controls === null) return
-    const elementStyle = controls.element.style as unknown as Record<string, string>
-    for (const key of appliedStyle.current) elementStyle[key] = ''
-    appliedStyle.current = Object.keys(style ?? {})
-    Object.assign(controls.element.style, style)
+    const elementStyle = controls.element.style
+    for (const property of appliedStyle.current) elementStyle.removeProperty(property)
+    appliedStyle.current = []
+    for (const [key, value] of Object.entries(style ?? {}) as Array<[string, unknown]>) {
+      if (value === undefined || value === null || value === false) continue
+      const property = cssPropertyName(key)
+      elementStyle.setProperty(property, cssValue(key, value))
+      appliedStyle.current.push(property)
+    }
   })
 
   useDomRoot(controls?.element ?? null, <ControlsContext value={controls}>{children}</ControlsContext>)
   return null
+}
+
+/** Properties whose numbers take no unit, as React treats them. */
+const UNITLESS_PROPERTIES = new Set(['opacity', 'zIndex', 'flex', 'flexGrow', 'flexShrink', 'order', 'fontWeight', 'lineHeight', 'zoom', 'gridRow', 'gridColumn', 'aspectRatio'])
+
+/** `marginTop` → `margin-top`, `WebkitBackdropFilter` → `-webkit-backdrop-filter`; custom properties stay as they are. */
+function cssPropertyName(key: string): string {
+  if (key.startsWith('--')) return key
+  return key.replace(/^(Webkit|Moz|ms)(?=[A-Z])/, prefix => `-${prefix.toLowerCase()}`).replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)
+}
+
+/** A style value as React writes it: numbers get `px` unless the property is unitless or custom. */
+function cssValue(key: string, value: unknown): string {
+  if (typeof value === 'number' && value !== 0 && !key.startsWith('--') && !UNITLESS_PROPERTIES.has(key)) return `${value}px`
+  return String(value)
 }
 
 /** The vanilla `Controls` of the nearest `<Controls>`, or null outside one. */
@@ -317,7 +337,7 @@ export function useViewControl(options: UseViewControlOptions = {}): ViewControl
   const earth = useEarth()
   const { transition, locale, onViewChange } = options
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const control = useMemo(() => new ViewControlImpl({ earth, transition, locale }), [earth, transition?.durationSeconds, localeKey(locale)])
+  const control = useMemo(() => new ViewControlImpl({ earth, transition, locale }), [earth, transition?.durationSeconds, transition?.essential, localeKey(locale)])
   const latest = useLatest(onViewChange)
   useLayoutEffect(() => {
     const listener = (event: { mode: ViewMode }) => latest.current?.(event.mode)

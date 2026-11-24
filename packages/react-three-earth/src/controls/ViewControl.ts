@@ -62,7 +62,7 @@ export class ViewControl extends MapControl<ViewControlState> {
 
   /** Switches to the other view. */
   toggle = (): void => {
-    const mode = this.state.nextMode
+    const mode: ViewMode = this.earth.view.mode === '3d' ? '2d' : '3d'
     this.earth.setView(mode, this.transition)
     this.earth.requestFrame()
     this.events.dispatchEvent({ type: 'viewchange', mode })

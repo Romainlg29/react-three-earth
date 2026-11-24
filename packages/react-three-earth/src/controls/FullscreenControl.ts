@@ -30,7 +30,10 @@ type FullscreenElement = HTMLElement & { webkitRequestFullscreen?: () => Promise
 /** The inline style that makes the container cover the page where the browser cannot fullscreen it. */
 const PAGE_COVER_STYLE: ReadonlyArray<readonly [string, string]> = [
   ['position', 'fixed'],
-  ['inset', '0'],
+  ['top', '0'],
+  ['right', '0'],
+  ['bottom', '0'],
+  ['left', '0'],
   ['width', '100%'],
   ['height', '100dvh'],
   ['max-width', 'none'],
@@ -48,7 +51,7 @@ export function fullscreenSupported(document: Document): boolean {
 /**
  * Makes the map fill the screen, as MapLibre's `FullscreenControl`, without drawing a button. It uses the browser's
  * Fullscreen API where there is one. iPhone Safari has none for elements, so by default the container covers the page
- * instead (an inline `position: fixed` and `100dvh`, taken off again when it leaves), and `Escape` or `toggle` brings
+ * instead (an inline `position: fixed` and `100dvh`; the container's own values of those properties come back when it leaves), and `Escape` or `toggle` brings
  * it back: put the map's container directly in the page, not inside an ancestor with a `transform`, which would trap
  * a fixed element.
  */
@@ -58,7 +61,8 @@ export class FullscreenControl extends MapControl<FullscreenControlState> {
   protected readonly locale: ControlsLocale
   protected readonly document: Document
   protected pageCovered = false
-  protected styleBeforeCover = ''
+  /** The container's own inline values of the cover's properties, put back on exit. */
+  protected styleBeforeCover: Array<{ property: string; value: string; priority: string }> = []
 
   constructor({ earth, container, unsupported = 'fixed', locale }: FullscreenControlOptions) {
     super(earth)
@@ -93,7 +97,8 @@ export class FullscreenControl extends MapControl<FullscreenControlState> {
       }
     } else if (this.unsupported === 'fixed') {
       this.pageCovered = true
-      this.styleBeforeCover = this.container.style.cssText
+      const style = this.container.style
+      this.styleBeforeCover = PAGE_COVER_STYLE.map(([property]) => ({ property, value: style.getPropertyValue(property), priority: style.getPropertyPriority(property) }))
       for (const [property, value] of PAGE_COVER_STYLE) this.container.style.setProperty(property, value, 'important')
       this.document.addEventListener('keydown', this.onKeyDown)
     }
@@ -104,7 +109,12 @@ export class FullscreenControl extends MapControl<FullscreenControlState> {
   exit = (): void => {
     if (this.pageCovered) {
       this.pageCovered = false
-      this.container.style.cssText = this.styleBeforeCover
+      // Only the cover's properties: anything else set on the container meanwhile stays
+      for (const { property, value, priority } of this.styleBeforeCover) {
+        if (value === '') this.container.style.removeProperty(property)
+        else this.container.style.setProperty(property, value, priority)
+      }
+      this.styleBeforeCover = []
       this.document.removeEventListener('keydown', this.onKeyDown)
     } else if (this.fullscreenElement() !== null) {
       const document = this.document as FullscreenDocument

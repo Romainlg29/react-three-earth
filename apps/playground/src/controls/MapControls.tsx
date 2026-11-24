@@ -3,7 +3,9 @@
  * The library draws no buttons and ships no CSS; the look lives in `mapControls.css`.
  */
 import type { ViewMode } from 'react-three-earth'
-import { Controls, Marker, useFullscreenControl, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from 'react-three-earth/react'
+import { Controls, Marker, useFullscreenControl, useMarker, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from 'react-three-earth/react'
+
+import { useLayoutEffect } from 'react'
 
 import './mapControls.css'
 
@@ -54,6 +56,26 @@ function ViewSwitch({ onViewChange }: { onViewChange?: (mode: ViewMode) => void 
   )
 }
 
+/**
+ * A `<Marker>` is a focusable button by default. The user's dot is a picture (`role="img"`) and the accuracy circle
+ * decoration (`aria-hidden`): neither belongs in the tab order.
+ */
+function PassiveMarker({ decorative }: { decorative: boolean }) {
+  const marker = useMarker()
+  useLayoutEffect(() => {
+    const element = marker?.element
+    if (element === undefined) return
+    element.removeAttribute('tabindex')
+    if (decorative) {
+      element.removeAttribute('role')
+      element.setAttribute('aria-hidden', 'true')
+    } else {
+      element.setAttribute('role', 'img')
+    }
+  }, [marker, decorative])
+  return null
+}
+
 /** The geolocate button, and the user's dot and accuracy circle drawn from its state with markers. */
 function Geolocate() {
   const geolocate = useGeolocateControl({ trackUser: true })
@@ -67,9 +89,11 @@ function Geolocate() {
       {location === null ? null : (
         <>
           <Marker longitudeDegrees={location.longitudeDegrees} latitudeDegrees={location.latitudeDegrees} anchor="center" pitchAlignment="map" rotationAlignment="map" label={geolocate.userLocationAccuracyLabel}>
-            <div className="map-accuracy-circle" aria-hidden="true" style={{ width: diameter, height: diameter, visibility: diameter < 16 ? 'hidden' : 'visible' }} />
+            <PassiveMarker decorative />
+            <div className="map-accuracy-circle" style={{ width: diameter, height: diameter, visibility: diameter < 16 ? 'hidden' : 'visible' }} />
           </Marker>
           <Marker longitudeDegrees={location.longitudeDegrees} latitudeDegrees={location.latitudeDegrees} anchor="center" occludedOpacity={1} label={geolocate.userLocationLabel}>
+            <PassiveMarker decorative={false} />
             <div className="map-user-dot" data-stale={geolocate.stale} />
           </Marker>
         </>

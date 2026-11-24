@@ -243,6 +243,14 @@ describe('ViewControl', () => {
     earth.dispatchEvent({ type: 'update' } as never)
     expect(view.getState().label).toBe('2D')
   })
+
+  it('toggles from the view the earth shows, even without a listener', () => {
+    const { earth } = setup()
+    const view = new ViewControl({ earth })
+    earth.view.mode = '2d'
+    view.toggle()
+    expect(earth.setView).toHaveBeenLastCalledWith('3d', undefined)
+  })
 })
 
 describe('FullscreenControl', () => {
@@ -259,6 +267,18 @@ describe('FullscreenControl', () => {
     expect(container.style.position).toBe('')
     expect(container.style.width).toBe('300px')
     expect(fullscreen.getState().active).toBe(false)
+  })
+
+  it('puts back only the properties it covered, keeping changes made meanwhile', () => {
+    const { earth, container } = setup()
+    container.style.top = '5px'
+    const fullscreen = new FullscreenControl({ earth, container })
+    fullscreen.toggle()
+    container.style.setProperty('color', 'red')
+    fullscreen.toggle()
+    expect(container.style.top).toBe('5px')
+    expect(container.style.color).toBe('red')
+    expect(container.style.position).toBe('')
   })
 
   it('reports itself unavailable with unsupported: hide, and leaves fullscreen when the last listener goes', () => {

@@ -183,7 +183,10 @@ export function MapWithControls() {
   gesture are required, iPhone Safari included). Without `trackUser` each trigger flies to one fix. With it the map
   follows the user; moving the map yourself pauses following (`status: 'background'`, the position stays), triggering
   again resumes, a trigger while following stops and clears `userLocation`. Draw the dot from `userLocation` and an
-  accuracy circle `accuracyDiameterPixels` wide (a `<Marker pitchAlignment="map">`). `disabled` is true where geolocation
+  accuracy circle `accuracyDiameterPixels` wide (a `<Marker pitchAlignment="map">`). A `<Marker>` is a focusable
+  button by default: for the dot, take its element out of the tab order (`useMarker()` inside it gives the vanilla
+  marker; remove `tabindex`, set `role="img"`), and hide the circle with `aria-hidden`. The pause on user input and the
+  early "access blocked" check run while the control has a listener (the hook always has one; in vanilla, `subscribe`). `disabled` is true where geolocation
   is missing or denied, and `label` says which. Callbacks: `onGeolocate`, `onError` (`error.code` 1 means denied),
   `onTrackUserLocationStart`, `onTrackUserLocationEnd`. The position is never sent anywhere by the library.
 - `useFullscreenControl` uses the Fullscreen API on the element around the canvas (or `container`). iPhone Safari has

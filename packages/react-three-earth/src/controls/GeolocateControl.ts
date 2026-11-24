@@ -9,8 +9,8 @@ export interface GeolocateControlOptions {
   earth: Earth
   /**
    * The element around the map: pressing, wheeling or touching it while the map follows the user pauses the
-   * following. Presses inside an element with the `react-three-earth-controls` class (a `Controls`) do not count.
-   * Without it, only `trigger` pauses and resumes.
+   * following, while the control has a listener (`subscribe`). Presses inside an element with the
+   * `react-three-earth-controls` class (a `Controls`) do not count. Without it, only `trigger` pauses and resumes.
    */
   container?: HTMLElement
   /** Keep following the user: the map re-centres on every new position until the user moves it or triggers again. Default: false. */
@@ -80,7 +80,8 @@ const USER_INPUT_EVENTS = ['pointerdown', 'wheel', 'touchstart'] as const
  * only in `trigger` (browsers need a user gesture, iPhone Safari too, and HTTPS), and never leaves the page.
  *
  * With `trackUser`, the first trigger follows the user, a second stops, and moving the map yourself pauses the
- * following (the position stays; trigger again to resume). Events: `geolocate`, `error`, `trackuserlocationstart`,
+ * following (the position stays; trigger again to resume). The control listens for that, and checks whether the site's
+ * location access is already blocked, only while it has a listener: subscribe, even with an empty function. Events: `geolocate`, `error`, `trackuserlocationstart`,
  * `trackuserlocationend` on `control.events`.
  */
 export class GeolocateControl extends MapControl<GeolocateControlState> {
