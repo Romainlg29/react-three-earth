@@ -1,44 +1,37 @@
 import earcut from 'earcut'
 import type { Position } from 'geojson'
 import { createFlatMapEmissionNode, type Earth, type GeographicAnchor } from 'react-three-earth'
-import { BufferGeometry, Color, DoubleSide, EdgesGeometry, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, SphereGeometry, type Object3D } from 'three'
+import { BufferGeometry, Color, DoubleSide, EdgesGeometry, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, type Object3D } from 'three'
 import { uniform, vec4 } from 'three/tsl'
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
 
-import { distanceMeters, unwrapLongitudeNear } from '../geometry.js'
-import { extrusionHeightOf, shapeOf } from '../shapes.js'
+import { distanceMeters, hasAltitude, storedPositions, unwrapLongitudeNear } from '../geometry.js'
+import { LocalFrame, type LocalPoint } from '../localFrame.js'
+import { indexMesh, isClosedMesh, isMeshGeometry, meshVolume, newellNormal, openRing } from '../mesh.js'
 import type { DrawFeature, DrawStyle } from '../types.js'
 
-const DEGREES = Math.PI / 180
-const WGS84_SEMI_MAJOR_AXIS_METERS = 6_378_137
-const WGS84_FLATTENING = 1 / 298.257223563
-const WGS84_ECCENTRICITY_SQUARED = WGS84_FLATTENING * (2 - WGS84_FLATTENING)
+export { LocalFrame } from '../localFrame.js'
+
 /** Edges longer than this are split, and faces wider than this get inner vertices, so solids follow the curve of the Earth. */
 const MAXIMUM_EDGE_METERS = 2000
-/** At most this many vertices per ring after splitting edges. */
-const MAXIMUM_RING_VERTICES = 2048
+/** At most this many pieces per edge of a line. */
+const MAXIMUM_EDGE_PIECES = 64
 /** About this many triangles at most per face: wider faces get longer triangles. */
 const MAXIMUM_FACE_TRIANGLES = 4096
-/** Milliseconds between two terrain height lookups of one solid standing on the ground. */
-const GROUND_CHECK_INTERVAL_MILLISECONDS = 500
-/** Terrain height lookups per frame, for all the solids together: each raycasts the loaded tiles. */
-const GROUND_LOOKUPS_PER_FRAME = 4
-/** Checks keep running, with follow-up frames, this long after the last height change (tiles still refining). */
-const GROUND_SETTLE_MILLISECONDS = 3000
 /** Edges between faces meeting at more than this angle are outlined (so a cylinder's wall shows no seams). */
 const EDGE_THRESHOLD_DEGREES = 30
+/** Faces meeting at less than this angle are shaded smoothly across their edge (a cylinder's wall, a sphere). */
+const SMOOTH_THRESHOLD_DEGREES = 30
 
 /**
- * Whether a feature is drawn as a 3D solid rather than draped on the terrain: an extruded polygon or line string
- * (`properties.extrusionHeightMeters`), a sphere (`properties.shape.type === 'sphere'`), or a polygon or line string
- * with altitudes (a third coordinate) on its positions.
+ * Whether a feature is drawn as a 3D solid rather than draped on the terrain: a mesh (a multipolygon with an altitude on
+ * every position, see `isMeshFeature`), or a polygon or line string with altitudes (a third coordinate) on its positions.
  */
 export function isSolidFeature(feature: DrawFeature): boolean {
   const geometry = feature.geometry
-  if (geometry.type === 'Point') return shapeOf(feature)?.type === 'sphere'
-  if (extrusionHeightOf(feature) > 0) return true
-  const lines = geometry.type === 'Polygon' ? geometry.coordinates : [geometry.coordinates]
-  return lines.some(line => line.some(position => position.length > 2 && Number.isFinite(position[2])))
+  if (geometry.type === 'Point') return false
+  if (geometry.type === 'MultiPolygon') return isMeshGeometry(geometry)
+  return storedPositions(geometry).some(hasAltitude)
 }
 
 /** The solids of one feature: their anchor and what it holds. */
@@ -50,14 +43,6 @@ interface Solid {
   owned: Array<{ dispose(): void }>
   /** The shared materials it uses (`acquireMaterials`), released with it. */
   materialKey: string | null
-  /** Stands on the terrain (no altitudes): the anchor follows the terrain's height. */
-  onGround: boolean
-  longitudeDegrees: number
-  latitudeDegrees: number
-  /** When the terrain under it was last looked up (performance.now()), or -Infinity before the first lookup. */
-  groundCheckedMilliseconds: number
-  /** The terrain's height has been found under it at least once. */
-  groundFound: boolean
 }
 
 /** Materials shared by the solids of one style. */
@@ -68,182 +53,207 @@ interface SharedMaterials {
   users: number
 }
 
-/** A point in a local east-north-up frame, in metres. */
-type LocalPoint = [east: number, north: number, up: number]
+type GeographicPoint = [longitude: number, latitude: number, height: number]
+
+/** Pieces an edge of a line is split into: at most 2 km long, never more than 64. */
+function edgePieces(from: GeographicPoint, to: GeographicPoint): number {
+  return Math.max(1, Math.min(MAXIMUM_EDGE_PIECES, Math.ceil(distanceMeters(from, to) / MAXIMUM_EDGE_METERS)))
+}
 
 /**
- * Converts positions to the east-north-up frame of an origin (x east, y north, z up, metres), on the WGS84 ellipsoid:
- * the frame of a `GeographicAnchor` at that origin. Exact on the globe. On the flat map the anchor keeps this curved
-geometry, so solids hundreds of kilometres wide droop at their edges there.
+ * Positions with their long edges split (around a ring, back to the first, when `closed`), longitudes unwrapped near
+ * the previous one (from `referenceLongitude`), each with its height.
  */
-export class LocalFrame {
-  protected readonly origin: [number, number, number]
-  protected readonly east: [number, number, number]
-  protected readonly north: [number, number, number]
-  protected readonly up: [number, number, number]
-  readonly longitudeDegrees: number
-
-  constructor(longitudeDegrees: number, latitudeDegrees: number, heightMeters: number) {
-    this.longitudeDegrees = longitudeDegrees
-    const longitude = longitudeDegrees * DEGREES
-    const latitude = latitudeDegrees * DEGREES
-    this.origin = earthCentered(longitude, latitude, heightMeters)
-    const sinLongitude = Math.sin(longitude)
-    const cosLongitude = Math.cos(longitude)
-    const sinLatitude = Math.sin(latitude)
-    const cosLatitude = Math.cos(latitude)
-    this.east = [-sinLongitude, cosLongitude, 0]
-    this.north = [-sinLatitude * cosLongitude, -sinLatitude * sinLongitude, cosLatitude]
-    this.up = [cosLatitude * cosLongitude, cosLatitude * sinLongitude, sinLatitude]
-  }
-
-  toLocal(longitudeDegrees: number, latitudeDegrees: number, heightMeters: number): LocalPoint {
-    const longitude = unwrapLongitudeNear(longitudeDegrees, this.longitudeDegrees) * DEGREES
-    const point = earthCentered(longitude, latitudeDegrees * DEGREES, heightMeters)
-    const dx = point[0] - this.origin[0]
-    const dy = point[1] - this.origin[1]
-    const dz = point[2] - this.origin[2]
-    const { east, north, up } = this
-    return [dx * east[0] + dy * east[1] + dz * east[2], dx * north[0] + dy * north[1] + dz * north[2], dx * up[0] + dy * up[1] + dz * up[2]]
-  }
-}
-
-function earthCentered(longitude: number, latitude: number, heightMeters: number): [number, number, number] {
-  const sinLatitude = Math.sin(latitude)
-  const radius = WGS84_SEMI_MAJOR_AXIS_METERS / Math.sqrt(1 - WGS84_ECCENTRICITY_SQUARED * sinLatitude * sinLatitude)
-  const cosLatitude = Math.cos(latitude)
-  return [(radius + heightMeters) * cosLatitude * Math.cos(longitude), (radius + heightMeters) * cosLatitude * Math.sin(longitude), (radius * (1 - WGS84_ECCENTRICITY_SQUARED) + heightMeters) * sinLatitude]
-}
-
-/** A ring or line with its long edges split, longitudes unwrapped near `referenceLongitude`, each with its height. */
-function densify(positions: readonly Position[], referenceLongitude: number, heightOf: (position: Position) => number): Array<[number, number, number]> {
-  const result: Array<[number, number, number]> = []
-  let previous: [number, number, number] | null = null
-  const budget = Math.max(1, Math.floor(MAXIMUM_RING_VERTICES / Math.max(1, positions.length)))
+function densify(positions: readonly Position[], referenceLongitude: number, heightOf: (position: Position) => number, closed: boolean): GeographicPoint[] {
+  const points: GeographicPoint[] = []
+  let previous = referenceLongitude
   for (const position of positions) {
     // Near the previous position, so an edge is never split the long way round (a ring around a pole keeps going east).
-    const current: [number, number, number] = [unwrapLongitudeNear(position[0]!, previous?.[0] ?? referenceLongitude), position[1]!, heightOf(position)]
-    if (previous !== null) {
-      const pieces = Math.min(budget, Math.ceil(distanceMeters(previous, current) / MAXIMUM_EDGE_METERS))
-      for (let piece = 1; piece < pieces; piece++) {
-        const t = piece / pieces
-        result.push([previous[0] + (current[0] - previous[0]) * t, previous[1] + (current[1] - previous[1]) * t, previous[2] + (current[2] - previous[2]) * t])
-      }
+    const longitude = unwrapLongitudeNear(position[0]!, previous)
+    points.push([longitude, position[1]!, heightOf(position)])
+    previous = longitude
+  }
+  const result: GeographicPoint[] = []
+  const edges = closed ? points.length : points.length - 1
+  for (let index = 0; index < points.length; index++) {
+    const from = points[index]!
+    result.push(from)
+    if (index >= edges) continue
+    const next = points[(index + 1) % points.length]!
+    const to: GeographicPoint = [unwrapLongitudeNear(next[0], from[0]), next[1], next[2]]
+    const pieces = edgePieces(from, to)
+    for (let piece = 1; piece < pieces; piece++) {
+      const t = piece / pieces
+      result.push([from[0] + (to[0] - from[0]) * t, from[1] + (to[1] - from[1]) * t, from[2] + (to[2] - from[2]) * t])
     }
-    result.push(current)
-    previous = current
   }
   return result
 }
 
-/** Triangles as a flat list of local points (three per triangle), with face normals. */
+/** Triangles as a flat list of local points (three per triangle). */
 class TriangleSoup {
   readonly positions: number[] = []
 
   triangle(a: LocalPoint, b: LocalPoint, c: LocalPoint): void {
-    this.positions.push(...a, ...b, ...c)
+    this.positions.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2])
   }
 
-  quad(a: LocalPoint, b: LocalPoint, c: LocalPoint, d: LocalPoint): void {
-    this.triangle(a, b, c)
-    this.triangle(a, c, d)
-  }
-
+  /**
+   * The geometry, with normals smoothed across edges where faces meet at less than 30° (a cylinder's wall, a sphere)
+   * and sharp elsewhere (a box's edges).
+   */
   toGeometry(): BufferGeometry {
+    const positions = this.positions
+    const triangles = positions.length / 9
+    const unit = new Float64Array(triangles * 3)
+    const weighted = new Float64Array(triangles * 3)
+    for (let triangle = 0; triangle < triangles; triangle++) {
+      const offset = triangle * 9
+      const ux = positions[offset + 3]! - positions[offset]!
+      const uy = positions[offset + 4]! - positions[offset + 1]!
+      const uz = positions[offset + 5]! - positions[offset + 2]!
+      const vx = positions[offset + 6]! - positions[offset]!
+      const vy = positions[offset + 7]! - positions[offset + 1]!
+      const vz = positions[offset + 8]! - positions[offset + 2]!
+      const nx = uy * vz - uz * vy
+      const ny = uz * vx - ux * vz
+      const nz = ux * vy - uy * vx
+      const length = Math.hypot(nx, ny, nz)
+      weighted.set([nx, ny, nz], triangle * 3)
+      if (length > 0) unit.set([nx / length, ny / length, nz / length], triangle * 3)
+    }
+    // The corners at each position (to the millimetre).
+    const corners = new Map<string, number[]>()
+    for (let corner = 0; corner < triangles * 3; corner++) {
+      const key = `${Math.round(positions[corner * 3]! * 1000)},${Math.round(positions[corner * 3 + 1]! * 1000)},${Math.round(positions[corner * 3 + 2]! * 1000)}`
+      const list = corners.get(key)
+      if (list === undefined) corners.set(key, [corner])
+      else list.push(corner)
+    }
+    const normals = new Float32Array(positions.length)
+    const cosine = Math.cos((SMOOTH_THRESHOLD_DEGREES * Math.PI) / 180)
+    for (const group of corners.values()) {
+      for (const corner of group) {
+        const triangle = Math.floor(corner / 3)
+        let x = 0
+        let y = 0
+        let z = 0
+        for (const other of group) {
+          const neighbour = Math.floor(other / 3)
+          const alignment = unit[triangle * 3]! * unit[neighbour * 3]! + unit[triangle * 3 + 1]! * unit[neighbour * 3 + 1]! + unit[triangle * 3 + 2]! * unit[neighbour * 3 + 2]!
+          if (neighbour !== triangle && alignment < cosine) continue
+          x += weighted[neighbour * 3]!
+          y += weighted[neighbour * 3 + 1]!
+          z += weighted[neighbour * 3 + 2]!
+        }
+        const length = Math.hypot(x, y, z)
+        if (length > 0) normals.set([x / length, y / length, z / length], corner * 3)
+        else normals.set([0, 0, 1], corner * 3)
+      }
+    }
     const geometry = new BufferGeometry()
-    geometry.setAttribute('position', new Float32BufferAttribute(this.positions, 3))
-    geometry.computeVertexNormals()
+    geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+    geometry.setAttribute('normal', new Float32BufferAttribute(normals, 3))
     return geometry
   }
-}
-
-/** Twice the signed area of a ring in the local frame's east-north plane: positive when counter-clockwise. */
-function signedArea(ring: readonly LocalPoint[]): number {
-  let area = 0
-  for (let index = 0; index < ring.length; index++) {
-    const a = ring[index]!
-    const b = ring[(index + 1) % ring.length]!
-    area += a[0] * b[1] - b[0] * a[1]
-  }
-  return area
 }
 
 /** What `buildSolidGeometry` returns. */
 export interface SolidGeometry {
   /** The faces, or null for a line drawn as a line. */
   faces: BufferGeometry | null
-  /** A line string at an altitude and not extruded, or null. */
+  /** A line string at an altitude, or null. */
   line: BufferGeometry | null
-  /** True when the faces close a volume, all facing outwards: an extruded polygon. Open faces are seen from both sides. */
+  /**
+   * True when the faces close a volume, all facing outwards (a closed mesh wound counter-clockwise seen from outside),
+   * so they can be drawn on one side. Open faces are seen from both sides.
+   */
   closed: boolean
 }
 
+/** A face ready to triangulate: its rings' positions (longitudes unwrapped near the frame's) and points in the frame. */
+interface PreparedFace {
+  rings: GeographicPoint[][]
+  local: LocalPoint[][]
+  /** Newell's normal of its exterior ring: its length is twice the face's area. */
+  normal: LocalPoint
+}
+
+function prepareFace(rings: readonly Position[][], frame: LocalFrame, heightOf: (position: Position) => number): PreparedFace | null {
+  const geographic = rings
+    .map(ring => openRing(ring).map(position => [unwrapLongitudeNear(position[0]!, frame.longitudeDegrees), position[1]!, heightOf(position)] as GeographicPoint))
+    .filter(ring => ring.length >= 3)
+  if (geographic.length === 0) return null
+  const local = geographic.map(ring => ring.map(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height)))
+  return { rings: geographic, local, normal: newellNormal(local[0]!) }
+}
+
 /**
- * The geometry of a polygon or line string solid, in the local frame: faces (a polygon's bottom and top, walls along an
- * extruded outline) and, for a line string with altitudes and no extrusion, the line itself. Faces of an extruded
- * polygon face outwards whatever the winding of its rings, so they can be drawn on one side.
+ * Adds one planar face to the soup: triangulated in its own plane, every triangle wound as the exterior ring (facing
+ * where its normal points), then split until no edge is longer than `maximumEdgeMeters` across, so it follows the curve
+ * of the Earth. Every face of a solid takes the same limit, so an edge two faces share is split the same way in both.
  */
-export function buildSolidGeometry(feature: DrawFeature, frame: LocalFrame, baseHeightMeters: (position: Position) => number): SolidGeometry {
-  const geometry = feature.geometry
-  const extrusion = extrusionHeightOf(feature)
-  const reference = frame.longitudeDegrees
-  if (geometry.type === 'LineString') {
-    const line = densify(geometry.coordinates, reference, baseHeightMeters)
-    if (extrusion === 0) {
-      const lineGeometry = new BufferGeometry()
-      lineGeometry.setAttribute('position', new Float32BufferAttribute(line.flatMap(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height)), 3))
-      return { faces: null, line: lineGeometry, closed: false }
-    }
-    const soup = new TriangleSoup()
-    for (let index = 0; index + 1 < line.length; index++) wall(soup, frame, line[index]!, line[index + 1]!, extrusion)
-    return { faces: soup.toGeometry(), line: null, closed: false }
-  }
-  if (geometry.type !== 'Polygon') return { faces: null, line: null, closed: false }
-  const rings = geometry.coordinates.map((ring, ringIndex) => {
-    const dense = densify(ring, reference, baseHeightMeters)
-    // Closed rings repeat their first position: earcut and the walls want each vertex once.
-    const first = dense[0]
-    const last = dense[dense.length - 1]
-    if (dense.length > 1 && first !== undefined && last !== undefined && unwrapLongitudeNear(last[0], first[0]) === first[0] && first[1] === last[1]) dense.pop()
-    // The exterior counter-clockwise and the holes clockwise, seen from above: then every wall faces outwards.
-    const counterClockwise = signedArea(dense.map(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height))) > 0
-    if (counterClockwise !== (ringIndex === 0)) dense.reverse()
-    return dense
-  })
-  const bottom = rings.map(ring => ring.map(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height)))
-  const top = extrusion === 0 ? bottom : rings.map(ring => ring.map(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height + extrusion)))
+function addFace(soup: TriangleSoup, face: PreparedFace, frame: LocalFrame, maximumEdgeMeters: number): void {
+  const length = Math.hypot(...face.normal)
+  if (!(length > 1e-9)) return
+  const n: LocalPoint = [face.normal[0] / length, face.normal[1] / length, face.normal[2] / length]
+  // A basis of the face's plane, (u, v, n) right-handed: counter-clockwise in (u, v) is counter-clockwise seen from n.
+  const axis: LocalPoint = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]
+  const uRaw: LocalPoint = [axis[1] * n[2] - axis[2] * n[1], axis[2] * n[0] - axis[0] * n[2], axis[0] * n[1] - axis[1] * n[0]]
+  const uLength = Math.hypot(...uRaw)
+  const u: LocalPoint = [uRaw[0] / uLength, uRaw[1] / uLength, uRaw[2] / uLength]
+  const v: LocalPoint = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]]
   const flat: number[] = []
   const holes: number[] = []
-  for (const ring of bottom) {
+  for (const ring of face.local) {
     if (flat.length > 0) holes.push(flat.length / 2)
-    for (const [east, north] of ring) flat.push(east, north)
+    for (const point of ring) flat.push(point[0] * u[0] + point[1] * u[1] + point[2] * u[2], point[0] * v[0] + point[1] * v[1] + point[2] * v[2])
   }
-  const bottomPoints = bottom.flat()
-  const indices = earcut(flat, holes, 2)
-  // Counter-clockwise from above, so the top faces up and the bottom down.
+  const indices = earcut(flat, holes.length > 0 ? holes : undefined, 2)
+  // Counter-clockwise in the plane, so each triangle faces as the face does.
   for (let index = 0; index < indices.length; index += 3) {
-    if (signedArea([bottomPoints[indices[index]!]!, bottomPoints[indices[index + 1]!]!, bottomPoints[indices[index + 2]!]!]) < 0) {
+    const a = indices[index]! * 2
+    const b = indices[index + 1]! * 2
+    const c = indices[index + 2]! * 2
+    if ((flat[b]! - flat[a]!) * (flat[c + 1]! - flat[a + 1]!) - (flat[c]! - flat[a]!) * (flat[b + 1]! - flat[a + 1]!) < 0) {
       ;[indices[index + 1], indices[index + 2]] = [indices[index + 2]!, indices[index + 1]!]
     }
   }
-  // Wide faces are split into small triangles, so they bend with the Earth instead of cutting under it.
-  const positions = rings.flat()
-  const area = Math.abs(bottom.reduce((sum, ring, ringIndex) => sum + (ringIndex === 0 ? 1 : -1) * Math.abs(signedArea(ring)), 0)) / 2
-  const maximumEdgeMeters = Math.max(MAXIMUM_EDGE_METERS, Math.sqrt((2 * area) / MAXIMUM_FACE_TRIANGLES))
-  const triangles = refineTriangles(positions, bottomPoints, indices, maximumEdgeMeters, frame)
-  const topPoints = extrusion === 0 ? bottomPoints : positions.map(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height + extrusion))
+  // Long edges are split, so faces bend with the Earth instead of cutting under it.
+  const positions = face.rings.flat()
+  const points = face.local.flat()
+  const triangles = refineTriangles(positions, points, indices, maximumEdgeMeters, frame)
+  for (let index = 0; index < triangles.length; index += 3) soup.triangle(points[triangles[index]!]!, points[triangles[index + 1]!]!, points[triangles[index + 2]!]!)
+}
+
+/**
+ * The geometry of a solid feature, in the local frame: a mesh's faces, a polygon at an altitude as one flat face, or a
+ * line string with altitudes as a line. Positions without an altitude stand at `fallbackHeightMeters`.
+ */
+export function buildSolidGeometry(feature: DrawFeature, frame: LocalFrame, fallbackHeightMeters = 0): SolidGeometry {
+  const geometry = feature.geometry
+  const heightOf = (position: Position) => (hasAltitude(position) ? position[2]! : fallbackHeightMeters)
+  if (geometry.type === 'LineString') {
+    const line = densify(geometry.coordinates, frame.longitudeDegrees, heightOf, false)
+    const lineGeometry = new BufferGeometry()
+    lineGeometry.setAttribute('position', new Float32BufferAttribute(line.flatMap(([longitude, latitude, height]) => frame.toLocal(longitude, latitude, height)), 3))
+    return { faces: null, line: lineGeometry, closed: false }
+  }
+  if (geometry.type === 'Point') return { faces: null, line: null, closed: false }
   const soup = new TriangleSoup()
-  for (let index = 0; index < triangles.length; index += 3) {
-    const a = triangles[index]!
-    const b = triangles[index + 1]!
-    const c = triangles[index + 2]!
-    soup.triangle(topPoints[a]!, topPoints[b]!, topPoints[c]!)
-    if (extrusion > 0) soup.triangle(bottomPoints[a]!, bottomPoints[c]!, bottomPoints[b]!)
+  const faces = (geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates).map(face => prepareFace(face, frame, heightOf)).filter(face => face !== null)
+  // Wider faces get longer triangles (about 4096 at most for the widest), all faces the same limit.
+  let largestArea = 0
+  for (const face of faces) largestArea = Math.max(largestArea, Math.hypot(...face.normal) / 2)
+  const maximumEdgeMeters = Math.max(MAXIMUM_EDGE_METERS, Math.sqrt((2 * largestArea) / MAXIMUM_FACE_TRIANGLES))
+  for (const face of faces) addFace(soup, face, frame, maximumEdgeMeters)
+  let closed = false
+  if (geometry.type === 'MultiPolygon') {
+    const mesh = indexMesh(geometry)
+    // Closed and wound outwards: one side. Wound inwards, or open: both, rather than guess.
+    closed = isClosedMesh(mesh) && meshVolume(mesh) > 0
   }
-  if (extrusion > 0) {
-    for (const ring of rings) for (let index = 0; index < ring.length; index++) wall(soup, frame, ring[index]!, ring[(index + 1) % ring.length]!, extrusion)
-  }
-  return { faces: soup.toGeometry(), line: null, closed: extrusion > 0 }
+  return { faces: soup.positions.length > 0 ? soup.toGeometry() : null, line: null, closed }
 }
 
 /**
@@ -337,38 +347,25 @@ export function refineTriangles(positions: Array<[number, number, number]>, loca
   return result
 }
 
-function wall(soup: TriangleSoup, frame: LocalFrame, from: [number, number, number], to: [number, number, number], extrusion: number): void {
-  const a = frame.toLocal(from[0], from[1], from[2])
-  const b = frame.toLocal(to[0], to[1], to[2])
-  soup.quad(a, b, frame.toLocal(to[0], to[1], to[2] + extrusion), frame.toLocal(from[0], from[1], from[2] + extrusion))
-}
 
-/** The longitude and latitude a feature's anchor stands at: the middle of its extent. */
-function anchorPosition(feature: DrawFeature): [number, number] {
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') return [geometry.coordinates[0]!, geometry.coordinates[1]!]
-  const positions = geometry.type === 'Polygon' ? (geometry.coordinates[0] ?? []) : geometry.coordinates
+/** The longitude and latitude a feature's anchor stands at (the middle of its extent), and its lowest altitude. */
+function anchorPosition(feature: DrawFeature): [longitude: number, latitude: number, height: number] {
+  const positions = storedPositions(feature.geometry)
   const reference = positions[0]?.[0] ?? 0
   let west = Infinity
   let east = -Infinity
   let south = Infinity
   let north = -Infinity
+  let lowest = Infinity
   for (const position of positions) {
     const longitude = unwrapLongitudeNear(position[0]!, reference)
     west = Math.min(west, longitude)
     east = Math.max(east, longitude)
     south = Math.min(south, position[1]!)
     north = Math.max(north, position[1]!)
+    if (hasAltitude(position)) lowest = Math.min(lowest, position[2]!)
   }
-  return [(west + east) / 2, (south + north) / 2]
-}
-
-/** The first altitude among a feature's positions, or null when it has none. */
-function firstAltitude(feature: DrawFeature): number | null {
-  const geometry = feature.geometry
-  const positions = geometry.type === 'Point' ? [geometry.coordinates] : geometry.type === 'LineString' ? geometry.coordinates : geometry.coordinates.flat()
-  for (const position of positions) if (position.length > 2 && Number.isFinite(position[2])) return position[2]!
-  return null
+  return [(west + east) / 2, (south + north) / 2, Number.isFinite(lowest) ? lowest : 0]
 }
 
 function sameSolidStyle(a: DrawStyle, b: DrawStyle): boolean {
@@ -376,10 +373,10 @@ function sameSolidStyle(a: DrawStyle, b: DrawStyle): boolean {
 }
 
 /**
- * Draws 3D features as solids in the scene: extruded polygons (prisms, cylinders, boxes), extruded line strings
- * (walls), spheres, and polygons or lines at an altitude. Each feature gets a `GeographicAnchor`, so it stays on its
- * spot through the globe-to-map morph; its geometry is built once per change, in the anchor's frame. Features without
- * altitudes stand on the terrain, following its height as it loads.
+ * Draws 3D features as solids in the scene: meshes (prisms, boxes, cylinders, walls, spheres, imported solids) from
+ * their faces, and polygons or lines at an altitude. Each feature gets a `GeographicAnchor`, so it stays on its spot
+ * through the globe-to-map morph; its geometry is built once per change, in the anchor's frame, at the altitudes its
+ * positions give.
  */
 export class SolidFeatures {
   /** Holds the anchors: add it under the earth (`context.addObject`). */
@@ -387,15 +384,7 @@ export class SolidFeatures {
   protected readonly solids = new Map<string, Solid>()
   /** Features being dragged or transformed, shown in 3D while they change (`setPreviews`). */
   protected readonly previews = new Map<string, Solid>()
-  /** The last terrain height found under each feature, so a rebuilt solid starts there rather than at 0 m. */
-  protected readonly lastGroundHeights = new Map<string, number>()
   protected readonly materials = new Map<string, SharedMaterials>()
-  /** The solids standing on the ground, checked in turn. */
-  protected groundSolids: Solid[] = []
-  /** The ground solid looked up first next frame, so every solid gets its turn. */
-  protected groundCursor = 0
-  protected lastGroundChangeMilliseconds = -Infinity
-  protected followUpTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(protected readonly earth: Earth) {
     this.object.name = 'DrawSolids'
@@ -411,75 +400,23 @@ export class SolidFeatures {
    * and rebuilt only when their feature object changes. Pass none when the change ends.
    */
   setPreviews(features: Iterable<{ feature: DrawFeature; style: DrawStyle }>): void {
-    this.sync(this.previews, features, true)
+    this.sync(this.previews, features)
   }
 
-  /** `immediate`: ground solids look the terrain up now (a preview must not show at 0 m for a frame). */
-  protected sync(solids: Map<string, Solid>, features: Iterable<{ feature: DrawFeature; style: DrawStyle }>, immediate = false): void {
+  protected sync(solids: Map<string, Solid>, features: Iterable<{ feature: DrawFeature; style: DrawStyle }>): void {
     const kept = new Set<string>()
-    let changed = false
     for (const { feature, style } of features) {
       kept.add(feature.id)
       const existing = solids.get(feature.id)
       if (existing !== undefined && existing.feature === feature && sameSolidStyle(existing.style, style)) continue
       if (existing !== undefined) this.removeSolid(existing)
-      const solid = this.createSolid(feature, style)
-      if (immediate && solid.onGround) {
-        this.placeOnGround(solid)
-        solid.groundCheckedMilliseconds = performance.now()
-      }
-      solids.set(feature.id, solid)
-      changed = true
+      solids.set(feature.id, this.createSolid(feature, style))
     }
     for (const [id, solid] of solids) {
       if (kept.has(id)) continue
       this.removeSolid(solid)
       solids.delete(id)
-      changed = true
     }
-    if (changed) this.groundSolids = [...this.solids.values(), ...this.previews.values()].filter(solid => solid.onGround)
-  }
-
-  /**
-   * Call once per frame: moves solids standing on the ground to the terrain's height, a few lookups per frame, each
-   * solid at most every 500 ms. While a solid has no height yet, or heights changed in the last seconds (tiles still
-   * refining), it asks the earth for follow-up frames, so the final height lands even when frames are on demand.
-   * Returns true if a solid moved.
-   */
-  update(timeMilliseconds: number = performance.now()): boolean {
-    const ground = this.groundSolids
-    const count = ground.length
-    if (count === 0) return false
-    let moved = false
-    let lookups = 0
-    let waitMilliseconds = Infinity
-    let pending = false
-    const start = this.groundCursor
-    for (let offset = 0; offset < count; offset++) {
-      const index = (start + offset) % count
-      const solid = ground[index]!
-      if (!solid.groundFound) pending = true
-      const wait = GROUND_CHECK_INTERVAL_MILLISECONDS - (timeMilliseconds - solid.groundCheckedMilliseconds)
-      if (wait > 0) {
-        waitMilliseconds = Math.min(waitMilliseconds, wait)
-        continue
-      }
-      if (lookups === GROUND_LOOKUPS_PER_FRAME) {
-        // Out of budget: the next frame serves the next solids, at once.
-        waitMilliseconds = 0
-        break
-      }
-      lookups++
-      solid.groundCheckedMilliseconds = timeMilliseconds
-      this.groundCursor = (index + 1) % count
-      if (this.placeOnGround(solid)) {
-        moved = true
-        this.lastGroundChangeMilliseconds = timeMilliseconds
-      }
-    }
-    const settling = pending || timeMilliseconds - this.lastGroundChangeMilliseconds < GROUND_SETTLE_MILLISECONDS
-    if (settling && Number.isFinite(waitMilliseconds)) this.scheduleFollowUp(waitMilliseconds)
-    return moved
   }
 
   get size(): number {
@@ -487,9 +424,6 @@ export class SolidFeatures {
   }
 
   dispose(): void {
-    if (this.followUpTimer !== null) clearTimeout(this.followUpTimer)
-    this.followUpTimer = null
-    this.groundSolids = []
     for (const solid of this.solids.values()) this.removeSolid(solid)
     for (const solid of this.previews.values()) this.removeSolid(solid)
     this.solids.clear()
@@ -498,71 +432,26 @@ export class SolidFeatures {
   }
 
   protected createSolid(feature: DrawFeature, style: DrawStyle): Solid {
-    const [longitudeDegrees, latitudeDegrees] = anchorPosition(feature)
-    const altitude = firstAltitude(feature)
-    const onGround = altitude === null
-    const shape = shapeOf(feature)
-    // Standing on the ground: built at height 0 and lifted by the anchor; otherwise at the altitudes given.
-    const anchorHeight = altitude ?? 0
-    // A ground solid starts where its feature last stood, until the terrain under it answers.
-    const anchor = this.earth.createGeographicAnchor({ longitudeDegrees, latitudeDegrees, heightMeters: onGround ? (this.lastGroundHeights.get(feature.id) ?? 0) : anchorHeight })
+    const [longitudeDegrees, latitudeDegrees, heightMeters] = anchorPosition(feature)
+    const anchor = this.earth.createGeographicAnchor({ longitudeDegrees, latitudeDegrees, heightMeters })
     this.object.add(anchor)
-    const solid: Solid = { feature, style, anchor, owned: [], materialKey: null, onGround, longitudeDegrees, latitudeDegrees, groundCheckedMilliseconds: -Infinity, groundFound: false }
-    const materials = (doubleSided: boolean) => {
-      const shared = this.acquireMaterials(style, doubleSided)
-      solid.materialKey = shared.key
-      return shared
-    }
+    const solid: Solid = { feature, style, anchor, owned: [], materialKey: null }
     const add = (object: Object3D, geometry: BufferGeometry) => {
       solid.owned.push(geometry)
       anchor.add(object)
     }
-    if (feature.geometry.type === 'Point' && shape?.type === 'sphere') {
-      if (!(shape.radiusMeters > 0) || !Number.isFinite(shape.radiusMeters)) {
-        console.warn(`react-three-earth-draw: sphere ${feature.id} has radiusMeters ${String(shape.radiusMeters)}; set properties.shape.radiusMeters to a positive number of metres (or build it with createSphere).`)
-        return solid
-      }
-      const sphere = new SphereGeometry(shape.radiusMeters, 48, 24)
-      const mesh = new Mesh(sphere, materials(false).material)
-      // Resting on the ground; with an altitude, the altitude is the center.
-      if (onGround) mesh.position.z = shape.radiusMeters
-      add(mesh, sphere)
-    } else {
-      const frame = new LocalFrame(longitudeDegrees, latitudeDegrees, anchorHeight)
-      const { faces, line, closed } = buildSolidGeometry(feature, frame, position => (position.length > 2 && Number.isFinite(position[2]) ? position[2]! : anchorHeight))
-      // Closed solids show their outside only, so transparent faces never blend with the far side; open faces show both.
-      const { material, edgeMaterial } = materials(!closed)
-      if (faces !== null) {
-        add(new Mesh(faces, material), faces)
-        const edges = new EdgesGeometry(faces, EDGE_THRESHOLD_DEGREES)
-        add(new LineSegments(edges, edgeMaterial), edges)
-      }
-      if (line !== null) add(new Line(line, edgeMaterial), line)
+    const frame = new LocalFrame(longitudeDegrees, latitudeDegrees, heightMeters)
+    const { faces, line, closed } = buildSolidGeometry(feature, frame, heightMeters)
+    // Closed solids show their outside only, so transparent faces never blend with the far side; open faces show both.
+    const shared = this.acquireMaterials(style, !closed)
+    solid.materialKey = shared.key
+    if (faces !== null) {
+      add(new Mesh(faces, shared.material), faces)
+      const edges = new EdgesGeometry(faces, EDGE_THRESHOLD_DEGREES)
+      add(new LineSegments(edges, shared.edgeMaterial), edges)
     }
-    // Lifted to the terrain by the next `update()`, which spreads the lookups over frames.
+    if (line !== null) add(new Line(line, shared.edgeMaterial), line)
     return solid
-  }
-
-  /** Asks the earth for a frame in `delayMilliseconds`, unless one is already asked for sooner. */
-  protected scheduleFollowUp(delayMilliseconds: number): void {
-    if (this.followUpTimer !== null) return
-    this.followUpTimer = setTimeout(() => {
-      this.followUpTimer = null
-      this.earth.requestFrame()
-    }, delayMilliseconds)
-  }
-
-  /** Sets a ground solid's anchor at the terrain's height under it. Returns true if it moved. */
-  protected placeOnGround(solid: Solid): boolean {
-    const { longitudeDegrees, latitudeDegrees } = solid
-    const height = this.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees })
-    if (height === null) return false
-    solid.groundFound = true
-    if (this.lastGroundHeights.size > 4096) this.lastGroundHeights.clear()
-    this.lastGroundHeights.set(solid.feature.id, height)
-    if (Math.abs(height - solid.anchor.geographicPosition.heightMeters) < 0.25) return false
-    solid.anchor.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters: height })
-    return true
   }
 
   protected removeSolid(solid: Solid): void {

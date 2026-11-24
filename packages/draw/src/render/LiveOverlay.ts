@@ -1,7 +1,7 @@
 import { isOccludedByEllipsoid, type Earth } from 'react-three-earth'
 import { Group, Vector3, type Camera } from 'three'
 
-import { distanceMeters, geometryLines, unwrapLongitudeNear, triangulatePolygon, fromMercator } from '../geometry.js'
+import { distanceMeters, geometryLines, geometryPolygons, unwrapLongitudeNear, triangulatePolygon, fromMercator } from '../geometry.js'
 import { linearColor } from '../style.js'
 import type { DrawFeature, DrawStyle, LongitudeLatitude } from '../types.js'
 import { ShapeBatch } from './ShapeBatch.js'
@@ -73,12 +73,15 @@ export class HeightSampler {
     this.heights.set(this.key(longitude, latitude), heightMeters)
   }
 
-  /** The terrain height at a position, or `fallback` until it can be sampled. */
-  heightAt(longitude: number, latitude: number, fallback = 0): number {
+  /**
+   * The terrain height at a position, or `fallback` until it can be sampled. Samples are limited per frame; with
+   * `immediate`, it samples now whatever the budget (for one-off uses, such as the base of a solid being created).
+   */
+  heightAt(longitude: number, latitude: number, fallback = 0, { immediate = false }: { immediate?: boolean } = {}): number {
     const key = this.key(longitude, latitude)
     const known = this.heights.get(key)
     if (known !== undefined) return known
-    if (this.samplesLeft <= 0) {
+    if (this.samplesLeft <= 0 && !immediate) {
       this.pending = true
       return fallback
     }
@@ -179,7 +182,7 @@ export class LiveOverlay {
       return
     }
     const lines = geometryLines(geometry)
-    if (geometry.type === 'Polygon' && style.fillOpacity > 0 && lines.length > 0 && lines[0]!.length >= 3) this.drawFill(lines, style)
+    if (style.fillOpacity > 0) for (const rings of geometryPolygons(geometry)) if (rings.length > 0 && rings[0]!.length >= 3) this.drawFill(rings, style)
     if (style.lineOpacity <= 0 || style.lineWidthPixels <= 0) return
     for (const line of lines) this.drawLine(line, style.lineWidthPixels, linearColor(style.lineColor), style.lineOpacity)
   }

@@ -1,7 +1,7 @@
 import type { DrapedLayerDrawInputs, GeographicBounds } from 'react-three-earth'
 import { Scene, type BufferGeometry } from 'three'
 
-import { geometryBounds, geometryLines, toMercator, triangulatePolygon, type MercatorCoordinate } from '../geometry.js'
+import { geometryBounds, geometryLines, geometryPolygons, toMercator, triangulatePolygon, type MercatorCoordinate } from '../geometry.js'
 import { linearColor } from '../style.js'
 import type { DrawFeature, DrawStyle } from '../types.js'
 import { ShapeBatch } from './ShapeBatch.js'
@@ -124,7 +124,7 @@ function prepare(feature: DrawFeature, style: DrawStyle): PreparedFeature {
     })
     return flat
   })
-  const fill = geometry.type === 'Polygon' && geometry.coordinates.length > 0 ? triangulatePolygon(geometryLines(geometry)) : null
+  const fill = triangulateFill(geometry)
   const point = geometry.type === 'Point' ? toMercator(geometry.coordinates) : null
   const mercatorBounds: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity]
   const extend = (x: number, y: number) => {
@@ -136,6 +136,22 @@ function prepare(feature: DrawFeature, style: DrawStyle): PreparedFeature {
   for (const line of lines) for (let index = 0; index < line.length; index += 2) extend(line[index]!, line[index + 1]!)
   if (point !== null) extend(point.x, point.y)
   return { feature, style, mercatorBounds, lines, fill, point }
+}
+
+/** The triangles of a polygon's or multipolygon's fill, in one list; null for points and lines. */
+function triangulateFill(geometry: DrawFeature['geometry']): { vertices: number[]; indices: number[] } | null {
+  const polygons = geometryPolygons(geometry).filter(rings => rings.length > 0)
+  if (polygons.length === 0) return null
+  if (polygons.length === 1) return triangulatePolygon(polygons[0]!)
+  const vertices: number[] = []
+  const indices: number[] = []
+  for (const rings of polygons) {
+    const part = triangulatePolygon(rings)
+    const offset = vertices.length / 2
+    for (const value of part.vertices) vertices.push(value)
+    for (const index of part.indices) indices.push(index + offset)
+  }
+  return { vertices, indices }
 }
 
 function drawPrepared(batch: ShapeBatch, { style, lines, fill, point }: PreparedFeature, toX: (x: number) => number, toY: (y: number) => number, texelsPerPixel: number): void {

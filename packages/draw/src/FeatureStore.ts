@@ -105,13 +105,13 @@ export class FeatureStore {
   }
 }
 
-const GEOMETRY_TYPES = new Set(['Point', 'LineString', 'Polygon'])
+const GEOMETRY_TYPES = new Set(['Point', 'LineString', 'Polygon', 'MultiPolygon'])
 
 /** Throws, stating the fix, for a feature a `Draw` cannot hold. */
 export function validateFeature(feature: DrawFeature): void {
   if (feature?.type !== 'Feature') throw new Error('Draw: features must be GeoJSON features ({ type: "Feature", geometry, properties }).')
   if (typeof feature.id !== 'string' || feature.id.length === 0) throw new Error('Draw: give every feature a string `id` (createFeatureId() makes one).')
   if (!GEOMETRY_TYPES.has(feature.geometry?.type)) {
-    throw new Error(`Draw: feature "${feature.id}" has a ${feature.geometry?.type ?? 'missing'} geometry; Draw holds Point, LineString and Polygon features (split Multi* geometries into features).`)
+    throw new Error(`Draw: feature "${feature.id}" has a ${feature.geometry?.type ?? 'missing'} geometry; Draw holds Point, LineString, Polygon and MultiPolygon features (split MultiPoint, MultiLineString and GeometryCollection geometries into features).`)
   }
 }

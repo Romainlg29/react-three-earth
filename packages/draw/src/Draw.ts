@@ -83,8 +83,8 @@ const INVALIDATE_PADDING_FRACTION = 0.1
 const INVALIDATE_PADDING_DEGREES = 0.5
 
 /**
- * Headless drawing on the globe and the flat map, as a react-three-earth plugin: points, line strings and polygons,
- * output as GeoJSON. It draws the features (draped on the terrain, styled by `style`) and the handles of the feature in
+ * Headless drawing on the globe and the flat map, as a react-three-earth plugin: points, line strings, polygons and
+ * solid meshes (multipolygons of faces with altitudes), output as GeoJSON. It draws the features (draped on the terrain, styled by `style`) and the handles of the feature in
  * progress, and nothing else: no buttons, no CSS. Build your toolbar from `getState()`, `subscribe` and the actions.
  *
  * ```ts
@@ -116,7 +116,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   protected overlay: LiveOverlay | null = null
   protected readonly draped = new DrapedFeatures()
   protected drapedLayer: DrapedLayerHandle | null = null
-  /** 3D features (extruded, spheres, at an altitude), drawn as solids in the scene rather than draped. */
+  /** 3D features (meshes, polygons and lines at an altitude), drawn as solids in the scene rather than draped. */
   protected solids: SolidFeatures | null = null
   /** Bounds of each draped feature, to redraw where a changed feature was. */
   protected drapedBounds = new Map<string, GeographicBounds>()
@@ -513,8 +513,6 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /** Redraws the overlay when the camera, the morph or the content changed. */
   protected updateOverlay({ camera, morph }: PluginFrame): boolean {
     this.draped.startFrame()
-    // Solids on the ground follow the terrain's height as it loads.
-    if (this.solids?.update() === true) this.earth?.requestFrame()
     const overlay = this.overlay
     if (overlay === null) return false
     camera.updateMatrixWorld()

@@ -1,7 +1,7 @@
 import type { Position } from 'geojson'
 
-import { distanceMeters, distanceToSegment, pointInPolygon, unwrapLongitudeNear } from './geometry.js'
-import { bearingDegrees, destination, extrusionHeightOf, shapeOf, type ShapeDescription } from './shapes.js'
+import { distanceMeters, distanceToSegment, hasAltitude, mapGeometryPositions, pointInPolygon, unwrapLongitudeNear } from './geometry.js'
+import { bearingDegrees, destination } from './shapes.js'
 import type { DrawFeature, LongitudeLatitude } from './types.js'
 
 /**
@@ -32,11 +32,15 @@ export interface FeatureMidpoint {
 const MINIMUM_LINE_VERTICES = 2
 const MINIMUM_RING_VERTICES = 3
 
-/** The rings of a feature as open vertex lists: a polygon's rings without their closing position, a line, a point. */
+/**
+ * The rings of a feature as open vertex lists: a polygon's rings without their closing position, a line, a point. None
+ * for multipolygons (meshes): their vertices are shared between faces, which these helpers do not edit.
+ */
 function openRings(feature: DrawFeature): Position[][] {
   const geometry = feature.geometry
   if (geometry.type === 'Point') return [[geometry.coordinates]]
   if (geometry.type === 'LineString') return [geometry.coordinates]
+  if (geometry.type === 'MultiPolygon') return []
   return geometry.coordinates.map(ring => (ring.length > 1 && samePosition(ring[0]!, ring[ring.length - 1]!) ? ring.slice(0, -1) : ring))
 }
 
@@ -49,14 +53,8 @@ function withRings(feature: DrawFeature, rings: Position[][]): DrawFeature {
   const geometry = feature.geometry
   if (geometry.type === 'Point') return { ...feature, geometry: { type: 'Point', coordinates: rings[0]![0]! } }
   if (geometry.type === 'LineString') return { ...feature, geometry: { type: 'LineString', coordinates: rings[0]! } }
+  if (geometry.type === 'MultiPolygon') return feature
   return { ...feature, geometry: { type: 'Polygon', coordinates: rings.map(ring => [...ring, [...ring[0]!]]) } }
-}
-
-/** Properties without `shape`: a shape whose outline was edited is no longer that shape. */
-function withoutShape(feature: DrawFeature): DrawFeature {
-  if (shapeOf(feature) === null) return feature
-  const { shape: _shape, ...properties } = feature.properties ?? {}
-  return { ...feature, properties }
 }
 
 /**
@@ -68,16 +66,16 @@ function moved(original: Position, to: LongitudeLatitude): Position {
   return original.length > 2 ? [longitude, to[1], original[2]!] : [longitude, to[1]]
 }
 
-/** The vertices of a feature, in order, without the closing positions of polygon rings. */
+/** The vertices of a feature, in order, without the closing positions of polygon rings. None for multipolygons (meshes). */
 export function featureVertices(feature: DrawFeature): FeatureVertex[] {
   const vertices: FeatureVertex[] = []
   openRings(feature).forEach((ring, ringIndex) => ring.forEach((position, index) => vertices.push({ path: { ring: ringIndex, index }, position })))
   return vertices
 }
 
-/** The middles of a line string's or polygon's edges (none for points). */
+/** The middles of a line string's or polygon's edges (none for points and multipolygons). */
 export function featureMidpoints(feature: DrawFeature): FeatureMidpoint[] {
-  if (feature.geometry.type === 'Point') return []
+  if (feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPolygon') return []
   const closed = feature.geometry.type === 'Polygon'
   const midpoints: FeatureMidpoint[] = []
   openRings(feature).forEach((ring, ringIndex) => {
@@ -94,19 +92,19 @@ export function featureMidpoints(feature: DrawFeature): FeatureMidpoint[] {
   return midpoints
 }
 
-/** The feature with the vertex at `path` moved to `position` (its altitude kept). A shape loses `properties.shape`. */
+/** The feature with the vertex at `path` moved to `position` (its altitude kept). Multipolygons are returned unchanged. */
 export function moveVertex(feature: DrawFeature, path: VertexPath, position: LongitudeLatitude): DrawFeature {
   const rings = openRings(feature).map(ring => [...ring])
   const ring = rings[path.ring]
   const original = ring?.[path.index]
   if (ring === undefined || original === undefined) return feature
   ring[path.index] = moved(original, position)
-  return withoutShape(withRings(feature, rings))
+  return withRings(feature, rings)
 }
 
 /** The feature with a vertex inserted at `path` (pushing the others along). Its altitude is its neighbours' average. */
 export function insertVertex(feature: DrawFeature, path: VertexPath, position: LongitudeLatitude): DrawFeature {
-  if (feature.geometry.type === 'Point') return feature
+  if (feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPolygon') return feature
   const rings = openRings(feature).map(ring => [...ring])
   const ring = rings[path.ring]
   if (ring === undefined || path.index < 0 || path.index > ring.length) return feature
@@ -115,7 +113,7 @@ export function insertVertex(feature: DrawFeature, path: VertexPath, position: L
   const longitude = unwrapLongitudeNear(position[0], before[0]!)
   const vertex: Position = before.length > 2 && after.length > 2 ? [longitude, position[1], (before[2]! + after[2]!) / 2] : [longitude, position[1]]
   ring.splice(path.index, 0, vertex)
-  return withoutShape(withRings(feature, rings))
+  return withRings(feature, rings)
 }
 
 /**
@@ -123,28 +121,21 @@ export function insertVertex(feature: DrawFeature, path: VertexPath, position: L
  * ring 3; points cannot lose theirs).
  */
 export function removeVertex(feature: DrawFeature, path: VertexPath): DrawFeature | null {
-  if (feature.geometry.type === 'Point') return null
+  if (feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPolygon') return null
   const rings = openRings(feature).map(ring => [...ring])
   const ring = rings[path.ring]
   if (ring === undefined || ring[path.index] === undefined) return null
   if (ring.length <= (feature.geometry.type === 'Polygon' ? MINIMUM_RING_VERTICES : MINIMUM_LINE_VERTICES)) return null
   ring.splice(path.index, 1)
-  return withoutShape(withRings(feature, rings))
+  return withRings(feature, rings)
 }
 
 /**
  * The feature moved as a whole from `from` to `to`: every position keeps its distance and bearing from the pointer, so
- * shapes keep their size in metres wherever they go. Altitudes are kept; a shape's center moves with it.
+ * shapes keep their size in metres wherever they go. Altitudes are kept.
  */
 export function translateFeature(feature: DrawFeature, from: LongitudeLatitude, to: LongitudeLatitude): DrawFeature {
-  const move = (position: Position): Position => moved(position, destination(to, distanceMeters(from, position), bearingDegrees(from, position)))
-  const rings = openRings(feature).map(ring => ring.map(move))
-  const result = withRings(feature, rings)
-  const shape = shapeOf(feature)
-  if (shape === null) return result
-  const center = move(shape.center)
-  const movedShape: ShapeDescription = { ...shape, center: [center[0]!, center[1]!] }
-  return { ...result, properties: { ...result.properties, shape: movedShape } }
+  return { ...feature, geometry: mapGeometryPositions(feature.geometry, position => moved(position, destination(to, distanceMeters(from, position), bearingDegrees(from, position)))) }
 }
 
 /** How a mode measures a tap against features: screen positions of geographic ones, and the tap. */
@@ -176,58 +167,48 @@ function insideScreenRing(point: ScreenPoint, ring: readonly ScreenPoint[]): boo
 }
 
 function hasAltitudes(positions: readonly Position[]): boolean {
-  return positions.some(position => position.length > 2 && Number.isFinite(position[2]))
+  return positions.some(hasAltitude)
+}
+
+/**
+ * Whether a tap is inside a face (its rings drawn at their altitudes, or on the terrain where they have none): inside
+ * its exterior and outside its holes. False when part of it is hidden.
+ */
+function insideFace(rings: readonly Position[][], input: HitTestInput): boolean {
+  for (const [ringIndex, ring] of rings.entries()) {
+    const screen: ScreenPoint[] = []
+    for (const position of ring) {
+      const point = input.project(position)
+      if (point === null) return false
+      screen.push(point)
+    }
+    const inside = insideScreenRing(input.screen, screen)
+    if (ringIndex === 0 ? !inside : inside) return false
+  }
+  return rings.length > 0
 }
 
 /**
  * Whether a tap hits a feature where it is drawn: within the tolerance of a point or a line (in pixels), inside a
- * draped polygon's outline on the ground, inside the faces of a solid (its top, bottom and walls on the screen, at
- * their altitudes), or inside a sphere's outline on the screen. Returns the distance in pixels (0 inside), or null.
+ * draped polygon's outline on the ground, inside a face of a mesh or of a polygon at an altitude (on the screen, at the
+ * altitudes of its vertices), or within the tolerance of their edges. Returns the distance in pixels (0 inside), or null.
  */
 export function hitFeature(feature: DrawFeature, input: HitTestInput): number | null {
   const geometry = feature.geometry
-  const extrusion = extrusionHeightOf(feature)
   if (geometry.type === 'Point') {
-    const shape = shapeOf(feature)
-    if (shape?.type === 'sphere') {
-      // Resting on the terrain, or centered on its altitude.
-      const above = hasAltitudes([geometry.coordinates]) ? 0 : shape.radiusMeters
-      const center = input.project(geometry.coordinates, above)
-      const top = input.project(geometry.coordinates, above + shape.radiusMeters)
-      if (center === null) return null
-      const radiusPixels = top === null ? 0 : Math.hypot(top.x - center.x, top.y - center.y)
-      const distance = Math.hypot(center.x - input.screen.x, center.y - input.screen.y)
-      if (distance <= radiusPixels) return 0
-      return distance - radiusPixels <= input.tolerancePixels ? distance - radiusPixels : null
-    }
     const screen = input.project(geometry.coordinates)
     if (screen === null) return null
     const distance = Math.hypot(screen.x - input.screen.x, screen.y - input.screen.y)
     return distance <= input.tolerancePixels ? distance : null
   }
-  const lines = geometry.type === 'Polygon' ? geometry.coordinates : [geometry.coordinates]
-  const solid = extrusion > 0 || lines.some(hasAltitudes)
-  if (geometry.type === 'Polygon' && !solid) {
-    const rings = geometry.coordinates.map(ring => ring.map(position => [position[0]!, position[1]!] as LongitudeLatitude))
-    if (pointInPolygon(input.ground, rings)) return 0
+  const polygons = geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.type === 'MultiPolygon' ? geometry.coordinates : []
+  for (const rings of polygons) {
+    if (rings.some(hasAltitudes)) {
+      // A face in the air (a mesh's, a polygon's at an altitude): where it is drawn.
+      if (insideFace(rings, input)) return 0
+    } else if (pointInPolygon(input.ground, rings.map(ring => ring.map(position => [position[0]!, position[1]!] as LongitudeLatitude)))) return 0
   }
-  if (solid) {
-    for (const line of lines) {
-      const bottom = line.map(position => input.project(position))
-      const top = extrusion > 0 ? line.map(position => input.project(position, extrusion)) : bottom
-      // A polygon's top and bottom faces.
-      if (geometry.type === 'Polygon') {
-        for (const face of [bottom, top]) if (face.every(point => point !== null) && insideScreenRing(input.screen, face as ScreenPoint[])) return 0
-      }
-      // Walls.
-      if (extrusion > 0) {
-        for (let index = 0; index + 1 < line.length; index++) {
-          const quad = [bottom[index], bottom[index + 1], top[index + 1], top[index]]
-          if (quad.every(point => point !== null && point !== undefined) && insideScreenRing(input.screen, quad as ScreenPoint[])) return 0
-        }
-      }
-    }
-  }
+  const lines = geometry.type === 'LineString' ? [geometry.coordinates] : polygons.flat()
   // Lines, and outlines tapped from just outside, where they are drawn.
   let closest = Infinity
   for (const line of lines) {

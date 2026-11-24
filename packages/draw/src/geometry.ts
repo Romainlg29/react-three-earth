@@ -1,4 +1,5 @@
 import earcut from 'earcut'
+import type { Position } from 'geojson'
 import type { GeographicBounds } from 'react-three-earth'
 
 import type { DrawFeature, DrawGeometry, LongitudeLatitude } from './types.js'
@@ -58,11 +59,45 @@ export function distanceMeters(from: readonly number[], to: readonly number[]): 
   return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(a)))
 }
 
-/** The lines of a geometry: a line string's coordinates, or a polygon's rings (closed). Points have none. */
+/** The lines of a geometry: a line string's coordinates, or the rings (closed) of its polygons. Points have none. */
 export function geometryLines(geometry: DrawGeometry): LongitudeLatitude[][] {
   if (geometry.type === 'LineString') return [unwrapPositions(geometry.coordinates)]
   if (geometry.type === 'Polygon') return geometry.coordinates.map(ring => unwrapPositions(ring))
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.flatMap(polygon => polygon.map(ring => unwrapPositions(ring)))
   return []
+}
+
+/** The polygons of a geometry, each as its rings (closed, longitudes unwrapped): one for a polygon, none for points and lines. */
+export function geometryPolygons(geometry: DrawGeometry): LongitudeLatitude[][][] {
+  if (geometry.type === 'Polygon') return [geometry.coordinates.map(ring => unwrapPositions(ring))]
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates.map(polygon => polygon.map(ring => unwrapPositions(ring)))
+  return []
+}
+
+/** Every position of a geometry, as stored (altitudes and the closing positions of rings included). */
+export function storedPositions(geometry: DrawGeometry): Position[] {
+  if (geometry.type === 'Point') return [geometry.coordinates]
+  if (geometry.type === 'LineString') return geometry.coordinates
+  if (geometry.type === 'Polygon') return geometry.coordinates.flat()
+  return geometry.coordinates.flat(2)
+}
+
+/** The geometry with every position mapped (closing positions too: they map like the first, so rings stay closed). */
+export function mapGeometryPositions<G extends DrawGeometry>(geometry: G, map: (position: Position) => Position): G {
+  const mapped: DrawGeometry =
+    geometry.type === 'Point'
+      ? { type: 'Point', coordinates: map(geometry.coordinates) }
+      : geometry.type === 'LineString'
+        ? { type: 'LineString', coordinates: geometry.coordinates.map(map) }
+        : geometry.type === 'Polygon'
+          ? { type: 'Polygon', coordinates: geometry.coordinates.map(ring => ring.map(map)) }
+          : { type: 'MultiPolygon', coordinates: geometry.coordinates.map(polygon => polygon.map(ring => ring.map(map))) }
+  return mapped as G
+}
+
+/** Whether a position has an altitude: a finite third coordinate. */
+export function hasAltitude(position: Position): boolean {
+  return position.length > 2 && Number.isFinite(position[2])
 }
 
 /** Every position of a geometry, flattened. */

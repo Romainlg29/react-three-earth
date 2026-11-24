@@ -1,44 +1,52 @@
 import type { Position } from 'geojson'
 
-import { distanceMeters, unwrapLongitudeNear } from './geometry.js'
-import { bearingDegrees, destination, extrusionHeightOf, shapeOf, type ShapeDescription } from './shapes.js'
-import type { DrawFeature, LongitudeLatitude } from './types.js'
+import { distanceMeters, hasAltitude, mapGeometryPositions, storedPositions, unwrapLongitudeNear } from './geometry.js'
+import { isMeshGeometry, meshAltitudeRange, meshTop, openRing, prismMesh, setMeshTop, wallMesh } from './mesh.js'
+import { bearingDegrees, destination } from './shapes.js'
+import type { DrawFeature, GroundHeight, LongitudeLatitude } from './types.js'
 
-/** Every position of a feature, closing positions included. */
-function allPositions(feature: DrawFeature): Position[] {
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') return [geometry.coordinates]
-  if (geometry.type === 'LineString') return geometry.coordinates
-  return geometry.coordinates.flat()
-}
+export type { GroundHeight } from './types.js'
 
-/** The feature with every position mapped (altitudes kept), closing positions included. */
+/** The feature with every position's longitude and latitude mapped, altitudes kept (closing positions included). */
 function mapPositions(feature: DrawFeature, map: (position: Position) => LongitudeLatitude): DrawFeature {
-  const move = (position: Position): Position => {
-    const [longitude, latitude] = map(position)
-    return position.length > 2 ? [longitude, latitude, position[2]!] : [longitude, latitude]
+  return {
+    ...feature,
+    geometry: mapGeometryPositions(feature.geometry, position => {
+      const [longitude, latitude] = map(position)
+      return position.length > 2 ? [longitude, latitude, position[2]!] : [longitude, latitude]
+    }),
   }
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') return { ...feature, geometry: { type: 'Point', coordinates: move(geometry.coordinates) } }
-  if (geometry.type === 'LineString') return { ...feature, geometry: { type: 'LineString', coordinates: geometry.coordinates.map(move) } }
-  return { ...feature, geometry: { type: 'Polygon', coordinates: geometry.coordinates.map(ring => ring.map(move)) } }
-}
-
-function withShape(feature: DrawFeature, shape: ShapeDescription): DrawFeature {
-  return { ...feature, properties: { ...feature.properties, shape } }
 }
 
 /**
- * The point a feature turns and scales around: a shape's center, a point's position, or else the average of its
- * vertices (longitudes unwrapped, so it holds over the antimeridian). Turning or scaling a feature around it leaves
- * it in place, so repeated turns keep the same pivot.
+ * Each vertex of a feature once, as longitude and latitude: a polygon's exterior ring without its closing position,
+ * a mesh's positions with equal longitude and latitude counted once (a prism's top corner stands over its bottom one).
+ */
+function footprintVertices(feature: DrawFeature): Position[] {
+  const geometry = feature.geometry
+  if (geometry.type === 'Point') return [geometry.coordinates]
+  if (geometry.type === 'LineString') return geometry.coordinates
+  if (geometry.type === 'Polygon') return openRing(geometry.coordinates[0] ?? [])
+  const seen = new Set<string>()
+  const vertices: Position[] = []
+  for (const polygon of geometry.coordinates) {
+    for (const position of openRing(polygon[0] ?? [])) {
+      const key = `${position[0]},${position[1]}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      vertices.push(position)
+    }
+  }
+  return vertices
+}
+
+/**
+ * The point a feature turns and scales around: a point's position, or else the average of its vertices (each once,
+ * longitudes unwrapped, so it holds over the antimeridian). Turning or scaling a feature around it leaves it in place,
+ * so repeated turns keep the same pivot.
  */
 export function featureCenter(feature: DrawFeature): LongitudeLatitude {
-  const shape = shapeOf(feature)
-  if (shape !== null) return [shape.center[0], shape.center[1]]
-  const geometry = feature.geometry
-  // Each vertex once: a polygon ring's closing position repeats its first.
-  const positions = geometry.type === 'Polygon' ? (geometry.coordinates[0] ?? []).slice(0, -1) : allPositions(feature)
+  const positions = footprintVertices(feature)
   if (positions.length === 0) return [0, 0]
   const reference = positions[0]![0]!
   let longitude = 0
@@ -50,66 +58,148 @@ export function featureCenter(feature: DrawFeature): LongitudeLatitude {
   return [longitude / positions.length, latitude / positions.length]
 }
 
-/** The turn a feature's shape already has (rectangles, ellipses, regular polygons), in degrees clockwise from north; else 0. */
+/** Relative area difference within which the gizmo keeps facing north rather than turning to a feature's edges. */
+const NORTH_PREFERENCE = 3e-3
+
+/**
+ * The turn of a feature's gizmo, in degrees clockwise from north, between -45° and 45°: the turn of the smallest
+ * rectangle around its footprint, so a turned box gets a box turned with it. Shapes nearly as tight facing north (a
+ * circle) face north. 0 for points.
+ */
 export function featureRotationDegrees(feature: DrawFeature): number {
-  const shape = shapeOf(feature)
-  return shape !== null && 'rotationDegrees' in shape ? shape.rotationDegrees : 0
+  if (feature.geometry.type === 'Point') return 0
+  const center = featureCenter(feature)
+  const hull = convexHull(footprintVertices(feature).map(position => positionInFrame(center, position, 0)))
+  if (hull.length < 2) return 0
+  const areaAt = (rotationDegrees: number) => {
+    let minimumX = Infinity
+    let maximumX = -Infinity
+    let minimumY = Infinity
+    let maximumY = -Infinity
+    for (const [east, north] of hull) {
+      const [x, y] = toFrame(east, north, rotationDegrees)
+      minimumX = Math.min(minimumX, x)
+      maximumX = Math.max(maximumX, x)
+      minimumY = Math.min(minimumY, y)
+      maximumY = Math.max(maximumY, y)
+    }
+    const width = maximumX - minimumX
+    const length = maximumY - minimumY
+    // A straight line has no area: the tightest box then runs along it, the longest way.
+    return width * length - 1e-9 * Math.max(width, length) ** 2
+  }
+  let best = 0
+  let bestArea = areaAt(0)
+  const northArea = bestArea
+  for (let index = 0; index < hull.length; index++) {
+    const [ax, ay] = hull[index]!
+    const [bx, by] = hull[(index + 1) % hull.length]!
+    if (ax === bx && ay === by) continue
+    // The frame's x axis along the edge: its angle from east, counter-clockwise, is minus the turn.
+    const rotation = normalizeQuarterTurn((-Math.atan2(by - ay, bx - ax) * 180) / Math.PI)
+    const area = areaAt(rotation)
+    if (area < bestArea - Math.abs(bestArea) * 1e-12) {
+      best = rotation
+      bestArea = area
+    }
+  }
+  if (northArea > 0 && northArea <= bestArea + Math.abs(bestArea) * NORTH_PREFERENCE) return 0
+  return best
+}
+
+/** An angle in degrees, brought to -45° to 45° by quarter turns. */
+function normalizeQuarterTurn(degrees: number): number {
+  const turned = ((degrees % 90) + 90) % 90
+  return turned > 45 ? turned - 90 : turned
+}
+
+/** The convex hull of points (Andrew's monotone chain), counter-clockwise. */
+function convexHull(points: Array<[number, number]>): Array<[number, number]> {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  if (sorted.length < 3) return sorted
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+  const lower: Array<[number, number]> = []
+  for (const point of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0) lower.pop()
+    lower.push(point)
+  }
+  const upper: Array<[number, number]> = []
+  for (let index = sorted.length - 1; index >= 0; index--) {
+    const point = sorted[index]!
+    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0) upper.pop()
+    upper.push(point)
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)]
 }
 
 /**
- * The feature turned by `angleDegrees` clockwise around `center`: every position keeps its distance in metres from
- * the center, so shapes keep their size. A shape's `rotationDegrees` turns with it.
+ * The feature turned by `angleDegrees` clockwise around the vertical through `center`: every position keeps its
+ * distance in metres from the center and its altitude, so shapes and meshes keep their size.
  */
 export function rotateFeature(feature: DrawFeature, center: LongitudeLatitude, angleDegrees: number): DrawFeature {
   if (angleDegrees % 360 === 0) return feature
-  const rotated = mapPositions(feature, position => {
+  return mapPositions(feature, position => {
     const distance = distanceMeters(center, position)
     return distance === 0 ? [position[0]!, position[1]!] : destination(center, distance, bearingDegrees(center, position) + angleDegrees)
   })
-  const shape = shapeOf(feature)
-  if (shape === null) return rotated
-  const centerMoved = distanceMeters(center, shape.center) > 0
-  const newCenter: LongitudeLatitude = centerMoved ? destination(center, distanceMeters(center, shape.center), bearingDegrees(center, shape.center) + angleDegrees) : [shape.center[0], shape.center[1]]
-  const turned = 'rotationDegrees' in shape ? { ...shape, center: newCenter, rotationDegrees: (((shape.rotationDegrees + angleDegrees) % 360) + 360) % 360 } : { ...shape, center: newCenter }
-  return withShape(rotated, turned)
 }
 
 /**
  * The feature scaled by `factor` around `center`: every position's distance in metres from the center is multiplied.
- * A shape's measurements (radius, width, length, axes) scale with it; a sphere's radius too. Heights are kept.
+ * A mesh scales in 3D, around the point on its base (its lowest altitude) under the center: its altitudes above the base
+ * are multiplied too, so a sphere stays round and resting where it was. Other features keep their altitudes.
  */
 export function scaleFeature(feature: DrawFeature, center: LongitudeLatitude, factor: number): DrawFeature {
   if (!(factor > 0) || !Number.isFinite(factor)) throw new Error(`scaleFeature: factor is ${factor}; give a positive number.`)
   if (factor === 1) return feature
-  const scaled = mapPositions(feature, position => {
-    const distance = distanceMeters(center, position)
-    return distance === 0 ? [position[0]!, position[1]!] : destination(center, distance * factor, bearingDegrees(center, position))
-  })
-  const shape = shapeOf(feature)
-  if (shape === null) return scaled
-  const shapeDistance = distanceMeters(center, shape.center)
-  const newCenter: LongitudeLatitude = shapeDistance > 0 ? destination(center, shapeDistance * factor, bearingDegrees(center, shape.center)) : [shape.center[0], shape.center[1]]
-  let next: ShapeDescription
-  switch (shape.type) {
-    case 'circle':
-    case 'sphere':
-    case 'regular-polygon':
-      next = { ...shape, center: newCenter, radiusMeters: shape.radiusMeters * factor }
-      break
-    case 'rectangle':
-      next = { ...shape, center: newCenter, widthMeters: shape.widthMeters * factor, lengthMeters: shape.lengthMeters * factor }
-      break
-    case 'ellipse':
-      next = { ...shape, center: newCenter, semiMajorAxisMeters: shape.semiMajorAxisMeters * factor, semiMinorAxisMeters: shape.semiMinorAxisMeters * factor }
-      break
+  const geometry = feature.geometry
+  const base = isMeshGeometry(geometry) ? meshAltitudeRange(geometry).minimumMeters : null
+  return {
+    ...feature,
+    geometry: mapGeometryPositions(geometry, position => {
+      const distance = distanceMeters(center, position)
+      const [longitude, latitude] = distance === 0 ? [position[0]!, position[1]!] : destination(center, distance * factor, bearingDegrees(center, position))
+      if (position.length <= 2) return [longitude, latitude]
+      return [longitude, latitude, base === null ? position[2]! : base + (position[2]! - base) * factor]
+    }),
   }
-  return withShape(scaled, next)
 }
 
-/** The feature extruded `heightMeters` tall (`properties.extrusionHeightMeters`); 0 or less removes the extrusion. */
-export function setExtrusionHeight(feature: DrawFeature, heightMeters: number): DrawFeature {
-  const { extrusionHeightMeters: _previous, ...rest } = feature.properties ?? {}
-  return { ...feature, properties: heightMeters > 0 ? { ...rest, extrusionHeightMeters: heightMeters } : rest }
+/**
+ * The flat polygon or line extruded into a mesh `heightMeters` tall: a polygon into a closed prism (`prismMesh`: a level
+ * top `heightMeters` above its highest base vertex), a line into a wall (`wallMesh`). The base is each position's
+ * altitude, or the terrain's height under it (`groundHeightMeters`: one height, or a function). Holes become inner
+ * walls. Other features (points, meshes) are returned unchanged. Properties and id are kept.
+ */
+export function extrudeFeature(feature: DrawFeature, heightMeters: number, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
+  const geometry = feature.geometry
+  if (geometry.type !== 'Polygon' && geometry.type !== 'LineString') return feature
+  const ground: GroundHeight = typeof groundHeightMeters === 'number' ? () => groundHeightMeters : groundHeightMeters
+  const base = (position: Position) => (hasAltitude(position) ? position[2]! : ground(position[0]!, position[1]!))
+  const mesh = geometry.type === 'Polygon' ? prismMesh(geometry.coordinates, base, heightMeters) : wallMesh(geometry.coordinates, base, heightMeters)
+  return { ...feature, geometry: mesh }
+}
+
+/**
+ * The top of a mesh with a level top face (a prism, a box): the top's altitude, and the highest altitude under it (the
+ * base of its shortest wall). Null for other features and for meshes without one (a sphere, a wall).
+ */
+export function meshTopOf(feature: DrawFeature): { topMeters: number; belowMeters: number } | null {
+  return isMeshGeometry(feature.geometry) ? meshTop(feature.geometry) : null
+}
+
+/** Smallest height of a mesh's top over its other vertices, in metres. */
+const MINIMUM_TOP_GAP_METERS = 1
+
+/**
+ * The mesh with its top face (the vertices at its highest altitude) moved up by `deltaMeters` (down when negative),
+ * never closer than 1 m above its other vertices. Features without a level top face (`meshTopOf`) are returned unchanged.
+ */
+export function moveMeshTop(feature: DrawFeature, deltaMeters: number): DrawFeature {
+  if (!Number.isFinite(deltaMeters)) throw new Error(`moveMeshTop: deltaMeters is ${deltaMeters}; give a finite number of metres.`)
+  const top = meshTopOf(feature)
+  if (top === null || !isMeshGeometry(feature.geometry)) return feature
+  return { ...feature, geometry: setMeshTop(feature.geometry, top.topMeters + deltaMeters, MINIMUM_TOP_GAP_METERS) }
 }
 
 /** An axis of a transform frame: `across` (x, the width of a rectangle) or `along` (y, its length, towards the rotation). */
@@ -130,19 +220,21 @@ export interface TransformSideHandle {
 /** The gizmo of a feature, in geographic positions: where its handles go. */
 export interface TransformFrame {
   center: LongitudeLatitude
-  /** The turn of the frame (the shape's rotation), degrees clockwise from north. */
+  /** The turn of the frame (see `featureRotationDegrees`), degrees clockwise from north. */
   rotationDegrees: number
-  /** Corners of the box around the feature, in the frame: scale handles. Empty for points. */
+  /** Corners of the box around the feature's vertices, in the frame: scale handles. Empty for points. */
   corners: LongitudeLatitude[]
   /**
-   * The middles of the box's edges (bottom, right, top, left): stretch handles. None for points and spheres, nor on an
-   * axis the feature does not extend along (across a straight line).
+   * The middles of the box's edges (bottom, right, top, left): stretch handles. None for points, nor on an axis the
+   * feature does not extend along (across a straight line).
    */
   sideHandles: TransformSideHandle[]
-  /** The rotation knob, beyond the box's top edge. Null for points, circles and spheres (which do not turn). */
+  /** The rotation knob, beyond the box's top edge. Null for points. */
   rotationHandle: LongitudeLatitude | null
-  /** The feature's extrusion height (0 when it has none). */
-  extrusionHeightMeters: number
+  /** The lowest altitude among the feature's positions (a mesh's base), where the gizmo is drawn; null on the terrain. */
+  baseHeightMeters: number | null
+  /** The highest altitude among the feature's positions; null on the terrain. */
+  topHeightMeters: number | null
 }
 
 /** Turns an east, north offset (metres) into the frame turned `rotationDegrees` clockwise: x across, y along. */
@@ -175,30 +267,27 @@ function positionInFrame(center: LongitudeLatitude, position: Position, rotation
 const MINIMUM_EXTENT_FRACTION = 1e-3
 
 /**
- * Where a feature's gizmo handles go: a box around it, turned with its shape, with a scale handle at each corner, a
- * stretch handle in the middle of each edge, and a rotation knob a quarter of its length beyond the top edge.
+ * Where a feature's gizmo handles go: a box around its vertices, turned with it (`featureRotationDegrees`), with a scale
+ * handle at each corner, a stretch handle in the middle of each edge, and a rotation knob a quarter of its length beyond
+ * the top edge. A mesh's box is drawn at its base, its lowest altitude.
  */
 export function transformFrame(feature: DrawFeature): TransformFrame {
   const center = featureCenter(feature)
   const rotationDegrees = featureRotationDegrees(feature)
-  const extrusionHeightMeters = extrusionHeightOf(feature)
-  const shape = shapeOf(feature)
+  const altitudes = altitudeRange(feature)
+  const baseHeightMeters = altitudes?.minimumMeters ?? null
+  const topHeightMeters = altitudes?.maximumMeters ?? null
+  if (feature.geometry.type === 'Point') return { center, rotationDegrees, corners: [], sideHandles: [], rotationHandle: null, baseHeightMeters, topHeightMeters }
   let minimumX = Infinity
   let maximumX = -Infinity
   let minimumY = Infinity
   let maximumY = -Infinity
-  const include = (x: number, y: number) => {
+  for (const position of footprintVertices(feature)) {
+    const [x, y] = positionInFrame(center, position, rotationDegrees)
     minimumX = Math.min(minimumX, x)
     maximumX = Math.max(maximumX, x)
     minimumY = Math.min(minimumY, y)
     maximumY = Math.max(maximumY, y)
-  }
-  if (feature.geometry.type === 'Point') {
-    if (shape?.type !== 'sphere') return { center, rotationDegrees, corners: [], sideHandles: [], rotationHandle: null, extrusionHeightMeters }
-    include(-shape.radiusMeters, -shape.radiusMeters)
-    include(shape.radiusMeters, shape.radiusMeters)
-  } else {
-    for (const position of allPositions(feature)) include(...positionInFrame(center, position, rotationDegrees))
   }
   const corners = [
     fromFrame(center, minimumX, minimumY, rotationDegrees),
@@ -207,132 +296,84 @@ export function transformFrame(feature: DrawFeature): TransformFrame {
     fromFrame(center, minimumX, maximumY, rotationDegrees),
   ]
   const sideHandles: TransformSideHandle[] = []
-  // Spheres stay round: they scale, but do not stretch.
-  if (feature.geometry.type !== 'Point') {
-    const middleX = (minimumX + maximumX) / 2
-    const middleY = (minimumY + maximumY) / 2
-    const bottom = fromFrame(center, middleX, minimumY, rotationDegrees)
-    const right = fromFrame(center, maximumX, middleY, rotationDegrees)
-    const top = fromFrame(center, middleX, maximumY, rotationDegrees)
-    const left = fromFrame(center, minimumX, middleY, rotationDegrees)
-    const largest = Math.max(maximumX - minimumX, maximumY - minimumY)
-    const hasLength = maximumY - minimumY > largest * MINIMUM_EXTENT_FRACTION
-    const hasWidth = maximumX - minimumX > largest * MINIMUM_EXTENT_FRACTION
-    if (hasLength) {
-      sideHandles.push({ position: bottom, oppositePosition: top, axis: 'along', sideMeters: minimumY, fixedMeters: maximumY })
-    }
-    if (hasWidth) {
-      sideHandles.push({ position: right, oppositePosition: left, axis: 'across', sideMeters: maximumX, fixedMeters: minimumX })
-    }
-    if (hasLength) {
-      sideHandles.push({ position: top, oppositePosition: bottom, axis: 'along', sideMeters: maximumY, fixedMeters: minimumY })
-    }
-    if (hasWidth) {
-      sideHandles.push({ position: left, oppositePosition: right, axis: 'across', sideMeters: minimumX, fixedMeters: maximumX })
-    }
-  }
+  const middleX = (minimumX + maximumX) / 2
+  const middleY = (minimumY + maximumY) / 2
+  const bottom = fromFrame(center, middleX, minimumY, rotationDegrees)
+  const right = fromFrame(center, maximumX, middleY, rotationDegrees)
+  const top = fromFrame(center, middleX, maximumY, rotationDegrees)
+  const left = fromFrame(center, minimumX, middleY, rotationDegrees)
+  const largest = Math.max(maximumX - minimumX, maximumY - minimumY)
+  const hasLength = maximumY - minimumY > largest * MINIMUM_EXTENT_FRACTION
+  const hasWidth = maximumX - minimumX > largest * MINIMUM_EXTENT_FRACTION
+  if (hasLength) sideHandles.push({ position: bottom, oppositePosition: top, axis: 'along', sideMeters: minimumY, fixedMeters: maximumY })
+  if (hasWidth) sideHandles.push({ position: right, oppositePosition: left, axis: 'across', sideMeters: maximumX, fixedMeters: minimumX })
+  if (hasLength) sideHandles.push({ position: top, oppositePosition: bottom, axis: 'along', sideMeters: maximumY, fixedMeters: minimumY })
+  if (hasWidth) sideHandles.push({ position: left, oppositePosition: right, axis: 'across', sideMeters: minimumX, fixedMeters: maximumX })
   const length = Math.max(maximumY - minimumY, maximumX - minimumX)
-  const rotationHandle = shape?.type === 'sphere' || shape?.type === 'circle' ? null : fromFrame(center, (minimumX + maximumX) / 2, maximumY + length * 0.25, rotationDegrees)
-  return { center, rotationDegrees, corners, sideHandles, rotationHandle, extrusionHeightMeters }
+  const rotationHandle = fromFrame(center, middleX, maximumY + length * 0.25, rotationDegrees)
+  return { center, rotationDegrees, corners, sideHandles, rotationHandle, baseHeightMeters, topHeightMeters }
 }
 
 /**
- * The feature stretched by `factor` along one axis of a frame (`frame.center`, turned `frame.rotationDegrees`), keeping
- * the line `fixedMeters` from the center on that axis where it is: each position's distance from that line, in metres,
- * is multiplied. Dragging one side of the gizmo's box this way keeps the opposite side fixed.
- *
- * Shapes stay what they can: a rectangle gets a new width (across) or length (along) and center; a circle becomes an
- * ellipse, and an ellipse keeps being one, with new semi-axes (`semiMajorAxisMeters` is the one along the rotation). A
- * regular polygon is no longer regular: it loses `properties.shape`. Points and spheres are returned unchanged.
- * Altitudes and the extrusion are kept.
+ * The feature stretched by `factor` along one horizontal axis of a frame (`frame.center`, turned
+ * `frame.rotationDegrees`), keeping the line `fixedMeters` from the center on that axis where it is: each position's
+ * distance from that line, in metres, is multiplied. Dragging one side of the gizmo's box this way keeps the opposite
+ * side fixed. Altitudes are kept; points are returned unchanged.
  */
 export function stretchFeature(feature: DrawFeature, frame: Pick<TransformFrame, 'center' | 'rotationDegrees'>, axis: TransformAxis, fixedMeters: number, factor: number): DrawFeature {
   if (!(factor > 0) || !Number.isFinite(factor)) throw new Error(`stretchFeature: factor is ${factor}; give a positive number.`)
   if (factor === 1 || feature.geometry.type === 'Point') return feature
   const { center, rotationDegrees } = frame
-  const stretch = (x: number, y: number): LongitudeLatitude =>
-    axis === 'across' ? fromFrame(center, fixedMeters + (x - fixedMeters) * factor, y, rotationDegrees) : fromFrame(center, x, fixedMeters + (y - fixedMeters) * factor, rotationDegrees)
-  const stretched = mapPositions(feature, position => stretch(...positionInFrame(center, position, rotationDegrees)))
-  const shape = shapeOf(feature)
-  if (shape === null) return stretched
-  const newCenter = stretch(...positionInFrame(center, shape.center, rotationDegrees))
-  // The frame is turned with the shape, so its axes are the shape's.
-  const turn = (((featureRotationDegrees(feature) - rotationDegrees) % 180) + 180) % 180
-  const aligned = Math.min(turn, 180 - turn) < 1e-9
-  switch (shape.type) {
-    case 'rectangle':
-      if (!aligned) break
-      return withShape(stretched, axis === 'across' ? { ...shape, center: newCenter, widthMeters: shape.widthMeters * factor } : { ...shape, center: newCenter, lengthMeters: shape.lengthMeters * factor })
-    case 'circle': {
-      const across = axis === 'across' ? shape.radiusMeters * factor : shape.radiusMeters
-      const along = axis === 'along' ? shape.radiusMeters * factor : shape.radiusMeters
-      return withShape(stretched, { type: 'ellipse', center: newCenter, semiMajorAxisMeters: along, semiMinorAxisMeters: across, rotationDegrees: ((rotationDegrees % 360) + 360) % 360 })
-    }
-    case 'ellipse':
-      if (!aligned) break
-      return withShape(stretched, axis === 'across' ? { ...shape, center: newCenter, semiMinorAxisMeters: shape.semiMinorAxisMeters * factor } : { ...shape, center: newCenter, semiMajorAxisMeters: shape.semiMajorAxisMeters * factor })
-    default:
-      break
-  }
-  // No longer that shape: a plain polygon.
-  const { shape: _shape, ...properties } = stretched.properties ?? {}
-  return { ...stretched, properties }
+  return mapPositions(feature, position => {
+    const [x, y] = positionInFrame(center, position, rotationDegrees)
+    return axis === 'across' ? fromFrame(center, fixedMeters + (x - fixedMeters) * factor, y, rotationDegrees) : fromFrame(center, x, fixedMeters + (y - fixedMeters) * factor, rotationDegrees)
+  })
 }
-
-/** The terrain's height under a position, in metres above the WGS84 ellipsoid. */
-export type GroundHeight = (longitudeDegrees: number, latitudeDegrees: number) => number
 
 /**
  * The feature moved up by `deltaMeters` (down when negative): every position gets a third coordinate, its altitude
- * above the WGS84 ellipsoid, as GeoJSON allows. Positions that already have one rise by `deltaMeters`; positions on the
- * terrain start from the terrain's height under them (`groundHeightMeters`: one height, or the height under each
- * position, so a lifted shape keeps the relief's offsets), and a sphere resting on the terrain from there plus its
- * radius (an altitude is a sphere's center). The extrusion is kept: a solid floats up whole.
+ * above the WGS84 ellipsoid, as GeoJSON allows. Positions that already have one (all of a mesh's) rise by
+ * `deltaMeters`; positions on the terrain start from the terrain's height under them (`groundHeightMeters`: one height,
+ * or the height under each position, so a lifted shape keeps the relief's offsets).
  */
 export function liftFeature(feature: DrawFeature, deltaMeters: number, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
   if (!Number.isFinite(deltaMeters)) throw new Error(`liftFeature: deltaMeters is ${deltaMeters}; give a finite number of metres.`)
   const ground: GroundHeight = typeof groundHeightMeters === 'number' ? () => groundHeightMeters : groundHeightMeters
-  const shape = shapeOf(feature)
-  const above = shape?.type === 'sphere' ? shape.radiusMeters : 0
-  const lift = (position: Position): Position => {
-    const start = position.length > 2 && Number.isFinite(position[2]) ? position[2]! : ground(position[0]!, position[1]!) + above
-    if (!Number.isFinite(start)) throw new Error(`liftFeature: no terrain height at ${position[0]}, ${position[1]}; give groundHeightMeters a finite number of metres.`)
-    return [position[0]!, position[1]!, start + deltaMeters]
+  return {
+    ...feature,
+    geometry: mapGeometryPositions(feature.geometry, position => {
+      const start = hasAltitude(position) ? position[2]! : ground(position[0]!, position[1]!)
+      if (!Number.isFinite(start)) throw new Error(`liftFeature: no terrain height at ${position[0]}, ${position[1]}; give groundHeightMeters a finite number of metres.`)
+      return [position[0]!, position[1]!, start + deltaMeters]
+    }),
   }
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') return { ...feature, geometry: { type: 'Point', coordinates: lift(geometry.coordinates) } }
-  if (geometry.type === 'LineString') return { ...feature, geometry: { type: 'LineString', coordinates: geometry.coordinates.map(lift) } }
-  return { ...feature, geometry: { type: 'Polygon', coordinates: geometry.coordinates.map(ring => ring.map(lift)) } }
-}
-
-/** The feature without altitudes (third coordinates): back on the terrain, where it drapes or stands. */
-export function placeOnTerrain(feature: DrawFeature): DrawFeature {
-  const flat = (position: Position): Position => (position.length > 2 ? [position[0]!, position[1]!] : position)
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') return { ...feature, geometry: { type: 'Point', coordinates: flat(geometry.coordinates) } }
-  if (geometry.type === 'LineString') return { ...feature, geometry: { type: 'LineString', coordinates: geometry.coordinates.map(flat) } }
-  return { ...feature, geometry: { type: 'Polygon', coordinates: geometry.coordinates.map(ring => ring.map(flat)) } }
 }
 
 /**
- * The altitude of a feature's base: the first third coordinate among its positions (for a sphere, its center less its
- * radius), or null for a feature on the terrain. A feature with any altitude stands at it, as `isSolidFeature` says.
+ * The feature without altitudes (third coordinates): back on the terrain, where it drapes. Meshes are returned
+ * unchanged: a solid needs its altitudes (lift it down with `liftFeature` instead).
  */
-export function baseAltitudeOf(feature: DrawFeature): number | null {
-  const altitude = firstAltitudeOf(feature)
-  if (altitude === null) return null
-  const shape = shapeOf(feature)
-  return altitude - (shape?.type === 'sphere' ? shape.radiusMeters : 0)
+export function placeOnTerrain(feature: DrawFeature): DrawFeature {
+  if (isMeshGeometry(feature.geometry)) return feature
+  return { ...feature, geometry: mapGeometryPositions(feature.geometry, position => (position.length > 2 ? [position[0]!, position[1]!] : position)) }
 }
 
-/** The first third coordinate among a feature's positions (a sphere's center), or null when none has one. */
-export function firstAltitudeOf(feature: DrawFeature): number | null {
-  const geometry = feature.geometry
-  if (geometry.type === 'Point') {
-    const position = geometry.coordinates
-    return position.length > 2 && Number.isFinite(position[2]) ? position[2]! : null
+/** The lowest and highest altitudes among a feature's positions, or null when none has one. */
+function altitudeRange(feature: DrawFeature): { minimumMeters: number; maximumMeters: number } | null {
+  let minimumMeters = Infinity
+  let maximumMeters = -Infinity
+  for (const position of storedPositions(feature.geometry)) {
+    if (!hasAltitude(position)) continue
+    minimumMeters = Math.min(minimumMeters, position[2]!)
+    maximumMeters = Math.max(maximumMeters, position[2]!)
   }
-  const rings = geometry.type === 'LineString' ? [geometry.coordinates] : geometry.coordinates
-  for (const ring of rings) for (const position of ring) if (position.length > 2 && Number.isFinite(position[2])) return position[2]!
-  return null
+  return Number.isFinite(minimumMeters) ? { minimumMeters, maximumMeters } : null
+}
+
+/**
+ * The altitude of a feature's base: the lowest third coordinate among its positions (a mesh's bottom), or null for a
+ * feature on the terrain. A feature with any altitude stands at it, as `isSolidFeature` says.
+ */
+export function baseAltitudeOf(feature: DrawFeature): number | null {
+  return altitudeRange(feature)?.minimumMeters ?? null
 }

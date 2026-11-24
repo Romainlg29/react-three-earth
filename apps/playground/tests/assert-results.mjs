@@ -484,7 +484,7 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
 for (const name of ['globe, mouse', 'flat map, touch']) {
   expectations[`shapes, ${name}`] = r => [
     ['the six starting shapes stand as solids', r.startingSolids === 6],
-    ['two taps draw a circle and two more a rectangle, extruded by the height picked', JSON.stringify(r.drawn) === '[{"type":"circle","extrusionHeightMeters":600},{"type":"rectangle","extrusionHeightMeters":600}]' && r.solids === 8],
+    ['two taps draw a cylinder and two more a box, meshes of faces as tall as the height picked', JSON.stringify(r.drawn) === '[{"type":"MultiPolygon","faces":66,"heightMeters":600},{"type":"MultiPolygon","faces":6,"heightMeters":600}]' && r.solids === 8],
     ['the solids draw over the map (orange prisms, magenta sphere)', r.orangePixels > 8000 && r.magentaPixels > 300],
     ['clearing removes every solid from the scene', r.solidsAfterClear === 0 && r.solidObjectsAfterClear === 0 && r.orangeAfterClear < 50],
   ]
@@ -497,12 +497,15 @@ expectations['solids over the sky'] = r => [
 for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {
   expectations[`transforming, ${name}`] = r => [
     ['a tap where the box stands in 3D selects it, with its gizmo', r.selected && r.gizmoShown],
-    ['a corner scales it, keeping it a rectangle with its proportions', r.afterScale.widthMeters > r.before.widthMeters * 1.2 && Math.abs(r.afterScale.lengthMeters / r.afterScale.widthMeters - r.before.lengthMeters / r.before.widthMeters) < 0.01],
-    ['the knob turns it', Math.abs(((r.afterRotate.rotationDegrees - r.before.rotationDegrees + 540) % 360) - 180) > 20],
-    ...(height ? [['the top knob raises it', r.extrusion > 900 * 1.1]] : []),
-    ['the knob in the middle of a flat polygon extrudes it into a solid', r.flatSelected && r.flatExtrusion > 50],
-    ['the middle of an edge stretches it, a rectangle still, the opposite edge fixed', r.afterStretch.type === 'rectangle' && r.afterStretch.widthMeters > r.afterRotate.widthMeters * 1.2 && Math.abs(r.afterStretch.lengthMeters - r.afterRotate.lengthMeters) < 1e-6 && r.fixedSideMovedMeters < 1],
-    ['the knob under its base lifts it into the air, keeping its height', r.lifted.altitude !== null && r.lifted.altitude > r.lifted.groundMeters + 50 && r.lifted.extrusion === r.extrusion],
+    ['a corner scales it, keeping its six faces and its proportions', r.afterScale.faces === 6 && r.afterScale.widthMeters > r.before.widthMeters * 1.2 && Math.abs(r.afterScale.lengthMeters / r.afterScale.widthMeters - r.before.lengthMeters / r.before.widthMeters) < 0.01],
+    ['the knob turns it', r.afterRotate.faces === 6 && Math.abs(((r.afterRotate.rotationDegrees - r.before.rotationDegrees + 540) % 360) - 180) > 20],
+    ...(height ? [['the top knob raises its top face', r.heightMeters > r.heightBeforeRaise * 1.1]] : []),
+    ['the knob in the middle of a flat polygon extrudes it into a prism mesh', r.flatSelected && r.flatExtrusion.type === 'MultiPolygon' && r.flatExtrusion.faces === 6 && r.flatExtrusion.heightMeters > 50],
+    // The gizmo's box turns with the box by quarter turns, so its right edge may be the box's side or its end.
+    ['the middle of an edge stretches it, a box still, the opposite edge fixed', r.afterStretch.faces === 6 && r.fixedSideMovedMeters < 1 && (
+      (r.afterStretch.widthMeters > r.afterRotate.widthMeters * 1.2 && Math.abs(r.afterStretch.lengthMeters - r.afterRotate.lengthMeters) < 0.5) ||
+      (r.afterStretch.lengthMeters > r.afterRotate.lengthMeters * 1.2 && Math.abs(r.afterStretch.widthMeters - r.afterRotate.widthMeters) < 0.5))],
+    ['the knob under its base lifts it into the air, keeping its height and faces', r.lifted.altitude > r.lifted.groundMeters + 50 && Math.abs(r.lifted.heightMeters - r.heightBeforeLift) < 1e-6 && r.lifted.faces === 6],
     ['each change fires one update', r.updates === (height ? 6 : 5)],
     ['the previews leave once released: one solid per stored feature', r.solids.stored === 7 && r.solids.inScene === 7],
   ]
