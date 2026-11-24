@@ -150,8 +150,9 @@ draw.addFeatures([{ type: 'Feature', properties: { name: 'Camp' }, geometry: { t
 
 Every feature has a string `id` (a random UUID unless `createId` says otherwise; numeric ids become strings, missing
 ones are made, in `features` and `addFeatures` alike). Draw holds `Point`, `LineString`, `Polygon` and `MultiPolygon`
-(a `MultiPolygon` with an altitude on every position is a solid mesh, see below; one without is draped polygon by
-polygon); split `MultiPoint`, `MultiLineString` and `GeometryCollection` into several features. Longitudes are kept as tapped, in -180 to 180: a line drawn across the antimeridian
+(a `MultiPolygon` with an altitude on every position and a steep face or a closed surface is a solid mesh, see below;
+any other is flat polygons, draped or at their altitudes); coordinates not shaped as GeoJSON says (rings of 4 or more
+positions, finite numbers, latitudes within ±90°) throw with the fix; split `MultiPoint`, `MultiLineString` and `GeometryCollection` into several features. Longitudes are kept as tapped, in -180 to 180: a line drawn across the antimeridian
 (179.5° to -179.5°) is drawn the short way on the map, but other GeoJSON tools read it as going around the world, so
 split it at 180° before handing it to them. Ring winding is kept as drawn. `getFeatures()` returns the same object until something
 changes, so it can be compared by identity.
@@ -185,7 +186,8 @@ To make shapes in code, use the builders. Lengths are metres on the ground, and 
 They return plain GeoJSON: nothing in `properties` describes the shape.
 
 Solids are **meshes of faces**, as in Blender. A mesh is a `MultiPolygon` whose every position has a third coordinate,
-its altitude in metres above the WGS84 ellipsoid (like every height in react-three-earth). Each polygon is one planar
+its altitude in metres above the WGS84 ellipsoid (like every height in react-three-earth), with a face steeper than 60°
+or closed (`isMeshGeometry`; flat polygons lifted over relief stay flat polygons). Each polygon is one planar
 face (a box has six: top, bottom, four walls), its exterior ring **counter-clockwise seen from outside** the solid, so
 its normal points outwards (the top of a prism is counter-clockwise from above, as GeoJSON wants; its bottom
 clockwise). Faces share vertices by equal coordinates. No property holds a height or a shape: moving, turning,
@@ -252,7 +254,7 @@ gizmo:
 - Drag the middle of an edge to stretch it along that axis; the opposite edge stays put and cannot be crossed.
 - Drag the knob beyond the box's top edge to turn it around the vertical through its center; hold Shift to snap to 15°.
   The box turns with the feature: it is the tightest rectangle around its footprint (facing north when nearly as tight).
-- Drag the knob in the middle of a flat line or polygon up to extrude it into a mesh: a rectangle becomes a box, a
+- Drag the knob in the middle of a flat line, polygon or multipolygon up to extrude it into a mesh: a rectangle becomes a box, a
   circle a cylinder, a line a wall, standing on the terrain under each vertex (or on the altitudes it has). On a mesh
   with a level top face (a prism) the knob sits on top: drag it to move that face up or down, never lower than 1 m
   above the rest. Spheres and walls have no height knob.
@@ -462,7 +464,14 @@ outside; faces wound the other way, or a mesh with gaps, are drawn from both sid
 ### MEDIUM: Multi geometries
 
 `addFeatures` throws for `MultiPoint`, `MultiLineString` and `GeometryCollection`; split them into one feature per part
-first. A `MultiPolygon` is held: as a mesh when every position has an altitude, else draped.
+first. A `MultiPolygon` is held: as a mesh when `isMeshGeometry` says so, else as flat polygons (draped, or at their
+altitudes), which `placeOnTerrain` drapes again and `extrudeFeature` turns into one prism per polygon.
+
+### MEDIUM: Expecting scaling to keep a mesh's height
+
+`scaleFeature` (and the gizmo's corners) scales a mesh in 3D, its altitudes around its base too: a box twice as wide
+is twice as tall. To change only the footprint use `stretchFeature` (the gizmo's sides), or set the top back with
+`moveMeshTop`.
 
 ## Completion
 

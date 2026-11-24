@@ -66,6 +66,10 @@ describe('editing helpers', () => {
     const slab: DrawFeature = { ...square(), geometry: { type: 'Polygon', coordinates: [[[0, 0, 50_000], [1, 0, 50_000], [1, 1, 50_000], [0, 1, 50_000], [0, 0, 50_000]]] } }
     expect(hitFeature(slab, at(50, 0))).toBe(0)
     expect(hitFeature(slab, at(50, 90))).toBeNull() // its footprint on the ground is not where it is drawn
+    // A position without an altitude stands at the lowest given, where it is drawn, not on the ground.
+    const partial: DrawFeature = { ...square(), geometry: { type: 'Polygon', coordinates: [[[0, 0, 50_000], [1, 0, 50_000], [1, 1], [0, 1, 50_000], [0, 0, 50_000]]] } }
+    expect(hitFeature(partial, at(95, 45))).toBe(0)
+    expect(hitFeature(partial, at(95, 95))).toBeNull()
     // A box mesh 30 km tall: its front wall spans y 100 down to 70.
     const box: DrawFeature = { ...square(), geometry: prismMesh(square().geometry.coordinates as Position[][], 0, 30_000) }
     expect(hitFeature(box, at(50, 105 - 30))).toBe(0)

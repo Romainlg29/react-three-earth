@@ -118,14 +118,35 @@ export abstract class TwoTapShapeMode extends DrawMode {
     return this.start === null ? IDLE_STATUS : { drawing: true, vertexCount: 1, canFinish: false, canUndo: true }
   }
 
+  /**
+   * The last preview and what it was built from: kept while nothing changes (the camera moving redraws the overlay),
+   * so its solid is not rebuilt; built again while terrain heights under it are still loading, so its base follows
+   * the terrain as the created shape's will.
+   */
+  protected lastPreview: { start: LongitudeLatitude; end: LongitudeLatitude; heightMeters: number | undefined; feature: DrawFeature | null; settled: boolean } | null = null
+
+  /** The preview spanning the first tap and the mouse, reused when nothing changed (see `lastPreview`). */
+  protected currentPreview(start: LongitudeLatitude, end: LongitudeLatitude): DrawFeature | null {
+    const last = this.lastPreview
+    if (last !== null && last.settled && last.start === start && last.end === end && last.heightMeters === this.heightMeters) return last.feature
+    const heights = this.context?.heights
+    const wasPending = heights?.pending ?? false
+    if (heights !== undefined) heights.pending = false
+    const shape = this.preview(start, end, this.ground(false))
+    const settled = !(heights?.pending ?? false)
+    if (heights !== undefined) heights.pending ||= wasPending
+    const feature = shape === null ? null : ({ ...shape, id: IN_PROGRESS_ID } as DrawFeature)
+    this.lastPreview = { start, end, heightMeters: this.heightMeters, feature, settled }
+    return feature
+  }
+
   override overlay(content: OverlayContent): void {
     const context = this.context
     const start = this.start
     if (context === null || start === null) return
-    const shape = this.hoverPosition === null ? null : this.preview(start, this.hoverPosition, this.ground(false))
+    const feature = this.hoverPosition === null ? null : this.currentPreview(start, this.hoverPosition)
     const style = context.style({ type: 'Feature', id: IN_PROGRESS_ID, properties: this.properties, geometry: { type: 'Point', coordinates: start } }, { selected: false, drawing: true })
-    if (shape !== null) {
-      const feature = { ...shape, id: IN_PROGRESS_ID } as DrawFeature
+    if (feature !== null) {
       content.features.push({ feature, style: context.style(feature, { selected: false, drawing: true }) })
     }
     content.handles.push({ position: start, radiusPixels: style.vertexRadiusPixels, color: style.vertexColor, outlineColor: style.vertexOutlineColor, outlineWidthPixels: style.vertexOutlineWidthPixels })

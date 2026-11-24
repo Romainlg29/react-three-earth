@@ -523,12 +523,16 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.lastMorph = morph
     this.overlayDirty = false
     const content: OverlayContent = { features: [], lines: [], handles: [] }
+    // The mode samples terrain too (a shape's base on the ground): with this frame's budget, and drawn again until
+    // every height it asked for is known.
+    overlay.heights.startFrame()
     this.mode.overlay(content)
+    const modePending = overlay.heights.pending
     // Solids the mode draws live (dragged, transformed) stay 3D: previews in the scene rather than flat in the overlay.
     const previews = content.features.filter(entry => isSolidFeature(entry.feature))
     if (previews.length > 0) content.features = content.features.filter(entry => !isSolidFeature(entry.feature))
     this.solids?.setPreviews(previews)
-    const pending = overlay.draw(camera, content)
+    const pending = overlay.draw(camera, content) || modePending
     if (pending) this.overlayDirty = true
     return pending
   }

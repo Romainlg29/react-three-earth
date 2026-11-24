@@ -52,6 +52,7 @@ export {
   isClosedMesh,
   isMeshFeature,
   isMeshGeometry,
+  type MeshGeometry,
   meshAltitudeRange,
   meshEdges,
   meshFaces,

@@ -26,13 +26,21 @@ export interface IndexedMesh {
   faces: number[][][]
 }
 
+declare const meshBrand: unique symbol
+
+/**
+ * A multipolygon `isMeshGeometry` found to be a mesh. The brand exists only for the type checker, so a multipolygon
+ * that is not a mesh keeps its type where `isMeshGeometry` returns false.
+ */
+export type MeshGeometry = MultiPolygon & { readonly [meshBrand]: true }
+
 /**
  * Whether a geometry is a mesh: a multipolygon with an altitude on every position that looks like a solid's surface,
  * with at least one steep face (steeper than 60°: a wall, a sphere's side) or closed (`isClosedMesh`). Any other
  * multipolygon is a set of flat polygons: draped on the terrain, or standing at their altitudes when they have them
  * (like a polygon with altitudes, even lifted over relief), and placing it back on the terrain drapes it again.
  */
-export function isMeshGeometry(geometry: DrawGeometry): geometry is MultiPolygon {
+export function isMeshGeometry(geometry: DrawGeometry): geometry is MeshGeometry {
   if (geometry.type !== 'MultiPolygon' || geometry.coordinates.length === 0) return false
   for (const polygon of geometry.coordinates) {
     if (polygon.length === 0) return false

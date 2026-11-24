@@ -180,8 +180,8 @@ export function extrudeFeature(feature: DrawFeature, heightMeters: number, groun
   const base = (position: Position) => (hasAltitude(position) ? position[2]! : ground(position[0]!, position[1]!))
   if (geometry.type === 'LineString') return { ...feature, geometry: wallMesh(geometry.coordinates, base, heightMeters) }
   if (geometry.type === 'Polygon') return { ...feature, geometry: prismMesh(geometry.coordinates, base, heightMeters) }
-  // Each polygon's highest base, so every prism's top lands at one altitude.
-  const highest = geometry.coordinates.map(polygon => Math.max(...openRing(polygon[0] ?? []).map(base)))
+  // Each polygon's highest base (holes too, as `prismMesh` counts them), so every prism's top lands at one altitude.
+  const highest = geometry.coordinates.map(polygon => Math.max(...polygon.flatMap(ring => openRing(ring).map(base))))
   const topMeters = Math.max(...highest) + heightMeters
   const coordinates = geometry.coordinates.flatMap((polygon, index) => prismMesh(polygon, base, topMeters - highest[index]!).coordinates)
   return { ...feature, geometry: { type: 'MultiPolygon', coordinates } }

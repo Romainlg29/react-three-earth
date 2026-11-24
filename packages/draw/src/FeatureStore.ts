@@ -114,4 +114,40 @@ export function validateFeature(feature: DrawFeature): void {
   if (!GEOMETRY_TYPES.has(feature.geometry?.type)) {
     throw new Error(`Draw: feature "${feature.id}" has a ${feature.geometry?.type ?? 'missing'} geometry; Draw holds Point, LineString, Polygon and MultiPolygon features (split MultiPoint, MultiLineString and GeometryCollection geometries into features).`)
   }
+  validateCoordinates(feature.id, feature.geometry)
+}
+
+/** Throws, stating the fix, for coordinates not shaped as the geometry's type requires. */
+function validateCoordinates(id: string, geometry: DrawGeometry): void {
+  const fail = (path: string, problem: string, fix: string) => {
+    throw new Error(`Draw: feature "${id}" (${geometry.type}) has ${problem} at coordinates${path}; ${fix}.`)
+  }
+  const position = (value: unknown, path: string) => {
+    if (!Array.isArray(value) || value.length < 2) fail(path, 'a position that is not [longitude, latitude]', 'give each position as [longitude, latitude] or [longitude, latitude, altitudeMeters]')
+    const [longitude, latitude, altitude] = value as unknown[]
+    if (typeof longitude !== 'number' || !Number.isFinite(longitude) || typeof latitude !== 'number' || !Number.isFinite(latitude)) {
+      fail(path, `the position ${JSON.stringify(value)}`, 'give the longitude and latitude as finite numbers of degrees')
+    }
+    if (Math.abs(latitude as number) > 90) fail(path, `the latitude ${latitude}`, 'give latitudes between -90 and 90 degrees (positions are [longitude, latitude], longitude first)')
+    if ((value as unknown[]).length > 2 && (typeof altitude !== 'number' || !Number.isFinite(altitude))) {
+      fail(path, `the altitude ${JSON.stringify(altitude)}`, 'give the altitude as a finite number of metres above the ellipsoid, or leave it out to drape the position on the terrain')
+    }
+  }
+  const line = (value: unknown, path: string, minimum: number, fix: string) => {
+    if (!Array.isArray(value) || value.length < minimum) fail(path, Array.isArray(value) ? `${value.length} positions` : 'no array of positions', fix)
+    ;(value as unknown[]).forEach((entry, index) => position(entry, `${path}[${index}]`))
+  }
+  const ringFix = 'give each ring 4 or more positions, the first repeated at the end'
+  const polygon = (value: unknown, path: string) => {
+    if (!Array.isArray(value) || value.length === 0) fail(path, 'no rings', 'give a polygon as an array of rings: the exterior, then any holes')
+    ;(value as unknown[]).forEach((ring, index) => line(ring, `${path}[${index}]`, 4, ringFix))
+  }
+  const coordinates: unknown = geometry.coordinates
+  if (geometry.type === 'Point') position(coordinates, '')
+  else if (geometry.type === 'LineString') line(coordinates, '', 2, 'give a line string 2 or more positions')
+  else if (geometry.type === 'Polygon') polygon(coordinates, '')
+  else {
+    if (!Array.isArray(coordinates) || coordinates.length === 0) fail('', 'no polygons', 'give a multipolygon as an array of polygons (a mesh: one per face), or remove the feature')
+    ;(coordinates as unknown[]).forEach((entry, index) => polygon(entry, `[${index}]`))
+  }
 }

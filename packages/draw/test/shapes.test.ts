@@ -4,11 +4,13 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
-import { indexMesh, isClosedMesh, isMeshFeature, meshEdges, meshFaces, meshFromIndexed, meshSharpEdges, meshTop, meshVolume, prismMesh, setMeshTop, sphereMesh, wallMesh } from '../src/mesh.js'
+import { indexMesh, isClosedMesh, isMeshFeature, meshAltitudeRange, meshEdges, meshFaces, meshFromIndexed, meshSharpEdges, meshTop, meshVolume, prismMesh, setMeshTop, sphereMesh, wallMesh } from '../src/mesh.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
 import { LineStringMode, PolygonMode } from '../src/modes/PathModes.js'
 import { CircleMode, RectangleMode, SphereMode } from '../src/modes/ShapeModes.js'
+import { HeightSampler, type OverlayContent } from '../src/render/LiveOverlay.js'
 import { buildSolidGeometry, isSolidFeature, LocalFrame, refineTriangles, SolidFeatures } from '../src/render/SolidFeatures.js'
+import { extrudeFeature, liftFeature, placeOnTerrain } from '../src/transform.js'
 import { bearingDegrees, createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, destination } from '../src/shapes.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
 import type { DrawFeature, DrawPointerEvent } from '../src/types.js'
@@ -278,6 +280,36 @@ describe('solids', () => {
     expect(level / positions.count).toBeGreaterThan(0.5)
   })
 
+  it('builds wide solids watertight with about as many triangles as their size needs, coarser for previews', () => {
+    const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
+    const cylinder = feature(createCircle(CENTER, 40_000, { baseHeightMeters: 0, heightMeters: 500 }).geometry)
+    for (const coarseness of [1, 4]) {
+      const { faces, edges, closed } = buildSolidGeometry(cylinder, frame, 0, { coarseness })
+      expect(closed).toBe(true)
+      const positions = faces!.getAttribute('position')
+      // Every triangle edge (by its ends, to the millimetre) is used once each way: no cracks, no T-junctions.
+      const key = (index: number) => [positions.getX(index), positions.getY(index), positions.getZ(index)].map(value => Math.round(value * 1000)).join(',')
+      const directed = new Map<string, number>()
+      for (let index = 0; index < positions.count; index += 3) {
+        for (let corner = 0; corner < 3; corner++) {
+          const edge = `${key(index + corner)}|${key(index + ((corner + 1) % 3))}`
+          directed.set(edge, (directed.get(edge) ?? 0) + 1)
+        }
+      }
+      for (const [edge, count] of directed) {
+        expect(count).toBe(1)
+        const [from, to] = edge.split('|')
+        expect(directed.get(`${to}|${from}`)).toBe(1)
+      }
+      // Two caps of 5000 km² in triangles of about 2 km (8 km for a preview), and the walls.
+      const triangles = positions.count / 3
+      if (coarseness === 1) expect(triangles).toBeLessThan(7000)
+      else expect(triangles).toBeLessThan(1000)
+      // The outline: both rims of 64 edges (3.9 km long: in halves at 2 km), no seams down the wall.
+      expect(edges!.getAttribute('position').count).toBe(2 * 2 * 64 * (coarseness === 1 ? 2 : 1))
+    }
+  })
+
   it('refines triangles without cracks: inner edges are shared by two triangles, outline edges stay on the outline', () => {
     const frame = new LocalFrame(CENTER[0], CENTER[1], 0)
     const corners = (createRectangle(CENTER, 9000, 9000).geometry as Polygon).coordinates[0]!.slice(0, 4).map(([longitude, latitude]) => [longitude!, latitude!, 0] as [number, number, number])
@@ -457,6 +489,39 @@ describe('shape modes', () => {
     expect(meshTop(geometry)!.topMeters).toBeCloseTo(relief(6.61) + 50, 1)
   })
 
+  it('keeps a preview while nothing changes, and builds it again while the terrain under it is loading', () => {
+    const { context } = createContext()
+    let loaded = false
+    const sampler = new HeightSampler({ queryTerrainElevation: () => (loaded ? 700 : null) } as never)
+    ;(context as { heights: HeightSampler }).heights = sampler
+    const mode = new CircleMode({ heightMeters: 50 })
+    mode.enter(context)
+    mode.click(tap(6.6, 46.45))
+    mode.hover(tap(6.61, 46.45))
+    const draw = () => {
+      sampler.startFrame()
+      const content: OverlayContent = { features: [], lines: [], handles: [] }
+      mode.overlay(content)
+      return { feature: content.features[0]!.feature as DrawFeature<MultiPolygon>, pending: sampler.pending }
+    }
+    const first = draw()
+    // The terrain is not loaded: the base stands at the tap's height, and the overlay asks to be drawn again.
+    expect(first.pending).toBe(true)
+    expect(meshAltitudeRange(first.feature.geometry).maximumMeters).toBe(50)
+    loaded = true
+    // Loaded: drawn again until every height is sampled (24 a frame), the base then on the terrain (but under the
+    // hovered point, whose height is remembered from the pointer).
+    let second = draw()
+    expect(second.feature).not.toBe(first.feature)
+    for (let frame = 0; frame < 5 && second.pending; frame++) second = draw()
+    expect(second.pending).toBe(false)
+    expect(meshAltitudeRange(second.feature.geometry).maximumMeters).toBe(750)
+    // Settled: the camera moving redraws the overlay with the same preview, so its solid is not rebuilt.
+    expect(draw().feature).toBe(second.feature)
+    mode.heightMeters = 80
+    expect(draw().feature).not.toBe(second.feature)
+  })
+
   it('makes prisms of polygons and walls of lines drawn with heightMeters, flat features without', () => {
     const { context, created } = createContext()
     const prisms = new PolygonMode({ heightMeters: 40 })
@@ -481,3 +546,97 @@ describe('shape modes', () => {
 function square2D(): Position[] {
   return [[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]
 }
+
+describe('mesh detection and validation', () => {
+  const store = new FeatureStore()
+  const feature = (geometry: DrawFeature['geometry']): DrawFeature => ({ type: 'Feature', id: 'f', properties: {}, geometry })
+  const flatPair = (): DrawFeature => ({
+    type: 'Feature',
+    id: 'pair',
+    properties: {},
+    geometry: {
+      type: 'MultiPolygon',
+      coordinates: [(createRectangle(CENTER, 1000, 1000).geometry as Polygon).coordinates, (createRectangle(destination(CENTER, 3000, 90), 1000, 1000).geometry as Polygon).coordinates],
+    },
+  })
+
+  it('keeps flat multipolygons flat when lifted over relief, and drapes them again', () => {
+    const pair = flatPair()
+    expect(isMeshFeature(pair)).toBe(false)
+    expect(isSolidFeature(pair)).toBe(false)
+    // Lifted over relief, every position gets an altitude, but no face is steep: still flat polygons, now in the air.
+    const lifted = liftFeature(pair, 100, longitude => 400 + (longitude - CENTER[0]) * 20_000)
+    expect(isMeshFeature(lifted)).toBe(false)
+    expect(isSolidFeature(lifted)).toBe(true)
+    expect(placeOnTerrain(lifted).geometry).toEqual(pair.geometry)
+    // Imported footprints at z = 0: flat polygons at the ellipsoid, not a mesh.
+    expect(isMeshFeature(liftFeature(pair, 0, 0))).toBe(false)
+    // Some positions without an altitude: flat polygons, drawn where the hit test and gizmo find them (at the lowest).
+    const partial = { ...pair, geometry: { ...(pair.geometry as MultiPolygon), coordinates: [(lifted.geometry as MultiPolygon).coordinates[0]!, (pair.geometry as MultiPolygon).coordinates[1]!] } } as DrawFeature
+    expect(isMeshFeature(partial)).toBe(false)
+    expect(isSolidFeature(partial)).toBe(true)
+    // Walls, prisms and spheres are meshes; so is a closed mesh without steep faces (a flat octahedron).
+    expect(isMeshFeature(feature(wallMesh([CENTER, destination(CENTER, 100, 90)], 0, 10)))).toBe(true)
+    expect(isMeshFeature(feature(prismMesh((createRectangle(CENTER, 100, 100).geometry as Polygon).coordinates, 0, 1)))).toBe(true)
+    const [east, north, west, south] = [90, 0, 270, 180].map(bearing => [...destination(CENTER, 1000, bearing), 0])
+    const [top, bottom] = [[...CENTER, 100], [...CENTER, -100]]
+    const ring = (...positions: number[][]) => [[...positions, positions[0]!]]
+    const octahedron: MultiPolygon = {
+      type: 'MultiPolygon',
+      coordinates: [ring(top!, east!, north!), ring(top!, north!, west!), ring(top!, west!, south!), ring(top!, south!, east!), ring(bottom!, north!, east!), ring(bottom!, west!, north!), ring(bottom!, south!, west!), ring(bottom!, east!, south!)],
+    }
+    expect(isMeshFeature(feature(octahedron))).toBe(true)
+  })
+
+  it('extrudes a flat multipolygon into one prism per polygon under one level top', () => {
+    const relief = (longitude: number) => 400 + (longitude - CENTER[0]) * 20_000
+    const extruded = extrudeFeature(flatPair(), 50, relief)
+    const geometry = extruded.geometry as MultiPolygon
+    expect(geometry.coordinates).toHaveLength(12)
+    expect(isMeshFeature(extruded)).toBe(true)
+    const top = meshTop(geometry)!
+    expect(top.topMeters).toBeCloseTo(Math.max(...geometry.coordinates.flat(2).map(position => relief(position[0]!))) + 50, 6)
+    // Both tops at that altitude, so moving the top moves both.
+    expect(geometry.coordinates.filter(face => face[0]!.every(position => Math.abs(position[2]! - top.topMeters) < 1e-6))).toHaveLength(2)
+  })
+
+  it('winds prisms outwards around a pole and across the antimeridian, whatever the rings winding', () => {
+    for (const ring of [
+      [[0, 89.9], [90, 89.9], [180, 89.9], [-90, 89.9]],
+      [[45, -89.5], [-45, -89.5], [-135, -89.5], [135, -89.5]],
+      [[179.9, 10], [-179.9, 10], [-179.9, 10.1], [179.9, 10.1]],
+    ]) {
+      expectClosedOutwards(prismMesh([ring], 0, 100))
+      expectClosedOutwards(prismMesh([[...ring].reverse()], 0, 100))
+    }
+  })
+
+  it('rejects malformed coordinates with an error that says the fix', () => {
+    const polygon = (coordinates: unknown): DrawFeature => ({ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'Polygon', coordinates } as Polygon })
+    expect(() => store.set([polygon([[[0, 0], [1, 0], [0, 0]]])])).toThrow(/give each ring 4 or more positions/)
+    expect(() => store.set([polygon([[[0, 0], [1, Number.NaN], [1, 1], [0, 0]]])])).toThrow(/finite numbers of degrees/)
+    expect(() => store.set([polygon([[[46, 6], [46, 95], [47, 95], [46, 6]]])])).toThrow(/between -90 and 90 degrees/)
+    expect(() => store.set([polygon([[[0, 0, null], [1, 0, 0], [1, 1, 0], [0, 0, 0]]])])).toThrow(/finite number of metres.*leave it out/)
+    expect(() => store.set([{ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'MultiPolygon', coordinates: [] } }])).toThrow(/array of polygons/)
+    expect(() => store.set([{ type: 'Feature', id: 'bad', properties: {}, geometry: { type: 'LineString', coordinates: [[0, 0]] } }])).toThrow(/coordinates; give a line string 2 or more positions/)
+    expect(store.size).toBe(0)
+  })
+})
+
+describe('height sampler', () => {
+  it('reads the terrain now when asked for an immediate height, falling back to the remembered one', () => {
+    let terrain: number | null = 120
+    const sampler = new HeightSampler({ queryTerrainElevation: () => terrain } as never)
+    sampler.remember(6.6, 46.45, 100)
+    expect(sampler.heightAt(6.6, 46.45)).toBe(100)
+    // Finer tiles loaded since the tap: the immediate read sees them, and remembers them.
+    expect(sampler.heightAt(6.6, 46.45, 0, { immediate: true })).toBe(120)
+    expect(sampler.heightAt(6.6, 46.45)).toBe(120)
+    terrain = null
+    expect(sampler.heightAt(6.6, 46.45, 0, { immediate: true })).toBe(120)
+    expect(sampler.heightAt(7, 46, 55, { immediate: true })).toBe(55)
+    expect(sampler.pending).toBe(false)
+    expect(sampler.heightAt(7, 46, 55)).toBe(55)
+    expect(sampler.pending).toBe(true)
+  })
+})

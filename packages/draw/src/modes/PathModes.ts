@@ -154,7 +154,8 @@ export abstract class PathMode extends DrawMode {
     const height = this.heightMeters
     let geometry: LineString | Polygon | MultiPolygon
     if (height !== undefined && height > 0) {
-      // The terrain under each vertex as it is now (better loaded than at its tap), or the tap's height.
+      // The terrain under each vertex sampled now (finer tiles may have loaded since its tap), else the height remembered
+      // for it (its tap's), else the tap's height kept with the vertex.
       const bases = this.vertices.map(([longitude, latitude], index) => context.heights.heightAt(longitude, latitude, this.vertexHeights[index] ?? 0, { immediate: true }))
       geometry = this.toMesh([...this.vertices], bases, height)
     } else geometry = this.toGeometry([...this.vertices])
