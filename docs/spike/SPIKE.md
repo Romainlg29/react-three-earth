@@ -1089,6 +1089,48 @@ DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill 
   fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
   loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
 
+## Keyboard and accessibility (W15), part 1
+
+The map works with a keyboard and a screen reader (`src/core/KeyboardControls.ts`, `src/core/EarthControls.ts`,
+`src/react/EarthControls.tsx`, `src/view/ViewMorph.ts`), skill `map-controls`.
+
+- **Map region.** `EarthViewControls.attach` gives the element it listens to `tabindex="0"`, `role="region"` and
+  `aria-label` (`label`, default "Map"), as MapLibre's canvas container. The element's own values come back on `detach`;
+  an app's own `tabindex` is kept (3DTilesRenderer sets -1 when there is none, which kept the map out of the tab order).
+- **Keys.** `KeyboardControls` (owned by `EarthViewControls`, `<EarthControls keyboard>`): MapLibre's bindings, from the
+  pure `keyboardAction(press, steps)`. Arrows `panBy` 100 px, `+` / `-` zoom 1 level (2 with `Shift`), `Shift` + left /
+  right turn 15°, `Shift` + up / down tilt 10°, clamped to the view's tilt limit (80° on the globe, the flat map's
+  `maximumTiltRadians`). Every press goes through `earth.camera.easeTo` (0.3 s, ease-out), so it stops other animations,
+  honours `prefers-reduced-motion`, and fires the camera events. Quick zoom, turn and tilt presses add to the running target (like
+  `NavigationControl`; arrows pan on from the camera, as MapLibre); a held key (`event.repeat`) starts from the camera instead, or holding `+` would race ahead. A
+  press stops the pointer controls' inertia first. Keys with `Ctrl` / `Alt` / `Cmd`, keys in form fields inside the map
+  and keys during a morph are not applied (during a morph the key is still taken, so arrows do not scroll the page).
+  The binding table is a protected `actionFor`, the seam for other bindings.
+- **Double-click zoom.** 3DTilesRenderer 0.5.4 already zooms in on a double click or double tap (`enableDoubleTapZoom`);
+  `<EarthControls doubleClickZoom>` exposes it for both views.
+- **Reduced motion.** `ViewMorph.setMode` switches at once for `prefers-reduced-motion` users unless
+  `{ essential: true }`, as camera animations already did.
+- **ARIA audit of W9 and W10.** Markers, popups and controls already had names, `aria-expanded`, `aria-pressed` and
+  focus handling; axe-core found nothing to fix in them. The playground's viewport meta blocked page zoom
+  (`maximum-scale=1, user-scalable=no`, a WCAG failure); it is gone (the map's own `touch-action: none` keeps pinches on
+  the map, and iOS ignores the setting anyway).
+
+Changed from the brief: double-click zoom was already there upstream, so it is a prop rather than new code. Cooperative
+gestures and box zoom move to part 2, to keep this pull request small and leave touch input untouched here.
+
+Not supported yet: cooperative gestures, box zoom (part 2); no live-region announcement of the view after a key press;
+keyboard zoom, like `NavigationControl`, is not clamped to the pointer controls' distance limits (camera zoom limits
+belong in `EarthCamera`); `<Earth>` has no prop for `essential` on the morph (use `useEarth().setView`).
+
+| Check | Result |
+| --- | --- |
+| Unit tests | `test/keyboard.test.ts`: every binding and modifier, editable targets, presses adding up during an ease and held keys starting from the camera, tilt clamped, nothing while disabled, detached or morphing, region attributes set and restored, an app's `tabindex` kept, double-click zoom switch, the morph switching at once under reduced motion unless essential |
+| Browser (`keyboard and accessibility`, SwiftShader) | `Tab` reaches the map, a region named "Map" around the canvas |
+| | right arrow pans east 0.065° at zoom 10, `=` zooms +1.00, `Shift` + right turns 15.0°, `Shift` + up tilts 10.0°, two `-` zoom −2.00, the page does not scroll |
+| | a double click zooms in 1.7 levels |
+| | axe-core 4.10 (WCAG 2.2 A and AA) finds no violation with the controls and markers, nor with a popup opened from the keyboard; markers faded behind terrain are left out (their fade is the point) |
+| | with `prefers-reduced-motion`, the view button switches to 2D with no in-between morph frame |
+
 ## Attribution
 
 Every source can carry a credit, and a control shows them all (`src/core/attribution.ts`, `src/controls/AttributionControl.ts`,
