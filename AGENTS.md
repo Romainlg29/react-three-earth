@@ -45,12 +45,18 @@ pnpm test
 pnpm --filter react-three-earth validate:skills
 pnpm build
 pnpm dev &   # then:
-xvfb-run -a node apps/playground/tests/run.mjs && node apps/playground/tests/assert-results.mjs
+xvfb-run -a node apps/playground/tests/run.mjs --changed && node apps/playground/tests/assert-results.mjs
 ```
 
+The full browser suite takes 10 to 15 minutes. While you work, run only the areas your change reaches:
+`run.mjs --changed` picks them from the files changed since `origin/master` (rules in `tests/areas.mjs`;
+shared code such as `Earth.ts` or the tiles renderer runs every area, docs and skills run none), and
+`run.mjs labels buildings` runs named areas. Run the full suite (`run.mjs` with no argument) once, just before
+merging. `assert-results.mjs` skips the checks a partial run left out and says how many.
+
 Outside the dev sandbox, install Playwright once with `npm i -g playwright@1.63.0 && npx playwright@1.63.0 install chromium`
-and run the checks with `NODE_PATH="$(npm root -g)"` in front. The browser checks need a headed Chromium (headless drops the WebGPU device) and take about 1.5 minutes
-locally; the sandbox cannot reach tile hosts, so they use `?fixtures`. They run on SwiftShader, a CPU
+and run the checks with `NODE_PATH="$(npm root -g)"` in front. The browser checks need a headed Chromium (headless drops the WebGPU device);
+the sandbox cannot reach tile hosts, so they use `?fixtures`. They run on SwiftShader, a CPU
 rasteriser: they prove correctness, never frame times. Screenshots land in `apps/playground/test-results/`.
 
 ## Keeping the skills current
