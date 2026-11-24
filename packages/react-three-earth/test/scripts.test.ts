@@ -210,6 +210,10 @@ describe('vertical text', () => {
     expect(shape('東京、大阪').glyphs.map(glyph => glyph.codePoint.toString(16))).toContain('fe11')
   })
 
+  it('turns fullwidth angle brackets and dashes, which have no upright form', () => {
+    expect(shape('東京＜駅＞').glyphs.map(glyph => glyph.rotated ?? false)).toEqual([false, false, true, false, true])
+  })
+
   it('keeps text with no CJK character horizontal', () => {
     const shaped = shape('Tokyo')
     expect(shaped.glyphs.some(glyph => glyph.rotated)).toBe(false)

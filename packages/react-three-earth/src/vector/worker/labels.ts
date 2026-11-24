@@ -261,9 +261,12 @@ const UPRIGHT_RANGES: ReadonlyArray<readonly [number, number]> = [
   [0x20000, 0x3ffff], // CJK extensions B and later
 ]
 
+/** Characters inside the upright ranges that turn instead (UAX #50 Tr or R): dashes, tildes, angle brackets. */
+const TURNED_IN_VERTICAL_TEXT = new Set([0x301c, 0x301d, 0x301e, 0x301f, 0x3030, 0xff0d, 0xff1c, 0xff1d, 0xff1e, 0xff3f, 0xff5c, 0xff5e, 0xff5f, 0xff60, 0xffe3])
+
 /** Whether a character stands upright in a vertical column; others turn 90° clockwise. */
 export function isUprightInVerticalText(codePoint: number): boolean {
-  if (codePoint < 0x1100) return false
+  if (codePoint < 0x1100 || TURNED_IN_VERTICAL_TEXT.has(codePoint)) return false
   for (const [start, end] of UPRIGHT_RANGES) if (codePoint >= start && codePoint <= end) return true
   return false
 }

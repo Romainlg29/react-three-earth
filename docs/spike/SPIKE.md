@@ -202,7 +202,7 @@ How it works:
 GeoJSON sources (with clustering and `line-gradient`) are drawn too, see W2 below.
 
 Heatmap layers: see W11 below; raster, hillshade and colour relief: see W7 below. Not supported yet: icons along
-lines and on draped labels (point icons face the viewer, see W6 part 3 below), (right-to-left, complex scripts and vertical text: see W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
+lines and on draped labels (point icons face the viewer, see W6 part 3 below; right-to-left, complex scripts and vertical text are covered in W13 below; `fill-extrusion` stands in 3D, see W12 below), line labels colliding across
 tiles with `symbols: 'draped'` (labels face the viewer and collide on the whole screen by default, see W6 below), and symbol layers below shape layers (all labels draw on top). Tile, TileJSON and glyph requests go
 through the worker's `fetch` with `requestHeaders` and the source's `transformRequest` / protocols, not
 3DTilesRenderer's `preprocessURL` (the style request does). Draped labels (line labels, or every label with `symbols: 'draped'`) change size by 2× where neighbouring
@@ -1277,6 +1277,9 @@ Arabic and Hebrew labels read in the right order and Arabic letters join, in the
   punctuation swaps to its vertical form (U+FE10–U+FE48) when the font has the glyph; runs of other characters
   are laid out as horizontal text and turned 90° clockwise. A turned glyph is a `ShapedGlyph` with `rotated`,
   whose quad `layoutPointLabel` turns, so screen labels, collisions and draped labels need no other change.
+- Limits: lines break only at spaces, so a long CJK name stays one tall column where MapLibre breaks between
+  ideographs; turned Latin runs sit on the horizontal line box, a few pixels off the column centre (MapLibre adds
+  a fixed correction); UAX #50 orientation is simplified to block ranges with a short list of turned exceptions.
 - Deviation from MapLibre: only the first writing mode is used (MapLibre places the next mode when the first
   collides, which would mean shipping two layouts to the main thread). Line labels stay horizontal.
 - Browser check: `?map=scripts` adds two vertical Japanese names (one with a Latin letter); they must stand more

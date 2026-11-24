@@ -1047,7 +1047,8 @@ export class MapStyleProcessor {
   protected async loadGlyphs(symbols: readonly SymbolCandidate[]): Promise<void> {
     const codePoints = new Map<string, Set<number>>()
     for (const { sections, layer } of symbols) {
-      const vertical = layer.has('layout', 'text-writing-mode')
+      // Vertical punctuation forms, only for layers that may lay text out vertically.
+      const vertical = layer.has('layout', 'text-writing-mode') && JSON.stringify(layer.raw('layout', 'text-writing-mode')).includes('vertical')
       for (const section of sections) {
         let set = codePoints.get(section.fontStack)
         if (set === undefined) codePoints.set(section.fontStack, (set = new Set()))
@@ -1827,7 +1828,6 @@ function firstAnchor(layer: CompiledStyleLayer, zoom: number, feature: StyleFeat
   return layer.evaluate<TextAnchor>('layout', 'text-anchor', zoom, feature)
 }
 
-/** Replaces `{name}` with the feature's `name` property (empty when missing). */
 /**
  * Whether a point label lays its text out vertically: `text-writing-mode` lists `vertical` first. MapLibre falls back
  * to the next mode when the first collides; here the first mode is used.
@@ -1838,6 +1838,7 @@ function prefersVerticalText(layer: CompiledStyleLayer, zoom: number, feature: S
   return modes?.[0] === 'vertical'
 }
 
+/** Replaces `{name}` with the feature's `name` property (empty when missing). */
 export function resolveTokens(text: string, properties: Record<string, unknown>): string {
   return text.replace(/{([^{}]+)}/g, (_, key: string) => {
     const value = properties[key]
