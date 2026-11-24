@@ -151,10 +151,12 @@ export class RenderPassRegistry {
   /**
    * Keeps the translucent pass registered (`TRANSLUCENT_LAYER`): objects on that layer are drawn after the
    * atmosphere, hazed at their own distance. Returns a function that lets it go; the pass leaves once every holder
-   * has. Plugins that put objects on the layer hold it while they are installed.
+   * has. Hold it while an atmosphere is set (without one there is no haze to fix), and move objects to the layer
+   * only while `isBuilt(TRANSLUCENT_RENDER_PASS_NAME)`: apps that compose their own pipeline never draw the layer.
    */
   retainTranslucentPass(): () => void {
-    if (this.translucentHolders++ === 0) this.removeTranslucentPass = this.register(TRANSLUCENT_RENDER_PASS)
+    if (this.translucentHolders === 0) this.removeTranslucentPass = this.register(TRANSLUCENT_RENDER_PASS)
+    this.translucentHolders++
     let released = false
     return () => {
       if (released) return
@@ -185,6 +187,17 @@ export class RenderPassRegistry {
   /** The passes with their order and registration sequence, in registration order. */
   entries(): RegisteredRenderPass[] {
     return [...this.passes.values()]
+  }
+
+  /**
+   * Whether a mounted pipeline built the pass `name` into its output, and it runs. Cheap: callable every frame,
+   * to know when objects may move to the translucent layer (`isBuilt(TRANSLUCENT_RENDER_PASS_NAME)`).
+   */
+  isBuilt(name: string): boolean {
+    for (const report of this.buildReports.values()) {
+      for (const entry of report) if (entry.name === name && entry.active) return true
+    }
+    return false
   }
 
   /** Records what a pipeline built (null: it stopped building), for `inspect`. `EarthRenderPipeline` calls it. */

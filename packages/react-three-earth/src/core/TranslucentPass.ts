@@ -1,9 +1,13 @@
-import { Color, Layers, Matrix4, type Camera, type Light, type Object3D, type PerspectiveCamera, type Scene } from 'three'
+import { Color, DoubleSide, Layers, Matrix4, type Camera, type Light, type Object3D, type PerspectiveCamera, type Scene } from 'three'
 import {
   float,
   Fn,
   getViewPosition,
   If,
+  int,
+  max,
+  select,
+  vec2,
   isBackgroundDepth,
   logarithmicDepthToViewZ,
   mix,
@@ -12,7 +16,7 @@ import {
   uv,
   vec4,
 } from 'three/tsl'
-import { Node, PassNode, type NodeBuilder, type NodeFrame } from 'three/webgpu'
+import { MeshBasicNodeMaterial, Node, PassNode, type NodeBuilder, type NodeFrame, type TextureNode } from 'three/webgpu'
 
 import type { RenderPassDefinition } from '../plugins/renderPasses.js'
 import type { Atmosphere } from './Atmosphere.js'
@@ -25,9 +29,11 @@ import type { Atmosphere } from './Atmosphere.js'
  * colour along it. Objects on this layer are left out of the scene pass (cameras see layer 0) and drawn in a pass of
  * their own after the atmosphere, hazed at the distance of their nearest face and hidden behind nearer opaque geometry.
  *
- * Give their materials `depthWrite: true` (the pass's depth buffer is their own) and `transparent: true`. The pass
- * runs while `earth.renderPasses.retainTranslucentPass()` is held, inside an `EarthRenderPipeline` attached with the
- * scene pass; every light that lights the scene lights them too.
+ * Their materials need `transparent: true`, and may leave `depthWrite` false: faces behind faces still blend, and the
+ * pass draws the layer's depth separately for the haze. The pass runs while `earth.renderPasses.retainTranslucentPass()`
+ * is held, inside an `EarthRenderPipeline` attached with the scene pass; move objects to the layer only while
+ * `earth.renderPasses.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)`, since apps composing their own pipeline never draw it.
+ * Every light that lights the scene lights them too.
  */
 export const TRANSLUCENT_LAYER = 30
 
@@ -39,10 +45,16 @@ translucentLayers.set(TRANSLUCENT_LAYER)
 
 const savedClearColor = new Color()
 
+/** Writes the nearest face's depth and no colour, after the colour is drawn (see `TranslucentPassNode`). */
+const depthOnlyMaterial = new MeshBasicNodeMaterial({ colorWrite: false, side: DoubleSide })
+depthOnlyMaterial.name = 'TranslucentDepthOnly'
+
 /**
  * Draws the objects on `TRANSLUCENT_LAYER` (and nothing else) into a colour and depth target of their own, over a
  * transparent black clear: premultiplied colour with coverage in alpha. Lights the scene camera sees light them.
- * Skips the drawing while no visible object is on the layer, once its target is clear.
+ * The colour is drawn first, with the materials' own depth writes (none, for see-through ones), so faces behind faces
+ * blend; then the layer's depth alone, so the composite knows the nearest face. Skips the drawing while no visible
+ * object is on the layer, once its target is clear.
  */
 export class TranslucentPassNode extends PassNode {
   static get type(): string {
@@ -87,8 +99,14 @@ export class TranslucentPassNode extends PassNode {
     if (backgroundNode !== null) sceneWithBackground.backgroundNode = null
     renderer.setClearColor(0x000000, 0)
     try {
-      return super.updateBefore(frame) as boolean | undefined
+      super.updateBefore(frame)
+      this.overrideMaterial = depthOnlyMaterial
+      this.autoClear = false
+      super.updateBefore(frame)
+      return undefined
     } finally {
+      this.overrideMaterial = null
+      this.autoClear = true
       renderer.setClearColor(savedClearColor, clearAlpha)
       if (background !== null) sceneWithBackground.background = background
       if (backgroundNode !== null) sceneWithBackground.backgroundNode = backgroundNode
@@ -137,8 +155,12 @@ export class TranslucentCompositeNode extends Node {
       If(front.a.greaterThan(0), () => {
         const frontDepth = vec4(translucentDepthNode).x.toConst()
         const sceneDepth = vec4(depthNode).x.toConst()
-        const frontHasDepth = isBackgroundDepth(frontDepth).not().toConst()
-        const frontViewZ = toViewZ(frontDepth).toConst()
+        // A multisampled edge pixel can have coverage but a background depth sample: it takes its nearest neighbour's.
+        const frontViewZ = toViewZ(frontDepth).toVar()
+        const frontHasDepth = isBackgroundDepth(frontDepth).not().toVar()
+        If(frontHasDepth.not(), () => {
+          this.nearestNeighbourViewZ(toViewZ, frontViewZ, frontHasDepth)
+        })
         // View z is negative ahead of the camera: the larger, the nearer.
         const hidden = frontHasDepth.and(isBackgroundDepth(sceneDepth).not()).and(toViewZ(sceneDepth).greaterThan(frontViewZ))
         If(hidden.not(), () => {
@@ -156,6 +178,24 @@ export class TranslucentCompositeNode extends Node {
       })
       return behind
     })()
+  }
+
+  /**
+   * Sets `viewZ` to the nearest translucent depth among the four pixels beside this one, and `found` when there is
+   * one. Does nothing when the translucent depth is not a texture to sample around.
+   */
+  protected nearestNeighbourViewZ(toViewZ: (depth: Node<'float'>) => Node<'float'>, viewZ: Node<'float'>, found: Node<'bool'>): void {
+    const depthTexture = this.translucentDepthNode as unknown as TextureNode
+    if (depthTexture.isTextureNode !== true) return
+    const texel = vec2(1).div(vec2(depthTexture.size(int(0)) as Node<'ivec2'>)).toConst()
+    for (const [x, y] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const depth = depthTexture.sample(uv().add(texel.mul(vec2(x, y)))).x.toConst()
+      If(isBackgroundDepth(depth).not(), () => {
+        const neighbourViewZ = toViewZ(depth)
+        viewZ.assign(select(found, max(viewZ, neighbourViewZ), neighbourViewZ))
+        found.assign(true)
+      })
+    }
   }
 }
 

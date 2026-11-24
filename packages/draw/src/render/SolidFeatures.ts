@@ -1,6 +1,6 @@
 import earcut from 'earcut'
 import type { Position } from 'geojson'
-import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, type Earth, type GeographicAnchor } from 'react-three-earth'
+import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from 'react-three-earth'
 import { BufferGeometry, Color, DoubleSide, EdgesGeometry, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, SphereGeometry, type Object3D } from 'three'
 import { uniform, vec4 } from 'three/tsl'
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
@@ -396,12 +396,13 @@ export class SolidFeatures {
   protected groundCursor = 0
   protected lastGroundChangeMilliseconds = -Infinity
   protected followUpTimer: ReturnType<typeof setTimeout> | null = null
-  /** Lets go of the translucent pass, which draws see-through faces after the atmosphere, hazed at their own distance. */
-  protected readonly releaseTranslucentPass: () => void
+  /** Lets go of the translucent pass, held while there is an atmosphere (see `syncTranslucentLayer`). */
+  protected releaseTranslucentPass: (() => void) | null = null
+  /** Whether see-through faces are on the translucent layer, which needs the pass built into a pipeline. */
+  protected onTranslucentLayer = false
 
   constructor(protected readonly earth: Earth) {
     this.object.name = 'DrawSolids'
-    this.releaseTranslucentPass = earth.renderPasses.retainTranslucentPass()
   }
 
   /** Replaces the solids. Unchanged features (same object, same colours) keep theirs. */
@@ -450,6 +451,7 @@ export class SolidFeatures {
    * Returns true if a solid moved.
    */
   update(timeMilliseconds: number = performance.now()): boolean {
+    this.syncTranslucentLayer()
     const ground = this.groundSolids
     const count = ground.length
     if (count === 0) return false
@@ -498,7 +500,33 @@ export class SolidFeatures {
     this.solids.clear()
     this.previews.clear()
     this.object.removeFromParent()
-    this.releaseTranslucentPass()
+    this.releaseTranslucentPass?.()
+    this.releaseTranslucentPass = null
+  }
+
+  /**
+   * With an atmosphere, see-through faces go on the translucent layer, drawn after the atmosphere and hazed at their
+   * own distance (in the scene, a face crossing the horizon changes shade along it). They move there only once a
+   * pipeline runs the translucent pass, and back when none does, so apps composing their own pipeline still see them.
+   */
+  protected syncTranslucentLayer(): void {
+    const hasAtmosphere = this.earth.atmosphere !== null
+    if (hasAtmosphere && this.releaseTranslucentPass === null) this.releaseTranslucentPass = this.earth.renderPasses.retainTranslucentPass()
+    else if (!hasAtmosphere && this.releaseTranslucentPass !== null) {
+      this.releaseTranslucentPass()
+      this.releaseTranslucentPass = null
+    }
+    const translucent = hasAtmosphere && this.earth.renderPasses.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)
+    if (translucent === this.onTranslucentLayer) return
+    this.onTranslucentLayer = translucent
+    this.object.traverse(object => this.placeOnLayer(object))
+    this.earth.requestFrame()
+  }
+
+  protected placeOnLayer(object: Object3D): void {
+    const mesh = object as Mesh
+    if (mesh.isMesh !== true || !(mesh.material as MeshStandardNodeMaterial).transparent) return
+    mesh.layers.set(this.onTranslucentLayer ? TRANSLUCENT_LAYER : 0)
   }
 
   protected createSolid(feature: DrawFeature, style: DrawStyle): Solid {
@@ -518,8 +546,7 @@ export class SolidFeatures {
       return shared
     }
     const add = (object: Object3D, geometry: BufferGeometry) => {
-      // See-through faces go on the translucent layer, hazed at their own distance rather than at the ground's behind.
-      if ((object as Mesh).isMesh === true && ((object as Mesh).material as MeshStandardNodeMaterial).transparent) object.layers.set(TRANSLUCENT_LAYER)
+      this.placeOnLayer(object)
       solid.owned.push(geometry)
       anchor.add(object)
     }
@@ -587,7 +614,7 @@ export class SolidFeatures {
     let shared = this.materials.get(key)
     if (shared === undefined) {
       const colorNode = vec4(uniform(new Color(style.fillColor)), 1)
-      const material = new MeshStandardNodeMaterial({ side: doubleSided ? DoubleSide : FrontSide, transparent: style.solidOpacity < 1, opacity: style.solidOpacity })
+      const material = new MeshStandardNodeMaterial({ side: doubleSided ? DoubleSide : FrontSide, transparent: style.solidOpacity < 1, opacity: style.solidOpacity, depthWrite: style.solidOpacity >= 1 })
       material.colorNode = colorNode
       // On the flat map the sun fades out: keep the colour, like the flat terrain.
       material.emissiveNode = createFlatMapEmissionNode(colorNode, this.earth.view)

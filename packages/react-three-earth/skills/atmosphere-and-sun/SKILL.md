@@ -151,7 +151,7 @@ export function createPipeline(renderer: WebGPURenderer, scene: Scene, camera: C
 
 To compose the atmosphere into a pipeline of your own (for example @aeronautic/core's `volume_pass`), pass
 `renderPipeline={false}` and build from `useAtmosphere()` with `createAerialPerspective` or
-`createBackdropNode`; `new EarthRenderPipeline(earth, { atmosphere }).buildOutput({ color, depth, camera })`
+`createBackdropNode`; `new EarthRenderPipeline(earth, { atmosphere }).buildOutput({ color, depth, camera, scene })`
 gives the staged output with plugin passes included.
 
 ## Common Mistakes
@@ -192,26 +192,28 @@ see-through face crossing the horizon changes shade along it. Put see-through so
 they are drawn after the atmosphere, hazed at their own distance and hidden behind nearer ground.
 
 ```ts
-import { TRANSLUCENT_LAYER, type Earth } from 'react-three-earth'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth } from 'react-three-earth'
 import { Mesh, type BufferGeometry } from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 
-function addGlassBox(earth: Earth, geometry: BufferGeometry): () => void {
-  const release = earth.renderPasses.retainTranslucentPass() // the pass runs while held
-  // depthWrite stays true: the pass's depth buffer is its own, and gives the haze its distance.
-  const mesh = new Mesh(geometry, new MeshStandardNodeMaterial({ transparent: true, opacity: 0.6 }))
-  mesh.layers.set(TRANSLUCENT_LAYER) // out of the scene pass, which sees layer 0
+function addGlassBox(earth: Earth, geometry: BufferGeometry): { update(): void; remove(): void } {
+  const release = earth.renderPasses.retainTranslucentPass() // the pass runs while held (with an atmosphere)
+  const mesh = new Mesh(geometry, new MeshStandardNodeMaterial({ transparent: true, opacity: 0.6, depthWrite: false }))
   earth.add(mesh)
-  return () => {
-    mesh.removeFromParent()
-    release()
+  return {
+    // Every frame: on the layer only while a pipeline draws it, or apps composing their own never see the box.
+    update: () => void mesh.layers.set(earth.renderPasses.isBuilt(TRANSLUCENT_RENDER_PASS_NAME) ? TRANSLUCENT_LAYER : 0),
+    remove: () => {
+      mesh.removeFromParent()
+      release()
+    },
   }
 }
 ```
 
-The pass needs an `EarthRenderPipeline` attached with the scene pass (`<Earth>` and `<Atmosphere>` host one; vanilla
-apps call `attach(renderPipeline, scenePass, camera)`): without it, objects on the layer are not drawn. Lights the
-camera sees light them. Other effects can haze themselves with `createAerialPerspectiveAlongRay`. A
+The pass runs in an `EarthRenderPipeline` attached with the scene pass (`<Earth>` and `<Atmosphere>` host one; vanilla
+apps call `attach(renderPipeline, scenePass, camera)`, or give `buildOutput` the `scene`). Lights the camera sees light
+the layer; faces behind faces still blend. Other effects can haze themselves with `createAerialPerspectiveAlongRay`. A
 `scene.background` colour covers the sky: leave it unset with an atmosphere.
 
 ## Completion

@@ -1,6 +1,6 @@
 import type { Point, Polygon } from 'geojson'
 import { Object3D, type LineSegments, type Mesh } from 'three'
-import { TRANSLUCENT_LAYER } from 'react-three-earth'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME } from 'react-three-earth'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'
@@ -170,7 +170,8 @@ describe('solids', () => {
       view: { morph: 0, flatMapLuminance: 1 },
       queryTerrainElevation: lookups,
       requestFrame,
-      renderPasses: { retainTranslucentPass: () => releaseTranslucentPass },
+      atmosphere: {},
+      renderPasses: { retainTranslucentPass: () => releaseTranslucentPass, isBuilt: (name: string) => name === TRANSLUCENT_RENDER_PASS_NAME },
       createGeographicAnchor: (position: { longitudeDegrees: number; latitudeDegrees: number; heightMeters: number }) =>
         Object.assign(new Object3D(), {
           geographicPosition: { ...position },
@@ -181,12 +182,12 @@ describe('solids', () => {
     const solids = new SolidFeatures(earth as never)
     solids.setFeatures(Array.from({ length: 10 }, (_, index) => ({ feature: { ...createCircle(destination(CENTER, index * 1000, 90), 100, { extrusionHeightMeters: 50 }), id: `c${index}` } as DrawFeature, style: DEFAULT_DRAW_STYLE })))
     expect(lookups).not.toHaveBeenCalled() // nothing raycast while features change
-    // See-through faces are drawn after the atmosphere, hazed at their own distance; their edges stay in the scene.
+    expect(solids.update(0)).toBe(false)
+    // With an atmosphere and the pass running, see-through faces are drawn after the atmosphere, hazed at their own distance; their edges stay in the scene.
     const objects: Object3D[] = []
     solids.object.traverse(object => void objects.push(object))
     expect(objects.filter(object => (object as Mesh).isMesh === true).every(mesh => mesh.layers.mask === 1 << TRANSLUCENT_LAYER)).toBe(true)
     expect(objects.some(object => (object as LineSegments).isLineSegments === true && object.layers.mask === 1)).toBe(true)
-    expect(solids.update(0)).toBe(false)
     expect(lookups).toHaveBeenCalledTimes(4)
     vi.runAllTimers()
     expect(requestFrame).toHaveBeenCalled() // the terrain had no answer: try again soon

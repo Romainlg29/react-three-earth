@@ -172,8 +172,8 @@ draw.setStyle({ lineColor: '#000000' }) // redraws every feature
 Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixels`, `pointColor`, `pointRadiusPixels`,
 `pointOutlineColor`, `pointOutlineWidthPixels`, `solidOpacity` (3D solids, default 0.85; their edges use `lineColor`),
 and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
-See-through solids are drawn after the atmosphere on `TRANSLUCENT_LAYER`, hazed at their own distance, so they need the
-render pipeline `<Earth>` hosts (vanilla apps attach an `EarthRenderPipeline` with the scene pass).
+With an atmosphere, see-through solids are drawn after it (`TRANSLUCENT_LAYER`), hazed at their own distance, whenever
+the render pipeline runs the translucent pass (`<Atmosphere>` hosts one); otherwise they are drawn with the scene.
 
 ### Shapes and 3D solids
 

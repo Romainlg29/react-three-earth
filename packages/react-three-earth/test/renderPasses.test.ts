@@ -87,6 +87,21 @@ describe('translucent pass', () => {
     expect(registry.has(TRANSLUCENT_RENDER_PASS_NAME)).toBe(false)
   })
 
+  it('keeps no hold when the name is taken, and reports whether a pipeline built it', () => {
+    const registry = new RenderPassRegistry()
+    const removeOther = registry.register({ name: TRANSLUCENT_RENDER_PASS_NAME, stage: 'scene', build: ({ color }) => color })
+    expect(() => registry.retainTranslucentPass()).toThrow(/already registered/)
+    removeOther()
+    registry.retainTranslucentPass()
+    expect(registry.has(TRANSLUCENT_RENDER_PASS_NAME)).toBe(true)
+    expect(registry.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)).toBe(false)
+    const pipeline = {}
+    registry.setBuildReport(pipeline, [{ name: TRANSLUCENT_RENDER_PASS_NAME, stage: 'radiance', order: 0, active: true, timing: 'fused' }])
+    expect(registry.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)).toBe(true)
+    registry.setBuildReport(pipeline, null)
+    expect(registry.isBuilt(TRANSLUCENT_RENDER_PASS_NAME)).toBe(false)
+  })
+
   it('draws the scene pass\'s scene again on its own layer, and is skipped without a scene', () => {
     const earth = new Earth()
     earth.renderPasses.retainTranslucentPass()
