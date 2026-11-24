@@ -33,12 +33,19 @@ export function EarthControls({ enableDamping = true, maximumFlatMapTiltDegrees 
   const [controls] = useState(() => new EarthViewControls(earth))
 
   useLayoutEffect(() => {
-    controls.label = label
     controls.setCamera(camera)
     controls.attach(domElement)
-    controls.enableDamping = enableDamping
     return () => controls.detach()
-  }, [controls, camera, domElement, enableDamping, label])
+  }, [controls, camera, domElement])
+
+  // Apart from attaching, so a new label or damping never cuts a drag short or takes focus from the map
+  useLayoutEffect(() => {
+    controls.label = label
+  }, [controls, label])
+
+  useLayoutEffect(() => {
+    controls.enableDamping = enableDamping
+  }, [controls, enableDamping])
 
   useLayoutEffect(() => {
     controls.flatMap.maximumTiltRadians = (maximumFlatMapTiltDegrees * Math.PI) / 180

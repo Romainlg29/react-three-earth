@@ -146,11 +146,12 @@ own `tabindex` wins, for example -1 to keep the map out of the tab order), `role
 | Key | Does |
 | --- | --- |
 | Arrows | Pan 100 pixels |
-| `+` / `=`, `-` / `_` | Zoom in, out one level (two with `Shift`) |
+| `=` / `-` | Zoom in, out one level; with `Shift` (`+` / `_` on most layouts) two levels |
 | `Shift` + left / right | Turn 15° |
 | `Shift` + up / down | Tilt 10° more or less (up to 80° on the globe, `maximumFlatMapTiltDegrees` on the flat map) |
 
-Each press eases over 0.3 seconds; quick presses add up, a held key keeps moving. Keys with `Ctrl`, `Alt` or
+Each press eases over 0.3 seconds; quick zoom, turn and tilt presses add up (arrows pan on from where the camera is,
+as in MapLibre), and a held key keeps moving. Keys with `Ctrl`, `Alt` or
 `Cmd` stay with the browser, and keys typed into a form field inside the map (a popup's `<input>`) never move it.
 Double-click or double-tap zooms in on that point.
 
@@ -166,13 +167,14 @@ export const accessibleControls = (
 )
 ```
 
-`keyboard={false}` turns the keys off. In vanilla, `EarthViewControls` has `label` (set before `attach`),
+`keyboard={false}` turns the keys off; the map stays a named region in the tab order (give the element
+`tabindex="-1"` to take it out). In vanilla, `EarthViewControls` has `label` (set before `attach`),
 `doubleClickZoom`, and `keyboard` (a `KeyboardControls`: `enabled`, `setOptions`, and a protected `actionFor` to
 override for other bindings); `keyboardAction(press, steps)` is the binding table on its own.
 
 Users who ask the system to reduce motion (`prefers-reduced-motion`) get no animation: camera animations, key presses
-and the globe-to-map morph jump to their end. Pass `essential: true` to `earth.setView` (or an animation) for motion
-that carries meaning.
+and the globe-to-map morph jump to their end. Pass `essential: true` to an animation, or to `earth.setView` (in React through
+`useEarth()`), for motion that carries meaning.
 
 ## Common Mistakes
 

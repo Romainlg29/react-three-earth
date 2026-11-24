@@ -1095,8 +1095,8 @@ The map works with a keyboard and a screen reader (`src/core/KeyboardControls.ts
   pure `keyboardAction(press, steps)`. Arrows `panBy` 100 px, `+` / `-` zoom 1 level (2 with `Shift`), `Shift` + left /
   right turn 15°, `Shift` + up / down tilt 10°, clamped to the view's tilt limit (80° on the globe, the flat map's
   `maximumTiltRadians`). Every press goes through `earth.camera.easeTo` (0.3 s, ease-out), so it stops other animations,
-  honours `prefers-reduced-motion`, and fires the camera events. Quick presses add to the running target (like
-  `NavigationControl`); a held key (`event.repeat`) starts from the camera instead, or holding `+` would race ahead. A
+  honours `prefers-reduced-motion`, and fires the camera events. Quick zoom, turn and tilt presses add to the running target (like
+  `NavigationControl`; arrows pan on from the camera, as MapLibre); a held key (`event.repeat`) starts from the camera instead, or holding `+` would race ahead. A
   press stops the pointer controls' inertia first. Keys with `Ctrl` / `Alt` / `Cmd`, keys in form fields inside the map
   and keys during a morph are not applied (during a morph the key is still taken, so arrows do not scroll the page).
   The binding table is a protected `actionFor`, the seam for other bindings.
@@ -1112,7 +1112,9 @@ The map works with a keyboard and a screen reader (`src/core/KeyboardControls.ts
 Changed from the brief: double-click zoom was already there upstream, so it is a prop rather than new code. Cooperative
 gestures and box zoom move to part 2, to keep this pull request small and leave touch input untouched here.
 
-Not supported yet: cooperative gestures, box zoom (part 2); no live-region announcement of the view after a key press.
+Not supported yet: cooperative gestures, box zoom (part 2); no live-region announcement of the view after a key press;
+keyboard zoom, like `NavigationControl`, is not clamped to the pointer controls' distance limits (camera zoom limits
+belong in `EarthCamera`); `<Earth>` has no prop for `essential` on the morph (use `useEarth().setView`).
 
 | Check | Result |
 | --- | --- |

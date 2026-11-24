@@ -170,11 +170,7 @@ export class EarthViewControls {
   readonly keyboard: KeyboardControls
   /** Steepest tilt a two-finger drag or `Shift` + up reaches on the globe, in radians. Default: 80°. */
   maximumGlobeTiltRadians = MathUtils.degToRad(80)
-  /**
-   * What screen readers call the map, on the element the controls attach to (with `role="region"`). Default:
-   * "Map". Set it before `attach`, or call `attach` again.
-   */
-  label = 'Map'
+  protected mapLabel = 'Map'
   protected domElement: HTMLElement | null = null
   /** The element's accessibility attributes before `attach`, put back by `detach`. */
   protected savedAttributes = new Map<string, string | null>()
@@ -229,9 +225,23 @@ export class EarthViewControls {
     this.savedAttributes.clear()
   }
 
+  /**
+   * What screen readers call the map: the `aria-label` of the element the controls attach to (with
+   * `role="region"`). Default: "Map". Changing it while attached renames the map without detaching, so focus and
+   * gestures in progress are kept.
+   */
+  get label(): string {
+    return this.mapLabel
+  }
+
+  set label(value: string) {
+    this.mapLabel = value
+    this.domElement?.setAttribute('aria-label', value)
+  }
+
   /** Sets the map's accessibility attributes, keeping the element's own values to put back on `detach`. */
   protected describe(domElement: HTMLElement): void {
-    const attributes: Record<string, string> = { tabindex: '0', role: 'region', 'aria-label': this.label }
+    const attributes: Record<string, string> = { tabindex: '0', role: 'region', 'aria-label': this.mapLabel }
     for (const [name, value] of Object.entries(attributes)) {
       // An app's own `tabindex` (for example -1, to keep the map out of the tab order) wins
       if (name === 'tabindex' && domElement.hasAttribute('tabindex')) continue

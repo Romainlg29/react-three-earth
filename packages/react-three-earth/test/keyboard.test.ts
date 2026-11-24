@@ -217,6 +217,16 @@ describe('EarthViewControls accessibility', () => {
     controls.dispose()
   })
 
+  it('renames the map while attached without detaching', () => {
+    const controls = createControls()
+    const element = document.createElement('div')
+    controls.attach(element)
+    controls.label = 'Trail map'
+    expect(element.getAttribute('aria-label')).toBe('Trail map')
+    expect(element.getAttribute('tabindex')).toBe('0')
+    controls.dispose()
+  })
+
   it("keeps an app's own tabindex", () => {
     const controls = createControls()
     const element = document.createElement('div')
