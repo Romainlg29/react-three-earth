@@ -42,6 +42,8 @@ export interface DrawModeContext {
   setCursor(cursor: string | null): void
   /** Turns double-click and double-tap zoom off while the mode places things by tapping. Released on `exit`. */
   holdDoubleClickZoom(): void
+  /** Gives double-click and double-tap zoom back before `exit`. */
+  releaseDoubleClickZoom(): void
 }
 
 /** What a mode reports for `Draw.getState()`. */

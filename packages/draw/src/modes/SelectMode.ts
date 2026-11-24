@@ -518,9 +518,10 @@ export class SelectMode extends DrawMode {
     const store = this.context?.store
     const next = store === undefined ? [...ids] : ids.filter(id => store.has(id))
     const same = next.length === this.selection.length && next.every((id, index) => id === this.selection[index])
-    // From the first selection on, a double tap enters edit mode rather than zooming, even on presses nobody takes
-    // (`moveFeatures: false`). Released when the mode exits.
+    // While something is selected, a double tap enters edit mode rather than zooming, even on presses nobody takes
+    // (`moveFeatures: false`). The first tap selects, so the hold is in place before the second press.
     if (next.length > 0) this.context?.holdDoubleClickZoom()
+    else this.context?.releaseDoubleClickZoom()
     if (!same) {
       this.selection = next.length === 0 ? NO_FEATURE_IDS : next
       this.selectedVertex = null

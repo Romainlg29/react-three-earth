@@ -77,7 +77,7 @@ Start in faces with `new SelectMode({ elementMode: 'face' })`; `editVertices: fa
 - A **double tap** (or double click) on a feature selects it and enters edit mode at once; on a mesh it switches to
   faces and picks the face under the pointer. Double tap a box's wall and its arrow is ready to drag.
 - A tap on the empty map leaves edit mode and keeps the selection; another clears it. Escape (and Tab) leave too.
-- Once something is selected, the camera's double-tap zoom is held off until the select mode is left.
+- While something is selected, the camera's double-tap zoom is held off, so a double tap edits instead of zooming.
   Selecting another feature starts with its gizmo.
 - Points have no edit mode. Flat multipolygons (several draped polygons) neither: they keep the gizmo.
 

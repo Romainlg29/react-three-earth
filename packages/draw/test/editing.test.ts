@@ -133,6 +133,7 @@ function createContext(features: DrawFeature[]) {
     },
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
+    releaseDoubleClickZoom: vi.fn(),
   }
   return { context, store, events }
 }

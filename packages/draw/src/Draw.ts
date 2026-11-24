@@ -469,6 +469,10 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       holdDoubleClickZoom: () => {
         this.doubleClickZoomRelease ??= this.earth?.interactions.holdDoubleClickZoom() ?? null
       },
+      releaseDoubleClickZoom: () => {
+        this.doubleClickZoomRelease?.()
+        this.doubleClickZoomRelease = null
+      },
     }
   }
 
