@@ -73,5 +73,5 @@ export function useRegisterImagerySource(source: import('../core/sources.js').Im
 /** The vanilla `Marker` of the nearest `<Marker>`, for a `<Popup>` or content inside it. */
 export const MarkerContext = createContext<import('../core/Marker.js').Marker | null>(null)
 
-/** The vanilla `Controls` of the nearest `<Controls>`, which the control components add themselves to. */
+/** The vanilla `Controls` of the nearest `<Controls>`. */
 export const ControlsContext = createContext<import('../controls/Controls.js').Controls | null>(null)

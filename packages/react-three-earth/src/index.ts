@@ -75,17 +75,19 @@ export {
   type SourceFeatureQueryOptions,
 } from './core/featureQuery.js'
 export { LayerEvents, type LayerEventListener, type LayerEventOptions, type LayerEventType, type LayerPointerEvent } from './core/LayerEvents.js'
-export { Controls, MapControl, type ControlPosition, type ControlsItem, type ControlsOptions } from './controls/Controls.js'
-export { NavigationControl, type NavigationControlOptions } from './controls/NavigationControl.js'
-export { ScaleControl, type ScaleControlOptions } from './controls/ScaleControl.js'
+export { Controls, CONTROLS_CLASS_NAME, MapControl, type ControlsOptions, type ControlStateListener } from './controls/Controls.js'
+export { NavigationControl, type NavigationControlOptions, type NavigationControlState } from './controls/NavigationControl.js'
+export { ScaleControl, type ScaleControlOptions, type ScaleControlState } from './controls/ScaleControl.js'
 export {
   GeolocateControl,
   type GeolocateControlOptions,
+  type GeolocateControlState,
   type GeolocateEventMap,
-  type GeolocateState,
+  type GeolocateStatus,
+  type UserLocation,
 } from './controls/GeolocateControl.js'
-export { FullscreenControl, fullscreenSupported, type FullscreenControlOptions } from './controls/FullscreenControl.js'
-export { ViewControl, type ViewControlEventMap, type ViewControlOptions } from './controls/ViewControl.js'
+export { FullscreenControl, fullscreenSupported, type FullscreenControlOptions, type FullscreenControlState } from './controls/FullscreenControl.js'
+export { ViewControl, type ViewControlEventMap, type ViewControlOptions, type ViewControlState } from './controls/ViewControl.js'
 export { DEFAULT_CONTROLS_LOCALE, resolveLocale, type ControlsLocale } from './controls/locale.js'
 export { computeScaleBar, formatScaleBar, roundScaleLength, type ScaleBar, type ScaleUnit } from './controls/scale.js'
 export { compassIsReset, compassRotation, compassTransform } from './controls/navigation.js'

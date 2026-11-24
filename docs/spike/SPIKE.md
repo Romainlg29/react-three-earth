@@ -1094,34 +1094,43 @@ which starts near a 400 px radius at a weight × intensity of 1.
 
 ## Map controls (W10)
 
-DOM controls over the canvas (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`.
+Headless controls (`src/controls/`, `src/react/controls.tsx`), skill `map-controls`. The library draws no buttons and
+ships no CSS for them: apps draw their own from state, and the playground's styled set (`apps/playground/src/controls/`)
+is the example.
 
-- **Structure.** `Controls({ earth, container, position })` owns a corner element (`.react-three-earth-controls`,
-  shared and reference-counted per container and corner, so two `Controls` in one corner stack). Items implement
-  `ControlsItem { element, onAdd, onRemove }`; `MapControl` is the base class with `addTo` and `attach`/`detach`. That
-  is the plugin seam: a third-party control is a `MapControl` subclass. The React `<Controls>` creates the vanilla object in a layout
-  effect and renders its children once it exists; each control component wraps the vanilla class of the same name and
-  rebuilds it when a primitive option changes.
-- **Controls.** `NavigationControl` (zoom by `camera.zoomTo`, summing presses made during the ease; compass from the
-  `rotate`/`pitch` events, `visualizePitch` tilts the needle and resets pitch too), `ScaleControl` (`computeScaleBar`,
-  MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`), `GeolocateControl`,
-  `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on the `update` event, `viewchange` event
-  for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
-- **Geolocate.** States `off | waiting | tracking | background | error`. The dot and the accuracy circle are two
-  `Marker`s (the circle `pitchAlignment: 'map'`, sized as accuracy over metres per pixel). "The user took the map" is a
-  a `pointerdown`, `wheel` or `touchstart` on the container (the corner stops those from the buttons; a `movestart` check
-  was dropped because viewport resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the state
-  before it and restores it on the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1 error disables the button.
-- **Phone.** `pointer: coarse` makes buttons 44 px; corners add `env(safe-area-inset-*)`; `touch-action: manipulation`.
-  iPhone Safari has no element Fullscreen API, so `FullscreenControl` falls back to a `position: fixed; 100dvh` class on
-  the container (Escape leaves), or hides with `unsupported: 'hide'`. Not tested on a real iPhone yet.
-- **Gestures.** The corner stops `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart` so a press
-  on a control never starts a map gesture or a map `click`.
-- **Not done.** `TerrainControl` (needs W8 exaggeration), disabled zoom buttons at the limits, compass dragging.
-- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, every control against a stub earth); browser check
-  `map controls` clicks zoom in/out, compass reset, view toggle, scale, geolocate (granted position near the fixture peak),
-  fullscreen, and a 390 px touch context with 44 px buttons (`controls-desktop.png`, `controls-phone.png`). Terrain
-  loading changes the zoom (measured from the ground), so the check waits for `earth.idle` before measuring.
+- **Structure.** `MapControl<State>` is the base: `getState()` (a new object only when something changed, so React's
+  `useSyncExternalStore` takes `subscribe` and `getState` as they are), `subscribe(listener)`, and the actions. The earth
+  is a constructor option. A control listens to the earth only while it has a listener (`attach` on the first, `detach`
+  after the last), so construction has no side effect and React can build it in a `useMemo`. Each hook
+  (`useNavigationControl`…) wraps the vanilla class of the same name and adds `…ButtonProps` objects (type, `aria-label`,
+  `title`, `onClick`, `aria-pressed`…) to spread on the app's own buttons.
+- **Controls.** `Controls({ container })` is an unstyled `<div class="react-three-earth-controls">` that stops
+  `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart`, so a press on a control never starts a map
+  gesture or a map `click`. The React `<Controls className style>` renders its children as HTML in it through `useDomRoot`
+  (contexts bridged, so the hooks and `<Marker>` work inside). The class also marks map UI for `GeolocateControl` and
+  cooperative gestures.
+- **State.** `NavigationControl` (zoom by `camera.zoomTo`, summing calls made during the ease; compass rotation, tilt and
+  a CSS transform from the `rotate`/`pitch` events, `north`; `visualizePitch` resets pitch too), `ScaleControl`
+  (`computeScaleBar`, MapLibre's 1-2-3-5 steps, from `getGroundResolutionMetersPerPixel` on `move`/`zoom`; width rounded
+  to whole pixels), `GeolocateControl`, `FullscreenControl`, `ViewControl` (`earth.setView`, follows `earth.view.mode` on
+  the `update` event, `viewchange` event for apps that keep `<Earth view>` in state). Labels come from `ControlsLocale`.
+- **Geolocate.** Statuses `off | waiting | tracking | background | error`. The state carries `userLocation` and
+  `accuracyDiameterPixels` (accuracy over metres per pixel at the centre); the app draws the dot and circle (the
+  playground uses two `<Marker>`s, the circle `pitchAlignment: 'map'`). "The user took the map" is a `pointerdown`, `wheel`
+  or `touchstart` on the container outside `.react-three-earth-controls` (a `movestart` check was dropped because viewport
+  resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the status before it and restores it on
+  the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1
+  error disables it. A one-off request answered after `stop` is ignored.
+- **Phone.** iPhone Safari has no element Fullscreen API, so `FullscreenControl` covers the page with an inline
+  `position: fixed; height: 100dvh` (the previous inline style is put back on exit; Escape leaves), or reports
+  `available: false` with `unsupported: 'hide'`. 44 px targets and safe-area insets are now the app's CSS (the playground
+  has them). Not tested on a real iPhone yet.
+- **Not done.** `TerrainControl` (needs W8 exaggeration), zoom limits in the state, compass dragging.
+- **Checks.** `test/mapControls.test.ts` (scale rounding, compass maths, subscription, every control's state and actions
+  against a stub earth); browser check `map controls` drives the playground's buttons: zoom in/out, compass reset, view
+  toggle, scale, geolocate (granted position near the fixture peak), fullscreen, and a 390 px touch context with 44 px
+  buttons (`controls-desktop.png`, `controls-phone.png`). Terrain loading changes the zoom (measured from the ground), so
+  the check waits for `earth.idle` before measuring.
 
 ## Keyboard and accessibility (W15), part 1
 

@@ -3,18 +3,15 @@ import { setCameraView, type CameraView, type Earth as EarthImpl } from 'react-t
 import {
   Atmosphere,
   AttributionControl,
-  Controls,
   Earth,
   EarthControls,
-  FullscreenControl,
-  NavigationControl,
   QuantizedMeshSource,
-  ScaleControl,
   Terrain,
   useEarth,
 } from 'react-three-earth/react'
 import { useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react'
 
+import { MapControls } from '../controls/MapControls'
 import { cameraFromParams, forceWebGL, terrainAttribution, terrainUrl, withAtmosphere } from './data'
 import './examples.css'
 
@@ -69,13 +66,7 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
           {withAtmosphere ? <Atmosphere /> : <PlainLights />}
           <EarthControls {...controls} />
           <AttributionControl />
-          <Controls position="top-right">
-            <NavigationControl visualizePitch />
-            <FullscreenControl />
-          </Controls>
-          <Controls position="bottom-left">
-            <ScaleControl />
-          </Controls>
+          <MapControls />
         </Earth>
       </Canvas>
       <section className="example-card" aria-label={title} data-collapsed={collapsed}>
