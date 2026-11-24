@@ -1798,10 +1798,20 @@ async function editing(name, { touch = false, flat = false } = {}) {
     await page.mouse.move(middle.x - 40, middle.y)
     const beforeKeys = await ring()
     const updatesBeforeKeys = await page.evaluate(() => window.drawUpdates)
+    // What the keys reached, for the failure message.
+    const keyState = () => page.evaluate(() => {
+      const element = window.earth.pointerEventsElement
+      const active = document.activeElement
+      return { focused: active === element || element.contains(active), documentFocused: document.hasFocus(), transform: window.draw.inspect().modeState.keyboardTransform }
+    })
+    const keySteps = { beforeG: await keyState() }
     await page.keyboard.press('g')
+    keySteps.afterG = await keyState()
     await page.mouse.move(middle.x + 20, middle.y + 30, { steps: 6 })
+    keySteps.afterMove = await keyState()
     await page.keyboard.press('x')
     await page.waitForTimeout(200)
+    keySteps.afterX = await keyState()
     await page.keyboard.press('Enter')
     await page.waitForTimeout(300)
     const afterKeys = await ring()
@@ -1810,6 +1820,7 @@ async function editing(name, { touch = false, flat = false } = {}) {
       updates: (await page.evaluate(() => window.drawUpdates)) - updatesBeforeKeys,
       eastDegrees: Math.min(...shift.map(([east]) => east)),
       northDegrees: Math.max(...shift.map(([, north]) => Math.abs(north))),
+      steps: keySteps,
     }
   }
   await page.close()
