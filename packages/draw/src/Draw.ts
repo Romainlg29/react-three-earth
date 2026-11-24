@@ -16,8 +16,10 @@ import { createFeatureId, FeatureStore, type FeatureStoreChange } from './Featur
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
 import { LineStringMode, PointMode, PolygonMode } from './modes/PathModes.js'
+import { CircleMode, RectangleMode, SphereMode } from './modes/ShapeModes.js'
 import { DrapedFeatures } from './render/DrapedFeatures.js'
 import { LiveOverlay, type OverlayContent } from './render/LiveOverlay.js'
+import { isSolidFeature, SolidFeatures } from './render/SolidFeatures.js'
 import { resolveStyle } from './style.js'
 import type { DrawFeature, DrawGeometry, DrawPointerEvent, DrawStyle, DrawStyleInput, DrawStyleState } from './types.js'
 
@@ -30,7 +32,7 @@ export interface DrawOptions {
    * Default: 'draw'.
    */
   name?: string
-  /** The modes `setMode` can switch to. Default: static, point, linestring and polygon. */
+  /** The modes `setMode` can switch to. Default: static, point, linestring, polygon, circle, rectangle and sphere. */
   modes?: DrawMode[]
   /** The mode to start in. Default: 'static'. */
   mode?: string
@@ -109,6 +111,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   protected overlay: LiveOverlay | null = null
   protected readonly draped = new DrapedFeatures()
   protected drapedLayer: DrapedLayerHandle | null = null
+  /** 3D features (extruded, spheres, at an altitude), drawn as solids in the scene rather than draped. */
+  protected solids: SolidFeatures | null = null
   /** Bounds of each draped feature, to redraw where a changed feature was. */
   protected drapedBounds = new Map<string, GeographicBounds>()
   /** Live ids the draped layer leaves out, from the last refresh. */
@@ -127,7 +131,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.styleInput = style
     this.keyboard = keyboard
     this.makeId = createId
-    for (const each of modes ?? [new StaticMode(), new PointMode(), new LineStringMode(), new PolygonMode()]) {
+    for (const each of modes ?? [new StaticMode(), new PointMode(), new LineStringMode(), new PolygonMode(), new CircleMode(), new RectangleMode(), new SphereMode()]) {
       if (this.modes.has(each.name)) throw new Error(`Draw: two modes are named "${each.name}"; give each mode a unique name.`)
       this.modes.set(each.name, each)
     }
@@ -247,6 +251,9 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     const overlay = new LiveOverlay(earth)
     this.overlay = overlay
     context.addObject(overlay.object)
+    const solids = new SolidFeatures(earth)
+    this.solids = solids
+    context.addObject(solids.object)
     this.drapedLayer = context.registerDrapedLayer({
       id: `${this.name}:features`,
       premultipliedAlpha: true,
@@ -286,6 +293,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       this.applyCursor(null)
       overlay.dispose()
       this.overlay = null
+      solids.dispose()
+      this.solids = null
       this.drapedLayer = null
       this.earth = null
     })
@@ -299,7 +308,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   }
 
   inspect(): unknown {
-    return { mode: this.mode.name, features: this.store.size, live: [...this.liveIds], modeState: this.mode.inspect() }
+    return { mode: this.mode.name, features: this.store.size, solids: this.solids?.size ?? 0, live: [...this.liveIds], modeState: this.mode.inspect() }
   }
 
   // ---- Internals ----
@@ -418,12 +427,20 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     for (const id of this.liveIds) if (!live.has(id)) touched.add(id)
     this.liveIds = live
     const entries: Array<{ feature: DrawFeature; style: DrawStyle }> = []
+    const solidEntries: Array<{ feature: DrawFeature; style: DrawStyle }> = []
     const bounds = new Map<string, GeographicBounds>()
     for (const feature of this.store.values()) {
       if (live.has(feature.id)) continue
-      entries.push({ feature, style: this.styleOf(feature, { selected: false, drawing: false }) })
+      const style = this.styleOf(feature, { selected: false, drawing: false })
+      // 3D features stand in the scene; the rest drape on the terrain.
+      if (isSolidFeature(feature)) {
+        solidEntries.push({ feature, style })
+        continue
+      }
+      entries.push({ feature, style })
       bounds.set(feature.id, geometryBounds(feature.geometry))
     }
+    this.solids?.setFeatures(solidEntries)
     let dirty: GeographicBounds | null = null
     for (const id of touched) dirty = unionBounds(unionBounds(dirty, this.drapedBounds.get(id) ?? null), bounds.get(id) ?? null)
     this.drapedBounds = bounds
@@ -460,6 +477,8 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /** Redraws the overlay when the camera, the morph or the content changed. */
   protected updateOverlay({ camera, morph }: PluginFrame): boolean {
     this.draped.startFrame()
+    // Solids on the ground follow the terrain's height as it loads.
+    if (this.solids?.update() === true) this.earth?.requestFrame()
     const overlay = this.overlay
     if (overlay === null) return false
     camera.updateMatrixWorld()

@@ -55,7 +55,7 @@ export const RULES = [
   [new RegExp(`^${PLAYGROUND}controls/`), ['controls', 'accessibility', 'gestures', 'examples']],
   [new RegExp(`^${DRAW}`), ['draw']],
   [new RegExp(`^${LIBRARY}core/PointerInteractions\\.ts$`), ['draw', 'markers', 'gestures', 'controls']],
-  [new RegExp(`^${PLAYGROUND}examples/DrawExample\\.tsx$`), ['draw']],
+  [new RegExp(`^${PLAYGROUND}examples/(Draw|Shapes)Example\\.tsx$`), ['draw']],
   [new RegExp(`^${PLAYGROUND}examples/`), ['examples']],
   [new RegExp(`^${PLAYGROUND}heatmap/`), ['heatmap']],
   [new RegExp(`^${PLAYGROUND}geojson/`), ['geojson']],

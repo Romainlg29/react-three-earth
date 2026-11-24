@@ -10,6 +10,7 @@ import { HeatmapExample } from './examples/HeatmapExample'
 import { NightCityExample } from './examples/NightCityExample'
 import { OverlayExample } from './examples/OverlayExample'
 import { PeaksExample } from './examples/PeaksExample'
+import { ShapesExample } from './examples/ShapesExample'
 import { TerrainExample } from './examples/TerrainExample'
 import { WorldLabelsExample } from './examples/WorldLabelsExample'
 import { MapDemo } from './MapDemo'
@@ -20,7 +21,7 @@ const test = params.get('test')
 
 const scenes = { precision: PrecisionTest, afterburner: AfterburnerDemo, atmosphere: AtmosphereTest }
 // `?example=<name>`: the gallery's focused examples (src/examples/), on live data or `?fixtures`.
-const examples = { city: CityExample, labels: WorldLabelsExample, geojson: PeaksExample, heatmap: HeatmapExample, terrain: TerrainExample, overlay: OverlayExample, embedded: EmbeddedExample, night: NightCityExample, draw: DrawExample }
+const examples = { city: CityExample, labels: WorldLabelsExample, geojson: PeaksExample, heatmap: HeatmapExample, terrain: TerrainExample, overlay: OverlayExample, embedded: EmbeddedExample, night: NightCityExample, draw: DrawExample, shapes: ShapesExample }
 const Scene = examples[params.get('example') as keyof typeof examples] ?? scenes[test as keyof typeof scenes] ?? MapDemo
 
 // `?strict` renders under React's StrictMode, which runs every effect twice.

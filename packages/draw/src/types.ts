@@ -32,6 +32,11 @@ export interface DrawStyle {
   pointOutlineColor: string
   /** Default: 2. */
   pointOutlineWidthPixels: number
+  /**
+   * 3D features (extruded shapes, spheres, polygons at an altitude) are drawn as solids in `fillColor` at this opacity,
+   * with edges in `lineColor`. Default: 0.85.
+   */
+  solidOpacity: number
   /** Vertex handles of the feature being drawn or edited. Default: '#ffffff'. */
   vertexColor: string
   /** Default: 5. */

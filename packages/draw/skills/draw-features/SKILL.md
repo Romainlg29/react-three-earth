@@ -4,7 +4,9 @@ description: >
   Use when an app lets users draw on a react-three-earth map, like maplibre-gl-draw or terra-draw: place points, draw
   lines and polygons by tapping, get the result as GeoJSON, load saved features back, style them, or build a drawing
   toolbar (headless: the app renders the buttons from useDrawState). Also when drawing must work with touch on
-  iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode.
+  iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode. Also for circles,
+  rectangles, ellipses, regular polygons and spheres in metres (createCircle, createRectangle…, like turf.circle), and
+  for 3D: extruded cylinders, boxes, prisms and walls, and shapes at an altitude (the GeoJSON third coordinate).
 metadata:
   purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
@@ -15,10 +17,14 @@ sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/Draw.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/DrawMode.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/PathModes.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/modes/ShapeModes.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/shapes.ts'
+  - 'Romainlg29/react-three-earth:packages/draw/src/render/SolidFeatures.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/types.ts'
   - 'Romainlg29/react-three-earth:packages/draw/src/react/index.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/PointerInteractions.ts'
   - 'Romainlg29/react-three-earth:apps/playground/src/examples/DrawExample.tsx'
+  - 'Romainlg29/react-three-earth:apps/playground/src/examples/ShapesExample.tsx'
 requires:
   - react-three-earth#getting-started
 ---
@@ -32,7 +38,7 @@ map, and nothing else. No buttons, no CSS. The app builds its toolbar from the s
 | maplibre-gl-draw / terra-draw | react-three-earth-draw |
 | --- | --- |
 | `new MapboxDraw()`, `map.addControl(draw)` | `new Draw()`, `earth.addPlugin(draw)` or `<Earth plugins={[draw]}>` |
-| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'point'`, `'linestring'`, `'polygon'`) |
+| `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
 | `draw.getAll()` | `draw.getFeatures()` (a `FeatureCollection`) |
 | `draw.add(geojson)`, `draw.delete(ids)`, `draw.deleteAll()` | `draw.addFeatures(geojson)`, `draw.removeFeatures(ids)`, `draw.clear()` |
 | `draw.create`, `draw.update`, `draw.delete` events | `create`, `update`, `delete`, `change`, `modechange` events |
@@ -158,8 +164,49 @@ draw.setStyle({ lineColor: '#000000' }) // redraws every feature
 ```
 
 Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixels`, `pointColor`, `pointRadiusPixels`,
-`pointOutlineColor`, `pointOutlineWidthPixels`, and `vertex*` for the handles. Colours are CSS colours without alpha;
-opacities are separate.
+`pointOutlineColor`, `pointOutlineWidthPixels`, `solidOpacity` (3D solids, default 0.85; their edges use `lineColor`),
+and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
+
+### Shapes and 3D solids
+
+The `circle`, `rectangle` and `sphere` modes take two taps: a center (or a corner), then the edge (or the opposite
+corner). The shape previews under the mouse between taps. A second tap on the first point, a double tap, is ignored.
+Shapes are plain GeoJSON polygons (a sphere is a `Point`) whose measurements are kept in `properties.shape`, so they can
+be rebuilt from metres rather than from their outline. To make shapes in code, use the builders. Lengths are metres on
+the ground, and angles are degrees clockwise from north.
+
+```ts
+import { createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, Draw, shapeOf } from 'react-three-earth-draw'
+
+const draw = new Draw()
+draw.addFeatures([
+  createCircle([6.6, 46.45], 1500, { extrusionHeightMeters: 800 }), // a cylinder 800 m tall, on the terrain
+  createRectangle([6.65, 46.45], 2000, 3500, { rotationDegrees: 30, extrusionHeightMeters: 900 }), // a box
+  createRegularPolygon([6.55, 46.5], 1200, 6, { baseHeightMeters: 2500, extrusionHeightMeters: 200 }), // a slab at 2.5 km
+  createEllipse([6.7, 46.4], 3000, 1000, { rotationDegrees: 45 }), // flat: draped on the terrain
+  createSphere([6.6, 46.5], 900, { id: 'ball' }), // a ball resting on the terrain
+])
+const shape = shapeOf(draw.getFeature('ball')!) // { type: 'sphere', center: [6.6, 46.5], radiusMeters: 900 }
+```
+
+A feature becomes a 3D solid, drawn as a lit mesh instead of being draped, in three cases:
+
+- `properties.extrusionHeightMeters > 0`. A polygon becomes a prism (a circle a cylinder, a rectangle a box), and a line string becomes a wall.
+- Its positions have a third coordinate, the GeoJSON altitude, in metres above the WGS84 ellipsoid like every height
+  in react-three-earth. A polygon at an altitude floats, and a line string at an altitude is drawn as a line in the air.
+- It is a sphere (`properties.shape.type === 'sphere'`). It rests on the terrain, or its center sits at the point's altitude.
+
+Solids without altitudes stand on the terrain under their center. Long edges are split every 2 km so walls follow the curve of the
+Earth. To draw solids, pass `extrusionHeightMeters` to the modes; it can change at any time:
+
+```ts
+import { CircleMode, Draw, PolygonMode, RectangleMode, SphereMode, StaticMode } from 'react-three-earth-draw'
+
+const circle = new CircleMode({ extrusionHeightMeters: 600 })
+const polygon = new PolygonMode({ extrusionHeightMeters: 600 })
+const draw = new Draw({ modes: [new StaticMode(), circle, new RectangleMode(), polygon, new SphereMode()] })
+circle.extrusionHeightMeters = 2000 // the next circles are 2 km tall; undefined draws flat ones
+```
 
 ### React hooks
 
@@ -240,6 +287,37 @@ Nothing is rendered outside the map. Build the toolbar from `useDrawState` (or `
 Finished features are draped and redraw once per change. Changing a feature every frame through `addFeatures`
 redraws terrain textures every frame: fine for an edit, too heavy for an animation. Animate with scene objects.
 
+### HIGH: Loading GeoJSON whose third coordinate is not an ellipsoidal altitude
+
+A polygon or line string with any third coordinate is drawn as a solid at that altitude, above the WGS84 ellipsoid.
+Files from KML often carry `0`, and GPS tracks carry heights above sea level, so these features end up buried
+under the terrain or floating tens of metres off. To drape them, strip the third coordinate before `addFeatures`.
+Points always drape; only spheres stand in 3D.
+
+```ts
+import type { FeatureCollection, LineString, Polygon } from 'geojson'
+
+function dropAltitudes(collection: FeatureCollection<Polygon | LineString>): FeatureCollection<Polygon | LineString> {
+  const flat = (positions: number[][]) => positions.map(([longitude, latitude]) => [longitude!, latitude!])
+  return {
+    ...collection,
+    features: collection.features.map(feature => ({
+      ...feature,
+      geometry:
+        feature.geometry.type === 'Polygon'
+          ? { type: 'Polygon', coordinates: feature.geometry.coordinates.map(flat) }
+          : { type: 'LineString', coordinates: flat(feature.geometry.coordinates) },
+    })),
+  }
+}
+```
+
+### MEDIUM: Solids hundreds of kilometres wide on the flat map
+
+Solids are built on the curve of the globe, with their faces split into triangles about 2 km wide. On the flat map
+they keep that curve, so a solid 300 km wide droops about 1.8 km at its edges there. For airspaces at that
+scale, split them into smaller features.
+
 ### MEDIUM: Multi geometries
 
 `addFeatures` throws for `MultiPolygon` and other `Multi*` geometries; split them into one feature per part first.
@@ -249,3 +327,5 @@ redraws terrain textures every frame: fine for an edit, too heavy for an animati
 - The toolbar switches modes, and `canFinish`/`canUndo` enable its buttons.
 - Taps place vertices on the globe and on the flat map, with a finger on a phone too; one finger still pans.
 - `getFeatures()` (or the `change` event) gives the GeoJSON to save, and `features`/`addFeatures` load it back.
+- Shapes made in two taps or with the builders keep `properties.shape`; extruded ones and ones at an altitude stand as
+  solids on the globe and the flat map.
