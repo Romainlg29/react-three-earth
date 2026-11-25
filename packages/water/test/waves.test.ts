@@ -13,8 +13,8 @@ import {
   wavenumberSpectrum,
   type SeaStateOptions,
 } from '../src/waves/spectrum.js'
-import { inverseStandardNormal, WAVE_CHOPPINESS } from '../src/waves/foam.js'
-import { createButterflies } from '../src/waves/WaveComputeField.js'
+import { inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS, WAVE_FOAM_LIFETIME_SECONDS } from '../src/waves/foam.js'
+import { createButterflies, foamKept } from '../src/waves/WaveComputeField.js'
 import { WAVE_CASCADE_LENGTHS_METERS, WAVE_REPEAT_PERIOD_SECONDS, WaveField } from '../src/waves/WaveField.js'
 import { whitecapCoverage } from '../src/optics.js'
 import { eastNorthAt, WAVE_COMPUTE_GRID_SIZE, WaveSurface } from '../src/waves/WaveSurface.js'
@@ -399,6 +399,24 @@ describe('WaveComputeField', () => {
     // |kx/k|² + |ky/k|² = 1: D east and north hold the height's variance between them, wave by wave.
     expect(displacement / height).toBeCloseTo(1, 6)
     expect(height / cells).toBeGreaterThan(0)
+  })
+
+  it('lets the foam fade over its lifetime, and drops it when the clock jumps back', () => {
+    expect(foamKept(0)).toBe(1)
+    expect(foamKept(WAVE_FOAM_LIFETIME_SECONDS / 4)).toBeCloseTo(Math.exp(-0.25), 9)
+    // A long pause (a hidden tab) fades it by a second's worth, not all at once.
+    expect(foamKept(60)).toBeCloseTo(Math.exp(-1 / WAVE_FOAM_LIFETIME_SECONDS), 9)
+    expect(foamKept(null)).toBe(0)
+    expect(foamKept(-1)).toBe(0)
+    expect(foamKept(Number.NaN)).toBe(0)
+  })
+
+  it('breaks only a share of the whitecap coverage at once: the rest is the foam left behind', () => {
+    const surface = new WaveSurface()
+    surface.setWhitecapCoverage(0.1)
+    const score = (surface as unknown as { whitecapScore: { value: number } }).whitecapScore.value
+    expect(score).toBeCloseTo(inverseStandardNormal(0.1 * WAVE_BREAKING_SHARE), 9)
+    surface.dispose()
   })
 
   it('scores the normal distribution', () => {

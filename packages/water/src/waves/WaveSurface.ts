@@ -1,8 +1,8 @@
 import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
+import { cameraWorldMatrix, float, fwidth, int, max, mix, mx_fractal_noise_float, mx_worley_noise_float, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
-import { inverseStandardNormal, WAVE_CHOPPINESS } from './foam.js'
+import { inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS } from './foam.js'
 import type { SeaStateOptions } from './spectrum.js'
 import { WaveComputeField } from './WaveComputeField.js'
 import { WaveField, type WaveFieldOptions } from './WaveField.js'
@@ -65,13 +65,15 @@ export class WaveSurface {
   readonly weight = uniform(1)
   /** The share of the sea white with whitecaps. */
   protected readonly whitecapCoverage = uniform(0)
-  /** Φ⁻¹ of `whitecapCoverage`: how far below its mean the Jacobian falls on the foam. */
+  /** Φ⁻¹ of the share breaking now (`WAVE_BREAKING_SHARE` of `whitecapCoverage`): how far below its mean the Jacobian falls on a breaking crest. */
   protected readonly whitecapScore = uniform(-8)
   /** 1 once the GPU computes the displacement's derivatives, so the foam follows the breaking crests. */
   protected readonly foamFromWaves = uniform(0)
   /** Sample the slopes (and on the GPU the displacement's derivatives): their values swap to the GPU's textures. */
   protected readonly surfaceSampler: TextureNode
   protected readonly foldSampler: TextureNode
+  /** Samples the foam the crests left (on the GPU path; zeros before). */
+  protected readonly foamSampler: TextureNode
   protected readonly emptyFold: DataArrayTexture
   protected readonly east = uniform(new Vector3(1, 0, 0))
   protected readonly north = uniform(new Vector3(0, 1, 0))
@@ -124,12 +126,14 @@ export class WaveSurface {
     this.emptyFold.generateMipmaps = false
     this.emptyFold.needsUpdate = true
     this.foldSampler = texture(this.emptyFold)
+    this.foamSampler = texture(this.emptyFold)
   }
 
   /** Sets the share of the sea white with whitecaps (`whitecapCoverage`): the drawn foam covers as much. */
   setWhitecapCoverage(coverage: number): void {
     this.whitecapCoverage.value = coverage
-    this.whitecapScore.value = inverseStandardNormal(coverage)
+    this.whitecapScore.value = inverseStandardNormal(coverage * WAVE_BREAKING_SHARE)
+    if (this.computeField !== null) this.computeField.breakingScore.value = this.whitecapScore.value
   }
 
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
@@ -213,6 +217,8 @@ export class WaveSurface {
     const compute = new WaveComputeField(spectrum)
     this.surfaceSampler.value = compute.surfaceTexture
     this.foldSampler.value = compute.foldTexture
+    this.foamSampler.value = compute.foamTexture
+    compute.breakingScore.value = this.whitecapScore.value
     this.foamFromWaves.value = 1
     return compute
   }
@@ -221,6 +227,7 @@ export class WaveSurface {
   protected stopCompute(): void {
     this.surfaceSampler.value = this.field.texture
     this.foldSampler.value = this.emptyFold
+    this.foamSampler.value = this.emptyFold
     this.foamFromWaves.value = 0
     this.computeField?.dispose()
     this.computeField = null
@@ -285,6 +292,8 @@ export class WaveSurface {
     // ∂Dx/∂x, ∂Dy/∂y and ∂Dx/∂y of the displacement, summed over the cascades.
     let stretch: Node = vec2(0)
     let shear: Node = float(0)
+    // The foam the cascades' crests left, weighted by the slope variance each draws here.
+    let left: Node = float(0)
     let resolved: Node = float(0)
     let total: Node = float(0)
     this.field.cascades.forEach((cascade, index) => {
@@ -295,7 +304,9 @@ export class WaveSurface {
       stretch = (stretch as Node<'vec2'>).add(surface.zw.mul(fade))
       shear = (shear as Node<'float'>).add(this.foldSampler.sample(uv).depth(int(index)).x.mul(fade))
       // The slopes are scaled by the fade, so the variance drawn by its square.
-      resolved = (resolved as Node<'float'>).add(this.meanSquareSlopes[index]!.mul(fade.mul(fade)))
+      const drawn = this.meanSquareSlopes[index]!.mul(fade.mul(fade))
+      resolved = (resolved as Node<'float'>).add(drawn)
+      left = (left as Node<'float'>).add(this.foamSampler.sample(uv).depth(int(index)).x.mul(drawn))
       total = (total as Node<'float'>).add(this.meanSquareSlopes[index]!)
     })
     const stretched = stretch as Node<'vec2'>
@@ -310,9 +321,11 @@ export class WaveSurface {
     const threshold = float(1).add(spread.mul(this.whitecapScore))
     const edge = spread.mul(0.25).add(1e-4)
     const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
+    // Crests breaking now, and the foam left where they broke, fading.
+    const density = max(breaking, (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
-    const foam = mix(this.whitecapCoverage, breaking, drawnShare)
+    const foam = mix(this.whitecapCoverage, foamPattern(plane, footprint, density as Node<'float'>), drawnShare)
     return {
       plane,
       slope: slope as Node<'vec2'>,
@@ -387,6 +400,22 @@ export class WaveSurface {
     this.field.dispose()
     this.emptyFold.dispose()
   }
+}
+
+/** The size of the foam's bubbly cells, metres. */
+const FOAM_CELL_METERS = 0.6
+
+/**
+ * Foam of `density` (0 to 1) broken into bubbly cells: fresh foam covers them all, thinning foam opens their middles
+ * into a web, then wisps. Farther than a pixel per cell, the density itself.
+ */
+function foamPattern(plane: Node<'vec2'>, footprint: Node<'float'>, density: Node<'float'>): Node<'float'> {
+  const swirl = mx_fractal_noise_float(plane.div(FOAM_CELL_METERS * 6), 3)
+  // The cells, warped: bubbles clear their middles first, so thinning foam is a web between them, then wisps.
+  const cells = mx_worley_noise_float(plane.div(FOAM_CELL_METERS).add(swirl.mul(1.5)))
+  const pattern = float(1).sub(cells).mul(0.75).add(swirl.mul(0.2)).add(0.1)
+  const patches = smoothstep(pattern.sub(0.1), pattern.add(0.1), density)
+  return mix(patches, density, smoothstep(FOAM_CELL_METERS * 0.5, FOAM_CELL_METERS * 2, footprint)) as unknown as Node<'float'>
 }
 
 function isWebGPUBackend(renderer: WebGPURenderer): boolean {
