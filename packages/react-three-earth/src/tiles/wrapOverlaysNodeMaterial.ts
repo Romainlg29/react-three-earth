@@ -4,7 +4,7 @@
 
 // Ported to TSL from: https://github.com/NASA-AMMOS/3DTilesRendererJS/blob/v0.4.24/src/three/plugins/images/overlays/wrapOverlaysMaterial.js
 
-import { Color, Texture } from 'three'
+import { Color, Texture, Vector3 } from 'three'
 import {
   attribute,
   Fn,
@@ -18,6 +18,7 @@ import {
 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
+import { screenClipFactor, screenClipPlane } from '../core/screenClip.js'
 import { reinterpretType } from '../core/types.js'
 
 import type { OverlayParams } from './ImageOverlayPlugin.js'
@@ -31,6 +32,7 @@ interface OverlayNodeMaterial extends NodeMaterial {
 
 const emptyTexture = new Texture()
 const emptyColor = new Color()
+const unclippedPlane = screenClipPlane(null)
 
 /**
  * Terrain layer slots: every imagery source and every draped layer takes one. `ImageOverlayPlugin` refuses
@@ -99,6 +101,14 @@ const layerPremultipliedAlpha = Array.from({ length: MAX_LAYER_COUNT }, (_, inde
   })
 )
 
+// The part of the canvas each layer keeps (`Imagery.screenClip`), as a half-plane over the screen's UV.
+const layerScreenClip = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
+  uniform(new Vector3()).onObjectUpdate(({ material }, { value }) => {
+    const { [OVERLAY_PARAMS]: params } = material as OverlayNodeMaterial
+    value.copy(params?.layerInfo.value[index]?.screenClipPlane ?? unclippedPlane)
+  })
+)
+
 const layerUV = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   attribute(`layer_uv_${index}`, 'vec3').toVarying(`layerUV${index}`)
 )
@@ -132,7 +142,7 @@ function getColorNode(layerCount: number): Node {
 
       // Apply tint color and opacity
       tint.rgb.mulAssign(layerColor[i])
-      tint.mulAssign(layerOpacity[i].mul(wOpacity))
+      tint.mulAssign(layerOpacity[i].mul(wOpacity).mul(screenClipFactor(layerScreenClip[i])))
 
       // Invert the alpha
       If(layerAlphaInvert[i], () => {

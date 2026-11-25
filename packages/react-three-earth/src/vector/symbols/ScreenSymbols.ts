@@ -3,6 +3,7 @@ import { Group, Matrix4, Vector2, Vector3, type Camera, type Mesh } from 'three'
 import type { MeshBasicNodeMaterial } from 'three/webgpu'
 
 import { isOccludedByEllipsoid } from '../../core/projection.js'
+import { screenClipPlane } from '../../core/screenClip.js'
 import { getLayerSymbolEffect, type SymbolEffectDefinition, type SymbolEffectRegistry } from '../../plugins/symbolEffects.js'
 import type { ViewMorph } from '../../view/ViewMorph.js'
 import { cameraHeightAboveSurface, computeViewTilePyramid, tileRowToLatitude, toScenePosition } from '../CameraTilePyramid.js'
@@ -12,6 +13,8 @@ import { SYMBOL_ALLOW_OVERLAP, SYMBOL_ICON, SYMBOL_ICON_ONLY, SYMBOL_IGNORE_PLAC
 import { TILE_EXTENT, type MapStyleSummary, type ScreenLabelHit, type SymbolMesh, type TileBucket, type TileRequest } from '../worker/types.js'
 import { boundBoxes, SymbolPlacement, type PlacementCandidate, type SymbolFade } from './SymbolPlacement.js'
 import { createSymbolMaterial, createSymbolTileMesh, SymbolStateTexture, type SymbolMeshUserData } from './symbolMaterial.js'
+
+const UNCLIPPED_PLANE = screenClipPlane(null)
 
 /** What labels facing the viewer need from the earth in a frame. `Earth.update` builds it once for every source. */
 export interface SymbolFrame {
@@ -47,6 +50,8 @@ export interface ScreenSymbolsHost {
   readonly maximumZoom: number
   /** The imagery layer's opacity: labels fade with it. */
   readonly opacity: number
+  /** The part of the canvas the imagery layer keeps (`Imagery.screenClip`): labels are clipped with it. Default: all of it. */
+  readonly screenClipPlane?: Vector3
   /** Locks a processed symbol tile in the overlay's tile cache. */
   acquireSymbolTile(request: TileRequest): Lease<{ bucket: TileBucket }>
   /** The style's layers by id, for the symbol effect a layer names in its metadata. */
@@ -310,7 +315,7 @@ export class ScreenSymbols {
   constructor(host: ScreenSymbolsHost, { fadeDurationSeconds = 0.3 }: { fadeDurationSeconds?: number } = {}) {
     this.host = host
     this.placement = new SymbolPlacement({ fadeDurationSeconds })
-    this.material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } })
+    this.material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } }, null, { get value() { return host.screenClipPlane ?? UNCLIPPED_PLANE } })
     this.object.name = 'MapStyleSymbols'
     this.object.matrixAutoUpdate = false
     this.object.raycast = () => {}
@@ -561,7 +566,7 @@ export class ScreenSymbols {
     let entry = this.effectMaterials.get(name)
     if (entry === undefined) {
       const host = this.host
-      const material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } }, definition)
+      const material = createSymbolMaterial(host.glyphAtlas, host.imageAtlas, this.state, this.glyphState, this.viewportPixels, this.luminance, { get value() { return host.opacity } }, definition, { get value() { return host.screenClipPlane ?? UNCLIPPED_PLANE } })
       entry = { definition, material }
       this.effectMaterials.set(name, entry)
     }

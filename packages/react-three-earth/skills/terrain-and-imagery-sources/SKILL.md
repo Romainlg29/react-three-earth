@@ -4,17 +4,19 @@ description: >
   Use when choosing or changing where an earthkit globe gets its elevation and its map pictures:
   quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), terrain from raster-dem elevation
   tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain, as MapLibre's terrain), XYZ raster tiles
-  (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
+  (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers,
+  clipping a layer to one side of the canvas (screenClip, a swipe or split view), or
   exaggerating terrain heights, or writing a custom terrain or imagery source class and its JSX component
   (useRegisterTerrainSource, useRegisterImagerySource).
 metadata:
-  purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
+  purpose: 'Covers the source components and classes, how layers compose, opacity, screen clipping, and the source interfaces for custom providers.'
   type: core
   library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Imagery.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/screenClip.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/attribution.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/ImageOverlayPlugin.ts'
@@ -233,6 +235,40 @@ stack, above layers that mounted after it.
 
 Vanilla: `const labels = new Imagery({ sources: [...], opacity: 0.8 })`, `earth.addImagery(labels)`,
 `labels.opacity = 0.5`, `earth.removeImagery(labels)`.
+
+### Clip a layer to one side of the canvas
+
+```tsx
+import type { Imagery as ImageryLayer } from '@earthkit/globe'
+import { Imagery, MapStyleSource, RasterTileSource } from '@earthkit/globe/react'
+import { useRef } from 'react'
+
+export function SplitView() {
+  const satellite = useRef<ImageryLayer | null>(null)
+  return (
+    <>
+      <Imagery screenClip={{ side: 'left', positionFraction: 0.5 }}>
+        <MapStyleSource url="https://example.com/streets/style.json" />
+      </Imagery>
+      <Imagery ref={satellite} screenClip={{ side: 'right', positionFraction: 0.5 }}>
+        <RasterTileSource url="https://example.com/satellite/{z}/{x}/{y}.jpg" levels={20} />
+      </Imagery>
+    </>
+  )
+}
+```
+
+`screenClip` keeps everything a layer draws (its imagery, and a map style's labels and 3D buildings) on one `side`
+(`'left'`, `'right'`, `'top'`, `'bottom'`) of a line at `positionFraction` (0 to 1) of the canvas's width or height,
+from the left or top edge. Layers clipped to opposite sides of the same line make a split view; the terrain, the
+camera and every unclipped layer are shared. It is per pixel in the shaders, so changing it costs nothing (no reload,
+no shader rebuild, no extra draw). For a line that moves every frame, set `ref.current.screenClip = { … }` and call
+`earth.requestFrame()` instead of re-rendering; a swipe slider with dragging and keyboard is `@earthkit/compare`.
+Feature queries (`queryRenderedFeatures`, clicks) still see the clipped part of a layer.
+
+Vanilla: `new Imagery({ sources, screenClip: { side: 'left', positionFraction: 0.5 } })`, or
+`imagery.screenClip = { side: 'top', positionFraction: 0.3 }` (copied: assign a new object to change it), `null` for
+the whole canvas.
 
 ### Write a custom source
 

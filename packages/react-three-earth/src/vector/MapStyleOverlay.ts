@@ -1,5 +1,5 @@
 import { XYZTilesOverlay } from '3d-tiles-renderer/three/plugins'
-import { Color, HalfFloatType, LinearFilter, LinearSRGBColorSpace, Mesh, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, SRGBColorSpace, Vector4, type Texture } from 'three'
+import { Color, HalfFloatType, LinearFilter, LinearSRGBColorSpace, Mesh, OrthographicCamera, PlaneGeometry, RenderTarget, Scene, SRGBColorSpace, Vector4, type Texture, type Vector3 } from 'three'
 import { texture } from 'three/tsl'
 import type { MeshBasicNodeMaterial, NodeMaterial, WebGPURenderer } from 'three/webgpu'
 
@@ -190,6 +190,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   compositor: ImageryCompositor | null = null
   /** The style's summary once loaded: sources, zoom ranges, background. */
   summary: MapStyleSummary | null = null
+  /** The part of the canvas the imagery layer keeps (`Imagery.screenClip` sets it); labels and buildings read it. Default: all of it. */
+  screenClipPlane?: Vector3
 
   declare imageSource: { init(): Promise<void>; tiling: unknown }
   /** Upstream `ImageOverlay.fetch`: goes through 3DTilesRenderer's download queue and `preprocessURL`. */

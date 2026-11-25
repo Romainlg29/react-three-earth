@@ -6,8 +6,11 @@ import type { ViewMorph } from '../../view/ViewMorph.js'
 import { computeViewTilePyramid, tileRowToLatitude } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
 import type { SymbolFrame } from '../symbols/ScreenSymbols.js'
+import { screenClipPlane } from '../../core/screenClip.js'
 import { TILE_EXTENT, type ExtrusionMesh, type MapStyleSummary, type TileBucket, type TileRequest } from '../worker/types.js'
 import { createExtrusionAttributes, createExtrusionGeometry, createExtrusionMaterials, createExtrusionMesh, type ExtrusionAttributes, type ExtrusionMaterials, type ExtrusionMeshUserData } from './extrusionMaterial.js'
+
+const UNCLIPPED_PLANE = screenClipPlane(null)
 
 /** What 3D extrusions need from the earth in a frame: the same as labels facing the viewer. */
 export interface ExtrusionFrame extends SymbolFrame {
@@ -22,6 +25,8 @@ export interface ExtrusionsHost {
   readonly maximumZoom: number
   /** The imagery layer's opacity: buildings fade with it. */
   readonly opacity: number
+  /** The part of the canvas the imagery layer keeps (`Imagery.screenClip`): buildings are clipped with it. Default: all of it. */
+  readonly screenClipPlane?: Vector3
   /** Locks a processed building tile in the overlay's tile cache. */
   acquireExtrusionTile(request: TileRequest): Lease<{ bucket: TileBucket }>
 }
@@ -131,7 +136,7 @@ export class Extrusions implements FlatMorphHost {
 
   constructor(host: ExtrusionsHost) {
     this.host = host
-    this.materials = createExtrusionMaterials()
+    this.materials = createExtrusionMaterials({ get value() { return host.screenClipPlane ?? UNCLIPPED_PLANE } })
     this.object.name = 'MapStyleExtrusions'
     this.object.matrixAutoUpdate = false
   }

@@ -1,7 +1,7 @@
 // Adapted from takram three-geospatial (MIT, (c) 2024 Shota Matsuda), storybook-webgpu at b012ad06.
 // Extends 3DTilesRendererJS's ImageOverlayPlugin (Apache-2.0, (c) NASA-AMMOS and contributors), v0.5.4.
 import { ImageOverlayPlugin as ImageOverlayPluginBase } from '3d-tiles-renderer/three/plugins'
-import { Mesh, type Color, type Object3D, type Texture } from 'three'
+import { Mesh, type Color, type Object3D, type Texture, type Vector3 } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry, RegisteredDrapedLayer } from '../plugins/drapedLayers.js'
@@ -31,6 +31,8 @@ interface ImageOverlay {
   alphaInvert: boolean
   /** The layer's texture holds premultiplied colour (a draped layer with `premultipliedAlpha`). Default: false. */
   premultipliedAlpha?: boolean
+  /** The part of the canvas the layer keeps (`Imagery.screenClip`, from `screenClipPlane`). Default: all of it. */
+  screenClipPlane?: Vector3
 }
 
 export interface OverlayParams {
