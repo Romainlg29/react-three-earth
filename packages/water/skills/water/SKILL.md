@@ -18,6 +18,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/water/src/waves/spectrum.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveField.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveSurface.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveComputeField.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/foam.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/react/index.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
@@ -100,15 +102,20 @@ The physical presets draw waves near the camera (`waves`, default true but for `
 wind's speed, `windDirectionDegrees` (where it blows from, default 270, a westerly) and `fetchKilometers` (open water it
 has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
 (`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
-simulated by FFT on the CPU (about 1.5 ms a frame on a desktop, skipped from high above) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the roughness takes back the
-slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
+simulated by FFT and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
+roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
+Under WebGPU the simulation runs in compute shaders (a few dispatches a frame, no CPU cost) and also draws foam on the
+crests that break (where the choppy waves' Jacobian folds), covering the whitecap share (`whitecapCoverage`). On WebGL2
+it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: the whitecaps pale the sea evenly.
 
 - `water.state.significantWaveHeightMeters` gives the sea state's wave height (about 1 m at 5 m/s over 100 km).
 - Waves animate: the earth renders every frame while they can show, that is below 30 km and off the flat map.
-  `waves: false` stops them (and the CPU cost).
+  `waves: false` stops them (and their cost). Nothing is simulated from high above.
 - The plane the waves lie on follows the camera, laid again after 20 km: the pattern shifts once then, unseen from
   the heights such a move takes.
-- They are normals only, with no foam patterns yet: `whitecapCoverage` pales the sea evenly.
+- They are normals only: the surface does not move up and down, so the horizon stays straight and nothing floats.
+- Where the waves fade out with distance, their foam gives way to the whitecap share spread evenly, so a windy sea
+  keeps its pallor however far.
 - `depthFromElevation`: the seafloor (`seafloorColor`, default sand) shows through shallow water, fading with depth by
   the water's own attenuation (blue reaches farthest). Needs a source holding the seafloor: Terrarium through
   `RasterDemSource` with `flattenBelowSeaLevel`. Leave it off for quantized mesh, whose sea heights are not depths.

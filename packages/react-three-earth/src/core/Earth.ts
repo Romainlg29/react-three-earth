@@ -611,7 +611,7 @@ export class Earth extends Group<EarthEventMap> {
     }
     const symbolsNeedFrame = this.updateSymbols(camera, delta, now)
     const cameraMoved = this.dispatchFrameEvents(camera, morphing)
-    const pluginsNeedFrame = this.plugins.update(camera, delta)
+    const pluginsNeedFrame = this.plugins.update(camera, delta, renderer)
     this.dispatchEvent({ type: 'update' })
     this.lastUpdateMilliseconds = performance.now() - now
     // After a move, one more frame tells whether the camera stopped (`moveend`).

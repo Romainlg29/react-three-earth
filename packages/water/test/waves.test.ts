@@ -1,4 +1,5 @@
-import { DataUtils, Matrix4, PerspectiveCamera, Group } from 'three'
+import { DataUtils, Matrix4, PerspectiveCamera, Group, type Texture } from 'three'
+import type { WebGPURenderer } from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
 
 import { createFourierPlan, inverseTransform2D } from '../src/waves/fft.js'
@@ -12,7 +13,10 @@ import {
   wavenumberSpectrum,
   type SeaStateOptions,
 } from '../src/waves/spectrum.js'
-import { WaveField } from '../src/waves/WaveField.js'
+import { inverseStandardNormal, WAVE_CHOPPINESS } from '../src/waves/foam.js'
+import { createButterflies } from '../src/waves/WaveComputeField.js'
+import { WAVE_REPEAT_PERIOD_SECONDS, WaveField } from '../src/waves/WaveField.js'
+import { whitecapCoverage } from '../src/optics.js'
 import { eastNorthAt, WaveSurface } from '../src/waves/WaveSurface.js'
 
 const openOcean: SeaStateOptions = { windSpeedMetersPerSecond: 10, windDirectionDegrees: 270, fetchKilometers: 300, temperatureCelsius: 15, salinityPartsPerThousand: 35 }
@@ -87,7 +91,7 @@ describe('WaveField', () => {
       field.setSeaState(openOcean)
       field.update(12.5)
       const cascade = field.cascades[1]!
-      const halves = cascade.texture.image.data as Uint16Array
+      const halves = cascade.slopes
       let sum = 0
       for (let index = 0; index < halves.length; index++) sum += DataUtils.fromHalfFloat(halves[index]!) ** 2
       return sum / (halves.length / 2) / cascade.meanSquareSlope
@@ -113,7 +117,7 @@ describe('WaveField', () => {
     const speed = internals.frequencies[1]![index]! / wavenumber
     const peakColumn = (time: number): number => {
       field.update(time)
-      const halves = cascade.texture.image.data as Uint16Array
+      const halves = cascade.slopes
       let best = 0
       for (let column = 0; column < size; column++) {
         if (DataUtils.fromHalfFloat(halves[column * 2]!) > DataUtils.fromHalfFloat(halves[best * 2]!)) best = column
@@ -140,7 +144,7 @@ describe('WaveField', () => {
     b.setSeaState(openOcean)
     a.update(3)
     b.update(3)
-    expect(a.cascades[1]!.texture.image.data).toEqual(b.cascades[1]!.texture.image.data)
+    expect(a.cascades[1]!.slopes).toEqual(b.cascades[1]!.slopes)
     const still = new WaveField()
     still.setSeaState({ ...openOcean, windSpeedMetersPerSecond: 0 })
     expect(still.cascades.every(cascade => cascade.meanSquareSlope === 0)).toBe(true)
@@ -177,5 +181,206 @@ describe('WaveSurface', () => {
     camera.position.set(6378137 + 400_000, 0, 0)
     camera.updateMatrixWorld()
     expect(surface.update(0.016, camera, earth)).toBe(false)
+  })
+})
+
+/** The GPU pipeline (`WaveComputeField`) replayed on the CPU: advance, butterflies, both directions. */
+function simulateGpu(field: WaveField, timeSeconds: number): { surface: Float64Array; fold: Float64Array } {
+  const size = field.gridSize
+  const cells = size * size
+  const count = cells * field.cascades.length
+  const spectrum = new Float32Array(count * 4)
+  const waves = new Float32Array(count * 4)
+  field.writeSpectrum(spectrum, waves)
+  let surface = new Float64Array(count * 4)
+  let fold = new Float64Array(count * 2)
+  for (let index = 0; index < count; index++) {
+    const [ar, ai, br, bi] = spectrum.subarray(index * 4, index * 4 + 4)
+    const [kx, ky, omega, inverse] = waves.subarray(index * 4, index * 4 + 4)
+    // As the GPU: whole cycles over the period times the share of it gone, in 32-bit, reduced to one cycle.
+    const share = Math.fround((timeSeconds % WAVE_REPEAT_PERIOD_SECONDS) / WAVE_REPEAT_PERIOD_SECONDS)
+    const cycles = Math.fround(omega! * share)
+    const phase = (cycles - Math.floor(cycles)) * 2 * Math.PI
+    const c = Math.cos(phase)
+    const s = Math.sin(phase)
+    const hr = ar! * c + ai! * s + br! * c - bi! * s
+    const hi = ai! * c - ar! * s + br! * s + bi! * c
+    const xx = kx! * kx! * inverse!
+    const yy = ky! * ky! * inverse!
+    const xy = kx! * ky! * inverse!
+    surface.set([-ky! * hr - kx! * hi, kx! * hr - ky! * hi, xx * hr - yy * hi, xx * hi + yy * hr], index * 4)
+    fold.set([xy * hr - hi, xy * hi + hr], index * 2)
+  }
+  const butterflies = createButterflies(size)
+  const stages = Math.log2(size)
+  for (const horizontal of [true, false]) {
+    for (let stage = 0; stage < stages; stage++) {
+      const nextSurface = new Float64Array(surface.length)
+      const nextFold = new Float64Array(fold.length)
+      for (let index = 0; index < count; index++) {
+        const cascade = Math.floor(index / cells)
+        const row = Math.floor((index % cells) / size)
+        const column = index % size
+        const offset = (stage * size + (horizontal ? column : row)) * 4
+        const [wr, wi, first, second] = butterflies.subarray(offset, offset + 4)
+        const at = (position: number): number => cascade * cells + (horizontal ? row * size + position : position * size + column)
+        const a = at(first!)
+        const b = at(second!)
+        for (let lane = 0; lane < 3; lane++) {
+          const [source, target, stride, laneOffset] = lane < 2 ? [surface, nextSurface, 4, lane * 2] : [fold, nextFold, 2, 0]
+          const br = source[b * stride + laneOffset]!
+          const bi = source[b * stride + laneOffset + 1]!
+          target[index * stride + laneOffset] = source[a * stride + laneOffset]! + wr! * br - wi! * bi
+          target[index * stride + laneOffset + 1] = source[a * stride + laneOffset + 1]! + wr! * bi + wi! * br
+        }
+      }
+      surface = nextSurface
+      fold = nextFold
+    }
+  }
+  return { surface, fold }
+}
+
+describe('WaveComputeField', () => {
+  it('butterflies that invert like the CPU transform', () => {
+    const size = 16
+    const input = Float64Array.from({ length: size * 2 }, (_, index) => Math.sin(index * 1.7) + index * 0.01)
+    // The sum itself: x[n] = Σ X[k] e^(+2πi k n / N).
+    const expected = new Float64Array(size * 2)
+    for (let n = 0; n < size; n++) {
+      let real = 0
+      let imaginary = 0
+      for (let k = 0; k < size; k++) {
+        const angle = (2 * Math.PI * k * n) / size
+        real += input[k * 2]! * Math.cos(angle) - input[k * 2 + 1]! * Math.sin(angle)
+        imaginary += input[k * 2]! * Math.sin(angle) + input[k * 2 + 1]! * Math.cos(angle)
+      }
+      expected[n * 2] = real
+      expected[n * 2 + 1] = imaginary
+    }
+    let data = input.slice()
+    const butterflies = createButterflies(size)
+    for (let stage = 0; stage < Math.log2(size); stage++) {
+      const next = new Float64Array(data.length)
+      for (let position = 0; position < size; position++) {
+        const [wr, wi, first, second] = butterflies.subarray((stage * size + position) * 4, (stage * size + position) * 4 + 4)
+        const br = data[second! * 2]!
+        const bi = data[second! * 2 + 1]!
+        next[position * 2] = data[first! * 2]! + wr! * br - wi! * bi
+        next[position * 2 + 1] = data[first! * 2 + 1]! + wr! * bi + wi! * br
+      }
+      data = next
+    }
+    // The table holds 32-bit floats, as on the GPU.
+    for (let index = 0; index < size * 2; index++) expect(data[index]).toBeCloseTo(expected[index]!, 5)
+  })
+
+  it('computes the same slopes as the CPU path', () => {
+    const field = new WaveField({ seed: 3 })
+    field.setSeaState(openOcean)
+    field.update(7.25)
+    const { surface } = simulateGpu(field, 7.25)
+    const cells = field.gridSize ** 2
+    field.cascades.forEach((cascade, cascadeIndex) => {
+      let error = 0
+      let scale = 0
+      for (let cell = 0; cell < cells; cell++) {
+        for (let axis = 0; axis < 2; axis++) {
+          const gpu = surface[(cascadeIndex * cells + cell) * 4 + axis]!
+          error = Math.max(error, Math.abs(gpu - DataUtils.fromHalfFloat(cascade.slopes[cell * 2 + axis]!)))
+          scale = Math.max(scale, Math.abs(gpu))
+        }
+      }
+      // Half floats on the CPU side: three significant digits.
+      expect(error).toBeLessThan(scale * 2e-3 + 1e-6)
+    })
+  })
+
+  it('folds the crests over the whitecap share of the sea', () => {
+    const storm: SeaStateOptions = { ...openOcean, windSpeedMetersPerSecond: 15 }
+    const coverage = whitecapCoverage(15)
+    const shares = [1, 2, 3, 4].map(seed => {
+      const field = new WaveField({ seed })
+      field.setSeaState(storm)
+      const { surface, fold } = simulateGpu(field, 4)
+      const cells = field.gridSize ** 2
+      const variance = field.cascades.reduce((sum, cascade) => sum + cascade.meanSquareSlope, 0)
+      const threshold = 1 + WAVE_CHOPPINESS * inverseStandardNormal(coverage) * Math.sqrt(variance)
+      // The sea at each cell of the shortest cascade, the others sampled at the same place (nearest texel).
+      let folded = 0
+      for (let cell = 0; cell < cells; cell++) {
+        const x = (cell % field.gridSize) / field.gridSize
+        const y = Math.floor(cell / field.gridSize) / field.gridSize
+        let xx = 0
+        let yy = 0
+        let xy = 0
+        field.cascades.forEach((cascade, cascadeIndex) => {
+          const scale = field.cascades.at(-1)!.lengthMeters / cascade.lengthMeters
+          const column = Math.floor((x * scale + 0.37 * cascadeIndex) * field.gridSize) % field.gridSize
+          const row = Math.floor((y * scale + 0.61 * cascadeIndex) * field.gridSize) % field.gridSize
+          const index = cascadeIndex * cells + row * field.gridSize + column
+          xx += surface[index * 4 + 2]!
+          yy += surface[index * 4 + 3]!
+          xy += fold[index * 2]!
+        })
+        const jacobian = (1 - WAVE_CHOPPINESS * xx) * (1 - WAVE_CHOPPINESS * yy) - WAVE_CHOPPINESS ** 2 * xy * xy
+        if (jacobian < threshold) folded++
+      }
+      return folded / cells
+    })
+    const share = shares.reduce((sum, value) => sum + value, 0) / shares.length
+    expect(share).toBeGreaterThan(coverage * 0.6)
+    expect(share).toBeLessThan(coverage * 1.6)
+  })
+
+  it('moves to the GPU under WebGPU and back to the CPU without it, with the same sampling', () => {
+    const surface = new WaveSurface()
+    surface.setSeaState(openOcean)
+    const earth = new Group()
+    earth.updateMatrixWorld()
+    const camera = new PerspectiveCamera()
+    camera.position.set(6378137 + 300, 0, 0)
+    camera.updateMatrixWorld()
+    const dispatched: unknown[] = []
+    const webgpu = { backend: { isWebGPUBackend: true }, compute: (kernels: unknown) => void dispatched.push(kernels) } as unknown as WebGPURenderer
+    const webgl = { backend: { isWebGLBackend: true } } as unknown as WebGPURenderer
+    const samplers = surface as unknown as { surfaceSampler: { value: Texture }; foldSampler: { value: Texture } }
+    const cpuFold = samplers.foldSampler.value
+    surface.update(0.016, camera, earth, webgpu)
+    const compute = surface.compute!
+    expect(compute).not.toBeNull()
+    // One submit a frame: all the dispatches at once.
+    expect(dispatched).toHaveLength(1)
+    expect(samplers.surfaceSampler.value).toBe(compute.surfaceTexture)
+    // Shaders built before the swap keep the placeholder's sampling: it must match the GPU textures'.
+    for (const [before, after] of [
+      [surface.field.texture, compute.surfaceTexture],
+      [cpuFold, compute.foldTexture],
+    ] as const) {
+      expect([before.wrapS, before.wrapT, before.minFilter, before.magFilter, before.type]).toEqual([after.wrapS, after.wrapT, after.minFilter, after.magFilter, after.type])
+    }
+    surface.update(0.016, camera, earth, webgl)
+    expect(surface.compute).toBeNull()
+    expect(samplers.surfaceSampler.value).toBe(surface.field.texture)
+    expect(samplers.foldSampler.value).toBe(cpuFold)
+    surface.dispose()
+  })
+
+  it('rounds each wave to whole cycles over the repeat period', () => {
+    const field = new WaveField()
+    field.setSeaState(openOcean)
+    const before = field.cascades[1]!.slopes.slice()
+    field.update(5)
+    const first = field.cascades[1]!.slopes.slice()
+    field.update(5 + WAVE_REPEAT_PERIOD_SECONDS)
+    expect(field.cascades[1]!.slopes).toEqual(first)
+    expect(first).not.toEqual(before)
+  })
+
+  it('scores the normal distribution', () => {
+    expect(inverseStandardNormal(0.5)).toBeCloseTo(0, 9)
+    expect(inverseStandardNormal(0.975)).toBeCloseTo(1.959964, 5)
+    expect(inverseStandardNormal(0.01)).toBeCloseTo(-2.326348, 5)
+    expect(inverseStandardNormal(0)).toBe(-8)
   })
 })

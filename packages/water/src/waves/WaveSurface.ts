@@ -1,8 +1,10 @@
-import { Matrix4, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, max, positionView, smoothstep, texture, uniform, vec2, vec4 } from 'three/tsl'
-import type { Node, UniformNode } from 'three/webgpu'
+import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector3, type Camera, type Object3D } from 'three'
+import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec4 } from 'three/tsl'
+import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
+import { inverseStandardNormal, WAVE_CHOPPINESS } from './foam.js'
 import type { SeaStateOptions } from './spectrum.js'
+import { WaveComputeField } from './WaveComputeField.js'
 import { WaveField, type WaveFieldOptions } from './WaveField.js'
 
 /** WGS84 semi-axes, metres. */
@@ -27,6 +29,11 @@ export interface WaveSurfaceNodes {
   /** The wave plane's east and north axes, in world space. */
   east: Node<'vec3'>
   north: Node<'vec3'>
+  /**
+   * The whitecap foam at the fragment, 0 to 1. On the GPU path, the breaking crests of the drawn waves (their Jacobian),
+   * covering the whitecap share; where no wave is drawn, and on the CPU path, that share spread evenly.
+   */
+  foam: Node<'float'>
 }
 
 /**
@@ -38,8 +45,20 @@ export interface WaveSurfaceNodes {
  */
 export class WaveSurface {
   readonly field: WaveField
+  /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
+  protected computeField: WaveComputeField | null = null
   /** 1 draws the waves, 0 leaves the sea flat. */
   readonly weight = uniform(1)
+  /** The share of the sea white with whitecaps. */
+  protected readonly whitecapCoverage = uniform(0)
+  /** Φ⁻¹ of `whitecapCoverage`: how far below its mean the Jacobian falls on the foam. */
+  protected readonly whitecapScore = uniform(-8)
+  /** 1 once the GPU computes the displacement's derivatives, so the foam follows the breaking crests. */
+  protected readonly foamFromWaves = uniform(0)
+  /** Sample the slopes (and on the GPU the displacement's derivatives): their values swap to the GPU's textures. */
+  protected readonly surfaceSampler: TextureNode
+  protected readonly foldSampler: TextureNode
+  protected readonly emptyFold: DataArrayTexture
   protected readonly east = uniform(new Vector3(1, 0, 0))
   protected readonly north = uniform(new Vector3(0, 1, 0))
   protected readonly cameraFromAnchor = uniform(new Vector3())
@@ -53,6 +72,31 @@ export class WaveSurface {
   constructor(options: WaveFieldOptions = {}) {
     this.field = new WaveField(options)
     this.meanSquareSlopes = this.field.cascades.map(() => uniform(0) as UniformNode<'float', number>)
+    this.surfaceSampler = texture(this.field.texture)
+    // Until the GPU writes them, no fold: zeros, one texel per cascade.
+    const layers = this.field.cascades.length
+    this.emptyFold = new DataArrayTexture(new Uint16Array(4 * layers), 1, 1, layers)
+    this.emptyFold.format = RGBAFormat
+    this.emptyFold.type = HalfFloatType
+    // The GPU's sampling, which shaders built before the swap keep: filtered and repeating.
+    this.emptyFold.wrapS = RepeatWrapping
+    this.emptyFold.wrapT = RepeatWrapping
+    this.emptyFold.minFilter = LinearFilter
+    this.emptyFold.magFilter = LinearFilter
+    this.emptyFold.generateMipmaps = false
+    this.emptyFold.needsUpdate = true
+    this.foldSampler = texture(this.emptyFold)
+  }
+
+  /** Sets the share of the sea white with whitecaps (`whitecapCoverage`): the drawn foam covers as much. */
+  setWhitecapCoverage(coverage: number): void {
+    this.whitecapCoverage.value = coverage
+    this.whitecapScore.value = inverseStandardNormal(coverage)
+  }
+
+  /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
+  get compute(): WaveComputeField | null {
+    return this.computeField
   }
 
   get timeSeconds(): number {
@@ -67,17 +111,43 @@ export class WaveSurface {
   }
 
   /**
-   * Advances the waves and lays the plane under the camera. `earth` is the object whose frame is ECEF. Returns false,
+   * Advances the waves and lays the plane under the camera. `earth` is the object whose frame is ECEF. With a WebGPU
+   * `renderer` the simulation runs on the GPU (and draws foam); without one, or on WebGL2, on the CPU. Returns false,
    * doing nothing, when the camera is too high for any wave to show (`WAVE_MAXIMUM_CAMERA_HEIGHT_METERS`).
    */
-  update(deltaSeconds: number, camera: Camera, earth: Object3D): boolean {
+  update(deltaSeconds: number, camera: Camera, earth: Object3D, renderer?: WebGPURenderer): boolean {
     this.timeSecondsValue += deltaSeconds
     const cameraWorld = scratchCamera.setFromMatrixPosition(camera.matrixWorld)
     const cameraEarth = scratchCameraEarth.copy(cameraWorld).applyMatrix4(scratchMatrix.copy(earth.matrixWorld).invert())
     if (heightAboveEllipsoid(cameraEarth) > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
-    this.field.update(this.timeSecondsValue)
+    if (renderer !== undefined && isWebGPUBackend(renderer)) {
+      this.computeField ??= this.startCompute()
+      this.computeField.update(renderer, this.timeSecondsValue)
+    } else {
+      // No WebGPU (or another renderer took over): back to the CPU.
+      if (this.computeField !== null) this.stopCompute()
+      this.field.update(this.timeSecondsValue)
+    }
     this.followCamera(cameraWorld, cameraEarth, earth)
     return true
+  }
+
+  /** Moves the simulation to the GPU: the shaders already built sample its textures from now on. */
+  protected startCompute(): WaveComputeField {
+    const compute = new WaveComputeField(this.field)
+    this.surfaceSampler.value = compute.surfaceTexture
+    this.foldSampler.value = compute.foldTexture
+    this.foamFromWaves.value = 1
+    return compute
+  }
+
+  /** Moves the simulation back to the CPU and frees the GPU's. */
+  protected stopCompute(): void {
+    this.surfaceSampler.value = this.field.texture
+    this.foldSampler.value = this.emptyFold
+    this.foamFromWaves.value = 0
+    this.computeField?.dispose()
+    this.computeField = null
   }
 
   protected followCamera(cameraWorld: Vector3, cameraEarth: Vector3, earth: Object3D): void {
@@ -101,26 +171,57 @@ export class WaveSurface {
     // Metres a pixel spans on the plane.
     const footprint = max(fwidth(plane.x), fwidth(plane.y))
     let slope: Node = vec2(0)
+    // ∂Dx/∂x, ∂Dy/∂y and ∂Dx/∂y of the displacement, summed over the cascades.
+    let stretch: Node = vec2(0)
+    let shear: Node = float(0)
     let resolved: Node = float(0)
+    let total: Node = float(0)
     this.field.cascades.forEach((cascade, index) => {
       const texelMeters = cascade.lengthMeters / this.field.gridSize
       // Gone before a pixel spans two texels: without mipmaps, a cascade sampled sparser than that shimmers.
       const fade = float(1).sub(smoothstep(texelMeters * 0.75, texelMeters * 2, footprint)).mul(this.weight)
-      slope = (slope as Node<'vec2'>).add(texture(cascade.texture, plane.div(cascade.lengthMeters)).rg.mul(fade))
+      const uv = plane.div(cascade.lengthMeters)
+      const surface = this.surfaceSampler.sample(uv).depth(int(index))
+      slope = (slope as Node<'vec2'>).add(surface.xy.mul(fade))
+      stretch = (stretch as Node<'vec2'>).add(surface.zw.mul(fade))
+      shear = (shear as Node<'float'>).add(this.foldSampler.sample(uv).depth(int(index)).x.mul(fade))
       // The slopes are scaled by the fade, so the variance drawn by its square.
       resolved = (resolved as Node<'float'>).add(this.meanSquareSlopes[index]!.mul(fade.mul(fade)))
+      total = (total as Node<'float'>).add(this.meanSquareSlopes[index]!)
     })
+    const stretched = stretch as Node<'vec2'>
+    const sheared = shear as Node<'float'>
+    const lambda = WAVE_CHOPPINESS
+    const jacobian = float(1)
+      .sub(stretched.x.mul(lambda))
+      .mul(float(1).sub(stretched.y.mul(lambda)))
+      .sub(sheared.mul(sheared).mul(lambda * lambda))
+    // The Jacobian's spread here (first order): λ σ, σ² the slope variance drawn. Foam below 1 + λ z σ, softly.
+    const spread = sqrt(resolved as Node<'float'>).mul(lambda)
+    const threshold = float(1).add(spread.mul(this.whitecapScore))
+    const edge = spread.mul(0.25).add(1e-4)
+    const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
+    // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
+    const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
+    const foam = mix(this.whitecapCoverage, breaking, drawnShare)
     return {
       slope: slope as Node<'vec2'>,
       resolvedMeanSquareSlope: resolved as Node<'float'>,
       east: this.east as unknown as Node<'vec3'>,
       north: this.north as unknown as Node<'vec3'>,
+      foam: foam as unknown as Node<'float'>,
     }
   }
 
   dispose(): void {
+    this.stopCompute()
     this.field.dispose()
+    this.emptyFold.dispose()
   }
+}
+
+function isWebGPUBackend(renderer: WebGPURenderer): boolean {
+  return (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true
 }
 
 /** The local east and north directions at a point given in ECEF metres, from the ellipsoid's normal there. */
