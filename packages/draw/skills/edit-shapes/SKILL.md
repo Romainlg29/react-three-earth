@@ -3,12 +3,8 @@ name: edit-shapes
 description: >
   Use when users of an @earthkit/draw app must reshape what they drew, like Blender's edit mode: pick and drag
   the vertices, edges or faces of a solid (a mesh), a polygon or a line; push or pull a face along its normal to resize
-<<<<<<< HEAD
   a box by one side; extrude a face, several faces as a region, edges into new faces, a line into a wall, or a flat
   polygon into a prism; double tap to edit a face; Vertex / Edge / Face /
-=======
-  a box by one side; extrude a face, or a flat polygon into a prism; double tap to edit a face; Vertex / Edge / Face /
->>>>>>> origin/claude/project-thread-3ir3b9
   Extrude buttons in a headless toolbar (setElementMode, extrude, elementMode, canExtrude); pick several elements with
   Shift or all with A (selectAllElements, pickedElementCount); move one vertex straight up, east or north with the
   move gizmo over what is picked; Tab, 1, 2, 3, A, G and E keys; touch on iPhone Safari. Also for editing meshes in code: moveMeshVertices, pushMeshFace, extrudeMeshFace.
@@ -240,9 +236,6 @@ the fix. Leave the distance out for the default, or pass a negative one to extru
   `canExtrude`, `setElementMode` and `extrude`.
 - Dragging a picked face's arrow resizes the solid along the face's normal; extrude adds walls and a new face.
 - Shift+tap and A pick several elements; the move gizmo's up arrow raises a single picked vertex of a line.
-<<<<<<< HEAD
 - A then E on a line makes a wall; E on picked edges grows faces up from them.
-=======
->>>>>>> origin/claude/project-thread-3ir3b9
 - Every edit fires one `update` and `undo()` takes it back; a tap on the empty map returns to the gizmo.
 - It works with a finger on a phone: taps pick within 22 px, no hover needed.
