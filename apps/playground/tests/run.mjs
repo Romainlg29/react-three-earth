@@ -3039,6 +3039,7 @@ const CHECKS = [
     const reverse = await page.getByTestId('geocoder-reverse').textContent()
     const searches = await page.evaluate(() => window.geocoderSearches)
     return { geocoder: { searches, options, expanded, activeDescendant, activeOptionId, query: await input.inputValue(), view, marker, listHidden, reverse } }
+  })],
   ['examples/compare', () => galleryExample('compare', '', async (page, idle) => {
     // The street map (beige) before the line, the fixture imagery (green checker) after it: green per band of the screen.
     const green = async bands => {

@@ -480,6 +480,7 @@ expectations['gallery example, geocoder'] = r => [
   ['Enter selects it: the name fills the box, the list closes, the camera flies to the point at zoom 16', r.geocoder.query === 'Fixture Peak' && r.geocoder.listHidden && Math.abs(r.geocoder.view.longitudeDegrees + 90) < 0.01 && Math.abs(r.geocoder.view.latitudeDegrees) < 0.01 && Math.abs(r.geocoder.view.zoom - 16) < 0.5],
   ['a marker named after the place drops on it', r.geocoder.marker?.label === 'Fixture Peak' && r.geocoder.marker.visibility !== 'hidden'],
   ['a click on the map reverse geocodes it: the peak nearby', r.geocoder.reverse === 'Here: Fixture Peak, Synthetic range'],
+]
 // `@earthkit/compare`: the street map before the line, the green fixture imagery after it, one camera.
 expectations['gallery example, compare'] = r => [
   ['the street map shows before the line, the imagery after', r.compare.initial[0] < 0.05 && r.compare.initial[1] > 0.3],
