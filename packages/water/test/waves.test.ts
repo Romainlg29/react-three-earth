@@ -81,18 +81,49 @@ describe('wave spectrum', () => {
 
 describe('WaveField', () => {
   it('draws slopes whose variance matches the spectrum', () => {
+    // Averaged over seeds: each draw is random, the mean must be the spectrum's.
+    const ratios = [1, 2, 3, 4, 5, 6, 7, 8].map(seed => {
+      const field = new WaveField({ seed })
+      field.setSeaState(openOcean)
+      field.update(12.5)
+      const cascade = field.cascades[1]!
+      const halves = cascade.texture.image.data as Uint16Array
+      let sum = 0
+      for (let index = 0; index < halves.length; index++) sum += DataUtils.fromHalfFloat(halves[index]!) ** 2
+      return sum / (halves.length / 2) / cascade.meanSquareSlope
+    })
+    const mean = ratios.reduce((total, ratio) => total + ratio, 0) / ratios.length
+    expect(mean).toBeGreaterThan(0.8)
+    expect(mean).toBeLessThan(1.25)
+  })
+
+  it('moves each wave along its own direction, downwind', () => {
     const field = new WaveField()
     field.setSeaState(openOcean)
-    field.update(12.5)
-    const [first] = field.cascades
-    const halves = first!.texture.image.data as Uint16Array
-    let sum = 0
-    for (let index = 0; index < halves.length; index++) sum += DataUtils.fromHalfFloat(halves[index]!) ** 2
-    const variance = sum / (halves.length / 2)
-    // One random draw: within a factor of two of the expected slope variance.
-    expect(variance).toBeGreaterThan(first!.meanSquareSlope / 2)
-    expect(variance).toBeLessThan(first!.meanSquareSlope * 2)
-    expect(first!.texture.version).toBeGreaterThan(0)
+    const internals = field as unknown as { amplitudes: Float64Array[]; frequencies: Float64Array[]; activeCells: Uint32Array[] }
+    // One wave in the second cascade, running east (+x): column 4, row 0.
+    const size = field.gridSize
+    const cascade = field.cascades[1]!
+    const index = 4
+    internals.amplitudes[1]!.fill(0)
+    internals.amplitudes[1]![index * 2] = 1
+    internals.activeCells[1] = Uint32Array.from([index, size - 4])
+    ;(field as unknown as { nonzeroRows: Uint8Array[] }).nonzeroRows[1] = Uint8Array.from({ length: size }, (_, row) => (row === 0 ? 1 : 0))
+    const wavenumber = (2 * Math.PI * 4) / cascade.lengthMeters
+    const speed = internals.frequencies[1]![index]! / wavenumber
+    const peakColumn = (time: number): number => {
+      field.update(time)
+      const halves = cascade.texture.image.data as Uint16Array
+      let best = 0
+      for (let column = 0; column < size; column++) {
+        if (DataUtils.fromHalfFloat(halves[column * 2]!) > DataUtils.fromHalfFloat(halves[best * 2]!)) best = column
+      }
+      return best
+    }
+    const texelMeters = cascade.lengthMeters / size
+    const start = peakColumn(0)
+    // Two texels later: the crest has moved two columns east.
+    expect((peakColumn((2 * texelMeters) / speed) - start + size) % size).toBe(2)
   })
 
   it('splits the wavenumbers between cascades without overlap', () => {
@@ -142,5 +173,9 @@ describe('WaveSurface', () => {
     surface.update(0.016, camera, earth)
     expect(offset.length()).toBe(0)
     expect(new Matrix4().identity().equals(earth.matrixWorld)).toBe(true)
+    // From orbit no wave shows: nothing is simulated.
+    camera.position.set(6378137 + 400_000, 0, 0)
+    camera.updateMatrixWorld()
+    expect(surface.update(0.016, camera, earth)).toBe(false)
   })
 })

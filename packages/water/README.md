@@ -7,8 +7,7 @@ the terrain is water, over the imagery and any terrain style:
   clear ocean is deep blue and productive coasts green-blue, with the seafloor through shallow water;
 - the gloss comes from the wind (Cox & Munk), so under `<Atmosphere>` the sea mirrors the sky and the sun's glint widens
   as the wind rises, and whitecaps pale a gale;
-- near the camera, waves from a JONSWAP spectrum (wind speed, direction and fetch, the water's temperature and salinity),
-  simulated by FFT;
+- near the camera, waves from a JONSWAP spectrum (wind speed, direction and fetch), simulated by FFT;
 - on the flat map, the sea takes a map colour.
 
 ```sh

@@ -13,6 +13,11 @@ const POLAR_RADIUS_METERS = 6356752.314245
  * The plane is flat, and its coordinates lose precision far from the anchor; laying it again shifts the waves once.
  */
 const REANCHOR_DISTANCE_METERS = 20_000
+/**
+ * Above this height the longest cascade has faded out everywhere (a pixel spans more than two of its 12.5 m texels even
+ * straight down), so `update` skips the simulation, metres.
+ */
+export const WAVE_MAXIMUM_CAMERA_HEIGHT_METERS = 30_000
 
 export interface WaveSurfaceNodes {
   /** The resolved waves' slope at the fragment, east and north, dimensionless. 0 where the waves fade out. */
@@ -40,6 +45,9 @@ export class WaveSurface {
   protected readonly cameraFromAnchor = uniform(new Vector3())
   protected readonly meanSquareSlopes: UniformNode<'float', number>[]
   protected anchorEarthCenteredMeters: Vector3 | null = null
+  protected readonly anchorEast = new Vector3()
+  protected readonly anchorNorth = new Vector3()
+  protected readonly anchorUp = new Vector3()
   protected timeSecondsValue = 0
 
   constructor(options: WaveFieldOptions = {}) {
@@ -58,25 +66,33 @@ export class WaveSurface {
     })
   }
 
-  /** Advances the waves and lays the plane under the camera. `earth` is the object whose frame is ECEF. */
-  update(deltaSeconds: number, camera: Camera, earth: Object3D): void {
+  /**
+   * Advances the waves and lays the plane under the camera. `earth` is the object whose frame is ECEF. Returns false,
+   * doing nothing, when the camera is too high for any wave to show (`WAVE_MAXIMUM_CAMERA_HEIGHT_METERS`).
+   */
+  update(deltaSeconds: number, camera: Camera, earth: Object3D): boolean {
     this.timeSecondsValue += deltaSeconds
+    const cameraWorld = scratchCamera.setFromMatrixPosition(camera.matrixWorld)
+    const cameraEarth = scratchCameraEarth.copy(cameraWorld).applyMatrix4(scratchMatrix.copy(earth.matrixWorld).invert())
+    if (heightAboveEllipsoid(cameraEarth) > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
     this.field.update(this.timeSecondsValue)
-    this.followCamera(camera, earth)
+    this.followCamera(cameraWorld, cameraEarth, earth)
+    return true
   }
 
-  protected followCamera(camera: Camera, earth: Object3D): void {
-    const cameraWorld = new Vector3().setFromMatrixPosition(camera.matrixWorld)
-    const worldToEarth = new Matrix4().copy(earth.matrixWorld).invert()
-    const cameraEarth = cameraWorld.clone().applyMatrix4(worldToEarth)
+  protected followCamera(cameraWorld: Vector3, cameraEarth: Vector3, earth: Object3D): void {
     const anchor = this.anchorEarthCenteredMeters
-    if (anchor === null || horizontalDistance(cameraEarth, anchor) > REANCHOR_DISTANCE_METERS) this.anchorEarthCenteredMeters = cameraEarth.clone()
-    const anchorEarth = this.anchorEarthCenteredMeters!
-    const { east, north } = eastNorthAt(anchorEarth)
-    this.east.value.copy(east).transformDirection(earth.matrixWorld)
-    this.north.value.copy(north).transformDirection(earth.matrixWorld)
+    if (anchor === null || horizontalDistance(cameraEarth, anchor, this.anchorUp) > REANCHOR_DISTANCE_METERS) {
+      this.anchorEarthCenteredMeters = cameraEarth.clone()
+      const { east, north, up } = eastNorthAt(cameraEarth)
+      this.anchorEast.copy(east)
+      this.anchorNorth.copy(north)
+      this.anchorUp.copy(up)
+    }
+    this.east.value.copy(this.anchorEast).transformDirection(earth.matrixWorld)
+    this.north.value.copy(this.anchorNorth).transformDirection(earth.matrixWorld)
     // Both in 64-bit: the difference is small near the anchor, so it survives the shader's 32-bit floats.
-    this.cameraFromAnchor.value.copy(cameraWorld).sub(anchorEarth.clone().applyMatrix4(earth.matrixWorld))
+    this.cameraFromAnchor.value.copy(cameraWorld).sub(scratchAnchor.copy(this.anchorEarthCenteredMeters!).applyMatrix4(earth.matrixWorld))
   }
 
   createNodes(): WaveSurfaceNodes {
@@ -88,9 +104,11 @@ export class WaveSurface {
     let resolved: Node = float(0)
     this.field.cascades.forEach((cascade, index) => {
       const texelMeters = cascade.lengthMeters / this.field.gridSize
-      const fade = float(1).sub(smoothstep(texelMeters * 1.5, texelMeters * 4, footprint)).mul(this.weight)
+      // Gone before a pixel spans two texels: without mipmaps, a cascade sampled sparser than that shimmers.
+      const fade = float(1).sub(smoothstep(texelMeters * 0.75, texelMeters * 2, footprint)).mul(this.weight)
       slope = (slope as Node<'vec2'>).add(texture(cascade.texture, plane.div(cascade.lengthMeters)).rg.mul(fade))
-      resolved = (resolved as Node<'float'>).add(this.meanSquareSlopes[index]!.mul(fade))
+      // The slopes are scaled by the fade, so the variance drawn by its square.
+      resolved = (resolved as Node<'float'>).add(this.meanSquareSlopes[index]!.mul(fade.mul(fade)))
     })
     return {
       slope: slope as Node<'vec2'>,
@@ -116,8 +134,22 @@ export function eastNorthAt(point: Vector3): { east: Vector3; north: Vector3; up
   return { east, north, up }
 }
 
-function horizontalDistance(point: Vector3, anchor: Vector3): number {
-  const { up } = eastNorthAt(anchor)
-  const offset = point.clone().sub(anchor)
-  return offset.sub(up.multiplyScalar(offset.dot(up))).length()
+const scratchCamera = new Vector3()
+const scratchCameraEarth = new Vector3()
+const scratchAnchor = new Vector3()
+const scratchOffset = new Vector3()
+const scratchMatrix = new Matrix4()
+
+function horizontalDistance(point: Vector3, anchor: Vector3, up: Vector3): number {
+  const offset = scratchOffset.copy(point).sub(anchor)
+  const vertical = offset.dot(up)
+  return Math.sqrt(Math.max(offset.lengthSq() - vertical * vertical, 0))
+}
+
+/** Height of an ECEF point above the WGS84 ellipsoid, metres, to within a few kilometres: enough to tell orbit from sea. */
+function heightAboveEllipsoid(point: Vector3): number {
+  const horizontal = Math.hypot(point.x, point.y)
+  const latitude = Math.atan2(point.z, horizontal)
+  const radius = Math.hypot(EQUATORIAL_RADIUS_METERS * Math.cos(latitude), POLAR_RADIUS_METERS * Math.sin(latitude))
+  return point.length() - radius
 }

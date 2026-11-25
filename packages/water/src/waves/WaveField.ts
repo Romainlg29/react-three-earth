@@ -3,8 +3,11 @@ import { DataTexture, DataUtils, HalfFloatType, LinearFilter, RepeatWrapping, RG
 import { createFourierPlan, inverseTransform2D, type FourierPlan } from './fft.js'
 import { angularFrequency, seaStateConstants, wavenumberSpectrum, type SeaStateOptions } from './spectrum.js'
 
-/** Side of each cascade's tile, metres: ratios near 7 so their repeats do not line up. */
-export const WAVE_CASCADE_LENGTHS_METERS = [250, 37, 5.3] as const
+/**
+ * Side of each cascade's tile, metres: ratios near 7 so their repeats do not line up. The longest holds a storm's
+ * dominant waves (some 400 m), the shortest ripples of about 13 cm.
+ */
+export const WAVE_CASCADE_LENGTHS_METERS = [800, 110, 15, 2.1] as const
 /** Texels per side of each cascade. */
 export const WAVE_GRID_SIZE = 64
 
@@ -45,7 +48,7 @@ function createRandom(seed: number): () => number {
 /**
  * The sea's surface simulated on the CPU (Tessendorf 2001): per cascade, a random field shaped by the wave spectrum,
  * advanced in time by each wave's own frequency and transformed to slopes by an inverse FFT every `update`. About
- * 0.5 ms a frame for three 64² cascades.
+ * 1.5 ms a frame for four 64² cascades on a desktop CPU (only the cells and rows in each band are computed).
  */
 export class WaveField {
   readonly cascades: WaveCascade[]
@@ -58,6 +61,13 @@ export class WaveField {
   /** Per cascade: ω(k). */
   protected readonly frequencies: Float64Array[]
   protected readonly work: Float64Array
+  /** Per cascade: the grid cells inside its band, the only ones `update` computes. */
+  protected readonly activeCells: Uint32Array[]
+  /** Per cascade: 1 for each grid row holding an active cell. */
+  protected readonly nonzeroRows: Uint8Array[]
+  /** Per cascade: the wavenumber of each column (east) and row (north), rad/m. */
+  protected readonly wavenumbersX: Float64Array[]
+  protected readonly wavenumbersY: Float64Array[]
   protected readonly halves: Uint16Array[]
 
   constructor({ lengthsMeters = WAVE_CASCADE_LENGTHS_METERS, gridSize = WAVE_GRID_SIZE, seed = 1 }: WaveFieldOptions = {}) {
@@ -96,6 +106,10 @@ export class WaveField {
     this.amplitudes = this.cascades.map(() => new Float64Array(cells * 2))
     this.frequencies = this.cascades.map(() => new Float64Array(cells))
     this.work = new Float64Array(cells * 2)
+    this.activeCells = this.cascades.map(() => new Uint32Array(0))
+    this.nonzeroRows = this.cascades.map(() => new Uint8Array(gridSize))
+    this.wavenumbersX = this.cascades.map(cascade => Float64Array.from({ length: gridSize }, (_, index) => this.wavenumber(index, cascade.lengthMeters)))
+    this.wavenumbersY = this.wavenumbersX
   }
 
   /** Wavenumber of grid index `index` along one axis of a cascade, rad/m (FFT order: negative ones in the upper half). */
@@ -114,23 +128,31 @@ export class WaveField {
       const amplitudes = this.amplitudes[cascadeIndex]!
       const frequencies = this.frequencies[cascadeIndex]!
       const gaussians = this.gaussians[cascadeIndex]!
+      const active: number[] = []
       let meanSquareSlope = 0
+      amplitudes.fill(0)
       for (let row = 0; row < size; row++) {
         const ky = this.wavenumber(row, cascade.lengthMeters)
         for (let column = 0; column < size; column++) {
           const kx = this.wavenumber(column, cascade.lengthMeters)
           const index = row * size + column
           const wavenumber = Math.hypot(kx, ky)
-          const inBand = wavenumber >= cascade.minimumWavenumber && wavenumber < cascade.maximumWavenumber && wavenumber > 0
-          const variance = inBand ? wavenumberSpectrum(kx, ky, options, constants) * cellArea : 0
-          // h0 = (ξ1 + iξ2) √(S Δk² / 2): the two terms of h(k, t) then hold S Δk² between them.
-          const scale = Math.sqrt(variance / 2)
+          // The band is symmetric in |k|: a cell and its mirror are in or out together.
+          if (!(wavenumber >= cascade.minimumWavenumber && wavenumber < cascade.maximumWavenumber && wavenumber > 0)) continue
+          active.push(index)
+          const variance = wavenumberSpectrum(kx, ky, options, constants) * cellArea
+          // h0 = (ξ1 + iξ2) √(S Δk² / 4), so E|h0|² = S Δk² / 2: h(k) and h(-k) then hold S(k) Δk² between them, once.
+          const scale = Math.sqrt(variance / 4)
           amplitudes[index * 2] = gaussians[index * 2]! * scale
           amplitudes[index * 2 + 1] = gaussians[index * 2 + 1]! * scale
           frequencies[index] = angularFrequency(wavenumber, constants.surfaceTensionOverDensity)
           meanSquareSlope += wavenumber * wavenumber * variance
         }
       }
+      this.activeCells[cascadeIndex] = Uint32Array.from(active)
+      const rows = new Uint8Array(size)
+      for (const index of active) rows[(index / size) | 0] = 1
+      this.nonzeroRows[cascadeIndex] = rows
       cascade.meanSquareSlope = meanSquareSlope
     })
   }
@@ -142,29 +164,33 @@ export class WaveField {
     this.cascades.forEach((cascade, cascadeIndex) => {
       const amplitudes = this.amplitudes[cascadeIndex]!
       const frequencies = this.frequencies[cascadeIndex]!
-      for (let row = 0; row < size; row++) {
-        const ky = this.wavenumber(row, cascade.lengthMeters)
-        const mirrorRow = (size - row) % size
-        for (let column = 0; column < size; column++) {
-          const kx = this.wavenumber(column, cascade.lengthMeters)
-          const index = row * size + column
-          const mirror = mirrorRow * size + ((size - column) % size)
-          const phase = frequencies[index]! * timeSeconds
-          const cos = Math.cos(phase)
-          const sin = Math.sin(phase)
-          // h(k, t) = h0(k) e^(iωt) + conj(h0(-k)) e^(-iωt): real heights, waves running both ways as the spectrum says.
-          const forwardReal = amplitudes[index * 2]!
-          const forwardImaginary = amplitudes[index * 2 + 1]!
-          const backwardReal = amplitudes[mirror * 2]!
-          const backwardImaginary = -amplitudes[mirror * 2 + 1]!
-          const heightReal = forwardReal * cos - forwardImaginary * sin + backwardReal * cos + backwardImaginary * sin
-          const heightImaginary = forwardReal * sin + forwardImaginary * cos - backwardReal * sin + backwardImaginary * cos
-          // Both slopes in one transform: i kx h + i (i ky h) = h (-ky + i kx); real part east, imaginary part north.
-          work[index * 2] = -ky * heightReal - kx * heightImaginary
-          work[index * 2 + 1] = kx * heightReal - ky * heightImaginary
-        }
+      const wavenumbersX = this.wavenumbersX[cascadeIndex]!
+      const wavenumbersY = this.wavenumbersY[cascadeIndex]!
+      work.fill(0)
+      // Only the cells in the cascade's band: about a fifth of the grid.
+      for (const index of this.activeCells[cascadeIndex]!) {
+        const row = (index / size) | 0
+        const column = index - row * size
+        const mirror = ((size - row) % size) * size + ((size - column) % size)
+        const kx = wavenumbersX[column]!
+        const ky = wavenumbersY[row]!
+        const phase = frequencies[index]! * timeSeconds
+        const cos = Math.cos(phase)
+        const sin = Math.sin(phase)
+        // h(k, t) = h0(k) e^(-iωt) + conj(h0(-k)) e^(iωt): real heights, each wave running along its own k (the
+        // transform is e^(+ik·x), so the phase k·x - ωt moves along k).
+        const forwardReal = amplitudes[index * 2]!
+        const forwardImaginary = amplitudes[index * 2 + 1]!
+        const backwardReal = amplitudes[mirror * 2]!
+        const backwardImaginary = -amplitudes[mirror * 2 + 1]!
+        const heightReal = forwardReal * cos + forwardImaginary * sin + backwardReal * cos - backwardImaginary * sin
+        const heightImaginary = forwardImaginary * cos - forwardReal * sin + backwardReal * sin + backwardImaginary * cos
+        // Both slopes in one transform: i kx h + i (i ky h) = h (-ky + i kx); real part east, imaginary part north.
+        work[index * 2] = -ky * heightReal - kx * heightImaginary
+        work[index * 2 + 1] = kx * heightReal - ky * heightImaginary
       }
-      inverseTransform2D(work, this.plan)
+      // The band leaves about half the rows empty: their transforms are skipped.
+      inverseTransform2D(work, this.plan, this.nonzeroRows[cascadeIndex])
       const halves = this.halves[cascadeIndex]!
       for (let index = 0; index < size * size * 2; index++) halves[index] = DataUtils.toHalfFloat(work[index]!)
       cascade.texture.needsUpdate = true

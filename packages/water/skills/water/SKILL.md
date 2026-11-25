@@ -98,13 +98,14 @@ Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3}
 
 The physical presets draw waves near the camera (`waves`, default true but for `map`): a JONSWAP spectrum from the
 wind's speed, `windDirectionDegrees` (where it blows from, default 270, a westerly) and `fetchKilometers` (open water it
-has blown over: short fetch, short steep waves), with ripples shaped by `temperatureCelsius` and salinity (surface
-tension and density). Three tiles of 250 m, 37 m and 5.3 m are simulated by FFT on the CPU (about 1 ms a frame) and
-tilt the surface's normal; each fades out where a pixel covers several of its texels, and the roughness takes back the
+has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
+(`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
+simulated by FFT on the CPU (about 1.5 ms a frame on a desktop, skipped from high above) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the roughness takes back the
 slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
 
 - `water.state.significantWaveHeightMeters` gives the sea state's wave height (about 1 m at 5 m/s over 100 km).
-- Waves animate: the earth renders every frame while they are on. `waves: false` stops them (and the CPU cost).
+- Waves animate: the earth renders every frame while they can show, that is below 30 km and off the flat map.
+  `waves: false` stops them (and the CPU cost).
 - The plane the waves lie on follows the camera, laid again after 20 km: the pattern shifts once then, unseen from
   the heights such a move takes.
 - They are normals only, with no foam patterns yet: `whitecapCoverage` pales the sea evenly.

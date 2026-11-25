@@ -66,9 +66,12 @@ function inverseTransform(data: Float32Array | Float64Array, offset: number, str
   }
 }
 
-/** The inverse transform of a `size × size` grid, rows of `size` complex values, in place. */
-export function inverseTransform2D(data: Float32Array | Float64Array, plan: FourierPlan): void {
+/**
+ * The inverse transform of a `size × size` grid, rows of `size` complex values, in place. Rows that `nonzeroRows` marks
+ * 0 must hold only zeros: their transform (zeros) is skipped.
+ */
+export function inverseTransform2D(data: Float32Array | Float64Array, plan: FourierPlan, nonzeroRows?: Uint8Array): void {
   const { size } = plan
-  for (let row = 0; row < size; row++) inverseTransform(data, row * size, 1, plan)
+  for (let row = 0; row < size; row++) if (nonzeroRows === undefined || nonzeroRows[row] !== 0) inverseTransform(data, row * size, 1, plan)
   for (let column = 0; column < size; column++) inverseTransform(data, column, size, plan)
 }

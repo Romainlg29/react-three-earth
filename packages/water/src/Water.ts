@@ -32,7 +32,10 @@ export interface WaterSettings {
   windDirectionDegrees?: number
   /** How far the wind has blown over open water, km: a short fetch raises short, steep waves, a long one a swell-like sea. */
   fetchKilometers?: number
-  /** Water temperature, °C: the surface tension and density that shape the smallest (capillary) ripples. */
+  /**
+   * Water temperature, °C: the surface tension and density in the waves' dispersion. Its effect is small at the drawn
+   * scales (capillary ripples are shorter than the smallest cascade's waves). Default: the preset's.
+   */
   temperatureCelsius?: number
   /**
    * A fixed colour instead of the one the water's optics give, for a stylised sea; null for the optics. Strings and
@@ -190,10 +193,10 @@ export class Water implements EarthPlugin {
     const { earth } = context
     this.earth = earth
     context.registerTerrainShading(this.createShading())
-    context.onUpdate(({ deltaSeconds, camera }) => {
-      if (!this.stateValue.waves) return false
-      this.waveSurface.update(deltaSeconds, camera, earth)
-      return true
+    // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
+    context.onUpdate(({ deltaSeconds, camera, morph }) => {
+      if (!this.stateValue.waves || morph >= 1) return false
+      return this.waveSurface.update(deltaSeconds, camera, earth)
     })
     context.onDispose(() => {
       if (this.earth === earth) this.earth = null
@@ -238,7 +241,7 @@ export class Water implements EarthPlugin {
         const sea = mix(onGlobe, onFlatMap, terrainFlatMorph)
         return {
           color: vec4(mix(ground, sea, terrainWaterMask), inputs.color.a) as unknown as Node<'vec4'>,
-          roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope), terrainWaterMask) as unknown as Node<'float'>,
+          roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea)), terrainWaterMask) as unknown as Node<'float'>,
           metalness: mix(inputs.metalness, float(0), terrainWaterMask) as unknown as Node<'float'>,
           // The waves tilt the surface: their slopes, east and north, taken off the ground's normal.
           normal: inputs.normal
