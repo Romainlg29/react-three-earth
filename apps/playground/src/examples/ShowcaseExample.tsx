@@ -99,10 +99,9 @@ function propertyRows(properties: Record<string, unknown>, skip: string | null):
  * drawing and measuring tools own the taps otherwise.
  */
 function FeatureInteractions({ enabled, files, peakSource, onSelect }: { enabled: boolean; files: LoadedGeoJsonFile[]; peakSource: RefObject<GeoJsonSourceImpl | null>; onSelect: (selection: Selection) => void }) {
-  const fileLayers = files.filter(file => file.visible).flatMap(fileLayerIds)
-  const interactive = enabled ? [...PEAK_LAYERS, ...fileLayers] : []
-  useHoverFeatureState(interactive, { tolerancePixels: 6 })
-  useLayerCursor(interactive, 'pointer', { tolerancePixels: 6 })
+  // Removed files leave the list a commit before their source goes, so the hover state is cleared on a live source.
+  const fileLayers = files.filter(file => !file.removed).flatMap(fileLayerIds)
+  const interactive = [...PEAK_LAYERS, ...fileLayers]
   useEarthEvent(
     'click',
     event => {
@@ -128,19 +127,29 @@ function FeatureInteractions({ enabled, files, peakSource, onSelect }: { enabled
         rows: propertyRows(properties, labelProperty),
       })
     },
-    { layers: [...PEAK_LAYERS, ...fileLayers], tolerancePixels: 10 },
+    { layers: interactive, tolerancePixels: 10 },
   )
+  // Layer events need at least one layer: hover and cursor are registered only while exploring.
+  return enabled ? <HoverAndCursor layers={interactive} /> : null
+}
+
+function HoverAndCursor({ layers }: { layers: string[] }) {
+  useHoverFeatureState(layers, { tolerancePixels: 6 })
+  useLayerCursor(layers, 'pointer', { tolerancePixels: 6 })
   return null
 }
 
 /** The summits, clustered, with hover highlights; the same layers as `?example=geojson`. */
-function PeakLayers({ source }: { source: RefObject<GeoJsonSourceImpl | null> }) {
+function PeakLayers({ source, visible }: { source: RefObject<GeoJsonSourceImpl | null>; visible: boolean }) {
+  // Hidden rather than unmounted: the hover state may still point at its features.
+  const visibility = visible ? 'visible' : 'none'
   return (
     <GeoJsonSource id="peaks" data={peaks} cluster clusterRadiusPixels={50} clusterProperties={{ highestMeters: ['max', ['get', 'elevationMeters']] }} ref={source}>
       <StyleLayer
         id="peak-clusters"
         type="circle"
         filter={['has', 'point_count']}
+        layout={{ visibility }}
         paint={{
           'circle-color': ['interpolate', ['linear'], ['get', 'highestMeters'], 3000, '#3aa267', 6000, '#e0603a', 8000, '#8f5cf6'],
           'circle-radius': ['interpolate', ['linear'], ['get', 'point_count'], 2, 14, 20, 26],
@@ -149,11 +158,12 @@ function PeakLayers({ source }: { source: RefObject<GeoJsonSourceImpl | null> })
           'circle-stroke-width': 2,
         }}
       />
-      <StyleLayer id="peak-counts" type="symbol" filter={['has', 'point_count']} layout={{ 'text-field': '{point_count_abbreviated}', 'text-size': 14 }} paint={{ 'text-color': '#ffffff' }} />
+      <StyleLayer id="peak-counts" type="symbol" filter={['has', 'point_count']} layout={{ visibility, 'text-field': '{point_count_abbreviated}', 'text-size': 14 }} paint={{ 'text-color': '#ffffff' }} />
       <StyleLayer
         id="peak-points"
         type="circle"
         filter={['!', ['has', 'point_count']]}
+        layout={{ visibility }}
         paint={{
           'circle-color': ['interpolate', ['linear'], ['get', 'elevationMeters'], 1000, '#3aa267', 3500, '#e6b33c', 6000, '#e0603a', 8000, '#f4f1ff'],
           'circle-radius': ['case', ['boolean', ['feature-state', 'hover'], false], 11, 7],
@@ -165,7 +175,7 @@ function PeakLayers({ source }: { source: RefObject<GeoJsonSourceImpl | null> })
         id="peak-names"
         type="symbol"
         filter={['!', ['has', 'point_count']]}
-        layout={{ 'text-field': '{name}', 'text-size': 13, 'text-anchor': 'top', 'text-offset': [0, 0.9] }}
+        layout={{ visibility, 'text-field': '{name}', 'text-size': 13, 'text-anchor': 'top', 'text-offset': [0, 0.9] }}
         paint={{ 'text-color': '#1d2333', 'text-halo-color': '#ffffff', 'text-halo-width': 1.5 }}
       />
     </GeoJsonSource>
@@ -260,7 +270,9 @@ export function ShowcaseExample() {
   const afterRef = useCompareImagery(compare, 'after')
 
   const fitFile = (file: LoadedGeoJsonFile) => {
-    if (file.bounds !== null) void earth?.camera.fitBounds(file.bounds, { paddingPixels: { topPixels: 60, rightPixels: 70, bottomPixels: 60, leftPixels: 60 }, maximumZoom: 15 })
+    // Clear of the card on wide screens (it collapses on phones).
+    const leftPixels = matchMedia('(min-width: 700px)').matches ? 380 : 40
+    if (file.bounds !== null) void earth?.camera.fitBounds(file.bounds, { paddingPixels: { topPixels: 60, rightPixels: 70, bottomPixels: 60, leftPixels }, maximumZoom: 15 })
   }
   const geoJsonFiles = useGeoJsonFiles(fitFile)
   const dragging = useFileDrop(files => void geoJsonFiles.add(files))
@@ -373,8 +385,8 @@ export function ShowcaseExample() {
             {tool === 'compare' ? <p className="example-status">Drag the slider: {basemap === 'satellite' ? 'streets' : 'satellite'} on the right, your basemap and data on the left.</p> : null}
           </Section>
 
-          <Section title={`Your GeoJSON${geoJsonFiles.files.length > 0 ? ` (${geoJsonFiles.files.length})` : ''}`} open>
-            <GeoJsonFilesPanel files={geoJsonFiles.files} errors={geoJsonFiles.errors} onAdd={files => void geoJsonFiles.add(files)} onSample={addSample} onToggle={geoJsonFiles.toggle} onRemove={removeFile} onZoom={fitFile} />
+          <Section title={`Your GeoJSON${geoJsonFiles.shown.length > 0 ? ` (${geoJsonFiles.shown.length})` : ''}`} open>
+            <GeoJsonFilesPanel files={geoJsonFiles.shown} errors={geoJsonFiles.errors} onAdd={files => void geoJsonFiles.add(files)} onSample={addSample} onToggle={geoJsonFiles.toggle} onRemove={removeFile} onZoom={fitFile} />
           </Section>
         </div>
       }
@@ -382,7 +394,7 @@ export function ShowcaseExample() {
       <Imagery ref={beforeRef}>
         <MapStyleSource style={style}>
           {layers.cities ? <CityLayers /> : null}
-          {layers.peaks ? <PeakLayers source={peakSource} /> : null}
+          <PeakLayers source={peakSource} visible={layers.peaks} />
           {geoJsonFiles.files.map(file => (
             <GeoJsonFileLayers key={file.id} file={file} />
           ))}
@@ -406,7 +418,7 @@ export function ShowcaseExample() {
             </Marker>
           ))
         : null}
-      {tool === 'measure' ? <MeasurementLabels measure={measure} unitSystem={unitSystem} /> : null}
+      <MeasurementLabels measure={measure} unitSystem={unitSystem} />
       {selection !== null ? (
         <Popup key={selection.key} longitudeDegrees={selection.longitudeDegrees} latitudeDegrees={selection.latitudeDegrees} open onClose={() => setSelection(null)} label={selection.title} offsetPixels={10}>
           <div className="example-popup">

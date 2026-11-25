@@ -15,6 +15,8 @@ export interface LoadedGeoJsonFile {
   labelProperty: string | null
   counts: { points: number; lines: number; polygons: number }
   visible: boolean
+  /** Set for the one commit between leaving the list and leaving the map. */
+  removed?: boolean
 }
 
 /** Colours for successive files: distinct on both streets and satellite imagery. */

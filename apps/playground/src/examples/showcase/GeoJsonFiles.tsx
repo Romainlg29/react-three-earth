@@ -69,8 +69,13 @@ export function useGeoJsonFiles(onLoaded: (file: LoadedGeoJsonFile) => void) {
     onLoaded(loaded.at(-1)!)
   }
   const toggle = (id: string) => setFiles(current => current.map(file => (file.id === id ? { ...file, visible: !file.visible } : file)))
-  const remove = (id: string) => setFiles(current => current.filter(file => file.id !== id))
-  return { files, errors, add, toggle, remove }
+  // Two steps: marked removed (the interactions drop its layers and clear their hover state), then gone.
+  const remove = (id: string) => setFiles(current => current.map(file => (file.id === id ? { ...file, removed: true } : file)))
+  useEffect(() => {
+    if (files.some(file => file.removed)) setFiles(current => current.filter(file => !file.removed))
+  }, [files])
+  const shown = files.filter(file => !file.removed)
+  return { files, shown, errors, add, toggle, remove }
 }
 
 /**
@@ -157,8 +162,8 @@ export function GeoJsonFilesPanel({ files, errors, onAdd, onSample, onToggle, on
       </div>
       {errors.length > 0 ? (
         <ul className="showcase-errors" role="alert">
-          {errors.map(error => (
-            <li key={error}>{error}</li>
+          {errors.map((error, index) => (
+            <li key={index}>{error}</li>
           ))}
         </ul>
       ) : null}
