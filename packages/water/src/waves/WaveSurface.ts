@@ -1,4 +1,4 @@
-import { DataArrayTexture, HalfFloatType, Matrix4, RGBAFormat, Vector3, type Camera, type Object3D } from 'three'
+import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector3, type Camera, type Object3D } from 'three'
 import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
@@ -45,8 +45,8 @@ export interface WaveSurfaceNodes {
  */
 export class WaveSurface {
   readonly field: WaveField
-  /** The GPU simulation, once a WebGPU renderer has run `update`; null on the CPU path (WebGL2). */
-  compute: WaveComputeField | null = null
+  /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
+  protected computeField: WaveComputeField | null = null
   /** 1 draws the waves, 0 leaves the sea flat. */
   readonly weight = uniform(1)
   /** The share of the sea white with whitecaps. */
@@ -78,6 +78,12 @@ export class WaveSurface {
     this.emptyFold = new DataArrayTexture(new Uint16Array(4 * layers), 1, 1, layers)
     this.emptyFold.format = RGBAFormat
     this.emptyFold.type = HalfFloatType
+    // The GPU's sampling, which shaders built before the swap keep: filtered and repeating.
+    this.emptyFold.wrapS = RepeatWrapping
+    this.emptyFold.wrapT = RepeatWrapping
+    this.emptyFold.minFilter = LinearFilter
+    this.emptyFold.magFilter = LinearFilter
+    this.emptyFold.generateMipmaps = false
     this.emptyFold.needsUpdate = true
     this.foldSampler = texture(this.emptyFold)
   }
@@ -86,6 +92,11 @@ export class WaveSurface {
   setWhitecapCoverage(coverage: number): void {
     this.whitecapCoverage.value = coverage
     this.whitecapScore.value = inverseStandardNormal(coverage)
+  }
+
+  /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
+  get compute(): WaveComputeField | null {
+    return this.computeField
   }
 
   get timeSeconds(): number {
@@ -109,20 +120,34 @@ export class WaveSurface {
     const cameraWorld = scratchCamera.setFromMatrixPosition(camera.matrixWorld)
     const cameraEarth = scratchCameraEarth.copy(cameraWorld).applyMatrix4(scratchMatrix.copy(earth.matrixWorld).invert())
     if (heightAboveEllipsoid(cameraEarth) > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
-    if (this.compute === null && renderer !== undefined && isWebGPUBackend(renderer)) this.startCompute()
-    if (this.compute !== null && renderer !== undefined) this.compute.update(renderer, this.timeSecondsValue)
-    else this.field.update(this.timeSecondsValue)
+    if (renderer !== undefined && isWebGPUBackend(renderer)) {
+      this.computeField ??= this.startCompute()
+      this.computeField.update(renderer, this.timeSecondsValue)
+    } else {
+      // No WebGPU (or another renderer took over): back to the CPU.
+      if (this.computeField !== null) this.stopCompute()
+      this.field.update(this.timeSecondsValue)
+    }
     this.followCamera(cameraWorld, cameraEarth, earth)
     return true
   }
 
   /** Moves the simulation to the GPU: the shaders already built sample its textures from now on. */
-  protected startCompute(): void {
+  protected startCompute(): WaveComputeField {
     const compute = new WaveComputeField(this.field)
-    this.compute = compute
     this.surfaceSampler.value = compute.surfaceTexture
     this.foldSampler.value = compute.foldTexture
     this.foamFromWaves.value = 1
+    return compute
+  }
+
+  /** Moves the simulation back to the CPU and frees the GPU's. */
+  protected stopCompute(): void {
+    this.surfaceSampler.value = this.field.texture
+    this.foldSampler.value = this.emptyFold
+    this.foamFromWaves.value = 0
+    this.computeField?.dispose()
+    this.computeField = null
   }
 
   protected followCamera(cameraWorld: Vector3, cameraEarth: Vector3, earth: Object3D): void {
@@ -175,7 +200,7 @@ export class WaveSurface {
     const spread = sqrt(resolved as Node<'float'>).mul(lambda)
     const threshold = float(1).add(spread.mul(this.whitecapScore))
     const edge = spread.mul(0.25).add(1e-4)
-    const breaking = smoothstep(threshold.add(edge), threshold.sub(edge), jacobian)
+    const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
     const foam = mix(this.whitecapCoverage, breaking, drawnShare)
@@ -189,8 +214,8 @@ export class WaveSurface {
   }
 
   dispose(): void {
+    this.stopCompute()
     this.field.dispose()
-    this.compute?.dispose()
     this.emptyFold.dispose()
   }
 }

@@ -10,6 +10,12 @@ import { angularFrequency, seaStateConstants, wavenumberSpectrum, type SeaStateO
 export const WAVE_CASCADE_LENGTHS_METERS = [800, 110, 15, 2.1] as const
 /** Texels per side of each cascade. */
 export const WAVE_GRID_SIZE = 64
+/**
+ * The sea repeats after this long, seconds: each wave's angular frequency is rounded to a whole number of cycles over
+ * it (Tessendorf's dispersion quantisation, shifting none by more than 0.3 %). The GPU then reduces each phase exactly,
+ * so the waves stay sharp however long the page runs.
+ */
+export const WAVE_REPEAT_PERIOD_SECONDS = 3600
 
 /** One cascade: a periodic tile of the sea's slopes, holding the wavelengths between its two wavenumbers. */
 export interface WaveCascade {
@@ -157,7 +163,8 @@ export class WaveField {
           const scale = Math.sqrt(variance / 4)
           amplitudes[index * 2] = gaussians[index * 2]! * scale
           amplitudes[index * 2 + 1] = gaussians[index * 2 + 1]! * scale
-          frequencies[index] = angularFrequency(wavenumber, constants.surfaceTensionOverDensity)
+          const cycles = Math.max(1, Math.round((angularFrequency(wavenumber, constants.surfaceTensionOverDensity) * WAVE_REPEAT_PERIOD_SECONDS) / (2 * Math.PI)))
+          frequencies[index] = (2 * Math.PI * cycles) / WAVE_REPEAT_PERIOD_SECONDS
           meanSquareSlope += wavenumber * wavenumber * variance
         }
       }
@@ -172,7 +179,8 @@ export class WaveField {
 
   /**
    * Writes the spectrum in the GPU's layout, cascade after cascade, rows of `gridSize` cells: per cell, `spectrum` gets
-   * h0(k) and conj(h0(-k)) (four floats) and `waves` kx, ky, ω(k) and 1/|k| (0 at k = 0).
+   * h0(k) and conj(h0(-k)) (four floats) and `waves` kx, ky, ω(k) as whole cycles per `WAVE_REPEAT_PERIOD_SECONDS`, and
+   * 1/|k| (0 at k = 0).
    */
   writeSpectrum(spectrum: Float32Array, waves: Float32Array): void {
     const size = this.gridSize
@@ -196,7 +204,7 @@ export class WaveField {
         const wavenumber = Math.hypot(kx, ky)
         waves[offset] = kx
         waves[offset + 1] = ky
-        waves[offset + 2] = frequencies[index]!
+        waves[offset + 2] = Math.round((frequencies[index]! * WAVE_REPEAT_PERIOD_SECONDS) / (2 * Math.PI))
         waves[offset + 3] = wavenumber > 0 ? 1 / wavenumber : 0
       }
     })
@@ -206,20 +214,22 @@ export class WaveField {
   update(timeSeconds: number): void {
     const size = this.gridSize
     const work = this.work
+    // Every wave repeats over the period: reducing the time keeps the phases exact.
+    const time = timeSeconds % WAVE_REPEAT_PERIOD_SECONDS
     this.cascades.forEach((cascade, cascadeIndex) => {
       const amplitudes = this.amplitudes[cascadeIndex]!
       const frequencies = this.frequencies[cascadeIndex]!
       const wavenumbersX = this.wavenumbersX[cascadeIndex]!
       const wavenumbersY = this.wavenumbersY[cascadeIndex]!
       work.fill(0)
-      // Only the cells in the cascade's band: about a fifth of the grid.
+    // Only the cells in the cascade's band: about a fifth of the grid.
       for (const index of this.activeCells[cascadeIndex]!) {
         const row = (index / size) | 0
         const column = index - row * size
         const mirror = ((size - row) % size) * size + ((size - column) % size)
         const kx = wavenumbersX[column]!
         const ky = wavenumbersY[row]!
-        const phase = frequencies[index]! * timeSeconds
+        const phase = frequencies[index]! * time
         const cos = Math.cos(phase)
         const sin = Math.sin(phase)
         // h(k, t) = h0(k) e^(-iωt) + conj(h0(-k)) e^(iωt): real heights, each wave running along its own k (the

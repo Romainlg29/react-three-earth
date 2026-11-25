@@ -1,4 +1,5 @@
-import { DataUtils, Matrix4, PerspectiveCamera, Group } from 'three'
+import { DataUtils, Matrix4, PerspectiveCamera, Group, type Texture } from 'three'
+import type { WebGPURenderer } from 'three/webgpu'
 import { describe, expect, it } from 'vitest'
 
 import { createFourierPlan, inverseTransform2D } from '../src/waves/fft.js'
@@ -14,7 +15,7 @@ import {
 } from '../src/waves/spectrum.js'
 import { inverseStandardNormal, WAVE_CHOPPINESS } from '../src/waves/foam.js'
 import { createButterflies } from '../src/waves/WaveComputeField.js'
-import { WaveField } from '../src/waves/WaveField.js'
+import { WAVE_REPEAT_PERIOD_SECONDS, WaveField } from '../src/waves/WaveField.js'
 import { whitecapCoverage } from '../src/optics.js'
 import { eastNorthAt, WaveSurface } from '../src/waves/WaveSurface.js'
 
@@ -196,7 +197,10 @@ function simulateGpu(field: WaveField, timeSeconds: number): { surface: Float64A
   for (let index = 0; index < count; index++) {
     const [ar, ai, br, bi] = spectrum.subarray(index * 4, index * 4 + 4)
     const [kx, ky, omega, inverse] = waves.subarray(index * 4, index * 4 + 4)
-    const phase = Math.fround(omega! * timeSeconds)
+    // As the GPU: whole cycles over the period times the share of it gone, in 32-bit, reduced to one cycle.
+    const share = Math.fround((timeSeconds % WAVE_REPEAT_PERIOD_SECONDS) / WAVE_REPEAT_PERIOD_SECONDS)
+    const cycles = Math.fround(omega! * share)
+    const phase = (cycles - Math.floor(cycles)) * 2 * Math.PI
     const c = Math.cos(phase)
     const s = Math.sin(phase)
     const hr = ar! * c + ai! * s + br! * c - bi! * s
@@ -327,6 +331,50 @@ describe('WaveComputeField', () => {
     const share = shares.reduce((sum, value) => sum + value, 0) / shares.length
     expect(share).toBeGreaterThan(coverage * 0.6)
     expect(share).toBeLessThan(coverage * 1.6)
+  })
+
+  it('moves to the GPU under WebGPU and back to the CPU without it, with the same sampling', () => {
+    const surface = new WaveSurface()
+    surface.setSeaState(openOcean)
+    const earth = new Group()
+    earth.updateMatrixWorld()
+    const camera = new PerspectiveCamera()
+    camera.position.set(6378137 + 300, 0, 0)
+    camera.updateMatrixWorld()
+    const dispatched: unknown[] = []
+    const webgpu = { backend: { isWebGPUBackend: true }, compute: (kernels: unknown) => void dispatched.push(kernels) } as unknown as WebGPURenderer
+    const webgl = { backend: { isWebGLBackend: true } } as unknown as WebGPURenderer
+    const samplers = surface as unknown as { surfaceSampler: { value: Texture }; foldSampler: { value: Texture } }
+    const cpuFold = samplers.foldSampler.value
+    surface.update(0.016, camera, earth, webgpu)
+    const compute = surface.compute!
+    expect(compute).not.toBeNull()
+    // One submit a frame: all the dispatches at once.
+    expect(dispatched).toHaveLength(1)
+    expect(samplers.surfaceSampler.value).toBe(compute.surfaceTexture)
+    // Shaders built before the swap keep the placeholder's sampling: it must match the GPU textures'.
+    for (const [before, after] of [
+      [surface.field.texture, compute.surfaceTexture],
+      [cpuFold, compute.foldTexture],
+    ] as const) {
+      expect([before.wrapS, before.wrapT, before.minFilter, before.magFilter, before.type]).toEqual([after.wrapS, after.wrapT, after.minFilter, after.magFilter, after.type])
+    }
+    surface.update(0.016, camera, earth, webgl)
+    expect(surface.compute).toBeNull()
+    expect(samplers.surfaceSampler.value).toBe(surface.field.texture)
+    expect(samplers.foldSampler.value).toBe(cpuFold)
+    surface.dispose()
+  })
+
+  it('rounds each wave to whole cycles over the repeat period', () => {
+    const field = new WaveField()
+    field.setSeaState(openOcean)
+    const before = field.cascades[1]!.slopes.slice()
+    field.update(5)
+    const first = field.cascades[1]!.slopes.slice()
+    field.update(5 + WAVE_REPEAT_PERIOD_SECONDS)
+    expect(field.cascades[1]!.slopes).toEqual(first)
+    expect(first).not.toEqual(before)
   })
 
   it('scores the normal distribution', () => {

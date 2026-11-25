@@ -1,9 +1,9 @@
 import { HalfFloatType, LinearFilter, RepeatWrapping } from 'three'
-import { cos, float, Fn, instancedArray, instanceIndex, int, ivec2, sin, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
+import { cos, float, fract, Fn, instancedArray, instanceIndex, int, ivec2, sin, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
 import { StorageArrayTexture, type ComputeNode, type Node, type StorageBufferNode, type WebGPURenderer } from 'three/webgpu'
 
 import { createFourierPlan } from './fft.js'
-import type { WaveField } from './WaveField.js'
+import { WAVE_REPEAT_PERIOD_SECONDS, type WaveField } from './WaveField.js'
 
 /**
  * The wave field's per-frame work moved to the GPU (WebGPU compute): the spectrum advanced in time and four real fields
@@ -20,10 +20,13 @@ export class WaveComputeField {
   /** Per cascade: ∂Dx/∂y (= ∂Dy/∂x) of the displacement per unit choppiness, then the height in metres. */
   readonly foldTexture: StorageArrayTexture
   protected readonly field: WaveField
-  protected readonly time = uniform(0)
+  /** The time as a share of `WAVE_REPEAT_PERIOD_SECONDS`, reduced in 64-bit on the CPU. */
+  protected readonly periodShare = uniform(0)
   protected readonly spectrum: StorageBufferNode<'vec4'>
   protected readonly waves: StorageBufferNode<'vec4'>
   protected readonly kernels: ComputeNode[]
+  /** Every storage buffer, freed with the field. */
+  protected readonly buffers: ReadonlyArray<{ readonly value: { dispose(): void } }>
   protected uploadedVersion = -1
 
   constructor(field: WaveField) {
@@ -52,7 +55,8 @@ export class WaveComputeField {
     const advance = Fn(() => {
       const amplitude = this.spectrum.element(index)
       const wave = this.waves.element(index)
-      const phase = wave.z.mul(this.time)
+      // Whole cycles over the period times the share of it gone: reduced to one cycle before the sine, exact for days.
+      const phase = fract(wave.z.mul(this.periodShare)).mul(2 * Math.PI)
       const cosine = cos(phase)
       const sine = sin(phase)
       // h(k, t) = h0(k) e^(-iωt) + conj(h0(-k)) e^(iωt), as on the CPU.
@@ -60,7 +64,8 @@ export class WaveComputeField {
       const heightImaginary = amplitude.y.mul(cosine).sub(amplitude.x.mul(sine)).add(amplitude.z.mul(sine)).add(amplitude.w.mul(cosine))
       const kx = wave.x
       const ky = wave.y
-      // The displacement D = -i k/|k| h: its derivatives are real multiples of h, (kx², ky², kx ky) / |k|.
+      // The choppy displacement moves the surface by -λ D towards the crests, D = -i k/|k| h (Tessendorf): the
+      // derivatives of D are real multiples of h, (kx², ky², kx ky) / |k|.
       const xx = kx.mul(kx).mul(wave.w)
       const yy = ky.mul(ky).mul(wave.w)
       const xy = kx.mul(ky).mul(wave.w)
@@ -116,6 +121,7 @@ export class WaveComputeField {
     })().compute(count)
 
     this.kernels = [advance, ...transforms, resolve]
+    this.buffers = [this.spectrum, this.waves, ...surface, ...fold, butterflies]
   }
 
   /** Advances the waves to `timeSeconds` on the GPU, uploading the spectrum first if the sea state changed. */
@@ -126,13 +132,14 @@ export class WaveComputeField {
       this.waves.value.needsUpdate = true
       this.uploadedVersion = this.field.seaStateVersion
     }
-    this.time.value = timeSeconds
-    // In order: each dispatch reads what the previous one wrote.
-    for (const kernel of this.kernels) void renderer.compute(kernel)
+    this.periodShare.value = (timeSeconds % WAVE_REPEAT_PERIOD_SECONDS) / WAVE_REPEAT_PERIOD_SECONDS
+    // One compute pass, one submit: each dispatch sees what the previous one wrote.
+    void renderer.compute(this.kernels)
   }
 
   dispose(): void {
     for (const kernel of this.kernels) kernel.dispose()
+    for (const buffer of this.buffers) buffer.value.dispose()
     this.surfaceTexture.dispose()
     this.foldTexture.dispose()
   }
