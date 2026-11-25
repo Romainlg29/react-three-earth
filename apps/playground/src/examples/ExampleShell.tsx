@@ -60,6 +60,10 @@ export interface ExampleShellProps {
   overlay?: ReactNode
   /** The DOM around the canvas, for an example that embeds the map in a page. Default: the whole window. */
   className?: string
+  /** The sun's time, overriding `?date`. Default: now. */
+  date?: Date
+  /** Show the globe / flat map button in the map controls. Default: false. */
+  viewSwitch?: boolean
 }
 
 /**
@@ -67,18 +71,18 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas', date: dateOverride, viewSwitch = false }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth plugins={plugins} date={date}>
+        <Earth plugins={plugins} date={dateOverride ?? date}>
           <InitialView view={camera} onEarth={onEarth} />
           <Terrain exaggeration={exaggeration} createMaterial={createTerrainMaterial}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
           {atmosphere ? <Atmosphere /> : <PlainLights />}
           <EarthControls {...controls} />
-          <MapControls />
+          <MapControls viewSwitch={viewSwitch} />
         </Earth>
       </Canvas>
       {overlay}

@@ -17,7 +17,7 @@ const TOOLS = [
 ] as const
 
 /** The toolbar: plain buttons on the draw's state. The library ships none of this, nor any CSS. */
-function DrawToolbar({ draw }: { draw: Draw }) {
+export function DrawToolbar({ draw }: { draw: Draw }) {
   const state = useDrawState(draw)
   return (
     <>
