@@ -50,7 +50,8 @@ export interface QuantizedMeshSourceOptions {
   smoothSkirtNormals?: boolean
   /**
    * Reads the tiles' water mask (the quantized-mesh `watermask` extension, asked for when `layer.json` lists it) into
-   * `terrainWaterMask`, for terrain materials. Tiles without one are land. Default: true.
+   * `terrainWaterMask`, for terrain materials. Tiles without one are land. False leaves the mask unread, though the tiles
+   * still carry it when `layer.json` lists the extension. Default: true.
    */
   waterMask?: boolean
   /**

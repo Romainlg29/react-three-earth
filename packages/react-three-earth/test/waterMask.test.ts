@@ -65,6 +65,8 @@ describe('terrain water mask', () => {
     expect(getTerrainWaterMaskState(meshOf(without))!.texture).toBeNull()
     expect(getTerrainWaterMaskState(meshOf(without))!.mode).toBe(0)
 
+    // Counted in the memory budget: one byte per mask pixel.
+    expect(plugin.calculateBytesUsed(root as never)).toBe(16)
     // Disposing the tile frees the texture it made.
     let disposed = false
     state.texture!.addEventListener('dispose', () => (disposed = true))
@@ -99,6 +101,16 @@ describe('terrain water mask', () => {
     first.texture!.addEventListener('dispose', () => (disposed = true))
     plugin.disposeTile(deeper as never)
     expect(disposed).toBe(false)
+  })
+
+  it('frees every mask when the plugin is disposed, as the terrain is', () => {
+    const plugin = new TerrainWaterMaskPlugin({ tileMasks: true })
+    const scene = tileScene(loaderMask(() => true))
+    plugin.processTileModel(scene, tile('1/0/0.terrain') as never)
+    let disposed = false
+    getTerrainWaterMaskState(meshOf(scene))!.texture!.addEventListener('dispose', () => (disposed = true))
+    plugin.dispose()
+    expect(disposed).toBe(true)
   })
 
   it('gives tiles the imagery split off the same mask, their uv being the parent tile\'s', () => {

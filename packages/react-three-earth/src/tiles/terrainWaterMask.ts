@@ -94,8 +94,8 @@ export class TerrainWaterMaskPlugin {
   readonly priority = -1001
   /** The state of each loaded tile, for the tiles split from it. */
   protected readonly states = new WeakMap<Tile, TerrainWaterMaskState>()
-  /** Masks this plugin made for a tile, disposed with it. Split tiles share their parent's. */
-  protected readonly ownedTextures = new WeakMap<Tile, Texture>()
+  /** Masks this plugin made for a tile, disposed with it or with the plugin. Split tiles share their parent's. */
+  protected readonly ownedTextures = new Map<Tile, DataTexture>()
   protected readonly tileMasks: boolean
   protected readonly seaLevelMeters: number | null
 
@@ -119,6 +119,18 @@ export class TerrainWaterMaskPlugin {
     this.ownedTextures.get(tile)?.dispose()
     this.ownedTextures.delete(tile)
     this.states.delete(tile)
+  }
+
+  /** The tile's mask, for the terrain's memory budget: it sits on no material, so the tile renderer does not see it. */
+  calculateBytesUsed(tile: Tile): number {
+    const image = this.ownedTextures.get(tile)?.image as { width: number; height: number } | undefined
+    return image === undefined ? 0 : image.width * image.height
+  }
+
+  /** Frees every mask: the tile renderer unregisters plugins before unloading its tiles, so `disposeTile` misses them. */
+  dispose(): void {
+    for (const texture of this.ownedTextures.values()) texture.dispose()
+    this.ownedTextures.clear()
   }
 
   protected stateFor(scene: Object3D, tile: Tile): TerrainWaterMaskState {
