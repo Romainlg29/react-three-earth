@@ -176,6 +176,10 @@ export class EarthViewControls {
   readonly cooperativeGestures = new CooperativeGestures()
   /** Steepest tilt a two-finger drag or `Shift` + up reaches on the globe, in radians. Default: 80°. */
   maximumGlobeTiltRadians = MathUtils.degToRad(80)
+  /** The globe controls' own tilt range, saved while the camera's tilt limits narrow it; null while they do not. */
+  protected savedGlobeTilt: { minimumRadians: number; maximumRadians: number } | null = null
+  /** The flat map controls' own least tilt, saved while the camera's tilt limits raise it; null while they do not. */
+  protected savedFlatMapMinimumTiltRadians: number | null = null
   protected mapLabel = 'Map'
   protected doubleClickZoomEnabled = true
   protected domElement: HTMLElement | null = null
@@ -300,18 +304,23 @@ export class EarthViewControls {
     globe.enableDoubleTapZoom = doubleClickZoom
     flatMap.enableDoubleTapZoom = doubleClickZoom
     this.touchGestures.tiltEnabled = onGlobe || flatMap.maximumTiltRadians > 0
-    this.keyboard.maximumTiltDegrees = MathUtils.radToDeg(onFlatMap ? flatMap.maximumTiltRadians : this.maximumGlobeTiltRadians)
+    // The camera's tilt limit, when tighter, stops a key press or a two-finger tilt there too.
+    const { minimumTiltDegrees = 0, maximumTiltDegrees = 90 } = earth.camera.getLimits()
+    const ownTiltDegrees = MathUtils.radToDeg(onFlatMap ? flatMap.maximumTiltRadians : this.maximumGlobeTiltRadians)
+    this.keyboard.maximumTiltDegrees = Math.max(minimumTiltDegrees, Math.min(maximumTiltDegrees, ownTiltDegrees))
     // Taken every frame, so finger travel during a view transition is dropped rather than applied after it.
     const frame = this.touchGestures.takeFrame()
     const gesture = onGlobe || onFlatMap ? frame : null
     if (onGlobe) {
       const tiles = earth.terrain?.tiles
       if (tiles !== undefined && globe.ellipsoidGroup !== tiles.group) globe.setEllipsoid(tiles.ellipsoid, tiles.group)
+      this.fitTiltToLimits()
       if (gesture !== null) this.applyGlobeGesture(gesture)
       globe.update(deltaSeconds)
     } else if (onFlatMap) {
       flatMap.followView(view)
       flatMap.terrainHeightMeters = this.findTerrainHeightUnderCamera()
+      this.fitTiltToLimits()
       if (gesture !== null) this.applyFlatMapGesture(gesture)
       flatMap.update(deltaSeconds)
     } else {
@@ -319,6 +328,44 @@ export class EarthViewControls {
       const camera = globe.camera as (Camera & { near: number; far: number }) | null
       if (camera !== null && 'near' in camera) fitClippingPlanes(camera, camera.position.distanceTo(view.anchorPosition))
     }
+  }
+
+  /**
+   * Narrows the controls' tilt range (their `minAltitude` / `maxAltitude`, in radians from looking straight down) to the
+   * camera's tilt limits (`earth.camera.setLimits`), so a rotating drag stops at a limit around its own pivot instead
+   * of `earth.update` pulling the camera back around the centre of the screen.
+   */
+  protected fitTiltToLimits(): void {
+    const { earth, globe, flatMap } = this
+    const { minimumTiltDegrees, maximumTiltDegrees } = earth.camera.getLimits()
+    const limited = minimumTiltDegrees !== undefined || maximumTiltDegrees !== undefined
+    if (earth.view.mode === '2d') {
+      // `followView` set the map's own steepest tilt this frame; the limits narrow the range, and win when the two
+      // do not overlap.
+      if (minimumTiltDegrees === undefined) {
+        if (this.savedFlatMapMinimumTiltRadians !== null) flatMap.minAltitude = this.savedFlatMapMinimumTiltRadians
+        this.savedFlatMapMinimumTiltRadians = null
+      } else {
+        const own = (this.savedFlatMapMinimumTiltRadians ??= flatMap.minAltitude)
+        flatMap.minAltitude = Math.max(own, MathUtils.degToRad(minimumTiltDegrees))
+      }
+      if (maximumTiltDegrees !== undefined) flatMap.maxAltitude = Math.min(flatMap.maxAltitude, MathUtils.degToRad(maximumTiltDegrees))
+      if (flatMap.maxAltitude < flatMap.minAltitude) flatMap.maxAltitude = flatMap.minAltitude
+      return
+    }
+    if (!limited) {
+      // Back to the app's own range, once, when the limits go.
+      const saved = this.savedGlobeTilt
+      if (saved === null) return
+      globe.minAltitude = saved.minimumRadians
+      globe.maxAltitude = saved.maximumRadians
+      this.savedGlobeTilt = null
+      return
+    }
+    const saved = (this.savedGlobeTilt ??= { minimumRadians: globe.minAltitude, maximumRadians: globe.maxAltitude })
+    globe.minAltitude = minimumTiltDegrees === undefined ? saved.minimumRadians : Math.max(saved.minimumRadians, MathUtils.degToRad(minimumTiltDegrees))
+    globe.maxAltitude = maximumTiltDegrees === undefined ? saved.maximumRadians : Math.min(saved.maximumRadians, MathUtils.degToRad(maximumTiltDegrees))
+    if (globe.maxAltitude < globe.minAltitude) globe.maxAltitude = globe.minAltitude
   }
 
   protected applyGlobeGesture(gesture: TwoFingerFrame): void {
@@ -336,7 +383,8 @@ export class EarthViewControls {
     }
     if (WGS84_ELLIPSOID.intersectRay(getScreenRay(camera, screenCenter), gesturePivot) === null) return
     WGS84_ELLIPSOID.getPositionToNormal(gesturePivot, gestureUp)
-    applyTwoFingerTilt(camera, gesture, gesturePivot, gestureUp, this.maximumGlobeTiltRadians)
+    const tiltLimitDegrees = this.earth.camera.getLimits().maximumTiltDegrees ?? 90
+    applyTwoFingerTilt(camera, gesture, gesturePivot, gestureUp, Math.min(this.maximumGlobeTiltRadians, MathUtils.degToRad(tiltLimitDegrees)))
   }
 
   protected applyFlatMapGesture(gesture: TwoFingerFrame): void {

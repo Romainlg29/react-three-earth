@@ -3,6 +3,7 @@ import { useCallback, useLayoutEffect, useRef, useState, useSyncExternalStore, t
 import type { WebGPURenderer } from 'three/webgpu'
 
 import { Earth as EarthImpl } from '../core/Earth.js'
+import type { CameraLimits } from '../core/cameraLimits.js'
 import type { MapViewChange } from '../core/EarthCamera.js'
 import type { EarthPlugin } from '../plugins/plugin.js'
 import type { ViewMode } from '../view/ViewMorph.js'
@@ -28,8 +29,15 @@ export interface EarthProps {
    */
   initialView?: MapViewChange
   /**
+   * Bounds the camera stays within (`earth.camera.setLimits`): zoom, tilt from looking straight down, and the box the
+   * centre of the screen stays in. Compared by value, so an inline object is fine. Default: none.
+   * @example <Earth cameraLimits={{ minimumZoom: 4, maximumZoom: 16, maximumTiltDegrees: 60 }}>
+   */
+  cameraLimits?: CameraLimits
+  /**
    * Whether markers and popups get the built-in look: the popup's font, colours, box, tip and close button,
-   * the focus rings (the default pin keeps its shape and `--earthkit-marker-color`). False leaves them unstyled apart from what places them, for an app that brings its own CSS
+   * the focus rings (the default pin keeps its shape and `--earthkit-marker-color`). False leaves them unstyled
+   * apart from what places them, for an app that brings its own CSS
    * (target `.earthkit-marker`, `.earthkit-popup`, `.earthkit-popup-content`, …). With it on, restyle through
    * the same classes or the `--earthkit-popup-*` and `--earthkit-marker-color` CSS variables. Read once at mount.
    * Default: true.
@@ -58,13 +66,13 @@ export interface EarthProps {
  * (ECEF) metres.
  *
   * Everything else (`<Terrain>`, `<Imagery>`, `<Atmosphere>`, `<EarthControls>`) goes inside it. */
-export function Earth({ date, view, viewTransitionSeconds, initialView, defaultOverlayStyles, plugins, renderPipeline = true, children }: EarthProps) {
+export function Earth({ date, view, viewTransitionSeconds, initialView, cameraLimits, defaultOverlayStyles, plugins, renderPipeline = true, children }: EarthProps) {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
   const domElement = useThree(state => state.events.connected ?? state.renderer.domElement) as HTMLElement
   const canvas = useThree(state => state.renderer.domElement) as HTMLElement
-  const [earth] = useState(() => new EarthImpl({ date, view, initialView, defaultOverlayStyles }))
+  const [earth] = useState(() => new EarthImpl({ date, view, initialView, cameraLimits, defaultOverlayStyles }))
 
   useLayoutEffect(() => {
     earth.connect(renderer)
@@ -79,6 +87,16 @@ export function Earth({ date, view, viewTransitionSeconds, initialView, defaultO
     earth.attachPointerEvents(domElement, { canvas })
     return () => earth.detachPointerEvents()
   }, [earth, domElement, canvas])
+
+  // By value: an inline object does not reset the limits on every render.
+  // The constructor applied the first value; the key holds every value the closure reads.
+  const cameraLimitsKey = JSON.stringify(cameraLimits ?? {})
+  const appliedCameraLimitsKey = useRef(cameraLimitsKey)
+  useLayoutEffect(() => {
+    if (appliedCameraLimitsKey.current === cameraLimitsKey) return
+    appliedCameraLimitsKey.current = cameraLimitsKey
+    earth.camera.setLimits(cameraLimits ?? {})
+  }, [earth, cameraLimitsKey])
 
   useLayoutEffect(() => {
     if (date !== undefined) earth.date = date

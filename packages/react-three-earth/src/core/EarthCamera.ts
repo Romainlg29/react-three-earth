@@ -24,6 +24,7 @@ import {
   type PaddingPixels,
   type ViewPadding,
 } from './cameraAnimation.js'
+import { constrainView, hasCameraLimits, validateCameraLimits, type CameraLimits } from './cameraLimits.js'
 import type { Earth } from './Earth.js'
 import {
   ellipsoidHorizonPoint,
@@ -105,6 +106,26 @@ interface RunningAnimation {
   resolve: (completed: boolean) => void
 }
 
+/** Differences below these are rounding, not a view outside the limits (re-reading a placed view is not exact). */
+const LIMIT_TOLERANCE_ZOOM = 1e-6
+const LIMIT_TOLERANCE_DEGREES = 1e-6
+/** Halvings that find where a move crossed a zoom limit: 1/4096 of the move. */
+const ZOOM_LIMIT_BISECTION_STEPS = 12
+/** A step that changes the camera's distance to the ground by more than this share is a zoom. */
+const ZOOM_STEP_DISTANCE_SHARE = 0.01
+const limitStart = new Vector3()
+const limitEnd = new Vector3()
+
+/** Points along a flight sampled for its lowest zoom. */
+const FLIGHT_ZOOM_SAMPLES = 64
+
+/** The lowest zoom change along a flight path, sampled. */
+function lowestZoomChange(flight: { length: number; zoomChange: (s: number) => number }): number {
+  let lowest = 0
+  for (let index = 0; index <= FLIGHT_ZOOM_SAMPLES; index++) lowest = Math.min(lowest, flight.zoomChange((index / FLIGHT_ZOOM_SAMPLES) * flight.length))
+  return lowest
+}
+
 /** The longest first animation step: one frame at 60 fps. */
 const FIRST_STEP_SECONDS = 1 / 60
 
@@ -149,8 +170,151 @@ export class EarthCamera {
   /** A copy of the camera that `cameraForBounds` measures fits with. */
   protected fitCamera: Camera | null = null
   protected placedView = false
+  protected limits: CameraLimits = {}
+  /** The camera's world matrix and viewport when the limits were last checked: unchanged means nothing to check. */
+  protected readonly checkedMatrix = new Float64Array(18)
+  protected limitsChecked = false
+  /** The view's distance at the last check, to tell a zoom step from a pan. */
+  protected checkedDistanceMeters = 0
 
   constructor(protected readonly earth: Earth) {}
+
+  /**
+   * Bounds the camera stays within (MapLibre's `minZoom`, `maxZoom`, `minPitch`, `maxPitch` and `maxBounds`). Replaces
+   * the previous limits; fields left out are unlimited, and `{}` removes every limit. Every way the camera moves
+   * keeps to them: the controls, `jumpTo`, the animations (they end inside the limits) and the app's own camera code,
+   * which `earth.update` corrects before the frame draws. A camera outside new limits moves inside on the next frame.
+   */
+  setLimits(limits: CameraLimits): void {
+    this.limits = validateCameraLimits(limits)
+    this.limitsChecked = false
+    this.earth.requestFrame()
+  }
+
+  /** True when `setLimits` set at least one limit. */
+  get hasLimits(): boolean {
+    return hasCameraLimits(this.limits)
+  }
+
+  /** The limits `setLimits` set, as validated. Read-only: change them with `setLimits`. */
+  getLimits(): Readonly<CameraLimits> {
+    return this.limits
+  }
+
+  /** The view moved inside the limits: what an animation ends on, or what `jumpTo` would place. */
+  constrainView<View extends { longitudeDegrees: number; latitudeDegrees: number; zoom: number; pitchDegrees: number }>(view: View): View {
+    return constrainView(view, this.limits)
+  }
+
+  /**
+   * Moves the camera inside the limits when it left them. `earth.update` calls it every frame, after the
+   * animation and before the tiles; it reads the view (a terrain raycast) only on frames where the camera or
+   * viewport changed, and not during an animation (whose plan already keeps to the limits). Returns true when it
+   * moved the camera.
+   *
+   * A move that crossed a zoom limit is cut short where it reaches the limit, along the camera's own path: a wheel
+   * zooming towards the cursor stops there rather than sliding the map. Tilt and the centre are then held around
+   * the centre of the screen.
+   */
+  applyLimits(): boolean {
+    if (!hasCameraLimits(this.limits) || !this.ready || this.earth.view.transitioning) return false
+    if (this.animation?.frame != null) return false
+    const camera = this.requireCamera()
+    camera.updateMatrixWorld()
+    if (this.limitsChecked && !this.cameraChangedSinceCheck(camera)) return false
+    let view = this.getView()
+    let moved = false
+    // A step of the controls (a wheel tick, a pinch) moves less than the camera's distance to the ground; a jump or
+    // the app's own placement moves farther, and is held around the centre instead.
+    // Only a step that changed the distance to the ground is a zoom; a pan that crosses a limit because zoom follows
+    // latitude and the terrain's height (dragging towards a pole at the minimum zoom) is held around the centre, so it
+    // keeps moving.
+    const step = this.limitsChecked ? camera.position.distanceTo(limitStart.set(this.checkedMatrix[12]!, this.checkedMatrix[13]!, this.checkedMatrix[14]!)) : Infinity
+    const zoomStep = Math.abs(view.distanceMeters - this.checkedDistanceMeters) > ZOOM_STEP_DISTANCE_SHARE * view.distanceMeters
+    if (this.outsideZoomLimits(view.zoom) && zoomStep && step < view.distanceMeters && this.checkedViewportUnchanged()) {
+      moved = this.cutMoveAtZoomLimit(view.zoom)
+      if (moved) view = this.getView()
+    }
+    const limited = constrainView(view, this.limits)
+    const outside =
+      Math.abs(limited.zoom - view.zoom) > LIMIT_TOLERANCE_ZOOM ||
+      Math.abs(limited.pitchDegrees - view.pitchDegrees) > LIMIT_TOLERANCE_DEGREES ||
+      Math.abs(limited.longitudeDegrees - view.longitudeDegrees) > LIMIT_TOLERANCE_DEGREES ||
+      Math.abs(limited.latitudeDegrees - view.latitudeDegrees) > LIMIT_TOLERANCE_DEGREES
+    if (outside) {
+      const centerMoved = limited.longitudeDegrees !== view.longitudeDegrees || limited.latitudeDegrees !== view.latitudeDegrees
+      const heightMeters = centerMoved ? (this.queryTerrainElevation(limited) ?? view.heightMeters) : view.heightMeters
+      this.placeView({
+        longitudeDegrees: limited.longitudeDegrees,
+        latitudeDegrees: limited.latitudeDegrees,
+        heightMeters,
+        zoom: limited.zoom,
+        headingDegrees: view.headingDegrees,
+        pitchDegrees: limited.pitchDegrees,
+      })
+      camera.updateMatrixWorld()
+      moved = true
+    }
+    this.checkedDistanceMeters = view.distanceMeters
+    this.rememberCheckedCamera(camera)
+    return moved
+  }
+
+  protected outsideZoomLimits(zoom: number): boolean {
+    const { minimumZoom, maximumZoom } = this.limits
+    return (minimumZoom !== undefined && zoom < minimumZoom - LIMIT_TOLERANCE_ZOOM) || (maximumZoom !== undefined && zoom > maximumZoom + LIMIT_TOLERANCE_ZOOM)
+  }
+
+  protected checkedViewportUnchanged(): boolean {
+    return this.viewportWidthPixels === this.checkedMatrix[16] && this.viewportHeightPixels === this.checkedMatrix[17]
+  }
+
+  /**
+   * Moves the camera back along the straight line from where it was at the last check (inside the zoom limits) to
+   * where it is now, to the last point inside them, keeping its orientation. False when the last position was
+   * outside too, so there is no point inside to stop at.
+   */
+  protected cutMoveAtZoomLimit(endZoom: number): boolean {
+    const camera = this.requireCamera()
+    const checked = this.checkedMatrix
+    limitStart.set(checked[12]!, checked[13]!, checked[14]!)
+    limitEnd.copy(camera.position)
+    // On the ellipsoid (no terrain raycast), shifted by the terrain's share at the end: `applyLimits` holds what is left.
+    const terrainZoom = endZoom - this.readView(false).zoom
+    const zoomAt = (amount: number) => {
+      camera.position.lerpVectors(limitStart, limitEnd, amount)
+      camera.updateMatrixWorld()
+      return this.readView(false).zoom + terrainZoom
+    }
+    if (this.outsideZoomLimits(zoomAt(0))) {
+      camera.position.copy(limitEnd)
+      camera.updateMatrixWorld()
+      return false
+    }
+    let inside = 0
+    let outside = 1
+    for (let step = 0; step < ZOOM_LIMIT_BISECTION_STEPS; step++) {
+      const middle = (inside + outside) / 2
+      if (this.outsideZoomLimits(zoomAt(middle))) outside = middle
+      else inside = middle
+    }
+    zoomAt(inside)
+    return true
+  }
+
+  protected cameraChangedSinceCheck(camera: Camera): boolean {
+    const elements = camera.matrixWorld.elements
+    const checked = this.checkedMatrix
+    for (let index = 0; index < 16; index++) if (elements[index] !== checked[index]) return true
+    return this.viewportWidthPixels !== checked[16] || this.viewportHeightPixels !== checked[17]
+  }
+
+  protected rememberCheckedCamera(camera: Camera): void {
+    this.checkedMatrix.set(camera.matrixWorld.elements)
+    this.checkedMatrix[16] = this.viewportWidthPixels
+    this.checkedMatrix[17] = this.viewportHeightPixels
+    this.limitsChecked = true
+  }
 
   setCamera(camera: Camera): void {
     this.camera = camera
@@ -269,6 +433,9 @@ export class EarthCamera {
     this.placedView = true
     this.stop()
     this.placeView(change)
+    // A jump is held around its centre, not cut short along the way.
+    this.limitsChecked = false
+    this.applyLimits()
     this.earth.requestFrame()
   }
 
@@ -638,7 +805,11 @@ export class EarthCamera {
 
   protected stepAnimation(animation: RunningAnimation): void {
     const time = animation.durationSeconds === 0 ? 1 : Math.min(1, animation.elapsedSeconds / animation.durationSeconds)
-    this.placeView(animation.frame!(time >= 1 ? 1 : animation.easing(time)))
+    const change = animation.frame!(time >= 1 ? 1 : animation.easing(time))
+    // The flight's top is planned above the minimum zoom, but only approximately: hold each frame's zoom too.
+    const { minimumZoom, maximumZoom } = this.limits
+    if (change.zoom !== undefined) change.zoom = Math.min(maximumZoom ?? Infinity, Math.max(minimumZoom ?? -Infinity, change.zoom))
+    this.placeView(change)
     if (time >= 1) {
       this.animation = null
       animation.resolve(true)
@@ -652,13 +823,19 @@ export class EarthCamera {
     const latitudeDegrees = change.latitudeDegrees ?? start.latitudeDegrees
     const heightMeters = change.heightMeters ?? (centerMoved ? (this.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0) : start.heightMeters)
     const zoom = change.zoom ?? (change.distanceMeters !== undefined ? this.distanceToZoom(change.distanceMeters, latitudeDegrees) : start.zoom)
+    // Animations end inside the limits; `planFlight` keeps a flight's top above the minimum zoom.
+    const limited = constrainView(
+      { longitudeDegrees, latitudeDegrees, zoom, pitchDegrees: change.pitchDegrees ?? start.pitchDegrees },
+      this.limits,
+    )
+    const limitedCenterMoved = limited.longitudeDegrees !== longitudeDegrees || limited.latitudeDegrees !== latitudeDegrees
     return {
-      longitudeDegrees,
-      latitudeDegrees,
-      heightMeters,
-      zoom,
+      longitudeDegrees: limited.longitudeDegrees,
+      latitudeDegrees: limited.latitudeDegrees,
+      heightMeters: limitedCenterMoved ? (this.queryTerrainElevation(limited) ?? heightMeters) : heightMeters,
+      zoom: limited.zoom,
       headingDegrees: change.headingDegrees ?? start.headingDegrees,
-      pitchDegrees: change.pitchDegrees ?? start.pitchDegrees,
+      pitchDegrees: limited.pitchDegrees,
     }
   }
 
@@ -706,13 +883,20 @@ export class EarthCamera {
   protected planFlight(start: MapView, change: MapViewChange, options: FlyToOptions): AnimationPlan {
     const end = this.resolveTarget(start, change)
     const { topPixels, rightPixels, bottomPixels, leftPixels } = this.padding
-    const flight = createFlightPath({
+    const flightOptions = {
       startWidthPixels: Math.max(this.viewportWidthPixels - leftPixels - rightPixels, this.viewportHeightPixels - topPixels - bottomPixels, 1),
       distancePixels: mercatorDistancePixels(start, end, start.zoom),
       zoomChange: end.zoom - start.zoom,
       curve: options.curve,
       minimumZoomChange: options.minimumZoom === undefined ? undefined : options.minimumZoom - start.zoom,
-    })
+    }
+    let flight = createFlightPath(flightOptions)
+    // A flight whose top would zoom out past the minimum zoom flies lower, with its speed planned for that height
+    // (rather than racing over the ground at the clamped zoom).
+    const minimumZoom = this.limits.minimumZoom
+    if (minimumZoom !== undefined && flight.length > 0 && start.zoom + lowestZoomChange(flight) < minimumZoom) {
+      flight = createFlightPath({ ...flightOptions, minimumZoomChange: Math.min(minimumZoom, start.zoom, end.zoom) - start.zoom })
+    }
     // Nothing to fly over (only heading or pitch change): ease, as MapLibre does.
     if (flight.length === 0) return this.planEase(start, change, options)
     const endHeight = this.followEndHeight(change, end)
