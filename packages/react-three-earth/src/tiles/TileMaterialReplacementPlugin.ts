@@ -3,6 +3,8 @@ import type { Tile, TilesRenderer } from '3d-tiles-renderer'
 import { Mesh, type Material, type Object3D } from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 
+import { attachTerrainShadings, type TerrainShadingSet } from './terrainMaterialSlots.js'
+
 export type MaterialFactory = () => Material
 
 const defaultMaterialFactory: MaterialFactory = () => new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 })
@@ -16,7 +18,11 @@ export class TileMaterialReplacementPlugin {
   readonly priority = -1000
   tiles: TilesRenderer | null = null
 
-  constructor(protected readonly createMaterial: MaterialFactory = defaultMaterialFactory) {}
+  constructor(
+    protected readonly createMaterial: MaterialFactory = defaultMaterialFactory,
+    /** The terrain's shadings (plugins), applied over each material's own nodes. */
+    protected readonly shadings: TerrainShadingSet | null = null,
+  ) {}
 
   init(tiles: TilesRenderer): void {
     this.tiles = tiles
@@ -30,6 +36,7 @@ export class TileMaterialReplacementPlugin {
       if (Array.isArray(previous)) throw new Error('TileMaterialReplacementPlugin: multi-material meshes are not supported yet.')
       const next = this.createMaterial() as Material & { map?: unknown }
       if ('map' in previous && previous.map != null && 'map' in next) next.map = previous.map
+      attachTerrainShadings(next, this.shadings)
       object.material = next
       previous.dispose()
     })

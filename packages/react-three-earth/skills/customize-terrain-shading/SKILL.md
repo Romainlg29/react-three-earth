@@ -7,13 +7,15 @@ description: >
   emissive overlays,
   wireframe debugging, or writing TSL node code for terrain tiles with the createMaterial option.
 metadata:
-  purpose: 'Explains the createMaterial factory, the terrain surface nodes (elevation, slope, aspect), which node material slots are free and which the imagery owns, and how to keep custom terrain shading fast.'
+  purpose: 'Explains the createMaterial factory, the terrain surface nodes (elevation, slope, aspect), which node material slots are free and which the imagery owns, terrain shadings from plugins (registerTerrainShading), and how to keep custom terrain shading fast.'
   type: sub-skill
   library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/TileMaterialReplacementPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/wrapOverlaysNodeMaterial.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainMaterialSlots.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainSurface.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/FlatMapPlugin.ts'
@@ -175,6 +177,49 @@ export function BlueSea() {
 For a glossy sea, set `material.roughnessNode = mix(float(1), float(0.05), terrainWaterMask)`: under `<Atmosphere>`
 the water then reflects the sky (Fresnel included) and the sun's highlight, while the land stays matte. Glossy pixels
 cost two more 3D texture samples each.
+
+The factory's slots sit under the imagery: with `<Imagery>` on, the satellite sea covers this colour. To shade over the
+imagery (a sea that stays glossy under satellite tiles, snow on peaks), register a terrain shading from a plugin
+(next section).
+
+### Shade over the imagery from a plugin
+
+A terrain shading changes how every terrain tile is shaded, above the imagery: its `shade` reads the slots
+(`color` with alpha, `roughness`, `metalness`, `normal` in view space, `emissive`) and returns those it changes. The
+terrain's own material (`createMaterial`, `@earthkit/terrain-style`) is the start, the imagery and draped layers blend
+over its colour, then the shadings run in turn (lower `order` first, then registration order), each reading what the
+last left. So a plugin's sea composes with any terrain style and any imagery.
+
+```ts
+import { PLUGIN_API_VERSION, terrainWaterMask, type EarthPlugin } from '@earthkit/globe'
+import { Color } from 'three'
+import { float, mix, uniform, vec4 } from 'three/tsl'
+
+export function glossySea() {
+  const tint = uniform(new Color('#0b3a5c')) // change tint.value at runtime: no shader rebuild
+  const plugin: EarthPlugin = {
+    name: 'glossy-sea',
+    apiVersion: PLUGIN_API_VERSION,
+    install(context) {
+      context.registerTerrainShading({
+        name: 'glossy-sea',
+        shade: inputs => ({
+          color: mix(inputs.color, vec4(tint, 1), terrainWaterMask.mul(0.6)),
+          roughness: mix(inputs.roughness, float(0.05), terrainWaterMask),
+        }),
+      })
+    },
+  }
+  return Object.assign(plugin, { tint })
+}
+```
+
+- `shade` runs once per shader (per terrain material variant), never per frame: build nodes there, animate through
+  your own `uniform`s updated in `context.onUpdate` (return true while it animates).
+- Registering or removing a shading rebuilds every loaded tile's shader (no reload); register once at install.
+- Read the terrain nodes (`terrainWaterMask`, `terrainElevationMeters`, `terrainSlopeDegrees`) for where to shade.
+- A shading that throws is logged and skipped; the terrain draws without it.
+- `earth.inspect().terrainShadings` lists them in the order they run; vanilla: `earth.terrainShadings.register(definition)`.
 
 ## Common Mistakes
 

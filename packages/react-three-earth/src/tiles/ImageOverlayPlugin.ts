@@ -12,6 +12,7 @@ import { GeoreferencedImageOverlay } from './imagery/GeoreferencedImageOverlay.j
 import { ImageryCompositor } from './imagery/ImageryCompositor.js'
 import { ImageryStatistics } from './imagery/ImageryStatistics.js'
 import { isGpuComposedOverlay } from './imagery/XYZImageryOverlay.js'
+import { attachTerrainShadings, type TerrainShadingSet } from './terrainMaterialSlots.js'
 import { MAXIMUM_TERRAIN_LAYERS, wrapOverlaysNodeMaterial } from './wrapOverlaysNodeMaterial.js'
 
 /** An overlay that draws custom style layer types and symbol effects (`MapStyleOverlay`). */
@@ -49,6 +50,8 @@ export interface ImageOverlayPluginOptions {
   enableTileSplitting?: boolean
   /** Main-thread time GPU composition may spend per frame, in milliseconds. Default: 2. */
   compositionBudgetMilliseconds?: number
+  /** The terrain's shadings (plugins), handed to every tile material it wraps, split tiles' clones included. Default: none. */
+  shadings?: TerrainShadingSet | null
 }
 
 /** Upstream private methods this class wraps (pinned to 3d-tiles-renderer 0.5.x). */
@@ -99,10 +102,12 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   readonly compositor: ImageryCompositor
   /** Main-thread imagery work, per frame and in total. */
   readonly statistics = new ImageryStatistics()
+  protected readonly shadings: TerrainShadingSet | null
 
-  constructor({ compositionBudgetMilliseconds, resolutionPixels, overlays = [], enableTileSplitting }: ImageOverlayPluginOptions = {}) {
+  constructor({ compositionBudgetMilliseconds, resolutionPixels, overlays = [], enableTileSplitting, shadings = null }: ImageOverlayPluginOptions = {}) {
     const options = { resolution: resolutionPixels, enableTileSplitting, overlays: [], renderer: null as never }
     super(options as ConstructorParameters<typeof ImageOverlayPluginBase>[0])
+    this.shadings = shadings
     this.compositor = new ImageryCompositor({ budgetMilliseconds: compositionBudgetMilliseconds })
     this.compositor.onQueued = () => this.requestUpdate()
     // Added here, not by the base constructor, so they get the compositor.
@@ -263,6 +268,7 @@ export class ImageOverlayPlugin extends ImageOverlayPluginBase {
   _wrapMaterials(scene: Object3D): void {
     scene.traverse(object => {
       if (object instanceof Mesh) {
+        attachTerrainShadings(object.material, this.shadings)
         const params = wrapOverlaysNodeMaterial(object.material)
         this.meshParams.set(object, params)
       }

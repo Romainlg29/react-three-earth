@@ -24,6 +24,7 @@ import type { EarthPlugin } from '../plugins/plugin.js'
 import { PluginManager, type PluginInspection } from '../plugins/PluginManager.js'
 import { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
+import { TerrainShadingRegistry } from '../plugins/terrainShadings.js'
 import { DrapedLayerRegistry, type DrapedLayerInspection } from '../plugins/drapedLayers.js'
 import { RenderPassRegistry, type RenderPassInspection } from '../plugins/renderPasses.js'
 import { PointerInteractions } from './PointerInteractions.js'
@@ -137,6 +138,8 @@ export interface EarthInspection {
   renderPasses: RenderPassInspection[]
   /** Draped layers (`earth.drapedLayers`), bottom to top. */
   drapedLayers: DrapedLayerInspection[]
+  /** Terrain shadings (`earth.terrainShadings`) by name, in the order they run. */
+  terrainShadings: string[]
 }
 
 function inspectImagery(terrain: Terrain) {
@@ -175,6 +178,8 @@ export class Earth extends Group<EarthEventMap> {
   readonly styleLayerTypes = new StyleLayerTypeRegistry()
   /** Symbol effects plugins registered (`context.registerSymbolEffect`), for labels of layers whose metadata names one. */
   readonly symbolEffects = new SymbolEffectRegistry()
+  /** Terrain shadings plugins registered (`context.registerTerrainShading`), run by the terrain's tile materials over the imagery. */
+  readonly terrainShadings = new TerrainShadingRegistry()
   /** Screen effects plugins registered (`context.registerRenderPass`), built into the output by `EarthRenderPipeline`. */
   readonly renderPasses = new RenderPassRegistry()
   /** Layers plugins drape above every imagery layer (`context.registerDrapedLayer`), drawn by the terrain. */
@@ -380,6 +385,7 @@ export class Earth extends Group<EarthEventMap> {
       this.terrain.setView(null)
       this.terrain.setStyleLayerTypes(null)
       this.terrain.setSymbolEffects(null)
+      this.terrain.setTerrainShadings(null)
       this.terrain.setDrapedLayers(null)
       for (const imagery of this.imagery) this.terrain.removeImagery(imagery)
       this.remove(this.terrain.object)
@@ -392,6 +398,7 @@ export class Earth extends Group<EarthEventMap> {
       terrain.setView(this.view)
       terrain.setStyleLayerTypes(this.styleLayerTypes)
       terrain.setSymbolEffects(this.symbolEffects)
+      terrain.setTerrainShadings(this.terrainShadings)
       this.add(terrain.object)
       this.add(terrain.symbols)
       this.add(terrain.extrusions)
@@ -827,6 +834,7 @@ export class Earth extends Group<EarthEventMap> {
       plugins: this.plugins.inspect(),
       renderPasses: this.renderPasses.inspect(),
       drapedLayers: this.drapedLayers.inspect(),
+      terrainShadings: this.terrainShadings.ordered().map(definition => definition.name),
     }
   }
 

@@ -7,6 +7,7 @@ import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js
 import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 import type { SymbolEffectDefinition } from './symbolEffects.js'
+import type { TerrainShadingDefinition } from './terrainShadings.js'
 
 /**
  * The version of the plugin API this @earthkit/globe implements. Additive changes keep it; a change that
@@ -95,6 +96,12 @@ export interface PluginContext {
    * earth. Labels already drawn switch at once, without processing tiles again. Returns a function that removes it early.
    */
   registerSymbolEffect(definition: SymbolEffectDefinition): () => void
+  /**
+   * Adds a terrain shading: every terrain tile's material runs it over its own colour and the imagery, to change the
+   * colour, roughness, metalness, normal or emission (a sea's gloss, snow). It composes with `createMaterial` and
+   * terrain styles. Tiles already loaded rebuild their shaders, without reloading. Returns a function that removes it early.
+   */
+  registerTerrainShading(definition: TerrainShadingDefinition): () => void
   /**
    * Adds a screen effect to the earth's render pipeline (`EarthRenderPipeline`), in a stage: `scene` (before
    * the atmosphere), `radiance` (after it, linear HDR) or `display` (tone-mapped). The pipeline's output is

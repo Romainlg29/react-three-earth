@@ -8,6 +8,7 @@ import type { DrapedLayerDefinition, DrapedLayerHandle } from './drapedLayers.js
 import type { RenderPassDefinition } from './renderPasses.js'
 import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 import type { SymbolEffectDefinition } from './symbolEffects.js'
+import type { TerrainShadingDefinition } from './terrainShadings.js'
 import { PLUGIN_API_VERSION, type EarthPlugin, type PluginContext, type PluginFrame } from './plugin.js'
 
 /** Per-plugin statistics in `earth.inspect().plugins`. */
@@ -107,6 +108,13 @@ export class PluginInstallation implements PluginContext {
   registerSymbolEffect(definition: SymbolEffectDefinition): () => void {
     this.requireActive('registerSymbolEffect')
     const remove = this.earth.symbolEffects.register(definition)
+    this.undoSteps.push(remove)
+    return remove
+  }
+
+  registerTerrainShading(definition: TerrainShadingDefinition): () => void {
+    this.requireActive('registerTerrainShading')
+    const remove = this.earth.terrainShadings.register(definition)
     this.undoSteps.push(remove)
     return remove
   }

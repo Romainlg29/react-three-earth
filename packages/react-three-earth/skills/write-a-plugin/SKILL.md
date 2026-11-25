@@ -11,7 +11,7 @@ description: >
   sort against terrain and take the atmosphere's haze, per-frame plugin code, label looks (registerSymbolEffect:
   see map-labels), or reading plugin state from earth.inspect().
 metadata:
-  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), pointer interactions (addPointerInteraction, holdDoubleClickZoom), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
+  purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), terrain shadings (registerTerrainShading), pointer interactions (addPointerInteraction, holdDoubleClickZoom), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
   type: framework
   framework: 'react'
   library: '@earthkit/globe'
@@ -62,6 +62,7 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 | A new layer `type` with its own tessellation | `registerStyleLayerType({ type, worker: { moduleUrl, exportName }, … })` |
 | A screen effect (bloom, vignette, grading) | `context.registerRenderPass({ name, stage, build })` |
 | A layer you draw yourself, draped over the imagery | `context.registerDrapedLayer({ id, bounds, draw })` → `handle.invalidate(bounds)` |
+| Change the terrain's colour, gloss or normal over the imagery (a sea, snow) | `context.registerTerrainShading({ name, shade })` (see `customize-terrain-shading`) |
 | Dragging on the map without panning it (see `@earthkit/draw#draw-features`) | `context.addPointerInteraction({ pointerDown, pointerMove, pointerUp })` |
 | A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` (disposed with the plugin) |
 | A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
@@ -438,8 +439,7 @@ export function selectionGlow(radiusDegrees = 0.03) {
   per region inside the bounds. Animate with scene objects or render passes, not by invalidating every frame.
   `earth.inspect().drapedLayers` lists `regions` and `regionsDrawn`.
 
-The playground's `src/effects/` has both: run `?fixtures&effects` and call
-`window.effectPlugins.selectionGlow.select({ longitudeDegrees: -90, latitudeDegrees: 0 })`.
+The playground's `src/effects/` has both: run `?fixtures&effects` and call `window.effectPlugins.selectionGlow.select({ longitudeDegrees: -90, latitudeDegrees: 0 })`.
 
 ### Plugins that offer objects to React
 
