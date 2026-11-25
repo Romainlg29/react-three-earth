@@ -55,5 +55,7 @@ export async function runDemTask({ bytes, factors, task }: Omit<DemTaskRequest, 
 
 /** The arrays of a surface, to transfer instead of copy. */
 export function surfaceTransferables({ surface }: DemTaskResult): ArrayBuffer[] {
-  return [surface.positions.buffer, surface.normals.buffer, surface.uvs.buffer, surface.indices.buffer] as ArrayBuffer[]
+  const buffers = [surface.positions.buffer, surface.normals.buffer, surface.uvs.buffer, surface.indices.buffer]
+  if (surface.elevations !== undefined) buffers.push(surface.elevations.buffer)
+  return buffers as ArrayBuffer[]
 }

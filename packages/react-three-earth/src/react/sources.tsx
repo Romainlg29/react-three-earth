@@ -29,12 +29,12 @@ function useAttribution(source: AttributionTracker, attribution: string | readon
 export type QuantizedMeshSourceProps = QuantizedMeshSourceOptions
 
 /** Quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain). Goes inside `<Terrain>`. */
-export function QuantizedMeshSource({ url, skirtLengthMeters, smoothSkirtNormals, attribution }: QuantizedMeshSourceProps) {
+export function QuantizedMeshSource({ url, skirtLengthMeters, smoothSkirtNormals, waterMask, attribution }: QuantizedMeshSourceProps) {
   const source = useMemo(
     // attribution changes are applied below, without reloading tiles
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    () => new QuantizedMeshSourceImpl({ url, skirtLengthMeters, smoothSkirtNormals, attribution }),
-    [url, skirtLengthMeters, smoothSkirtNormals],
+    () => new QuantizedMeshSourceImpl({ url, skirtLengthMeters, smoothSkirtNormals, waterMask, attribution }),
+    [url, skirtLengthMeters, smoothSkirtNormals, waterMask],
   )
   useAttribution(source, attribution)
   useRegisterSource(use(TerrainSourceContext), source, 'QuantizedMeshSource', 'Terrain')
@@ -47,11 +47,25 @@ export type RasterDemSourceProps = RasterDemSourceOptions
  * Terrain from elevation tiles (Terrarium, Mapbox Terrain-RGB), MapLibre's `raster-dem`. Goes inside `<Terrain>`.
  * Keep `createWorker` stable (memoised): changing it reloads the terrain.
  */
-export function RasterDemSource({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }: RasterDemSourceProps) {
+export function RasterDemSource({
+  url,
+  tileJsonUrl,
+  encoding,
+  redFactor,
+  greenFactor,
+  blueFactor,
+  baseShift,
+  maximumZoom,
+  createWorker,
+  seaLevelMeters,
+  flattenBelowSeaLevel,
+  attribution,
+}: RasterDemSourceProps) {
   const source = useMemo(
+    () =>
+      new RasterDemSourceImpl({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, seaLevelMeters, flattenBelowSeaLevel, attribution }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    () => new RasterDemSourceImpl({ url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, attribution }),
-    [url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker],
+    [url, tileJsonUrl, encoding, redFactor, greenFactor, blueFactor, baseShift, maximumZoom, createWorker, seaLevelMeters, flattenBelowSeaLevel],
   )
   useAttribution(source, attribution)
   useRegisterSource(use(TerrainSourceContext), source, 'RasterDemSource', 'Terrain')

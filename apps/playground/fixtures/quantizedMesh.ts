@@ -17,6 +17,41 @@ export function fixtureHeightMeters(longitudeDegrees: number, latitudeDegrees: n
   return Math.max(0, ridges) * 2600
 }
 
+/**
+ * The water fixture: the same ridges with the sea left in, down to about −3900 m. Water is wherever it is below 0 m
+ * (the tiles' water mask says so too).
+ */
+export function fixtureWaterHeightMeters(longitudeDegrees: number, latitudeDegrees: number): number {
+  const lon = (longitudeDegrees * Math.PI) / 180
+  const lat = (latitudeDegrees * Math.PI) / 180
+  return (Math.sin(lon * 7) * Math.cos(lat * 9) + 0.5 * Math.sin(lon * 31 + lat * 17)) * 2600
+}
+
+const WATER_MASK_SIZE = 256
+
+/**
+ * The quantized-mesh `watermask` extension of a tile: 255 water, 0 land, sampled at pixel centres, rows from the north
+ * and columns from the west; one byte when the tile is all one or the other.
+ */
+function waterMaskExtension(west: number, south: number, span: number): Uint8Array {
+  const mask = new Uint8Array(WATER_MASK_SIZE * WATER_MASK_SIZE)
+  for (let row = 0; row < WATER_MASK_SIZE; row++) {
+    const latitude = south + span - ((row + 0.5) / WATER_MASK_SIZE) * span
+    for (let column = 0; column < WATER_MASK_SIZE; column++) {
+      const longitude = west + ((column + 0.5) / WATER_MASK_SIZE) * span
+      mask[row * WATER_MASK_SIZE + column] = fixtureWaterHeightMeters(longitude, latitude) < 0 ? 255 : 0
+    }
+  }
+  const uniform = mask.every(value => value === mask[0])
+  const body = uniform ? mask.subarray(0, 1) : mask
+  const extension = new Uint8Array(5 + body.length)
+  const view = new DataView(extension.buffer)
+  view.setUint8(0, 2) // extension id: water mask
+  view.setUint32(1, body.length, true)
+  extension.set(body, 5)
+  return extension
+}
+
 function toECEF(lonDeg: number, latDeg: number, h: number): [number, number, number] {
   const lon = (lonDeg * Math.PI) / 180
   const lat = (latDeg * Math.PI) / 180
@@ -26,7 +61,9 @@ function toECEF(lonDeg: number, latDeg: number, h: number): [number, number, num
 
 const zigZag = (v: number) => ((v << 1) ^ (v >> 31)) & 0xffff
 
-export function encodeQuantizedMeshTile(level: number, x: number, y: number): Uint8Array {
+/** A tile of the fixture terrain; `water`: of the water fixture, with its water mask. */
+export function encodeQuantizedMeshTile(level: number, x: number, y: number, { water = false }: { water?: boolean } = {}): Uint8Array {
+  const heightMeters = water ? fixtureWaterHeightMeters : fixtureHeightMeters
   const span = 180 / 2 ** level
   const west = -180 + x * span
   const south = -90 + y * span
@@ -38,7 +75,7 @@ export function encodeQuantizedMeshTile(level: number, x: number, y: number): Ui
     for (let i = 0; i < GRID; i++) {
       us.push(Math.round((i / (GRID - 1)) * MAX))
       vs.push(Math.round((j / (GRID - 1)) * MAX))
-      heights.push(fixtureHeightMeters(west + (i / (GRID - 1)) * span, south + (j / (GRID - 1)) * span))
+      heights.push(heightMeters(west + (i / (GRID - 1)) * span, south + (j / (GRID - 1)) * span))
     }
   }
   const minHeight = Math.min(...heights)
@@ -113,10 +150,16 @@ export function encodeQuantizedMeshTile(level: number, x: number, y: number): Ui
     u32(edge.length)
     edge.forEach(u16)
   }
-  return new Uint8Array(buffer, 0, p)
+  const tile = new Uint8Array(buffer, 0, p)
+  if (!water) return tile
+  const extension = waterMaskExtension(west, south, span)
+  const withMask = new Uint8Array(tile.length + extension.length)
+  withMask.set(tile)
+  withMask.set(extension, tile.length)
+  return withMask
 }
 
-export function layerJson(): object {
+export function layerJson({ water = false }: { water?: boolean } = {}): object {
   const available = Array.from({ length: FIXTURE_MAX_LEVEL + 1 }, (_, level) => [
     { startX: 0, startY: 0, endX: 2 ** (level + 1) - 1, endY: 2 ** level - 1 },
   ])
@@ -131,5 +174,6 @@ export function layerJson(): object {
     tiles: ['{z}/{x}/{y}.terrain'],
     maxzoom: FIXTURE_MAX_LEVEL,
     available,
+    ...(water ? { extensions: ['watermask'] } : {}),
   }
 }

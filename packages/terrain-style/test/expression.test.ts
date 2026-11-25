@@ -13,6 +13,13 @@ describe('evaluateTerrainExpression', () => {
     expect(hex(evaluateTerrainExpression(expression, { slope: 10, elevation: 1999 }))).toBe('#336633')
   })
 
+  it('reads the water mask as an input, land when not given', () => {
+    const expression: TerrainExpression = ['case', ['>=', ['water'], 0.5], '#1d3f6e', '#4f7f45']
+    expect(hex(evaluateTerrainExpression(expression, { water: 1 }))).toBe('#1d3f6e')
+    expect(hex(evaluateTerrainExpression(expression, {}))).toBe('#4f7f45')
+    expect(() => compileTerrainColor(expression)).not.toThrow()
+  })
+
   it('steps at each stop and before the first', () => {
     const expression: TerrainExpression = ['step', ['elevation'], 1, 1000, 2, 2000, 3]
     expect(evaluateTerrainExpression(expression, { elevation: -50 })).toBe(1)

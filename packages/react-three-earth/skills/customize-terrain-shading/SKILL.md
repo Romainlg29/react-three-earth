@@ -3,7 +3,8 @@ name: customize-terrain-shading
 description: >
   Use when changing how the ground of an earthkit globe looks: the terrain tile material,
   roughness, base colour under the imagery, a stylised globe with no imagery, colouring by elevation, slope
-  or aspect (terrainElevationMeters, terrainSlopeDegrees, terrainAspectDegrees), emissive overlays,
+  or aspect (terrainElevationMeters, terrainSlopeDegrees, terrainAspectDegrees), sea and lakes (terrainWaterMask),
+  emissive overlays,
   wireframe debugging, or writing TSL node code for terrain tiles with the createMaterial option.
 metadata:
   purpose: 'Explains the createMaterial factory, the terrain surface nodes (elevation, slope, aspect), which node material slots are free and which the imagery owns, and how to keep custom terrain shading fast.'
@@ -14,6 +15,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/TileMaterialReplacementPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/wrapOverlaysNodeMaterial.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainSurface.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/FlatMapPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
@@ -62,6 +64,7 @@ Every terrain tile carries what it needs for this, whatever the source (quantize
 | `terrainSlopePercent` | Grade: 100 is 45° |
 | `terrainAspectDegrees`, `terrainAspectRadians` | Downhill compass direction, clockwise from north (0 north, 90 east); 0 on flat ground |
 | `terrainNormalEastNorthUp` | The ground's unit normal, x east, y north, z up |
+| `terrainWaterMask` | 1 on sea and lakes, 0 on land, between along coasts (see "Colour the sea") |
 
 Set them on the material's `colorNode` in `createMaterial`: with no imagery the globe shows that colour, and
 imagery layers blend over it.
@@ -131,6 +134,43 @@ import { MeshStandardNodeMaterial } from 'three/webgpu'
 
 export const createWireframeMaterial = () => new MeshStandardNodeMaterial({ wireframe: true, roughness: 1 })
 ```
+
+### Colour the sea
+
+`terrainWaterMask` says where the terrain is water, from the terrain source:
+
+- `QuantizedMeshSource`: the tiles' water mask (the quantized-mesh `watermask` extension, 256 × 256 per tile), when
+  the server's `layer.json` lists it (Cesium World Terrain does). Tiles without one are land. `waterMask={false}` skips it.
+- `RasterDemSource`: heights at or below `seaLevelMeters` (default 0). Low land counts as water too (polders, Death
+  Valley), and coasts are as coarse as the elevation tiles. With Terrarium, which holds the seafloor, add
+  `flattenBelowSeaLevel` so the sea is drawn flat; `terrainElevationMeters` keeps the true depth for a tint.
+
+```tsx
+import { terrainElevationMeters, terrainWaterMask } from '@earthkit/globe'
+import { RasterDemSource, Terrain } from '@earthkit/globe/react'
+import { color, mix, smoothstep } from 'three/tsl'
+import { MeshStandardNodeMaterial } from 'three/webgpu'
+
+const land = mix(color('#4f7f45'), color('#c4ad7e'), smoothstep(0, 2400, terrainElevationMeters))
+const sea = mix(color('#1d3f6e'), color('#5fa8d3'), smoothstep(-4000, 0, terrainElevationMeters))
+const ground = mix(land, sea, terrainWaterMask)
+
+const createMaterial = () => {
+  const material = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0 })
+  material.colorNode = ground
+  return material
+}
+
+export function BlueSea() {
+  return (
+    <Terrain createMaterial={createMaterial}>
+      <RasterDemSource url="https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png" encoding="terrarium" flattenBelowSeaLevel />
+    </Terrain>
+  )
+}
+```
+
+`@earthkit/terrain-style` reads it as `['water']`.
 
 ## Common Mistakes
 

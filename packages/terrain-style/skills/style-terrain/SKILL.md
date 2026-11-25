@@ -4,7 +4,7 @@ description: >
   Use when an earthkit globe should look stylised without imagery or map layers, or the ground should be coloured by
   height, steepness or the direction it faces: hypsometric tints, snow above an altitude, rock on steep slopes,
   avalanche slope classes (30°, 35°, 40°), sunny south faces, a grey base map for data. MapLibre-style expressions
-  (step, interpolate, case) over ['elevation'], ['slope'], ['slope-percent'] and ['aspect'], or a preset (alpine,
+  (step, interpolate, case) over ['elevation'], ['slope'], ['slope-percent'], ['aspect'] and ['water'], or a preset (alpine,
   atlas, desert, monochrome, slope-classes); legends from the same expression.
 metadata:
   purpose: 'Documents @earthkit/terrain-style: TerrainStyle and its presets, the expression language, useTerrainStyle, compileTerrainColor and evaluateTerrainExpression.'
@@ -66,6 +66,7 @@ The colour is a MapLibre-style expression. Inputs, per pixel:
 | `['slope']` | degrees, 0 flat to 90 vertical |
 | `['slope-percent']` | grade: 100 at 45° |
 | `['aspect']` | downhill compass direction, degrees clockwise from north (0 to 360); 0 on flat ground |
+| `['water']` | 1 on sea and lakes, 0 on land, between along coasts: the terrain source's water mask (see below) |
 
 Operators: `step`, `interpolate` (`['linear']` or `['exponential', base]`), `case`, `all`, `any`, `!`, `<`, `<=`,
 `>`, `>=`, `==`, `!=`, `+`, `-`, `*`, `/`, `%`, `^`, `min`, `max`, `abs`, `sqrt`, `sin`, `cos`, `rgb`. Colours are CSS
@@ -91,6 +92,25 @@ export function useMyTerrainStyle() {
 
 `step` gives hard bands, `interpolate` gradients: `['interpolate', ['linear'], ['slope'], 25, grass, 35, '#8a8580']`
 fades grass into rock between 25° and 35°.
+
+### Sea and lakes with water
+
+`['water']` comes from the terrain source: the tiles' water mask for `QuantizedMeshSource` (when the server has the
+`watermask` extension), heights at or below `seaLevelMeters` (default 0) for `RasterDemSource`. With Terrarium tiles,
+which hold the seafloor, add `flattenBelowSeaLevel` so the sea is flat, and tint by depth: `['elevation']` keeps the
+true, negative height.
+
+```ts
+import { TerrainStyle } from '@earthkit/terrain-style'
+
+const style = new TerrainStyle({
+  color: [
+    'interpolate', ['linear'], ['water'],
+    0.5, ['interpolate', ['linear'], ['elevation'], 0, '#4f7f45', 2400, '#c4ad7e'],
+    0.6, ['interpolate', ['linear'], ['elevation'], -4000, '#1d3f6e', 0, '#5fa8d3'],
+  ],
+})
+```
 
 ### Shaded north faces with aspect
 

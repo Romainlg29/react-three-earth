@@ -18,6 +18,7 @@ import { toStyleImage, type StyleImageInput, type StyleImageOptions } from '../v
 import { readStyleRoot, type StyleRoot } from '../vector/styleRoot.js'
 import type { StyleImage } from '../vector/worker/types.js'
 import { QuantizedMeshVersionPlugin } from '../tiles/QuantizedMeshVersionPlugin.js'
+import { TerrainWaterMaskPlugin } from '../tiles/terrainWaterMask.js'
 import { RasterDemTerrainPlugin } from '../tiles/RasterDemTerrainPlugin.js'
 import { demUnpackFactors, type DemEncoding, type DemUnpackFactors } from '../vector/raster/rasterTiles.js'
 
@@ -48,6 +49,12 @@ export interface QuantizedMeshSourceOptions {
   /** Smooths normals along skirts. Default: true. */
   smoothSkirtNormals?: boolean
   /**
+   * Reads the tiles' water mask (the quantized-mesh `watermask` extension, asked for when `layer.json` lists it) into
+   * `terrainWaterMask`, for terrain materials. Tiles without one are land. False leaves the mask unread, though the tiles
+   * still carry it when `layer.json` lists the extension. Default: true.
+   */
+  waterMask?: boolean
+  /**
    * Credit for the data, shown by `AttributionControl` and returned by `Earth.getAttributions()`. Plain text, or
    * HTML where only `<a href="https://…">` links are kept.
    * @example '<a href="https://reearth.io">Re:Earth</a> Terrain'
@@ -67,12 +74,14 @@ export class QuantizedMeshSource extends AttributionTracker implements TerrainSo
   readonly url: string
   readonly skirtLengthMeters: number | undefined
   readonly smoothSkirtNormals: boolean
+  readonly waterMask: boolean
 
-  constructor({ url, skirtLengthMeters, smoothSkirtNormals = true, attribution }: QuantizedMeshSourceOptions) {
+  constructor({ url, skirtLengthMeters, smoothSkirtNormals = true, waterMask = true, attribution }: QuantizedMeshSourceOptions) {
     super(attribution)
     this.url = url.endsWith('/') ? url : `${url}/`
     this.skirtLengthMeters = skirtLengthMeters
     this.smoothSkirtNormals = smoothSkirtNormals
+    this.waterMask = waterMask
   }
 
   createPlugins(): object[] {
@@ -83,6 +92,7 @@ export class QuantizedMeshSource extends AttributionTracker implements TerrainSo
         ...(this.skirtLengthMeters !== undefined ? { skirtLength: this.skirtLengthMeters } : {}),
       }),
       new QuantizedMeshVersionPlugin(),
+      ...(this.waterMask ? [new TerrainWaterMaskPlugin({ tileMasks: true })] : []),
     ]
   }
 }
@@ -120,6 +130,17 @@ export interface RasterDemSourceOptions {
    */
   createWorker?: (() => Worker) | null
   /**
+   * Heights at or below it are water in `terrainWaterMask`, in metres (the tiles' heights above sea level: 0 is the
+   * sea). Low land at or below it counts as water too (polders, Death Valley). Null: no water. Default: 0.
+   */
+  seaLevelMeters?: number | null
+  /**
+   * Draws the ground below `seaLevelMeters` at sea level, so the sea is flat where tiles hold bathymetry (Terrarium):
+   * height queries, markers and the camera then meet the sea's surface. `terrainElevationMeters` keeps the true depth,
+   * for depth tints. Default: false (the seafloor's relief is drawn).
+   */
+  flattenBelowSeaLevel?: boolean
+  /**
    * Credit for the data, as `RasterTileSource`'s. Most elevation tiles require it.
    * @example 'Terrain: <a href="https://github.com/tilezen/joerd/blob/master/docs/attribution.md">Mapzen, AWS Terrain Tiles</a>'
    */
@@ -151,13 +172,20 @@ export class RasterDemSource extends AttributionTracker implements TerrainSource
     if (url !== undefined && (!url.includes('{z}') || !url.includes('{x}') || !/{-?y}/.test(url))) {
       throw new Error(`RasterDemSource: the url needs {z}, {x} and {y} (or {-y}) placeholders, got "${url}". For a TileJSON document, pass it as \`tileJsonUrl\`.`)
     }
+    const { seaLevelMeters = 0, flattenBelowSeaLevel = false } = options
+    if (seaLevelMeters !== null && !Number.isFinite(seaLevelMeters)) {
+      throw new Error(`RasterDemSource: seaLevelMeters must be a finite number of metres, or null for no water, got ${seaLevelMeters}.`)
+    }
+    if (flattenBelowSeaLevel && seaLevelMeters === null) {
+      throw new Error('RasterDemSource: flattenBelowSeaLevel needs a sea level; pass seaLevelMeters (0 for tiles holding heights above sea level).')
+    }
     this.url = (url ?? tileJsonUrl)!
     this.options = options
     this.factors = demUnpackFactors(options)
   }
 
   createPlugins(): object[] {
-    const { url, tileJsonUrl, maximumZoom, createWorker } = this.options
+    const { url, tileJsonUrl, maximumZoom, createWorker, seaLevelMeters = 0, flattenBelowSeaLevel = false } = this.options
     return [
       new RasterDemTerrainPlugin({
         factors: this.factors,
@@ -165,7 +193,9 @@ export class RasterDemSource extends AttributionTracker implements TerrainSource
         ...(tileJsonUrl !== undefined ? { tileJsonUrl, onTileJson: info => this.setLoadedAttributions(info.attribution) } : {}),
         ...(maximumZoom !== undefined ? { maximumZoom } : {}),
         ...(createWorker !== undefined ? { createWorker } : {}),
+        ...(flattenBelowSeaLevel && seaLevelMeters !== null ? { floorHeightMeters: seaLevelMeters } : {}),
       }),
+      new TerrainWaterMaskPlugin({ seaLevelMeters }),
     ]
   }
 }

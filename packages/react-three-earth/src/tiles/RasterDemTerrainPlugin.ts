@@ -4,6 +4,7 @@ import { BufferAttribute, BufferGeometry, Mesh, MeshBasicMaterial, type Object3D
 import type { DemUnpackFactors } from '../vector/raster/rasterTiles.js'
 import { WEB_MERCATOR_MAX_LATITUDE_RADIANS } from '../view/webMercator.js'
 import { DemMeshBuilder } from './dem/DemMeshBuilder.js'
+import { TERRAIN_ELEVATION_ATTRIBUTE } from './terrainSurface.js'
 import { demTileGeometricError, webMercatorTileBounds, type TerrainSurface } from './dem/demSurface.js'
 import type { DemImageDecoder, DemTask } from './dem/demTasks.js'
 import { readTileJson, type TileJsonInfo } from './imagery/XYZImageryOverlay.js'
@@ -74,6 +75,8 @@ export interface RasterDemTerrainPluginOptions {
   decodeImage?: DemImageDecoder
   /** Called once a TileJSON is read, before tiles load (for its attribution). */
   onTileJson?: (info: TileJsonInfo) => void
+  /** Ground below this height, metres, is drawn at it (a flat sea over bathymetry). Default: none. */
+  floorHeightMeters?: number | null
 }
 
 /**
@@ -208,7 +211,8 @@ export class RasterDemTerrainPlugin {
   }
 
   protected taskFor(tile: DemTile, info: DemTileInfo): DemTask {
-    if (info.cap !== null) return { kind: 'cap', north: info.cap === 'north', rings: CAP_RINGS, segments: CAP_SEGMENTS, skirtLengthMeters: capSkirtLengthMeters() }
+    const floorHeightMeters = this.options.floorHeightMeters ?? null
+    if (info.cap !== null) return { kind: 'cap', north: info.cap === 'north', rings: CAP_RINGS, segments: CAP_SEGMENTS, skirtLengthMeters: capSkirtLengthMeters(), floorHeightMeters }
     const scale = 2 ** (info.z - info.sourceZ)
     const west = (info.x - info.sourceX * scale) / scale
     const top = (info.y - info.sourceY * scale) / scale
@@ -220,6 +224,7 @@ export class RasterDemTerrainPlugin {
       subview: [west, top, west + 1 / scale, top + 1 / scale],
       segments: DEM_TILE_SEGMENTS,
       skirtLengthMeters: info.y === 0 || info.y === 2 ** info.z - 1 ? Math.max(tile.geometricError, POLAR_EDGE_SKIRT_LENGTH_METERS) : tile.geometricError,
+      floorHeightMeters,
     }
   }
 
@@ -324,11 +329,13 @@ function capSkirtLengthMeters(): number {
   return 3000
 }
 
-function createMesh({ positions, normals, uvs, indices, center }: TerrainSurface): Mesh {
+function createMesh({ positions, normals, uvs, indices, center, elevations }: TerrainSurface): Mesh {
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(positions, 3))
   geometry.setAttribute('normal', new BufferAttribute(normals, 3))
   geometry.setAttribute('uv', new BufferAttribute(uvs, 2))
+  // The true heights where the floor lifted the ground: `FlatMapPlugin` writes them into `terrainSurface`.
+  if (elevations !== undefined) geometry.setAttribute(TERRAIN_ELEVATION_ATTRIBUTE, new BufferAttribute(elevations, 1))
   geometry.setIndex(new BufferAttribute(indices, 1))
   geometry.computeBoundingBox()
   geometry.computeBoundingSphere()

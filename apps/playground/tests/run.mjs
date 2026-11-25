@@ -2307,6 +2307,65 @@ async function rasterDemTerrain(name, query, { heights = false } = {}) {
   results.push({ check: `raster-dem terrain, ${name}`, ...stats, heightErrorsMeters, view: inspection.view, tilesLoaded: inspection.terrain.tilesLoaded, attributions, errors })
 }
 
+/** The water fixture's heights (`fixtures/quantizedMesh.ts`): the ridges with the sea left in; below 0 m is water. */
+function fixtureWaterHeightMeters(longitudeDegrees, latitudeDegrees) {
+  const lon = (longitudeDegrees * Math.PI) / 180
+  const lat = (latitudeDegrees * Math.PI) / 180
+  return (Math.sin(lon * 7) * Math.cos(lat * 9) + 0.5 * Math.sin(lon * 31 + lat * 17)) * 2600
+}
+
+/**
+ * `terrainWaterMask` (`?test=water`): the terrain is painted blue where the mask says water, red on land. Seen from
+ * 3000 km, where tiles span 10° to 20°, so a mask flipped or shifted within its tile would miss most coasts. Each pixel
+ * of a grid is compared with the fixture's sea, away from the coast (within 300 m of sea level the mesh's coarse
+ * heights decide). On raster-dem, the seafloor is drawn at sea level: heights read there are 0.
+ */
+async function waterMask(name, query) {
+  const { page, errors } = await open(`/?fixtures&test=water&camera=-48,0,0,3000000,0,-90${query}`)
+  await page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    const t = inspection?.terrain
+    return t && t.tilesLoaded > 4 && t.tilesDownloading === 0 && t.tilesParsing === 0 && inspection.view.morph === (inspection.view.mode === '2d' ? 1 : 0)
+  }, null, { timeout: 240_000, polling: 500 })
+  await page.waitForTimeout(2000) // tiles fade in
+  const png = await page.screenshot()
+  writeFileSync(new URL(`water-mask-${name.replace(/[^a-z0-9]+/g, '-')}.png`, OUT), png)
+  const grid = await page.evaluate(() => {
+    const points = []
+    for (let y = 20; y < 600; y += 20) {
+      for (let x = 20; x < 800; x += 20) {
+        const position = window.earth.unproject({ xPixels: x, yPixels: y })
+        if (position !== null) points.push({ x, y, longitudeDegrees: position.longitudeDegrees, latitudeDegrees: position.latitudeDegrees })
+      }
+    }
+    return points
+  })
+  const colours = await analyse(page, png, `
+    return ${JSON.stringify(grid.map(({ x, y }) => [x, y]))}.map(([x, y]) => {
+      const i = (y * width + x) * 4
+      return px[i + 2] > px[i] + 100 ? 'water' : px[i] > px[i + 2] + 100 ? 'land' : 'other'
+    })
+  `)
+  let compared = 0, agreeing = 0, water = 0
+  grid.forEach((point, index) => {
+    const height = fixtureWaterHeightMeters(point.longitudeDegrees, point.latitudeDegrees)
+    if (Math.abs(height) < 300) return
+    compared++
+    if (height < 0) water++
+    if (colours[index] === (height < 0 ? 'water' : 'land')) agreeing++
+  })
+  let seaHeights = null
+  if (query.includes('terrain=dem')) {
+    const sea = grid.filter(point => fixtureWaterHeightMeters(point.longitudeDegrees, point.latitudeDegrees) < -1000).slice(0, 40)
+    const heights = await page.evaluate(points => points.map(point => window.earth.queryTerrainElevation(point)), sea)
+    const read = heights.filter(height => height !== null)
+    seaHeights = { count: read.length, maximumMeters: read.length === 0 ? null : Number(Math.max(...read.map(Math.abs)).toFixed(2)) }
+  }
+  const inspection = await page.evaluate(() => window.earth.inspect())
+  await page.close()
+  results.push({ check: `water mask, ${name}`, compared, waterShare: compared === 0 ? 0 : Number((water / compared).toFixed(3)), agreement: compared === 0 ? 0 : Number((agreeing / compared).toFixed(3)), seaHeights, view: inspection.view, errors })
+}
+
 /**
  * A style's root properties (`?terrain=style`): with an empty `<Terrain>`, the earth builds terrain from the style's
  * `terrain` (DEM fixture, exaggeration 1.5) and the camera starts at its `center`, `zoom`, `bearing` and `pitch`.
@@ -2894,6 +2953,10 @@ const CHECKS = [
   ['dem/north-pole', () => rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')],
   ['dem/2d', () => rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')],
   ['style-root', () => styleRoot()],
+  ['water/quantized-mesh', () => waterMask('quantized-mesh', '')],
+  ['water/quantized-mesh-webgl2', () => waterMask('quantized-mesh webgl2', '&webgl')],
+  ['water/raster-dem', () => waterMask('raster-dem', '&terrain=dem')],
+  ['water/2d', () => waterMask('2d', '&view=2d')],
   ['exaggeration/raster-dem', () => terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')],
   ['exaggeration/quantized-mesh', () => terrainExaggeration('quantized-mesh', '&exaggeration=2')],
   ['exaggeration/2d', () => terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')],
