@@ -760,5 +760,67 @@ describe('select mode, edit mode', () => {
     expect(mode.keyDown({ key: 'q', code: 'KeyA', altKey: true } as KeyboardEvent)).toBe(false)
     expect(mode.pickedElementCount).toBe(1)
   })
-})
 
+  it('extrudes a line into a wall with A then E, its top edges picked, and those up again into a taller wall', () => {
+    const { context, store, events } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    expect(mode.canExtrude).toBe(false) // nothing picked
+    expect(mode.keyDown({ key: 'a' } as KeyboardEvent)).toBe(true)
+    expect(mode.canExtrude).toBe(true)
+    expect(mode.keyDown({ key: 'e' } as KeyboardEvent)).toBe(true)
+    expect(events).toEqual(['update road'])
+    const wall = store.get('road')!
+    expect(wall.geometry.type).toBe('MultiPolygon')
+    expect((wall.geometry as MultiPolygon).coordinates).toHaveLength(3)
+    const height = Math.max(...altitudes(wall))
+    expect(height).toBeGreaterThan(1000) // half the gizmo's arrow
+    expect(Math.min(...altitudes(wall))).toBe(0)
+    // The top edges stay picked, with the move gizmo over them; E again grows the wall up from them.
+    expect(mode.pickedElementCount).toBe(3)
+    expect(mode.gizmoHandles().some(handle => handle.handle === 'move-z')).toBe(true)
+    expect(mode.extrude(height)).toBe(true)
+    const taller = store.get('road')!
+    expect((taller.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(Math.max(...altitudes(taller))).toBeCloseTo(2 * height, 0)
+    expect(mode.extrude(-10)).toBe(true) // a mesh's edges extrude down too
+    mode.undo()
+    mode.undo()
+    expect(store.get('road')).toBe(wall)
+    mode.undo()
+    expect(store.get('road')).toEqual(road())
+  })
+
+  it('pulls a polygon whose every edge is picked into a prism, and extrudes two faces of a box as one region', () => {
+    const { context, store } = slanted([{ ...square(), geometry: { type: 'Polygon', coordinates: [[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8], [0.2, 0.2]]] } }, box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['square'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    mode.selectAllElements()
+    expect(mode.extrude(-5)).toBe(false) // a prism only grows up
+    expect(mode.extrude(500)).toBe(true)
+    const prism = store.get('square')!
+    expect((prism.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(Math.max(...altitudes(prism))).toBeCloseTo(500, 6)
+    expect(mode.pickedElementCount).toBe(4) // the top's edges
+    // A box: every vertex picked is every face, pointing every way: nothing to extrude.
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('vertex')
+    mode.selectAllElements()
+    expect(mode.canExtrude).toBe(false)
+    // Its top and its south wall, as one region: six walls around their outline.
+    mode.setElementMode('face')
+    tapAt(mode, at(50 + 15, -50 - 30)) // the top's middle, 30 km up
+    tapAt(mode, shift(50 + 7.5, -20 - 15)) // the south wall's middle
+    expect(mode.pickedElementCount).toBe(2)
+    expect(mode.extrude(1000)).toBe(true)
+    expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(12)
+    expect(mode.pickedElementCount).toBe(2)
+  })
+})

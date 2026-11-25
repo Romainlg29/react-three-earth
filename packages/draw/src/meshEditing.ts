@@ -15,6 +15,8 @@ import { newellNormal, type IndexedMesh } from './mesh.js'
 /** Below this (metres), a face that was planar and is no longer gets split into triangles: 1 mm, or a millionth of its size. */
 const PLANAR_TOLERANCE_METERS = 1e-3
 const PLANAR_TOLERANCE_SHARE = 1e-6
+/** Faces whose area-weighted normals sum to less than this share of their area point every way (a box's top and bottom). */
+export const PARALLEL_NORMALS_SHARE = 1e-3
 /** Neighbours closer than this to a face's plane (metres) do not limit how far it is pushed in: they lie beside it. */
 const BESIDE_FACE_METERS = 1e-3
 
@@ -305,6 +307,94 @@ export function extrudeMeshFace(mesh: IndexedMesh, faceIndex: number, distanceMe
     }
   }
   return { vertices, faces }
+}
+
+/**
+ * The mesh with several faces extruded together `distanceMeters` along their mean outward normal (each face's weighted
+ * by its area; negative: into the solid), as Blender's extrude region: the faces move out on new vertices as one piece,
+ * and a four-sided wall joins each edge of the region's outline (an edge only one of them uses) to where it was, wound
+ * to face outwards. Edges between two of the faces get no wall. The faces keep their indices; the walls come after the
+ * last face, and the new vertices after the last vertex. One face is `extrudeMeshFace`.
+ */
+export function extrudeMeshFaces(mesh: IndexedMesh, faceIndices: readonly number[], distanceMeters: number): IndexedMesh {
+  if (!Number.isFinite(distanceMeters) || distanceMeters === 0) {
+    throw new Error(`extrudeMeshFaces: distanceMeters is ${distanceMeters}; give a finite number of metres other than 0 (negative extrudes inwards).`)
+  }
+  const region = [...new Set(faceIndices)]
+  if (region.length === 0) throw new Error('extrudeMeshFaces: give at least one face index.')
+  if (region.length === 1) return extrudeMeshFace(mesh, region[0]!, distanceMeters)
+  const indices = [...new Set(region.flatMap(faceIndex => meshFaceVertices(mesh, faceIndex)))]
+  const frame = meshElementFrame(mesh, indices)
+  const sum: LocalPoint = [0, 0, 0]
+  let totalArea = 0
+  for (const faceIndex of region) {
+    const normal = meshFaceNormal(mesh, faceIndex, frame)
+    const area = meshFaceArea(mesh, faceIndex)
+    totalArea += area
+    for (let axis = 0; axis < 3; axis++) sum[axis] = sum[axis]! + normal[axis]! * area
+  }
+  const length = Math.hypot(sum[0], sum[1], sum[2])
+  if (!(length > totalArea * PARALLEL_NORMALS_SHARE)) throw new Error('extrudeMeshFaces: the faces point every way (their normals cancel out); extrude fewer of them, or one at a time.')
+  const offset: LocalPoint = [(sum[0] / length) * distanceMeters, (sum[1] / length) * distanceMeters, (sum[2] / length) * distanceMeters]
+  const vertices = mesh.vertices.slice()
+  const copies = new Map<number, number>()
+  for (const index of indices) {
+    const local = toLocal(frame, mesh.vertices[index]!)
+    copies.set(index, vertices.push(frame.toGeographic(local[0] + offset[0], local[1] + offset[1], local[2] + offset[2])) - 1)
+  }
+  // The region's directed edges: an edge whose reverse is in the region too lies between two of its faces.
+  const directed = new Set<string>()
+  for (const faceIndex of region) for (const ring of mesh.faces[faceIndex]!) ring.forEach((a, index) => directed.add(`${a}>${ring[(index + 1) % ring.length]}`))
+  const faces = mesh.faces.slice()
+  for (const faceIndex of region) faces[faceIndex] = mesh.faces[faceIndex]!.map(ring => ring.map(index => copies.get(index)!))
+  for (const faceIndex of region) {
+    for (const ring of mesh.faces[faceIndex]!) {
+      for (let index = 0; index < ring.length; index++) {
+        const a = ring[index]!
+        const b = ring[(index + 1) % ring.length]!
+        if (a === b || directed.has(`${b}>${a}`)) continue
+        faces.push([[a, b, copies.get(b)!, copies.get(a)!]])
+      }
+    }
+  }
+  return { vertices, faces }
+}
+
+/**
+ * The mesh with some edges extruded by `offset` (metres east, north and up in `frame`, by default `meshElementFrame` of
+ * their vertices), as Blender's extrude of edges: their vertices are copied, moved by the offset, and a four-sided face
+ * joins each edge to its copy (a parallelogram, so planar). The new face runs along the edge the other way from the face
+ * already using it, so a wall's top edge extruded up continues the wall; an edge no face uses (a line's) runs from
+ * its first vertex to its second. Returns the mesh and the copied edges, in the order given (the new vertices come after
+ * the last vertex, the new faces after the last face).
+ */
+export function extrudeMeshEdges(mesh: IndexedMesh, edges: ReadonlyArray<readonly [number, number]>, offset: readonly [number, number, number], frame?: LocalFrame): { mesh: IndexedMesh; edges: Array<[number, number]> } {
+  if (!offset.every(Number.isFinite) || offset.every(value => value === 0)) {
+    throw new Error(`extrudeMeshEdges: the offset is ${offset.join(', ')}; give finite metres east, north and up, not all 0.`)
+  }
+  for (const [a, b] of edges) {
+    if (mesh.vertices[a] === undefined || mesh.vertices[b] === undefined || a === b) throw new Error(`extrudeMeshEdges: ${a} to ${b} is no edge of the mesh; give two different vertex indices below ${mesh.vertices.length}.`)
+  }
+  const indices = [...new Set(edges.flat())]
+  if (indices.length === 0) return { mesh, edges: [] }
+  const measure = frame ?? meshElementFrame(mesh, indices)
+  const vertices = mesh.vertices.slice()
+  const copies = new Map<number, number>()
+  for (const index of indices) {
+    const local = toLocal(measure, mesh.vertices[index]!)
+    copies.set(index, vertices.push(measure.toGeographic(local[0] + offset[0], local[1] + offset[1], local[2] + offset[2])) - 1)
+  }
+  const directed = new Set<string>()
+  for (const face of mesh.faces) for (const ring of face) ring.forEach((a, index) => directed.add(`${a}>${ring[(index + 1) % ring.length]}`))
+  const faces = mesh.faces.slice()
+  const copied: Array<[number, number]> = []
+  for (const edge of edges) {
+    // Against the face that uses it: a face running a to b takes the new one running b to a.
+    const [a, b] = directed.has(`${edge[0]}>${edge[1]}`) ? [edge[1], edge[0]] : [edge[0], edge[1]]
+    faces.push([[a, b, copies.get(b)!, copies.get(a)!]])
+    copied.push([copies.get(edge[0])!, copies.get(edge[1])!])
+  }
+  return { mesh: { vertices, faces }, edges: copied }
 }
 
 function cross(a: LocalPoint, b: LocalPoint): LocalPoint {

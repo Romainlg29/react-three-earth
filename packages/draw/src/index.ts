@@ -95,7 +95,7 @@ export {
   type MeshFeature,
   type SphereMeshOptions,
 } from './mesh.js'
-export { extrudeMeshFace, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from './meshEditing.js'
+export { extrudeMeshEdges, extrudeMeshFace, extrudeMeshFaces, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from './meshEditing.js'
 export { LocalFrame, type LocalPoint } from './localFrame.js'
 export { createFeatureId, FeatureStore, validateFeature, type FeatureStoreChange, type FeatureStoreListener } from './FeatureStore.js'
 export { DEFAULT_DRAW_STYLE, DEFAULT_SELECTED_STYLE, resolveStyle } from './style.js'
