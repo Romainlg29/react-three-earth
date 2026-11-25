@@ -9,13 +9,13 @@ import type { StyleLayerTypeDefinition } from './styleLayerTypes.js'
 import type { SymbolEffectDefinition } from './symbolEffects.js'
 
 /**
- * The version of the plugin API this react-three-earth implements. Additive changes keep it; a change that
+ * The version of the plugin API this @earthkit/globe implements. Additive changes keep it; a change that
  * breaks plugins raises it. A plugin states the version it was built against in `apiVersion`.
  */
 export const PLUGIN_API_VERSION = 1
 
 /**
- * A package that extends react-three-earth: install it with `earth.addPlugin(plugin)` or
+ * A package that extends @earthkit/globe: install it with `earth.addPlugin(plugin)` or
  * `<Earth plugins={[plugin]}>`. Everything it registers through its `PluginContext` is undone when it is
  * removed, so `earth.removePlugin(plugin)` leaves the earth as it was.
  *
@@ -64,7 +64,7 @@ export interface PluginFrame {
 export interface PluginContext {
   /** The earth the plugin is installed on: camera, view, terrain, atmosphere, events. */
   readonly earth: Earth
-  /** The `PLUGIN_API_VERSION` of this react-three-earth. */
+  /** The `PLUGIN_API_VERSION` of this @earthkit/globe. */
   readonly apiVersion: number
   /**
    * Runs `callback` at the end of every `earth.update`, after the camera, the morph, the tiles and the sun.

@@ -1,6 +1,6 @@
 // An example plugin for symbol effects: neon labels. Text and SDF icons of the style layers whose metadata says
 // `"react-three-earth:symbol-effect": "neon"` draw as a bright core with a coloured outline in place of the halo.
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { Color } from 'three'
 import { max, min, mix, smoothstep, uniform, vec4 } from 'three/tsl'
 

@@ -1,0 +1,55 @@
+name: Release
+
+# Pushes to master open or update the "Version packages" pull request from the pending changesets.
+# Publishing to npm happens only when this workflow is run by hand (workflow_dispatch) with no changeset pending,
+# and needs the NPM_TOKEN repository secret. See .changeset/README.md.
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # version commits and release tags
+  pull-requests: write # the "Version packages" pull request
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    name: Version or publish
+    if: github.repository == 'Romainlg29/react-three-earth' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # version from package.json's packageManager
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Check the npm token before publishing
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::Add the NPM_TOKEN repository secret (Settings → Secrets and variables → Actions) before publishing."
+            exit 1
+          fi
+      - uses: changesets/action@v1
+        with:
+          title: Version packages
+          commit: Version packages
+          version: pnpm changeset version
+          # Only a manual run publishes; a push to master only versions.
+          publish: ${{ github.event_name == 'workflow_dispatch' && 'pnpm release' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'

@@ -1,7 +1,7 @@
 ---
 name: map-labels
 description: >
-  Use when working on the text labels of a MapLibre style on a react-three-earth globe or flat map: labels that
+  Use when working on the text labels of a MapLibre style on an earthkit globe or flat map: labels that
   face the viewer at a constant size (the default, place and road names alike) or lie on the ground (MapStyleSource symbols="draped"), their
   collision across the screen, priorities (symbol-sort-key, text-allow-overlap, text-ignore-placement), variable
   anchors (text-variable-anchor), icons from the sprite (icon-image), labels hidden behind mountains, fades
@@ -11,7 +11,7 @@ description: >
 metadata:
   purpose: 'Covers screen-space labels: the symbols option, placement and fades, getScreenLabels and inspect().terrain.symbols, symbol effects from plugins, and current limits.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
@@ -43,7 +43,7 @@ readable at any pitch, as in MapLibre. Line-placed labels (road names, `symbol-p
 Nothing to set up: labels face the viewer by default.
 
 ```tsx
-import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from 'react-three-earth/react'
+import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
 
 export function LabelledMap() {
   return (
@@ -66,7 +66,7 @@ Vanilla: `new MapStyleSource({ url, symbols: 'screen', symbolFadeDurationSeconds
 ### Labels on the ground instead, or no fade
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 
 export function GroundLabels() {
   return (
@@ -168,7 +168,7 @@ layer opts in through its `metadata`, so the style stays valid for MapLibre, whi
 ```
 
 ```ts
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { Color } from 'three'
 import { max, min, mix, smoothstep, uniform, vec4 } from 'three/tsl'
 
@@ -208,7 +208,7 @@ playground example is `?fixtures&map=labels&neon`.
 ### Read the labels on the screen (tests, devtools)
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export function labelsOnScreen(earth: Earth): string[] {
   return earth.terrain?.getScreenLabels().map(label => `${label.text} @ ${label.xPixels},${label.yPixels}`) ?? []

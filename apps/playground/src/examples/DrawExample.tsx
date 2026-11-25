@@ -1,7 +1,7 @@
-import type { Earth as EarthImpl } from 'react-three-earth'
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
-import { Draw } from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+import type { Earth as EarthImpl } from '@earthkit/globe'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
+import { Draw } from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 import { useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'
@@ -62,7 +62,7 @@ function DrawToolbar({ draw }: { draw: Draw }) {
 }
 
 /**
- * `?example=draw`: drawing points, lines and polygons with `react-three-earth-draw`, a headless plugin. Taps place
+ * `?example=draw`: drawing points, lines and polygons with `@earthkit/draw`, a headless plugin. Taps place
  * vertices while one finger still pans and two fingers pinch; finished features are draped on the terrain, as GeoJSON.
  */
 export function DrawExample() {

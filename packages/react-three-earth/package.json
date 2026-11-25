@@ -1,8 +1,9 @@
 {
-  "name": "react-three-earth",
+  "name": "@earthkit/globe",
   "version": "0.0.0",
   "description": "WebGPU map engine for three.js and React Three Fiber: 2D and 3D, physically based, agent-first",
   "keywords": [
+    "earthkit",
     "three",
     "threejs",
     "react-three-fiber",
@@ -52,6 +53,9 @@
       "default": "./dist/terrain-worker.js"
     },
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsdown",

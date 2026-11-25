@@ -1,6 +1,6 @@
 import type { MultiPolygon, Polygon, Position } from 'geojson'
 import { Object3D, type LineSegments, type Mesh } from 'three'
-import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME } from 'react-three-earth'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME } from '@earthkit/globe'
 import { describe, expect, it, vi } from 'vitest'
 
 import { FeatureStore } from '../src/FeatureStore.js'

@@ -1,13 +1,13 @@
 ---
 name: getting-started
 description: >
-  Use when building a 3D globe, map or Earth viewer from scratch with react-three-earth, in React Three Fiber
+  Use when building a 3D globe, map or Earth viewer from scratch with @earthkit/globe, in React Three Fiber
   or vanilla three.js: installing the package, creating the WebGPU canvas or renderer, adding terrain,
   raster imagery, the atmosphere and camera controls, and placing the first camera view.
 metadata:
   purpose: 'Takes an agent from an empty project to a rendering globe with terrain, imagery, atmosphere and controls.'
   type: lifecycle
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/*.tsx'
@@ -16,9 +16,9 @@ sources:
   - 'Romainlg29/react-three-earth:apps/playground/src/MapDemo.tsx'
 ---
 
-# Getting started with react-three-earth
+# Getting started with @earthkit/globe
 
-react-three-earth is a WebGPU map engine for three.js r187 and React Three Fiber v10. The scene is in
+`@earthkit/globe` is a WebGPU map engine for three.js r187 and React Three Fiber v10. The scene is in
 Earth-centred, Earth-fixed (ECEF, WGS84) metres. Every React component has a vanilla class of the same
 name, so both paths below build the same thing.
 
@@ -27,11 +27,11 @@ name, so both paths below build the same thing.
 Install the exact versions the library is built against. three is pinned to r187, R3F to v10 alpha.
 
 ```sh
-pnpm add react-three-earth three@0.187.0 @react-three/fiber@10.0.0-alpha.6 @react-three/tsl@10.0.0-alpha.6 react@19.3.1 react-dom@19.3.1
+pnpm add @earthkit/globe three@0.187.0 @react-three/fiber@10.0.0-alpha.6 @react-three/tsl@10.0.0-alpha.6 react@19.3.1 react-dom@19.3.1
 pnpm add -D @types/three@0.187.0
 ```
 
-Vanilla three.js only needs `react-three-earth` and `three@0.187.0`.
+Vanilla three.js only needs `@earthkit/globe` and `three@0.187.0`.
 
 ## Core Patterns
 
@@ -39,8 +39,8 @@ Vanilla three.js only needs `react-three-earth` and `three@0.187.0`.
 
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
-import { prefersWebGLBackend, setCameraView } from 'react-three-earth'
-import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
+import { prefersWebGLBackend, setCameraView } from '@earthkit/globe'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from '@earthkit/globe/react'
 import { useLayoutEffect } from 'react'
 
 function InitialView() {
@@ -103,7 +103,7 @@ What each piece does:
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, appendAttribution, prefersWebGLBackend, setCameraView } from 'react-three-earth'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, appendAttribution, prefersWebGLBackend, setCameraView } from '@earthkit/globe'
 
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
@@ -185,7 +185,7 @@ metadata once the style has loaded, so a style from a provider usually needs no 
 de-duplicated and ordered terrain first, then imagery layers in order.
 
 ```tsx
-import { AttributionControl, AttributionText, useAttributionControl } from 'react-three-earth/react'
+import { AttributionControl, AttributionText, useAttributionControl } from '@earthkit/globe/react'
 
 // Inside <Earth>. compact: undefined (automatic) | true (always a "ⓘ" button) | false (always the text)
 export const Credits = () => (
@@ -220,8 +220,8 @@ the text and links; `earth.getAttributions()` returns the raw strings. Only text
 Put it on `window` in development so an agent or a Playwright test can read it.
 
 ```tsx
-import type { Earth } from 'react-three-earth'
-import { useEarth } from 'react-three-earth/react'
+import type { Earth } from '@earthkit/globe'
+import { useEarth } from '@earthkit/globe/react'
 import { useLayoutEffect } from 'react'
 
 declare global {
@@ -252,7 +252,7 @@ throw `useEarth: call it inside <Earth>` otherwise. Source components throw
 
 ### HIGH: Importing React components from the root entry
 
-React components live in `react-three-earth/react`. The root entry `react-three-earth` exports the
+React components live in `@earthkit/globe/react`. The root entry `@earthkit/globe` exports the
 vanilla classes of the same names: `<Earth>` from the root is a three.js `Group` class, not a component.
 Helpers such as `setCameraView` and `toCartesian` are only in the root entry.
 

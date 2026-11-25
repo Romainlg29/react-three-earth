@@ -7,7 +7,7 @@ import type { DemUnpackFactors } from '../../vector/raster/rasterTiles.js'
  */
 export function createRasterDemWorker(): Worker {
   // The build rewrites this path to the bundled worker (dist/terrain-worker.js).
-  return new Worker(new URL('./rasterDemWorker.ts', import.meta.url), { type: 'module', name: 'react-three-earth terrain' })
+  return new Worker(new URL('./rasterDemWorker.ts', import.meta.url), { type: 'module', name: 'earthkit terrain' })
 }
 
 interface Pending {

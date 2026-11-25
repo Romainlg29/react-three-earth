@@ -1,4 +1,4 @@
-import { Imagery, RasterTileSource } from 'react-three-earth/react'
+import { Imagery, RasterTileSource } from '@earthkit/globe/react'
 
 import { rasterAttribution, rasterTilesUrl } from './data'
 import { ExampleShell } from './ExampleShell'

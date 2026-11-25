@@ -1,4 +1,4 @@
-import { GeoJsonSource, Imagery, MapStyleSource, StyleLayer } from 'react-three-earth/react'
+import { GeoJsonSource, Imagery, MapStyleSource, StyleLayer } from '@earthkit/globe/react'
 import { useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'

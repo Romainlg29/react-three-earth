@@ -1,7 +1,7 @@
 ---
 name: camera-and-events
 description: >
-  Use when an app needs MapLibre-style map state or camera moves from react-three-earth: the current
+  Use when an app needs MapLibre-style map state or camera moves from @earthkit/globe: the current
   centre, zoom, heading or pitch, jumping or animating the camera (jumpTo, easeTo, flyTo, fitBounds, zoomTo,
   rotateTo, panBy), view padding, the visible bounds, converting between screen pixels and longitude /
   latitude (project, unproject), clicks and pointer moves with their position on Earth, terrain height at
@@ -10,7 +10,7 @@ metadata:
   purpose: 'Documents EarthCamera (getView, jumpTo, easeTo, flyTo, fitBounds, padding, getBounds, project, unproject, queryTerrainElevation), MapLibre zoom, pointer events, initialView, the view hash, the Earth event map, useEarthCamera and useEarthEvent.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/EarthCamera.ts'
@@ -34,7 +34,7 @@ through, like MapLibre's map object: it works on the globe (`view="3d"`) and on 
 (`view="2d"`). `Earth` hands it the camera and canvas size in every `update`, so it is ready after the
 first frame.
 
-| MapLibre | react-three-earth |
+| MapLibre | @earthkit/globe |
 | --- | --- |
 | `getCenter`, `getZoom`, `getBearing`, `getPitch` | `earth.camera.getView()` → `{ longitudeDegrees, latitudeDegrees, heightMeters, zoom, headingDegrees, pitchDegrees, distanceMeters }` |
 | `jumpTo` | `earth.camera.jumpTo({ … })` |
@@ -57,7 +57,7 @@ first frame.
 ### Read the view and jump
 
 ```tsx
-import { useEarth, useEarthCamera, useEarthEvent } from 'react-three-earth/react'
+import { useEarth, useEarthCamera, useEarthEvent } from '@earthkit/globe/react'
 import { useEffect } from 'react'
 
 export function GoToParis({ onView }: { onView: (text: string) => void }) {
@@ -84,7 +84,7 @@ terrain (0 where none is loaded). It asks for a frame itself, so it works with `
 Vanilla:
 
 ```ts
-import { Earth } from 'react-three-earth'
+import { Earth } from '@earthkit/globe'
 import { PerspectiveCamera } from 'three'
 
 const earth = new Earth()
@@ -99,8 +99,8 @@ earth.addEventListener('idle', () => console.log(earth.camera.getBounds()))
 ### Animate the camera
 
 ```tsx
-import type { GeographicBounds } from 'react-three-earth'
-import { useEarthCamera } from 'react-three-earth/react'
+import type { GeographicBounds } from '@earthkit/globe'
+import { useEarthCamera } from '@earthkit/globe/react'
 
 /** Handlers for buttons outside the canvas get the camera through a hook inside `<Earth>`. */
 export function useTour(france: GeographicBounds) {
@@ -138,8 +138,8 @@ export function useTour(france: GeographicBounds) {
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { formatViewHash, parseViewHash } from 'react-three-earth'
-import { Earth, useEarthCamera, useEarthEvent } from 'react-three-earth/react'
+import { formatViewHash, parseViewHash } from '@earthkit/globe'
+import { Earth, useEarthCamera, useEarthEvent } from '@earthkit/globe/react'
 
 function KeepHash() {
   const camera = useEarthCamera()
@@ -199,7 +199,7 @@ moves a camera your own code placed back inside before the frame draws.
 
 `zoom` is MapLibre's: the world is `512 × 2^zoom` pixels wide, continuous, measured at the centre of the
 screen. A pitched view has the zoom of a top-down view at the same distance from the centre. Helpers for
-your own maths, exported from `react-three-earth`: `zoomToGroundMetersPerPixel(zoom, latitudeDegrees)`,
+your own maths, exported from `@earthkit/globe`: `zoomToGroundMetersPerPixel(zoom, latitudeDegrees)`,
 `groundMetersPerPixelToZoom`, `zoomToMercatorMetersPerPixel`, `mercatorMetersPerPixelToZoom`,
 `focalLengthPixels(camera, viewportHeightPixels)`. `earth.camera.getGroundResolutionMetersPerPixel()`
 gives the ground size of a CSS pixel at the centre.
@@ -213,7 +213,7 @@ Screen positions are CSS pixels from the canvas's top-left corner, like `event.o
 `<Earth>` listens to the canvas and dispatches pointer events with the position under the pointer:
 
 ```tsx
-import { useEarthEvent } from 'react-three-earth/react'
+import { useEarthEvent } from '@earthkit/globe/react'
 
 export function LogClicks() {
   useEarthEvent('click', event => {

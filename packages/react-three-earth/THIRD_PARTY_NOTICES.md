@@ -1,6 +1,6 @@
 # Third-party notices
 
-react-three-earth depends on, and in places adapts code from, the projects below.
+earthkit depends on, and in places adapts code from, the projects below.
 
 ## 3DTilesRendererJS
 

@@ -1,6 +1,6 @@
 import earcut from 'earcut'
 import type { MultiPolygon, Polygon, Position } from 'geojson'
-import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from 'react-three-earth'
+import { createFlatMapEmissionNode, TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth, type GeographicAnchor } from '@earthkit/globe'
 import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, FrontSide, Group, Line, LineSegments, Mesh, type Object3D } from 'three'
 import { uniform, vec4 } from 'three/tsl'
 import { LineBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'

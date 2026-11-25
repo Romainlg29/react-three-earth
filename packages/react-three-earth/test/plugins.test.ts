@@ -72,7 +72,7 @@ describe('earth.addPlugin / removePlugin', () => {
   it('refuses a plugin built for another API version, stating the fix', () => {
     const earth = new Earth()
     expect(() => earth.addPlugin({ name: 'future', apiVersion: PLUGIN_API_VERSION + 1, install() {} })).toThrow(
-      /targets plugin API 2, this react-three-earth implements 1: upgrade react-three-earth/,
+      /targets plugin API 2, this @earthkit\/globe implements 1: upgrade @earthkit\/globe/,
     )
     expect(() => earth.addPlugin({} as EarthPlugin)).toThrow(/non-empty `name`/)
   })

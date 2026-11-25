@@ -1,10 +1,10 @@
-// An example react-three-earth plugin: raymarched signed-distance shapes on the globe.
+// An example earthkit plugin: raymarched signed-distance shapes on the globe.
 //
 // Each shape is a box mesh (its bounds) whose fragment shader sphere-traces a distance function and writes
 // the hit's true depth, so terrain hides it, it hides terrain and the atmosphere hazes it. It is lit by the
 // scene's lights (the atmosphere's sun and sky), emits its colour on the flat map, and sits in a geographic
 // anchor that follows the globe-to-map morph. See docs/design or the write-a-plugin skill.
-import { createFlatMapEmissionNode, createLocalCameraPositionNode, depthFromViewZ, PLUGIN_API_VERSION, type EarthPlugin, type GeographicAnchor, type GeographicPosition, type PluginContext } from 'react-three-earth'
+import { createFlatMapEmissionNode, createLocalCameraPositionNode, depthFromViewZ, PLUGIN_API_VERSION, type EarthPlugin, type GeographicAnchor, type GeographicPosition, type PluginContext } from '@earthkit/globe'
 import { BackSide, BoxGeometry, Color, MathUtils, Mesh, Vector2, Vector3, type PerspectiveCamera } from 'three'
 import { Break, Discard, float, Fn, If, Loop, max, min, modelViewMatrix, normalize, positionLocal, positionView, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import { MeshStandardNodeMaterial, type Node } from 'three/webgpu'

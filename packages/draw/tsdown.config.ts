@@ -6,7 +6,7 @@ export default defineConfig({
   platform: 'browser',
   dts: true,
   clean: true,
-  external: [/^react-three-earth(\/.*)?$/, /^three(\/.*)?$/, 'react'],
+  external: [/^@earthkit\/globe(\/.*)?$/, /^three(\/.*)?$/, 'react'],
   // Not minified, so the published code reads as it is
   sourcemap: false,
 })

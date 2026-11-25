@@ -1,6 +1,6 @@
 // An example plugin for draped layers: a glow around a selected place, draped on the terrain above every
 // imagery layer. It is static: `select` redraws only the regions around the old and the new place.
-import { PLUGIN_API_VERSION, type DrapedLayerHandle, type EarthPlugin, type GeographicBounds, type GeographicPosition } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type DrapedLayerHandle, type EarthPlugin, type GeographicBounds, type GeographicPosition } from '@earthkit/globe'
 import { Color, Mesh, NoBlending, PlaneGeometry, Scene } from 'three'
 import { smoothstep, uniform, uv, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'

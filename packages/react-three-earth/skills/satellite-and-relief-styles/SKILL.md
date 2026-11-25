@@ -1,7 +1,7 @@
 ---
 name: satellite-and-relief-styles
 description: >
-  Use when a react-three-earth MapStyleSource style has satellite or scanned-map imagery or elevation shading:
+  Use when an @earthkit/globe MapStyleSource style has satellite or scanned-map imagery or elevation shading:
   MapLibre raster and raster-dem sources (XYZ, TileJSON, PMTiles, TMS, Terrarium or Mapbox Terrain-RGB
   encodings), raster layers with hue, saturation, contrast and brightness, hillshade (all hillshade-method
   values, several lights) and color-relief ramps over elevation, drawn under roads and labels; and the style root's
@@ -9,7 +9,7 @@ description: >
 metadata:
   purpose: 'Covers raster and raster-dem style sources, the raster, hillshade and color-relief layers, their paint, the style root (terrain, starting view, projection), and what differs from MapLibre.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
@@ -36,7 +36,7 @@ A style's `raster` sources (satellite, scanned maps) and `raster-dem` sources (e
 with its vector layers: roads and labels listed after a raster layer draw on top of it.
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 
 const reliefStyle = {
   version: 8,
@@ -102,7 +102,7 @@ The earth follows a style's root properties when the app does not set them itsel
 | `projection.type` | `'mercator'`: `view="2d"`; `'globe'`, `'vertical-perspective'`, expressions: `'3d'` | `<Earth view>` is given |
 
 ```tsx
-import { Earth, Imagery, MapStyleSource, Terrain } from 'react-three-earth/react'
+import { Earth, Imagery, MapStyleSource, Terrain } from '@earthkit/globe/react'
 
 const style = {
   version: 8,

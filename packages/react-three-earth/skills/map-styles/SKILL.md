@@ -1,7 +1,7 @@
 ---
 name: map-styles
 description: >
-  Use when draping a MapLibre style (vector tiles: roads, water, labels) on a react-three-earth globe or flat
+  Use when draping a MapLibre style (vector tiles: roads, water, labels) on an earthkit globe or flat
   map with MapStyleSource: style URLs or objects, XYZ, TileJSON and PMTiles sources, satellite and relief
   styles (raster and raster-dem sources, raster, hillshade and color-relief layers), the worker, headers,
   fonts, labels facing the viewer or draped (symbols, symbolFadeDurationSeconds), sprite patterns (fill-pattern, line-pattern, background-pattern), runtime images with addImage /
@@ -13,7 +13,7 @@ description: >
 metadata:
   purpose: 'Covers MapStyleSource, what it draws, its options, the runtime style API, GeoJSON sources and clusters, feature-state, invalidate and what is not supported yet.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
@@ -49,7 +49,7 @@ straight into each terrain tile's texture on the GPU. Labels, place and road nam
 ## Setup
 
 ```tsx
-import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from 'react-three-earth/react'
+import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
 
 export function VectorMap() {
   return (
@@ -73,7 +73,7 @@ Vanilla: `earth.addImagery(new Imagery({ sources: [new MapStyleSource({ url })] 
 ### Pass a style object, headers or a font
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 import { useMemo } from 'react'
 
 export function OwnStyle({ token }: { token: string }) {
@@ -110,8 +110,8 @@ the tiles of the sources it touches, from the worker's cached tiles (nothing is 
 the textures that show them in place, with no flicker.
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
-import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
+import type { MapStyleSource as MapStyleSourceInstance } from '@earthkit/globe'
 import { useEffect, useRef } from 'react'
 
 export function NightMode({ night }: { night: boolean }) {
@@ -156,7 +156,7 @@ calls overlap, the last one wins. `await source.setStyle(next)` before reading t
 ### Layers the app owns: `<StyleLayer>`
 
 ```tsx
-import { Imagery, MapStyleSource, StyleLayer } from 'react-three-earth/react'
+import { Imagery, MapStyleSource, StyleLayer } from '@earthkit/globe/react'
 
 export function Highlights({ selectedClass }: { selectedClass: string }) {
   return (
@@ -189,7 +189,7 @@ GeoJSON from the app is tiled in the worker (geojson-vt, and supercluster for cl
 
 ```tsx
 import type { FeatureCollection } from 'geojson'
-import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from '@earthkit/globe/react'
 
 export function Stations({ stations, route }: { stations: FeatureCollection; route: FeatureCollection }) {
   return (
@@ -224,7 +224,7 @@ Change a few features by id without sending everything (moving vehicles), and as
 the vanilla class:
 
 ```ts
-import { GeoJsonSource, MapStyleSource } from 'react-three-earth'
+import { GeoJsonSource, MapStyleSource } from '@earthkit/globe'
 
 const style = new MapStyleSource({ url: 'https://example.com/style.json' })
 const buses = new GeoJsonSource({ id: 'buses', data: { type: 'FeatureCollection', features: [] }, cluster: true })
@@ -244,8 +244,8 @@ style.setGeoJsonSourceData('buses', { type: 'FeatureCollection', features: [] })
 ### Hover and selection: feature-state
 
 ```tsx
-import { Imagery, MapStyleSource, StyleLayer } from 'react-three-earth/react'
-import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { Imagery, MapStyleSource, StyleLayer } from '@earthkit/globe/react'
+import type { MapStyleSource as MapStyleSourceInstance } from '@earthkit/globe'
 import { useEffect, useRef } from 'react'
 
 export function HoveredBuilding({ hoveredId }: { hoveredId: number | null }) {
@@ -289,7 +289,7 @@ export function HoveredBuilding({ hoveredId }: { hoveredId: number | null }) {
 ### App state in filters and layout: `global-state`
 
 ```ts
-import type { MapStyleSource } from 'react-three-earth'
+import type { MapStyleSource } from '@earthkit/globe'
 
 export function showCategory(source: MapStyleSource, category: string) {
   // The style reads it with ['global-state', 'category'], defaulting to its root `state`
@@ -303,7 +303,7 @@ changed name are processed again. `undefined` returns it to the style root `stat
 ### Rewrite requests: `transformRequest` and `addProtocol`
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 import { useCallback } from 'react'
 
 export function SignedTiles({ token }: { token: string }) {
@@ -330,8 +330,8 @@ Textures are drawn once per terrain tile. When the server's tiles change (live d
 tell the source where:
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
-import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
+import type { MapStyleSource as MapStyleSourceInstance } from '@earthkit/globe'
 import { useEffect, useRef } from 'react'
 
 export function LiveMap({ changes }: { changes: EventTarget }) {
@@ -375,8 +375,8 @@ sheet loads on high-density screens; set `spritePixelRatio` (1 or 2) to choose. 
 be added at runtime, as with MapLibre's `addImage`:
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
-import type { MapStyleSource as MapStyleSourceInstance } from 'react-three-earth'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
+import type { MapStyleSource as MapStyleSourceInstance } from '@earthkit/globe'
 import { useRef } from 'react'
 
 /** A 4 × 4 checker as raw RGBA pixels (straight alpha, sRGB, rows from the top). */
