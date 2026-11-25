@@ -574,7 +574,7 @@ Deviations from the brief:
   that (not known until the feature is read) can be missed near its edge.
 
 Not supported yet: custom layer types (plugins), icons, raster sources and draped layers answer nothing;
-`fill-translate` and friends are not drawn either, so not queried; hover does not follow a camera move under a still
+hover does not follow a camera move under a still
 pointer (as in MapLibre).
 
 | Check (`?fixtures&map=vector&hover`, SwiftShader; correctness only) | Result |
