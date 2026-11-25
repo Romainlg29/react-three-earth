@@ -9,14 +9,14 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, dot, exp, float, max, mix, normalize, pow, saturate, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
-import { WaveMesh, type WaveMeshGround, type WaveMeshShading } from './waves/WaveMesh.js'
+import { WaveMesh, type WaveMeshGround, type WaveMeshShading, type WaveMeshView } from './waves/WaveMesh.js'
 import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
-import { WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
+import { earthCenteredFromGeographic, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 import { WATER_PRESETS, type WaterPreset } from './presets.js'
 
 export interface WaterSettings {
@@ -102,6 +102,8 @@ export interface WaterState {
   readonly whitecapCoverage: number
   /** Downwelling light lost per metre of depth, per band (red, green, blue). */
   readonly diffuseAttenuationPerMeter: readonly [number, number, number]
+  /** The share of sunlight a crest lit from behind sends on to the eye, per band (`WaterOptics.crestTransmittance`); 0 for a fixed `color`. */
+  readonly crestTransmittance: readonly [number, number, number]
   readonly imageryOpacity: number
   readonly depthFromElevation: boolean
   readonly waveSeed: number
@@ -148,6 +150,14 @@ export class Water implements EarthPlugin {
   protected readonly seaLevelMeters = uniform(0)
   protected readonly seafloorAlbedo = uniform(new Color())
   protected readonly diffuseAttenuation = uniform(new Vector3())
+  /** The colour of sunlight scattered back out of the water after a metre through it: the faint glow of faces turned to the camera. */
+  protected readonly scatterColor = uniform(new Color())
+  /** The colour of sunlight through a crest lit from behind: its turquoise. */
+  protected readonly crestColor = uniform(new Color())
+  /** Towards the sun, in the wave plane's frame (x east, y north, z up). */
+  protected readonly sunInPlane = uniform(new Vector3(0, 0, 1))
+  /** The sunlight reaching the sea under the camera, through the atmosphere, in the scene's units; 0 without one. */
+  protected readonly sunIlluminance = uniform(new Vector3())
   /** 1 when `roughness` is fixed: the drawn waves then do not change it. */
   protected readonly fixedRoughnessWeight = uniform(0)
   /** The surface's whole slope variance from the wind (Cox & Munk): drawn waves carry part of it, roughness the rest. */
@@ -163,7 +173,7 @@ export class Water implements EarthPlugin {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
     this.name = name
     this.settingsValue = {}
-    this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground) => this.meshShading(waves, ground))
+    this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground, view) => this.meshShading(waves, ground, view))
     this.setSettings(settings)
   }
 
@@ -201,6 +211,9 @@ export class Water implements EarthPlugin {
     this.seaLevelMeters.value = settings.seaLevelMeters ?? 0
     this.seafloorAlbedo.value.set(settings.seafloorColor ?? DEFAULT_SEAFLOOR_COLOR).multiplyScalar(SURFACE_TRANSMITTANCE)
     this.diffuseAttenuation.value.set(...state.diffuseAttenuationPerMeter)
+    const [red, green, blue] = state.diffuseAttenuationPerMeter
+    this.scatterColor.value.setRGB(state.albedo[0] * Math.exp(-red), state.albedo[1] * Math.exp(-green), state.albedo[2] * Math.exp(-blue))
+    this.crestColor.value.setRGB(...state.crestTransmittance)
     const fixedRoughness = settings.roughness === undefined ? preset.roughness : settings.roughness
     this.fixedRoughnessWeight.value = fixedRoughness === null ? 0 : 1
     this.meanSquareSlope.value = surfaceMeanSquareSlope(state.windSpeedMetersPerSecond)
@@ -220,6 +233,7 @@ export class Water implements EarthPlugin {
     context.addObject(this.waveMesh.mesh)
     // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
+      this.followSun(earth)
       const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
       this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0, { renderer, terrain: earth.terrain, earth })
@@ -264,9 +278,44 @@ export class Water implements EarthPlugin {
     this.waveMesh.dispose()
   }
 
-  /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain. */
-  protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround): WaveMeshShading {
+  /** Points the light scattered through the crests at the atmosphere's sun, with its light where the camera is. */
+  protected followSun(earth: Earth): void {
+    const { atmosphere } = earth
+    const surface = this.waveSurface
+    if (atmosphere === null || !Number.isFinite(surface.cameraHeightMeters)) {
+      this.sunIlluminance.value.set(0, 0, 0)
+      return
+    }
+    surface.directionToPlane(atmosphere.sunDirectionECEF, this.sunInPlane.value)
+    const position = earthCenteredFromGeographic((surface.cameraLongitudeRadians * 180) / Math.PI, (surface.cameraLatitudeRadians * 180) / Math.PI, surface.seaLevelMeters, scratchPosition)
+    const { sun } = atmosphere.getSunAndSkyIlluminance(position, scratchIlluminance)
+    this.sunIlluminance.value.copy(sun).multiplyScalar(atmosphere.opacity)
+  }
+
+  /**
+   * Sunlight scattered through the waves to the eye (after Atlas's water, GDC 2019): through the thin crests and backs
+   * of waves standing between the camera and the sun, glowing in the water's own scattered colour, the more the higher
+   * the crest; and a little through every face turned to the camera. None under foam.
+   */
+  protected scatteredSunlight(view: WaveMeshView, foam: Node<'float'>): Node<'vec3'> {
+    const sun = this.sunInPlane
+    const { normal, toCamera, waveHeightMeters, significantWaveHeightMeters } = view
+    // Towards the sun along the sea: crests glow when the camera looks towards it, however high it stands.
+    const sunAlong = normalize(vec3(sun.x, sun.y, 0).add(vec3(1e-4, 0, 0)))
+    const behind = pow(saturate(dot(sunAlong, toCamera.negate())), 2)
+    const turnedAway = saturate(float(0.5).sub(dot(sun, normal).mul(0.5)))
+    const crest = pow(saturate(waveHeightMeters.div(max(significantWaveHeightMeters.mul(0.5), 0.05))), 2)
+    const facing = pow(saturate(dot(toCamera, normal)), 2)
+    const throughCrests = (this.crestColor as unknown as Node<'vec3'>).mul(crest.mul(behind).mul(turnedAway).mul(SCATTER_THROUGH_CRESTS))
+    const towardsCamera = (this.scatterColor as unknown as Node<'vec3'>).mul(facing.mul(SCATTER_TOWARDS_CAMERA))
+    const daylight = saturate(sun.z.mul(4))
+    return throughCrests.add(towardsCamera).mul(this.sunIlluminance as unknown as Node<'vec3'>).mul(daylight).mul(float(1).sub(foam)) as unknown as Node<'vec3'>
+  }
+
+  /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain, and the light scattered through its crests. */
+  protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
+      emissive: this.scatteredSunlight(view, waves.foam),
       color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
     }
@@ -407,9 +456,17 @@ export function resolveState(settings: WaterSettings): WaterState {
     roughness: fixedRoughness ?? windRoughness + (1 - windRoughness) * whitecaps,
     whitecapCoverage: whitecaps,
     diffuseAttenuationPerMeter: optics.diffuseAttenuationPerMeter,
+    crestTransmittance: fixedColor === null ? optics.crestTransmittance : [0, 0, 0],
     imageryOpacity,
     depthFromElevation: settings.depthFromElevation ?? false,
     waveSeed,
     waveMesh: settings.waveMesh ?? true,
   }
 }
+
+/** How strongly sunlight glows through a crest standing between the camera and the sun (Atlas's k1, tuned on the scene's units). */
+const SCATTER_THROUGH_CRESTS = 0.6
+/** How much scattered light every face turned to the camera sends (Atlas's k2). */
+const SCATTER_TOWARDS_CAMERA = 0.3
+const scratchPosition = new Vector3()
+const scratchIlluminance = { sun: new Vector3(), sky: new Vector3(), skyAvailable: false }

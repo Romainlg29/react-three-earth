@@ -78,6 +78,8 @@ export class WaveSurface {
   protected readonly cameraFromAnchor = uniform(new Vector3())
   /** The camera on the wave plane: metres east and north of the anchor. */
   readonly cameraPlane = uniform(new Vector2())
+  /** The camera's height over the wave plane, metres (the plane lies at sea level under the anchor). */
+  readonly cameraPlaneHeight = uniform(0)
   /** Sea level, metres above the ellipsoid: where a mesh of the waves lies. */
   seaLevelMeters = 0
   /** The camera's height above sea level, metres, from the last `update`. */
@@ -245,6 +247,7 @@ export class WaveSurface {
     this.cameraFromAnchor.value.copy(cameraWorld).sub(scratchAnchor.copy(this.anchorEarthCenteredMeters!).applyMatrix4(earth.matrixWorld))
     const fromAnchor = scratchOffset.copy(cameraEarth).sub(this.anchorEarthCenteredMeters!)
     this.cameraPlane.value.set(fromAnchor.dot(this.anchorEast), fromAnchor.dot(this.anchorNorth))
+    this.cameraPlaneHeight.value = scratchOffset.copy(cameraEarth).sub(scratchOrigin.setFromMatrixPosition(this.planeFrame)).dot(this.anchorUp)
   }
 
   /** Lays the plane's frame at sea level under the anchor, with the Earth's curvature there. */
@@ -359,6 +362,11 @@ export class WaveSurface {
     if (anchor === null) return null
     const offset = scratchOffset.copy(earthCentered).sub(anchor)
     return target.set(offset.dot(this.anchorEast), offset.dot(this.anchorNorth))
+  }
+
+  /** Turns a direction from ECEF into the plane's frame (x east, y north, z up, at the anchor), into `target`. */
+  directionToPlane(direction: Vector3, target: Vector3): Vector3 {
+    return target.set(direction.dot(this.anchorEast), direction.dot(this.anchorNorth), direction.dot(this.anchorUp))
   }
 
   /** Turns a direction from the plane's frame (x east, y north, z up, at the anchor) into ECEF, in place. */

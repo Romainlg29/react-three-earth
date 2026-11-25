@@ -1,7 +1,7 @@
 import type { Terrain } from '@earthkit/globe'
 import { BufferAttribute, BufferGeometry, Mesh, Vector2, type Object3D } from 'three'
 import { abs, ceil, clamp, exp2, float, floor, fract, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
-import { MeshStandardNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
+import { MeshPhysicalNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
 import { WaveDepthCache, type WaveGround } from './WaveDepthCache.js'
 import type { WaveSurface, WaveSurfaceNodes } from './WaveSurface.js'
@@ -20,6 +20,20 @@ export const WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS = 1500
 export interface WaveMeshShading {
   color: Node<'vec3'>
   roughness: Node<'float'>
+  /** Light the water sends out of itself (the sun's light scattered through the crests), radiance. */
+  emissive?: Node<'vec3'>
+}
+
+/** The geometry at a fragment of the mesh, in the wave plane's frame (x east, y north, z up), for its shading. */
+export interface WaveMeshView {
+  /** The surface's normal, unit. */
+  normal: Node<'vec3'>
+  /** Towards the camera, unit. */
+  toCamera: Node<'vec3'>
+  /** How high the waves lift the surface here over the water's level, metres (negative in a trough). */
+  waveHeightMeters: Node<'float'>
+  /** The sea state's significant wave height, metres: what a crest's height compares with. */
+  significantWaveHeightMeters: Node<'float'>
 }
 
 /** The ground under a fragment of the mesh, for its shading. */
@@ -35,6 +49,9 @@ export interface WaveMeshGroundSource {
   /** The object whose frame is ECEF. */
   earth: Object3D
 }
+
+/** Seawater's index of refraction for visible light. */
+export const WATER_INDEX_OF_REFRACTION = 1.34
 
 /** Waves break where they stand taller than this share of the water's depth (McCowan): the mesh calms them there. */
 export const WAVE_BREAKING_DEPTH_RATIO = 0.78
@@ -59,7 +76,7 @@ export interface WaveMeshOptions {
  * Needs the GPU path (`WaveSurface.compute`): without it, nothing displaces and the mesh is hidden.
  */
 export class WaveMesh {
-  readonly mesh: Mesh<BufferGeometry, MeshStandardNodeMaterial>
+  readonly mesh: Mesh<BufferGeometry, MeshPhysicalNodeMaterial>
   readonly resolution: number
   readonly levels: number
   /** The innermost ring's cell size, metres. */
@@ -76,7 +93,7 @@ export class WaveMesh {
   protected readonly surface: WaveSurface
   protected laidAnchorVersion = -1
 
-  constructor(surface: WaveSurface, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround) => WaveMeshShading, { resolution = WAVE_MESH_RESOLUTION, levels = WAVE_MESH_LEVELS }: WaveMeshOptions = {}) {
+  constructor(surface: WaveSurface, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading, { resolution = WAVE_MESH_RESOLUTION, levels = WAVE_MESH_LEVELS }: WaveMeshOptions = {}) {
     if (!Number.isInteger(resolution) || resolution < 24 || resolution % 4 !== 0) {
       throw new Error(`WaveMesh: resolution must be a multiple of 4 of at least 24 (cells from the centre to a ring's edge), got ${resolution}.`)
     }
@@ -86,7 +103,8 @@ export class WaveMesh {
     this.levels = levels
     // The outer ring: `2 resolution` of its cells across.
     this.ground = new WaveDepthCache(surface, 2 * resolution)
-    const material = new MeshStandardNodeMaterial({ metalness: 0 })
+    // Water's index of refraction: 2 % reflected head-on (Fresnel), all of it at grazing angles.
+    const material = new MeshPhysicalNodeMaterial({ metalness: 0, ior: WATER_INDEX_OF_REFRACTION })
     material.name = 'WaveMesh'
     this.buildNodes(material, shade)
     this.mesh = new Mesh(createRings(resolution, levels), material)
@@ -199,7 +217,7 @@ export class WaveMesh {
     return { ...ground, calm: shallows.mul(shore) as unknown as Node<'float'> }
   }
 
-  protected buildNodes(material: MeshStandardNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround) => WaveMeshShading): void {
+  protected buildNodes(material: MeshPhysicalNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading): void {
     const { surface, resolution } = this
     const camera = surface.cameraPlane
     const local = positionGeometry.xy
@@ -226,12 +244,16 @@ export class WaveMesh {
     const fragmentPlane = varying(plane, 'wavePlane') as unknown as Node<'vec2'>
     const drawnPlane = varying(moved, 'waveDrawnPlane') as unknown as Node<'vec2'>
     const depthMeters = varying(ground.depthMeters, 'waveDepth') as unknown as Node<'float'>
+    const waveHeightMeters = varying(displacement.z, 'waveHeight') as unknown as Node<'float'>
+    const waterLevel = varying(ground.surfaceMeters, 'waveLevel') as unknown as Node<'float'>
     const waves = surface.sampleWaves(fragmentPlane)
-    const { color, roughness } = shade(waves, { depthMeters })
+    // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
+    const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize() as unknown as Node<'vec3'>
+    const toCamera = vec3(surface.cameraPlane.sub(drawnPlane), surface.cameraPlaneHeight.sub(waterLevel.add(waveHeightMeters))).normalize() as unknown as Node<'vec3'>
+    const { color, roughness, emissive } = shade(waves, { depthMeters }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
     material.colorNode = color
     material.roughnessNode = roughness
-    // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
-    const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize()
+    if (emissive !== undefined) material.emissiveNode = emissive
     material.normalNode = transformNormalToView(normal)
     // Only over water, where it lies after the waves moved it (the terrain's sea gives way by the same map); beyond the
     // terrain's edge of the mesh (`coverage`), the terrain draws the sea.

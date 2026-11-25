@@ -94,7 +94,10 @@ Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3}
 
 - `windSpeedMetersPerSecond`: the gloss from the waves too small to draw (Cox & Munk), so the sun's glint widens as the
   wind rises, and whitecaps from 3 m/s (Monahan). Under `<Atmosphere>` the glossy sea mirrors the sky, Fresnel
-  included: deep blue looking down, pale towards the horizon.
+  included: deep blue looking down, pale towards the horizon. On the GPU's wave mesh the water reflects with its
+  index of refraction (`WATER_INDEX_OF_REFRACTION`, 1.34), and the atmosphere's sunlight glows through crests standing
+  between the camera and the sun, turquoise from the optics (`crestTransmittance`): red absorbed in the crest, blue
+  scattered out of it.
 - `chlorophyllMilligramsPerCubicMeter`: the colour, from the absorption and scattering of seawater, phytoplankton and
   dissolved matter (ocean colour models). 0.03 deep blue gyres, 0.1 to 0.3 open ocean, 1 to 10 green-blue coasts.
 - `salinityPartsPerThousand`: 35 sea, 0 fresh water (a little less scattering, lighter water).
@@ -190,7 +193,7 @@ false and the sample holds the ground's level. Vanilla: `const probe = water.cre
 and the samples say so: sea level, normal straight up. Up to `capacity` points (default 16) cost one small dispatch.
 
 `water.state` (and `earth.inspect().plugins.water`) gives the resolved values: `albedo` (linear RGB), `roughness`,
-`whitecapCoverage`, `diffuseAttenuationPerMeter`.
+`whitecapCoverage`, `diffuseAttenuationPerMeter`, `crestTransmittance` (0 for a fixed `color`, which draws the sea as given).
 
 ### Change the weather at runtime
 
@@ -216,8 +219,8 @@ export function setWind(water: Water, windSpeedMetersPerSecond: number): void {
 
 ### The optics on their own
 
-`computeWaterOptics({ chlorophyllMilligramsPerCubicMeter, salinityPartsPerThousand })` returns `deepAlbedo` and
-`diffuseAttenuationPerMeter` per band, `surfaceRoughness(wind)` and `whitecapCoverage(wind)` the surface's: for a
+`computeWaterOptics({ chlorophyllMilligramsPerCubicMeter, salinityPartsPerThousand })` returns `deepAlbedo`,
+`diffuseAttenuationPerMeter` and `crestTransmittance` (through `WATER_CREST_THICKNESS_METERS` of water) per band, `surfaceRoughness(wind)` and `whitecapCoverage(wind)` the surface's: for a
 material of your own or a legend.
 
 ## Common Mistakes
