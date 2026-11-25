@@ -304,12 +304,18 @@ describe('GeoJSON sources in the worker', () => {
     expect(eastIds).toHaveLength(1)
     expect(westIds).toHaveLength(1)
     expect(eastIds[0]).not.toBe(westIds[0])
-    expect(eastIds[0]).toBeGreaterThanOrEqual(302) // after the base's 302 features
+    expect(eastIds[0]).toBe(302) // new: after the base's 302 features
+    expect(westIds[0]).toBe(1) // changed: its index in the base, which stays
+    // Changed again, ids stay where they were
+    await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { update: [{ id: 2, newGeometry: { type: 'Point', coordinates: [-150, 2] } }] }] }])
+    expect(await ids(west)).toEqual([1])
+    expect(await ids(east)).toEqual([302])
     // Hiding reaches the changed features too
     await processor.applyCommands([{ command: 'setGeoJSONSourceHiddenFeatures', args: ['shapes', [3]] }])
     expect(await ids(east)).toHaveLength(0)
-    // Past the share, the whole data is cut again
-    await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { update: many.map(feature => ({ id: feature.id!, addOrUpdateProperties: [{ key: 'seen', value: true }] })) }] }])
+    // Past the share (removed features count), the whole data is cut again, redrawing everywhere as generated ids move
+    const result = await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { remove: many.map(feature => feature.id!) }] }])
+    expect(result.rebuiltAreas![0]!.rectangles).toBeNull()
     expect(provider.base).not.toBe(base)
     expect(provider.overlay.size).toBe(0)
     expect(await ids(east)).toHaveLength(0) // still hidden

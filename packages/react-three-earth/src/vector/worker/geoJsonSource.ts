@@ -134,6 +134,16 @@ export class GeoJsonTileSource implements VectorTileProvider {
   protected overlayCut: FeatureCut | null = null
   /** Ids whose version in the base is out of date (changed or removed since): the base's tiles leave them out. */
   protected readonly superseded = new Set<GeoJsonFeatureId>()
+  /**
+   * With `generateId`, the tile id of each feature that entered the overlay: its index in the base when it was there
+   * (whose version is left out, so the index is free), else a number after the base's. Stable until everything is cut
+   * again, so feature-state set on an edited feature stays.
+   */
+  protected readonly overlayTileIds = new Map<GeoJsonFeatureId, number>()
+  /** The next tile id `overlayTileIds` gives a feature new to the base. */
+  protected nextOverlayTileId = 0
+  /** With `generateId`, each base feature's index, by id: made when first needed. */
+  protected baseIndexes: Map<GeoJsonFeatureId, number> | null = null
   protected readonly filter: FeatureFilter | null
   /** Ids of the features left out of the tiles (`hiddenFeatureIds`), still in the data. */
   protected hidden: ReadonlySet<GeoJsonFeatureId>
@@ -197,16 +207,19 @@ export class GeoJsonTileSource implements VectorTileProvider {
       }
       const applied = applyGeoJsonDiff(this.features, diff, this.options.promoteId, this.sourceId)
       this.features = applied.features
-      this.applyToOverlay(applied.before, applied.after, diff.removeAll === true)
+      const rebuilt = this.applyToOverlay(applied.before, applied.after, diff.removeAll === true)
+      if (rebuilt !== false) return { rectangles: rebuilt, marginTiles: this.marginTiles }
       return { rectangles: featureRectangles([...this.drawnFeatures(applied.before), ...this.drawnFeatures(applied.after)]), marginTiles: this.marginTiles }
     })
   }
 
   /**
    * Cuts the changed features on their own, over the base, whose versions of them are left out from now on: an edit
-   * costs the size of the edits so far, not of the data. Past a share of the data, everything is cut again.
+   * costs the size of the edits so far, not of the data. Past a share of the data, everything is cut again: then
+   * answers where tiles changed (around every feature changed since the last full cut, or everywhere with
+   * `generateId`, whose ids all move), else false.
    */
-  protected applyToOverlay(before: readonly Feature[], after: readonly Feature[], removedAll: boolean): void {
+  protected applyToOverlay(before: readonly Feature[], after: readonly Feature[], removedAll: boolean): MercatorRectangle[] | null | false {
     const promoteId = this.options.promoteId
     // Changes before additions: a replaced feature is removed, then added back as it is now.
     for (const feature of before) {
@@ -220,14 +233,36 @@ export class GeoJsonTileSource implements VectorTileProvider {
       if (id === undefined) continue
       this.superseded.add(id)
       this.overlay.set(id, feature)
+      if (this.options.generateId && !this.overlayTileIds.has(id)) this.overlayTileIds.set(id, this.baseIndexOf(id) ?? this.nextOverlayTileId++)
     }
     const baseSize = this.base?.drawn.length ?? 0
-    if (removedAll || this.overlay.size > Math.max(MINIMUM_REBUILD_FEATURES, baseSize * OVERLAY_REBUILD_SHARE)) {
+    // Removed features count too: their versions still weigh on the base until it is cut again.
+    if (removedAll || this.superseded.size > Math.max(MINIMUM_REBUILD_FEATURES, baseSize * OVERLAY_REBUILD_SHARE)) {
+      const changed = this.options.generateId || removedAll ? null : [...this.overlay.values(), ...(this.base?.drawn ?? []).filter(feature => this.isSuperseded(feature))]
       this.buildIndex(this.features)
-      return
+      return changed === null ? null : featureRectangles(changed)
     }
     const drawn = this.drawnFeatures([...this.overlay.values()])
     this.overlayCut = drawn.length === 0 ? null : { index: this.cut(drawn), drawn }
+    return false
+  }
+
+  protected isSuperseded(feature: Feature): boolean {
+    const id = geoJsonFeatureId(feature, this.options.promoteId)
+    return id !== undefined && this.superseded.has(id)
+  }
+
+  /** With `generateId`, a feature's index in the base, or undefined when the base does not hold it. */
+  protected baseIndexOf(id: GeoJsonFeatureId): number | undefined {
+    if (this.baseIndexes === null) {
+      const promoteId = this.options.promoteId
+      this.baseIndexes = new Map()
+      for (const [index, feature] of (this.base?.drawn ?? []).entries()) {
+        const featureId = geoJsonFeatureId(feature, promoteId)
+        if (featureId !== undefined && !this.baseIndexes.has(featureId)) this.baseIndexes.set(featureId, index)
+      }
+    }
+    return this.baseIndexes.get(id)
   }
 
   /**
@@ -278,8 +313,10 @@ export class GeoJsonTileSource implements VectorTileProvider {
       const overlay = this.overlayCut
       for (const feature of base?.index.getTile(z, x, y)?.features ?? []) if (left(this.originalId(feature, base!))) entries.push({ feature, id: feature.id })
       for (const feature of overlay?.index.getTile(z, x, y)?.features ?? []) {
-        // Generated ids follow on from the base's, so feature-state keys stay distinct.
-        if (!this.hidden.has(this.originalId(feature, overlay!)!)) entries.push({ feature, id: this.options.generateId ? (base?.drawn.length ?? 0) + (feature.id as number) : feature.id })
+        const id = this.originalId(feature, overlay!)
+        if (id !== undefined && this.hidden.has(id)) continue
+        // Generated ids stay as they were in the base, or follow on from the base's for new features: distinct and stable.
+        entries.push({ feature, id: this.options.generateId ? this.overlayTileIds.get(id!) : feature.id })
       }
     }
     return entries.length === 0 ? null : new GeoJsonTile(entries)
@@ -368,6 +405,8 @@ export class GeoJsonTileSource implements VectorTileProvider {
     this.overlay.clear()
     this.overlayCut = null
     this.superseded.clear()
+    this.overlayTileIds.clear()
+    this.baseIndexes = null
     const drawn = this.drawnFeatures(features)
     const options = this.options
     if (options.cluster) {
@@ -388,6 +427,7 @@ export class GeoJsonTileSource implements VectorTileProvider {
     }
     this.clusters = null
     this.base = { index: this.cut(drawn), drawn }
+    this.nextOverlayTileId = drawn.length
   }
 
   /** A geojson-vt index over features, with the source's options. */

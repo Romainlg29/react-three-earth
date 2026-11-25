@@ -116,10 +116,11 @@ It costs a redraw of the regions around those features, whatever the size of the
 
 - Selecting, deselecting and dragging never tile the data again: the drag is drawn by the overlay, the hide is a
   filter in the tile worker.
-- Each committed change is one `updateData`. The tile worker cuts only the changed features, in a small second index
-  drawn over the first (under a millisecond for one feature in 50,000, where cutting the whole source took 300 ms),
-  and cuts everything again only once the edits reach an eighth of the data. The main thread does O(changes) lookups
-  and one array of the features, in the source and in the style document.
+- Each committed change is one `updateData`. Without `cluster`, the tile worker cuts only the features changed since
+  the last full cut, in a small second index drawn over the first: one edit in 50,000 polygons takes under a
+  millisecond where cutting everything took 300 ms, growing with the edits made since. Once the changed and removed
+  features pass an eighth of the data (and 256), everything is cut again. Changed features draw above the others until
+  then, and keep their `generateId` ids. Clustered sources cluster every point again on each change.
 - A tap tests only the draped features whose box is within reach of it, so selecting in a file of thousands of
   features projects a handful of them (in a tilted view, a tap that finds nothing nearby tests them all). Features with
   a third coordinate are always tested.
