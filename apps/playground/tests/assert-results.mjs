@@ -435,6 +435,7 @@ for (const name of ['buildings', 'labels', 'webgl2']) {
   expectations[`screen clip, ${name}`] = r => [
     ['the kept half looks as before (under 1 % of its pixels changed)', r.keptChangedShare < 0.01],
     ['the clipped half lost the layer (over 30 % of its pixels changed)', r.clippedChangedShare > 0.3],
+    ['no label or building is left in the clipped half (under 1 % of its pixels stand out)', r.clippedStandingOutShare < 0.01],
   ]
 }
 expectations['3d buildings, atmosphere on'] = r => [...standing(r), ['lit and hazed walls and roofs draw', r.redShare > 0.03]]

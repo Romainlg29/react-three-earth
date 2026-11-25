@@ -11,11 +11,14 @@ export interface ImageryProps {
   /**
    * Keeps the layer to one side of a line across the canvas (`Imagery.screenClip`): its imagery, and a map style's
    * labels and 3D buildings. Compared by value, so an inline object is fine; changing it costs nothing. For a line that
-   * moves every frame (a swipe slider), set `imagery.screenClip` through `ref` instead of re-rendering. Default: null.
+   * moves every frame (a swipe slider), set `imagery.screenClip` through a callback `ref` instead of re-rendering. Default: null.
    * @example <Imagery screenClip={{ side: 'left', positionFraction: 0.5 }}>
    */
   screenClip?: ScreenClip | null
-  /** The vanilla `Imagery` once its sources are registered, null before and after (a new one when the sources change). */
+  /**
+   * The vanilla `Imagery` once its sources are registered, null before and after. Changing the sources builds a new one,
+   * which starts with the `screenClip` prop's clip: use a callback ref, which is called with it, to set its clip again.
+   */
   ref?: Ref<ImageryImpl | null>
   /** Imagery source components, stacked bottom to top. */
   children?: ReactNode

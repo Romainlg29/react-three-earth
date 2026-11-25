@@ -239,18 +239,15 @@ Vanilla: `const labels = new Imagery({ sources: [...], opacity: 0.8 })`, `earth.
 ### Clip a layer to one side of the canvas
 
 ```tsx
-import type { Imagery as ImageryLayer } from '@earthkit/globe'
 import { Imagery, MapStyleSource, RasterTileSource } from '@earthkit/globe/react'
-import { useRef } from 'react'
 
 export function SplitView() {
-  const satellite = useRef<ImageryLayer | null>(null)
   return (
     <>
       <Imagery screenClip={{ side: 'left', positionFraction: 0.5 }}>
         <MapStyleSource url="https://example.com/streets/style.json" />
       </Imagery>
-      <Imagery ref={satellite} screenClip={{ side: 'right', positionFraction: 0.5 }}>
+      <Imagery screenClip={{ side: 'right', positionFraction: 0.5 }}>
         <RasterTileSource url="https://example.com/satellite/{z}/{x}/{y}.jpg" levels={20} />
       </Imagery>
     </>
@@ -262,9 +259,10 @@ export function SplitView() {
 (`'left'`, `'right'`, `'top'`, `'bottom'`) of a line at `positionFraction` (0 to 1) of the canvas's width or height,
 from the left or top edge. Layers clipped to opposite sides of the same line make a split view; the terrain, the
 camera and every unclipped layer are shared. It is per pixel in the shaders, so changing it costs nothing (no reload,
-no shader rebuild, no extra draw). For a line that moves every frame, set `ref.current.screenClip = { … }` and call
-`earth.requestFrame()` instead of re-rendering; a swipe slider with dragging and keyboard is `@earthkit/compare`.
-Feature queries (`queryRenderedFeatures`, clicks) still see the clipped part of a layer.
+no shader rebuild, no extra draw). For a line that moves every frame, set `imagery.screenClip = { … }` on the layer a callback
+`ref` receives (`<Imagery ref={layer => …}>`; a source change builds a new layer, which starts with the prop's clip)
+and call `earth.requestFrame()`, instead of re-rendering. `queryRenderedFeatures` and layer events skip a layer where
+it is clipped away.
 
 Vanilla: `new Imagery({ sources, screenClip: { side: 'left', positionFraction: 0.5 } })`, or
 `imagery.screenClip = { side: 'top', positionFraction: 0.3 }` (copied: assign a new object to change it), `null` for

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { Earth } from '../src/core/Earth.js'
 import { Imagery } from '../src/core/Imagery.js'
-import { screenClipPlane, type ScreenClip } from '../src/core/screenClip.js'
+import { screenClipKeeps, screenClipPlane, type ScreenClip } from '../src/core/screenClip.js'
 import { MapStyleSource, RasterTileSource } from '../src/core/sources.js'
 
 /** Whether the half-plane keeps the pixel at (u, v), the canvas's normalised coordinates from the top left. */
@@ -68,5 +69,29 @@ describe('Imagery.screenClip', () => {
     const imagery = new Imagery({ sources: [new RasterTileSource({ url: 'https://a.test/{z}/{x}/{y}.png' })] })
     expect(() => (imagery.screenClip = { side: 'middle' as never, positionFraction: 0.5 })).toThrow(/side must be 'left', 'right', 'top' or 'bottom'/)
     expect(() => (imagery.screenClip = { side: 'left', positionFraction: Number.NaN })).toThrow(/positionFraction must be a number from 0 to 1/)
+  })
+})
+
+describe('screenClipKeeps', () => {
+  it('agrees with the shader half-plane', () => {
+    for (const side of ['left', 'right', 'top', 'bottom'] as const) {
+      for (const [u, v] of [[0.1, 0.9], [0.8, 0.2], [0.45, 0.55]] as const) {
+        expect(screenClipKeeps({ side, positionFraction: 0.5 }, u, v)).toBe(keeps({ side, positionFraction: 0.5 }, u, v))
+      }
+    }
+  })
+})
+
+describe('feature queries on a clipped layer', () => {
+  it('skip the layer where the query box lies in its clipped part', () => {
+    const earth = new Earth()
+    ;(earth as unknown as { viewportSize: { set(x: number, y: number): void } }).viewportSize.set(800, 600)
+    const imagery = new Imagery({ sources: [new RasterTileSource({ url: 'https://a.test/{z}/{x}/{y}.png' })], screenClip: { side: 'left', positionFraction: 0.5 } })
+    const overlaps = (box: readonly [number, number, number, number]) => (earth as unknown as { screenBoxOverlapsClip(imagery: Imagery, box: readonly [number, number, number, number]): boolean }).screenBoxOverlapsClip(imagery, box)
+    expect(overlaps([100, 100, 100, 100])).toBe(true)
+    expect(overlaps([600, 100, 600, 100])).toBe(false)
+    expect(overlaps([380, 100, 420, 140])).toBe(true) // straddles the line
+    imagery.screenClip = null
+    expect(overlaps([600, 100, 600, 100])).toBe(true)
   })
 })

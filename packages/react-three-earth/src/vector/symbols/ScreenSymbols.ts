@@ -3,7 +3,7 @@ import { Group, Matrix4, Vector2, Vector3, type Camera, type Mesh } from 'three'
 import type { MeshBasicNodeMaterial } from 'three/webgpu'
 
 import { isOccludedByEllipsoid } from '../../core/projection.js'
-import { screenClipPlane } from '../../core/screenClip.js'
+import { screenClipPlane, setScreenClipMask } from '../../core/screenClip.js'
 import { getLayerSymbolEffect, type SymbolEffectDefinition, type SymbolEffectRegistry } from '../../plugins/symbolEffects.js'
 import type { ViewMorph } from '../../view/ViewMorph.js'
 import { cameraHeightAboveSurface, computeViewTilePyramid, tileRowToLatitude, toScenePosition } from '../CameraTilePyramid.js'
@@ -400,6 +400,9 @@ export class ScreenSymbols {
     this.requestFrame = frame.requestFrame
     const summary = this.host.summary
     if (this.disposed || summary === null) return false
+    const plane = this.host.screenClipPlane ?? UNCLIPPED_PLANE
+    setScreenClipMask(this.material, plane)
+    for (const { material } of this.effectMaterials.values()) setScreenClipMask(material, plane)
     const { camera, view, timeMilliseconds } = frame
     camera.updateMatrixWorld()
     const cameraMoved =

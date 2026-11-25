@@ -6,7 +6,7 @@ import type { ViewMorph } from '../../view/ViewMorph.js'
 import { computeViewTilePyramid, tileRowToLatitude } from '../CameraTilePyramid.js'
 import type { Lease } from '../RefCountedCache.js'
 import type { SymbolFrame } from '../symbols/ScreenSymbols.js'
-import { screenClipPlane } from '../../core/screenClip.js'
+import { screenClipPlane, setScreenClipMask } from '../../core/screenClip.js'
 import { TILE_EXTENT, type ExtrusionMesh, type MapStyleSummary, type TileBucket, type TileRequest } from '../worker/types.js'
 import { createExtrusionAttributes, createExtrusionGeometry, createExtrusionMaterials, createExtrusionMesh, type ExtrusionAttributes, type ExtrusionMaterials, type ExtrusionMeshUserData } from './extrusionMaterial.js'
 
@@ -187,6 +187,8 @@ export class Extrusions implements FlatMorphHost {
     this.readElevations(frame)
     this.chooseDrawnTiles()
     this.setDrawState(frame.zoom)
+    const plane = this.host.screenClipPlane ?? UNCLIPPED_PLANE
+    for (const material of [this.materials.opaque, this.materials.translucent, this.materials.depth]) setScreenClipMask(material, plane)
     this.statistics.updateMilliseconds = performance.now() - start
     // Buildings waiting for their first ground, or to read it again since the terrain changed (both `loading`), ask for
     // frames; retries of points with no terrain under them ride on frames drawn anyway.

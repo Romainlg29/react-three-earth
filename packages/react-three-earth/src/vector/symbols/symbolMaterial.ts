@@ -3,7 +3,7 @@ import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smooth
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
-import { screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
+import { prepareScreenClipMask, screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
 import type { SymbolEffectDefinition, SymbolEffectInputs } from '../../plugins/symbolEffects.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { GLYPH_EDGE } from '../worker/glyphs.js'
@@ -176,7 +176,7 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
   const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
   // The imagery layer's `screenClip`: labels outside the part of the canvas it keeps are cut off at the line.
-  material.maskNode = screenClipFactor(uniform(new Vector3()).onRenderUpdate((_, self) => void self.value.copy(clipPlane.value)) as unknown as Node<'vec3'>).greaterThan(0.5)
+  prepareScreenClipMask(material, screenClipFactor(uniform(new Vector3()).onRenderUpdate((_, self) => void self.value.copy(clipPlane.value)) as unknown as Node<'vec3'>).greaterThan(0.5))
 
   // Two texels a label: its anchor, scale and opacity, then its text's shift from the anchor (variable anchors) and
   // its icon's scale relative to the label's.

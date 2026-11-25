@@ -2696,7 +2696,22 @@ async function screenClip(name, query, side) {
         count[1]++
       }
     }
-    return { keptChangedShare: +(counts.kept[0] / counts.kept[1]).toFixed(4), clippedChangedShare: +(counts.clipped[0] / counts.clipped[1]).toFixed(4) }
+    // What is left in the clipped half must be bare terrain: no label or building standing out of its mean colour.
+    const mean = [0, 0, 0]
+    const clippedPixels = []
+    // Below the black space over the horizon, clear of the map controls (top right) and the attribution (bottom right).
+    for (let y = 80; y < height - 24; y++) {
+      for (let x = 0; x < width - 60; x++) {
+        const along = side === 'left' || side === 'right' ? x / width : y / height
+        if (Math.abs(along - 0.5) < 0.02 || ((side === 'left' || side === 'top') === along < 0.5)) continue
+        const i = (y * width + x) * 4
+        clippedPixels.push(i)
+        for (let channel = 0; channel < 3; channel++) mean[channel] += b.data[i + channel]
+      }
+    }
+    for (let channel = 0; channel < 3; channel++) mean[channel] /= clippedPixels.length
+    const standingOut = clippedPixels.filter(i => Math.abs(b.data[i] - mean[0]) + Math.abs(b.data[i + 1] - mean[1]) + Math.abs(b.data[i + 2] - mean[2]) > 60).length
+    return { keptChangedShare: +(counts.kept[0] / counts.kept[1]).toFixed(4), clippedChangedShare: +(counts.clipped[0] / counts.clipped[1]).toFixed(4), clippedStandingOutShare: +(standingOut / clippedPixels.length).toFixed(4) }
   }, { before: before.toString('base64'), after: after.toString('base64'), side })
   await page.close()
   results.push({ check: `screen clip, ${name}`, ...halves, errors })

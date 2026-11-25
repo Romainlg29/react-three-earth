@@ -2,7 +2,7 @@ import { BufferAttribute, BufferGeometry, LessEqualDepth, Mesh, Vector3, type Ob
 import { attribute, clamp, cosh, dot, float, max, mix, mat3, normalGeometry, output, positionGeometry, sRGBTransferEOTF, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial, type Node } from 'three/webgpu'
 
-import { screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
+import { prepareScreenClipMask, screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
 import { flatMapLuminanceNode, flatMorphFactor, globeToFlatMatrix, morphPosition } from '../../tiles/FlatMapPlugin.js'
 import { WEB_MERCATOR_RADIUS_METERS } from '../../view/webMercator.js'
 import type { ExtrusionMesh } from '../worker/types.js'
@@ -86,13 +86,13 @@ export function createExtrusionMaterials(clipPlane: { readonly value: Vector3 } 
       material.depthFunc = LessEqualDepth
     }
     material.outputNode = vec4(mix(output.rgb, flatColor, flatMorphFactor), output.a)
-    material.maskNode = kept
+    prepareScreenClipMask(material, kept)
     return material
   }
   const depth = new MeshBasicNodeMaterial({ colorWrite: false })
   depth.name = 'ExtrusionDepth'
   depth.positionNode = extrusionPosition
-  depth.maskNode = kept
+  prepareScreenClipMask(depth, kept)
   return { opaque: create(false), translucent: create(true), depth }
 }
 
