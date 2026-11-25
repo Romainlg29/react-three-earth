@@ -409,8 +409,11 @@ export class SelectMode extends DrawMode {
   protected readonly gizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; heightMeters: number; basis: GizmoBasis }>()
   /** The last gizmo of the picked elements of each feature version, valid while the view, the space and what is picked stay. */
   protected readonly elementGizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; picked: readonly PickedElement[]; heightMeters: number; basis: GizmoBasis }>()
+<<<<<<< HEAD
   /** What `extrude()` would do with each pick, on the feature version it was computed for. */
   protected readonly extrusionCache = new WeakMap<readonly PickedElement[], { feature: DrawFeature; extrusion: Extrusion | null }>()
+=======
+>>>>>>> origin/claude/project-thread-3ir3b9
   /** The pieces of each gizmo, for a tool. */
   protected readonly partsCache = new WeakMap<GizmoBasis, { tool: GizmoTool; parts: GizmoPart[] }>()
 
@@ -1245,6 +1248,7 @@ export class SelectMode extends DrawMode {
 
   // ---- Edit mode ----
 
+<<<<<<< HEAD
   /** Whether `extrude()` can act: in edit mode, with faces, edges or a line's elements picked on its stored version. */
   get canExtrude(): boolean {
     const picked = this.picked
@@ -1297,11 +1301,112 @@ export class SelectMode extends DrawMode {
     // An edge of no length (a vertex placed twice) would make a face of no area.
     const edges = edgeIndices.map(index => elements.edges[index]!).filter(([a, b]) => !samePlace(elements.positions[a]!, elements.positions[b]!))
     return edges.length > 0 ? { kind: 'edges', edges } : null
+=======
+  /** Whether `extrude()` can act: in edit mode, with one face of a mesh or polygon picked on its stored version. */
+  get canExtrude(): boolean {
+    const picked = this.picked
+    return this.vertexEditing && picked !== null && picked.elements.length === 1 && picked.elements[0]!.kind === 'face' && this.context?.store.get(picked.feature.id) === picked.feature
+>>>>>>> origin/claude/project-thread-3ir3b9
   }
 
   /** How many elements are picked in edit mode (`selectAllElements` picks them all). */
   get pickedElementCount(): number {
     return this.vertexEditing ? (this.picked?.elements.length ?? 0) : 0
+<<<<<<< HEAD
+=======
+  }
+
+  /**
+   * Picks every element of the selected feature in edit mode, of the element mode (every vertex, edge or face, those
+   * turned away from the camera too), as A does with the `keyboard` option. Returns false outside edit mode, or when
+   * the feature has none of them (a line's faces).
+   */
+  selectAllElements(): boolean {
+    const context = this.context
+    const feature = this.elementEditedFeature()
+    const elements = feature === null ? null : this.elementsOf(feature)
+    if (context === null || feature === null || elements === null || this.drag !== null || this.keyboardTransform !== null) return false
+    const all: PickedElement[] =
+      this.element === 'vertex'
+        ? elements.positions.map((_, index) => ({ kind: 'vertex', index }))
+        : this.element === 'edge'
+          ? elements.edges.map(([from, to]) => ({ kind: 'edge', from, to }))
+          : elements.faces.map((_, index) => ({ kind: 'face', index }))
+    if (all.length === 0) return false
+    this.picked = { feature, elements: all }
+    context.changed()
+    return true
+  }
+
+  /** Drops what is picked in edit mode, as Alt+A does with the `keyboard` option. Returns false when nothing was picked. */
+  clearElementSelection(): boolean {
+    if (this.picked === null || this.drag !== null || this.keyboardTransform !== null) return false
+    this.picked = null
+    this.context?.changed()
+    return true
+  }
+
+  /** Picks an element, or with `additive` (Shift) adds it to what is picked on that version, or takes it away when already picked. */
+  protected pickElement(feature: DrawFeature, element: PickedElement, additive: boolean): void {
+    const current = additive && this.picked?.feature === feature ? this.picked.elements : []
+    const without = current.filter(each => !sameElement(each, element))
+    const elements = without.length < current.length ? without : [...without, element]
+    this.picked = elements.length === 0 ? null : { feature, elements }
+  }
+
+  /** After an edit of the feature the elements were picked on, they stay picked on its new version (same indices). */
+  protected carryPicked(original: DrawFeature): void {
+    const picked = this.picked
+    const edited = this.context?.store.get(original.id)
+    if (picked === null || picked.feature !== original || edited === undefined || edited === original) return
+    this.picked = { feature: edited, elements: picked.elements }
+    this.context?.changed()
+  }
+
+  /** The index of a line's or polygon's vertex among its elements (`featureVertices` order), or -1. */
+  protected vertexIndex(feature: DrawFeature, path: VertexPath): number {
+    return this.elementsOf(feature)?.paths?.findIndex(each => each.ring === path.ring && each.index === path.index) ?? -1
+  }
+
+  /** The vertex handle under a press, as a picked vertex, or null. */
+  protected vertexHandleAt(event: DrawPointerEvent, feature: DrawFeature): PickedElement | null {
+    const handle = this.handleAt(event)
+    if (handle === null || handle.kind !== 'vertex' || handle.featureId !== feature.id) return null
+    const index = this.vertexIndex(feature, handle.path)
+    return index < 0 ? null : { kind: 'vertex', index }
+  }
+
+  /** A press on a picked vertex handle while several elements are picked: a drag moving them all, level under the pointer. */
+  protected pickedGroupDrag(feature: DrawFeature, path: VertexPath, press: DrawPointerEvent): SelectDrag | null {
+    const picked = this.picked
+    if (picked === null || picked.feature !== feature || picked.elements.length < 2) return null
+    const index = this.vertexIndex(feature, path)
+    const element: PickedElement = { kind: 'vertex', index }
+    if (index < 0 || !picked.elements.some(each => sameElement(each, element))) return null
+    const update = this.elementMoveUpdate(feature, picked.elements, press)
+    return update === null ? null : { kind: 'element', base: feature, feature, element, update }
+  }
+
+  /** Removes the picked vertices of the selected line or polygon in edit mode (each ring keeps its fewest). */
+  protected deletePickedVertices(): boolean {
+    const context = this.context
+    const picked = this.picked
+    if (context === null || picked === null) return false
+    const feature = context.store.get(picked.feature.id)
+    // Picked on another version of the feature: the indices may name other vertices now.
+    const paths = feature !== picked.feature ? null : this.elementsOf(feature)?.paths
+    if (feature === undefined || paths == null) return false
+    // From the last, so the indices of those still to remove hold.
+    const targets = picked.elements
+      .flatMap(each => (each.kind === 'vertex' && paths[each.index] !== undefined ? [paths[each.index]!] : []))
+      .sort((a, b) => b.ring - a.ring || b.index - a.index)
+    let edited = feature
+    for (const path of targets) edited = removeVertex(edited, path) ?? edited
+    if (edited === feature) return false
+    this.picked = null
+    this.commit([feature], () => context.update([edited]))
+    return true
+>>>>>>> origin/claude/project-thread-3ir3b9
   }
 
   /**
@@ -1416,8 +1521,15 @@ export class SelectMode extends DrawMode {
       throw new Error(`SelectMode.extrude: distanceMeters is ${distanceMeters}; give a finite number of metres other than 0, or leave it out for half the arrow's length.`)
     }
     if (context === null || !this.canExtrude || this.drag !== null) return false
+<<<<<<< HEAD
     const { feature, elements: picked } = this.picked!
     const extrusion = this.extrusionOf(feature, picked)
+=======
+    const feature = this.picked!.feature
+    const element = this.picked!.elements[0]!
+    if (element.kind !== 'face') return false
+    const distance = distanceMeters ?? this.defaultExtrudeMeters(feature, element.index)
+>>>>>>> origin/claude/project-thread-3ir3b9
     const elements = this.elementsOf(feature)
     if (extrusion === null || elements === null) return false
     const distance = distanceMeters ?? this.defaultExtrusionMeters(feature, picked)
@@ -1445,8 +1557,13 @@ export class SelectMode extends DrawMode {
       made = { vertices: [...new Set(extruded.edges.flat())], edges: extruded.edges, faces: [] }
     }
     this.commit([feature], () => context.update([edited]))
+<<<<<<< HEAD
     const kept = this.element === 'vertex' ? made.vertices.map(index => ({ kind: 'vertex', index }) as const) : this.element === 'edge' ? made.edges.map(([from, to]) => ({ kind: 'edge', from: Math.min(from, to), to: Math.max(from, to) }) as const) : made.faces.map(index => ({ kind: 'face', index }) as const)
     this.picked = kept.length === 0 ? null : { feature: edited, elements: kept }
+=======
+    // A polygon's prism has its top first.
+    this.picked = { feature: edited, elements: [{ kind: 'face', index: elements?.mesh != null ? element.index : 0 }] }
+>>>>>>> origin/claude/project-thread-3ir3b9
     context.changed()
     return true
   }
@@ -2739,6 +2856,7 @@ function angleBetween(fromX: number, fromY: number, toX: number, toY: number): n
   return Math.atan2(fromX * toY - fromY * toX, fromX * toX + fromY * toY)
 }
 
+<<<<<<< HEAD
 /** One key for an edge either way round. */
 function samePlace(a: Position, b: Position): boolean {
   return a[0] === b[0] && a[1] === b[1] && (a[2] ?? null) === (b[2] ?? null)
@@ -2748,6 +2866,8 @@ function edgeKey(a: number, b: number): string {
   return a < b ? `${a}-${b}` : `${b}-${a}`
 }
 
+=======
+>>>>>>> origin/claude/project-thread-3ir3b9
 /** Whether a press adds to what is picked (Shift), as in Blender. */
 function isAdditive(event: DrawPointerEvent): boolean {
   return event.originalEvent?.shiftKey === true
