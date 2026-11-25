@@ -207,6 +207,7 @@ export class MapStyleProcessor {
   protected readonly lineGradients = new WeakMap<CompiledStyleLayer, Map<number, Rgba[]>>()
   /** Line layers with a `line-gradient` on a source without line metrics, warned about once. */
   protected readonly warnedLineGradients = new Set<string>()
+  protected readonly warnedTranslateAnchors = new Set<string>()
   /** Which processor the glyph provider fetches through; shared with the processors that reload this one. */
   protected glyphRoute!: { processor: MapStyleProcessor }
   /** Sources whose TileJSON or PMTiles header is loading. */
@@ -684,6 +685,7 @@ export class MapStyleProcessor {
     const symbols: SymbolCandidate[] = []
     const uses: FeatureStateUse = { colorKeys: new Set(), rebuildKeys: new Set() }
     const customBuilders: CustomLayerBuilder[] = []
+    const sorted: Array<{ sortKey: number; add: () => void }> = []
     if (request.symbols === true) return this.processSymbolTile(tile, request, empty, signal)
     if (request.extrusions === true) return this.processExtrusionTile(tile, request, empty)
     for (const layer of layers) {
@@ -699,6 +701,7 @@ export class MapStyleProcessor {
       const custom = customType === undefined ? null : createCustomLayerBuilder(layer, customType, { zoom, unitsPerPixel, tile: { x, y, z } })
       if (custom !== null) customBuilders.push(custom)
       const promotedProperty = typeof promoteId === 'string' ? promoteId : promoteId?.[layerName!]
+      const sortKeyProperty = custom === null ? shapeSortKeyProperty(layer) : null
       for (let index = 0; index < sourceLayer.length; index++) {
         const vectorFeature = sourceLayer.feature(index)
         const id = promotedProperty === undefined ? vectorFeature.id : asFeatureId(vectorFeature.properties[promotedProperty])
@@ -712,7 +715,16 @@ export class MapStyleProcessor {
         else if (layer.type === 'symbol') {
           const candidate = this.createSymbolCandidate(layer, feature, state, vectorFeature.type, geometry, zoom, symbols.length, layerName!, index)
           if (candidate !== null) symbols.push(candidate)
+        } else if (sortKeyProperty !== null) {
+          const sortKey = layer.evaluate<number | undefined>('layout', sortKeyProperty, zoom, feature) ?? 0
+          sorted.push({ sortKey, add: () => this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images, key, state, uses) })
         } else this.addShape(shapes, layer, feature, vectorFeature.type, geometry, zoom, unitsPerPixel, placement, images, key, state, uses)
+      }
+      // `fill-sort-key`, `line-sort-key`, `circle-sort-key`: lower keys draw first, ties in the tile's order (a stable sort).
+      if (sorted.length > 0) {
+        sorted.sort((a, b) => a.sortKey - b.sortKey)
+        for (const shape of sorted) shape.add()
+        sorted.length = 0
       }
     }
     const placed: PlacedLabel[] = []
@@ -1134,6 +1146,7 @@ export class MapStyleProcessor {
     uses: FeatureStateUse,
   ): void {
     shapes.setGroup(layer.group)
+    geometry = this.translateGeometry(layer, geometry, zoom, unitsPerPixel)
     const slotted = key !== undefined && layer.featureStateDependence === 'colors'
     /**
      * Sets the colour of the vertices about to be added; false when there is nothing to draw. A feature whose colour
@@ -1196,6 +1209,7 @@ export class MapStyleProcessor {
       if (pattern !== null && rectangle === null) return // missing image: nothing, as in MapLibre
       // A gradient replaces the colour (and dashes), and needs the line metrics of a GeoJSON source with `lineMetrics`
       const ramp = rectangle === null && layer.has('paint', 'line-gradient') ? this.lineGradientRamp(layer, zoom, feature) : null
+      const blurWidth = Math.max(0, layer.evaluate<number>('paint', 'line-blur', zoom, feature, state)) * unitsPerPixel
       if (ramp !== null) {
         // Baked: a state-dependent opacity processes the tile again.
         if (key !== undefined && layer.featureStateDependence !== 'none') uses.rebuildKeys.add(key)
@@ -1212,6 +1226,7 @@ export class MapStyleProcessor {
             cap: layer.evaluate<LineCap>('layout', 'line-cap', zoom, feature),
             join: layer.evaluate<LineJoin>('layout', 'line-join', zoom, feature),
             miterLimit: layer.evaluate<number>('layout', 'line-miter-limit', zoom, feature),
+            blurWidth,
             gradient: lineGradientAlong(line, start, end, ramp, opacity),
           })
         }
@@ -1237,6 +1252,7 @@ export class MapStyleProcessor {
           cap: layer.evaluate<LineCap>('layout', 'line-cap', zoom, feature),
           join: layer.evaluate<LineJoin>('layout', 'line-join', zoom, feature),
           miterLimit: layer.evaluate<number>('layout', 'line-miter-limit', zoom, feature),
+          blurWidth,
           ...(dashLengths !== undefined ? { dashes: dashLengths } : {}),
         })
       }
@@ -1251,13 +1267,34 @@ export class MapStyleProcessor {
         layer.evaluateColor('circle-color', zoom, feature, layer.evaluate<number>('paint', 'circle-opacity', zoom, feature, featureState), featureState)
       const stroke = (featureState: FeatureState) =>
         layer.evaluateColor('circle-stroke-color', zoom, feature, layer.evaluate<number>('paint', 'circle-stroke-opacity', zoom, feature, featureState), featureState)
+      // A share of the radius (MapLibre's `circle-blur`); the stroke fades over the same distance at its own rim.
+      const blur = Math.max(0, layer.evaluate<number>('paint', 'circle-blur', zoom, feature, state))
+      const outerRadius = radius + strokeWidth
       for (const ring of geometry) {
         for (const point of ring) {
-          if (strokeWidth > 0 && useColor('stroke', stroke)) shapes.addCircle(point, radius + strokeWidth)
-          if (useColor('circle', fill)) shapes.addCircle(point, radius)
+          if (strokeWidth > 0 && useColor('stroke', stroke)) shapes.addCircle(point, outerRadius, outerRadius > 0 ? (blur * radius) / outerRadius : 0)
+          if (useColor('circle', fill)) shapes.addCircle(point, radius, blur)
         }
       }
     }
+  }
+
+  /**
+   * The geometry moved by the layer's `fill-translate`, `line-translate` or `circle-translate` (pixels right and down),
+   * or the same array without one. Draped layers turn with the map, so a `viewport` anchor is drawn as `map`, with a
+   * warning once per layer.
+   */
+  protected translateGeometry(layer: CompiledStyleLayer, geometry: Point[][], zoom: number, unitsPerPixel: number): Point[][] {
+    const [rightPixels, downPixels] = shapeTranslatePixels(layer, zoom)
+    if (rightPixels === 0 && downPixels === 0) return geometry
+    const property = `${layer.type}-translate`
+    if (layer.evaluate<string>('paint', `${property}-anchor`, zoom) === 'viewport' && !this.warnedTranslateAnchors.has(layer.id)) {
+      this.warnedTranslateAnchors.add(layer.id)
+      console.warn(`MapStyleSource: layer "${layer.id}" has ${property}-anchor "viewport", which draped layers cannot follow; it is drawn as "map". Use "map" to silence this.`)
+    }
+    const right = rightPixels * unitsPerPixel
+    const down = downPixels * unitsPerPixel
+    return geometry.map(ring => ring.map(point => ({ x: point.x + right, y: point.y + down })))
   }
 
   /**
@@ -1513,14 +1550,17 @@ export class MapStyleProcessor {
         const sourceLayer = tile.layers[layerName]!
         const margin = toleranceUnits + (layer.type === 'line' || layer.type === 'circle' ? MAXIMUM_QUERY_RADIUS_PIXELS * unitsPerPixel : 0)
         const factor = TILE_EXTENT / sourceLayer.extent
-        for (const featureIndex of index.query(...queryBounds(clipped, margin))) {
+        // A translated layer (`fill-translate`…) is drawn moved: query the features under the query moved back.
+        const [rightPixels, downPixels] = shapeTranslatePixels(layer, zoom)
+        const layerQuery = rightPixels === 0 && downPixels === 0 ? clipped : clipped.map(point => ({ x: point.x - rightPixels * unitsPerPixel, y: point.y - downPixels * unitsPerPixel }))
+        for (const featureIndex of index.query(...queryBounds(layerQuery, margin))) {
           const vectorFeature = sourceLayer.feature(featureIndex)
           const id = this.featureId(tileRequest.sourceId, layerName, vectorFeature)
           const feature: StyleFeature = { type: vectorFeature.type, properties: vectorFeature.properties, id }
           if (!accepts(layer, feature)) continue
           const state = id === undefined ? NO_STATE : (this.featureStates.get(featureKey(tileRequest.sourceId, this.stateLayerOf(tileRequest.sourceId, layerName), id)) ?? NO_STATE)
           const geometry = scaleGeometry(vectorFeature.loadGeometry(), factor)
-          if (hitTest({ layer, feature, state, type: vectorFeature.type, geometry, query: clipped, zoom, unitsPerPixel, toleranceUnits })) add(layer, tileRequest, tile, layerName, featureIndex, false)
+          if (hitTest({ layer, feature, state, type: vectorFeature.type, geometry, query: layerQuery, zoom, unitsPerPixel, toleranceUnits })) add(layer, tileRequest, tile, layerName, featureIndex, false)
         }
       }
     }
@@ -1848,4 +1888,23 @@ export function resolveTokens(text: string, properties: Record<string, unknown>)
     const value = properties[key]
     return value === undefined || value === null ? '' : String(value)
   })
+}
+
+/** The layout property that orders a shape layer's features (`fill-sort-key`…), or null when the layer has none. */
+function shapeSortKeyProperty(layer: CompiledStyleLayer): string | null {
+  if (layer.type !== 'fill' && layer.type !== 'line' && layer.type !== 'circle') return null
+  const property = `${layer.type}-sort-key`
+  return layer.has('layout', property) ? property : null
+}
+
+/**
+ * A shape layer's `fill-translate`, `line-translate` or `circle-translate` at a zoom, in pixels right and down: [0, 0]
+ * without one. Not data-driven in the style spec, so one value holds for every feature of the layer.
+ */
+function shapeTranslatePixels(layer: CompiledStyleLayer, zoom: number): [number, number] {
+  if (layer.type !== 'fill' && layer.type !== 'line' && layer.type !== 'circle') return [0, 0]
+  const property = `${layer.type}-translate`
+  if (!layer.has('paint', property)) return [0, 0]
+  const [rightPixels = 0, downPixels = 0] = layer.evaluate<number[]>('paint', property, zoom)
+  return [rightPixels, downPixels]
 }

@@ -22,6 +22,8 @@ export interface LineStyle {
   join?: LineJoin
   /** Miter length limit, in multiples of the width, beyond which a miter becomes a bevel. Default: 2. */
   miterLimit?: number
+  /** Width of the fade at each edge (`line-blur`), in tile units. Default: 0 (sharp). */
+  blurWidth?: number
   /** Alternating dash and gap lengths in tile units. Empty or undefined: solid. */
   dashes?: readonly number[]
   /**
@@ -107,6 +109,13 @@ export class ShapeBuilder {
   protected patternRectangles: Growable<Uint16Array> | null = null
   protected patternCoordinates: Growable<Float32Array> | null = null
   protected pattern: { rectangle: PatternRectangle; mapping: PatternMapping } | null = null
+  /**
+   * Created by the first blurred shape, then filled for every vertex: where the vertex sits across its shape (-1 and 1
+   * at a line band's edges, 0 at its middle; 0 at a circle's centre, 1 on its rim) and the blur as a share of the
+   * shape's half width (0: sharp).
+   */
+  protected edges: Growable<Float32Array> | null = null
+  protected blurShare = 0
   /** The local frame of the line being stroked with a pattern: image coordinates follow it. */
   protected lineFrame = { originX: 0, originY: 0, directionX: 1, directionY: 0, distance: 0, left: 0, right: 1, acrossScale: 1 }
 
@@ -182,15 +191,27 @@ export class ShapeBuilder {
     }
   }
 
-  /** Adds a filled circle. */
-  addCircle(center: Point, radius: number): void {
+  /** Adds a filled circle, fading over `blurShare` of its radius towards the rim (`circle-blur`). */
+  addCircle(center: Point, radius: number, blurShare = 0): void {
+    this.useBlur(blurShare)
     const segments = ROUND_SEGMENTS * 2
-    const first = this.addVertex(center.x, center.y)
+    const first = this.addVertex(center.x, center.y, 0)
     for (let index = 0; index < segments; index++) {
       const angle = (index / segments) * Math.PI * 2
-      this.addVertex(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius)
+      this.addVertex(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius, 1)
     }
     for (let index = 0; index < segments; index++) this.indices.push3(first, first + 1 + index, first + 1 + ((index + 1) % segments))
+    this.useBlur(0)
+  }
+
+  /** The blur of the vertices about to be added, as a share of their shape's half width; creates the edges on first use. */
+  protected useBlur(share: number): void {
+    this.blurShare = share > 0 && Number.isFinite(share) ? share : 0
+    if (this.blurShare > 0 && this.edges === null) {
+      this.edges = new Growable(size => new Float32Array(size))
+      this.edges.reserve(this.vertexCount * 2)
+      this.edges.length = this.vertexCount * 2 // zero-filled: sharp
+    }
   }
 
   /** Adds a stroked polyline. Closed rings repeat their first point at the end. */
@@ -205,7 +226,7 @@ export class ShapeBuilder {
       const piece = removeDuplicatePoints(dash)
       if (piece.length < 2) {
         // A zero-length dash (`line-dasharray: [0, 2]` with round caps) is a dot.
-        if (piece.length === 1 && dash.length >= 2 && style.cap === 'round') this.addCircle(piece[0]!, style.width / 2)
+        if (piece.length === 1 && dash.length >= 2 && style.cap === 'round') this.addCircle(piece[0]!, style.width / 2, ((style.blurWidth ?? 0) * 2) / style.width)
         continue
       }
       if (gap > 0) {
@@ -227,14 +248,17 @@ export class ShapeBuilder {
       groups: this.groups.filter(group => group.count > 0),
       patterns: this.patternRectangles?.toArray() ?? null,
       patternCoordinates: this.patternCoordinates?.toArray() ?? null,
+      edges: this.edges?.toArray() ?? null,
     }
   }
 
-  protected addVertex(x: number, y: number): number {
+  /** Adds a vertex; `edge` is where it sits across its shape (see `edges`), read only by blurred shapes. */
+  protected addVertex(x: number, y: number, edge = 0): number {
     const [r, g, b, a] = this.color
     this.positions.push2(x, y)
     this.colors.push4(r, g, b, a)
     this.colorSlots?.push1(this.colorSlot)
+    this.edges?.push2(edge, this.blurShare)
     if (this.patternRectangles !== null) this.addPatternVertex(x, y)
     return this.vertexCount - 1
   }
@@ -281,6 +305,7 @@ export class ShapeBuilder {
   protected addStroke(line: readonly Point[], left: number, right: number, style: LineStyle): void {
     const halfWidth = (right - left) / 2
     const center = (left + right) / 2
+    this.useBlur((style.blurWidth ?? 0) / halfWidth)
     const join = style.join ?? 'miter'
     const miterLimit = style.miterLimit ?? 2
     const closed = line.length > 2 && line[0]!.x === line.at(-1)!.x && line[0]!.y === line.at(-1)!.y
@@ -311,8 +336,8 @@ export class ShapeBuilder {
       if (isEndpoint) {
         const normal = (incoming ?? outgoing)!
         if (distances !== null) this.setLineFrame(point.x, point.y, normal, distances[index]!)
-        const leftVertex = this.addVertex(point.x + normal.x * left, point.y + normal.y * left)
-        const rightVertex = this.addVertex(point.x + normal.x * right, point.y + normal.y * right)
+        const leftVertex = this.addVertex(point.x + normal.x * left, point.y + normal.y * left, -1)
+        const rightVertex = this.addVertex(point.x + normal.x * right, point.y + normal.y * right, 1)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
         this.addCap(point, normal, center, halfWidth, style.cap ?? 'butt', incoming === null)
         previousLeft = leftVertex
@@ -329,8 +354,8 @@ export class ShapeBuilder {
         const miter = { x: (bisector.x / bisectorLength) * miterScale, y: (bisector.y / bisectorLength) * miterScale }
         // The mitre points along the normals' bisector: the frame of the mean direction, stretched by the mitre.
         if (distances !== null) this.setLineFrame(point.x, point.y, { x: bisector.x / bisectorLength, y: bisector.y / bisectorLength }, distances[index]!, miterScale)
-        const leftVertex = this.addVertex(point.x + miter.x * left, point.y + miter.y * left)
-        const rightVertex = this.addVertex(point.x + miter.x * right, point.y + miter.y * right)
+        const leftVertex = this.addVertex(point.x + miter.x * left, point.y + miter.y * left, -1)
+        const rightVertex = this.addVertex(point.x + miter.x * right, point.y + miter.y * right, 1)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
         previousLeft = leftVertex
         previousRight = rightVertex
@@ -340,16 +365,17 @@ export class ShapeBuilder {
       // Bevel or round: end the incoming segment, start the outgoing one, and fill the wedge between them on
       // the outer side only (the inner side is covered by both segments), around the line's own vertex.
       if (distances !== null) this.setLineFrame(point.x, point.y, incoming, distances[index]!)
-      const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left)
-      const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right)
+      const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left, -1)
+      const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right, 1)
       if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, endLeft, endRight)
       if (distances !== null) this.setLineFrame(point.x, point.y, outgoing, distances[index]!)
-      const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left)
-      const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right)
+      const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left, -1)
+      const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right, 1)
       this.addJoinWedge(point, left, right, incoming, outgoing, join === 'round')
       previousLeft = startLeft
       previousRight = startRight
     }
+    this.useBlur(0)
   }
 
   protected addQuad(fromLeft: number, fromRight: number, toLeft: number, toRight: number): void {
@@ -363,21 +389,21 @@ export class ShapeBuilder {
     const direction = isStart ? { x: -normal.y, y: normal.x } : { x: normal.y, y: -normal.x } // along the line, outwards
     const base = { x: point.x + normal.x * center, y: point.y + normal.y * center }
     if (cap === 'square') {
-      const a = this.addVertex(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth)
-      const b = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth)
-      const c = this.addVertex(base.x + normal.x * halfWidth + direction.x * halfWidth, base.y + normal.y * halfWidth + direction.y * halfWidth)
-      const d = this.addVertex(base.x - normal.x * halfWidth + direction.x * halfWidth, base.y - normal.y * halfWidth + direction.y * halfWidth)
+      const a = this.addVertex(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth, -1)
+      const b = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth, 1)
+      const c = this.addVertex(base.x + normal.x * halfWidth + direction.x * halfWidth, base.y + normal.y * halfWidth + direction.y * halfWidth, 1)
+      const d = this.addVertex(base.x - normal.x * halfWidth + direction.x * halfWidth, base.y - normal.y * halfWidth + direction.y * halfWidth, -1)
       this.indices.push3(a, b, c)
       this.indices.push3(a, c, d)
       return
     }
-    const pivot = this.addVertex(base.x, base.y)
+    const pivot = this.addVertex(base.x, base.y, 0)
     const start = Math.atan2(normal.y, normal.x)
     const sweep = isStart ? Math.PI : -Math.PI
-    let previous = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth)
+    let previous = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth, 1)
     for (let step = 1; step <= ROUND_SEGMENTS; step++) {
       const angle = start + (sweep * step) / ROUND_SEGMENTS
-      const next = this.addVertex(base.x + Math.cos(angle) * halfWidth, base.y + Math.sin(angle) * halfWidth)
+      const next = this.addVertex(base.x + Math.cos(angle) * halfWidth, base.y + Math.sin(angle) * halfWidth, 1)
       this.indices.push3(pivot, previous, next)
       previous = next
     }
@@ -399,7 +425,11 @@ export class ShapeBuilder {
     if (turn > Math.PI) turn -= Math.PI * 2
     if (turn < -Math.PI) turn += Math.PI * 2
     const steps = round ? Math.max(1, Math.ceil((Math.abs(turn) / Math.PI) * ROUND_SEGMENTS)) : 1
-    const ring = (radius: number, angle: number) => this.addVertex(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius)
+    // Across the band: the ring's signed distance right of the line, against the band's middle and half width.
+    const center = (left + right) / 2
+    const halfWidth = (right - left) / 2
+    const ring = (radius: number, angle: number) =>
+      this.addVertex(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius, (side * radius - center) / halfWidth)
     let previousInner = ring(innerRadius, from)
     let previousOuter = ring(outerRadius, from)
     for (let step = 1; step <= steps; step++) {
