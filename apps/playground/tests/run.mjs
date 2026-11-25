@@ -1,39 +1,28 @@
 // Browser checks on real WebGPU (Chromium, SwiftShader adapter). Needs `pnpm dev` running.
 // Frame times here measure a CPU rasteriser, not a GPU: correctness only.
+// By default only the checks a change can reach run: see selection.mjs for the options (--list, --all, names).
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { AREAS, selectAreas } from './areas.mjs'
+import { fileURLToPath } from 'node:url'
+
+import { CoverageRecorder } from './coverage.mjs'
+import { PENDING, checkRecord, emptyRecord, environmentHashes, selectChecks, writeRecord } from './selection.mjs'
+
+const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
+// Started first, so the coverage of this script's top level is complete
+const recorder = await new CoverageRecorder({ origin: new URL(BASE).origin, scripts: [fileURLToPath(import.meta.url)] }).start()
 
 // The pre-installed Playwright resolves through require (NODE_PATH), not ESM import.
 const { chromium } = createRequire(import.meta.url)('playwright')
 
-const BASE = process.env.PLAYGROUND_URL ?? 'http://localhost:5173'
 const OUT = new URL('../test-results/', import.meta.url)
-mkdirSync(OUT, { recursive: true })
-// A run that crashes leaves no results, so assert-results.mjs fails instead of reading an earlier run's.
-rmSync(new URL('results.json', OUT), { force: true })
-rmSync(new URL('selection.json', OUT), { force: true })
 
-// Areas: all by default, named ones (`labels buildings`), or those the branch's changes reach (`--changed`). See areas.mjs.
-const selected = new Set(selectAreas(process.argv.slice(2)))
-const want = area => selected.has(area)
-console.error(selected.size === AREAS.length ? 'Browser checks: every area' : `Browser checks: ${[...selected].join(', ') || 'none, no change reaches the playground'}`)
-/** Writes the results and the areas they cover: assert-results.mjs tells the checks a partial run skipped from missing ones. */
+/** Writes the results and the checks they cover: assert-results.mjs tells the checks a run skipped from missing ones. */
 function writeResults(results) {
-  writeFileSync(new URL('selection.json', OUT), JSON.stringify({ areas: [...selected], every: selected.size === AREAS.length }, null, 2))
+  writeFileSync(new URL('selection.json', OUT), JSON.stringify({ checks: [...selected.keys()], every: selected.size === CHECKS.length }, null, 2))
   writeFileSync(new URL('results.json', OUT), JSON.stringify(results, null, 2))
 }
-if (selected.size === 0) {
-  writeResults([])
-  process.exit(0)
-}
 
-// WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
-// canvas drops the GPU instance. Run under xvfb-run on machines without a display.
-const browser = await chromium.launch({
-  headless: false,
-  args: ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
-})
 const results = []
 
 async function open(path, viewport = { width: 800, height: 600 }) {
@@ -1691,7 +1680,7 @@ async function drawing(name, { touch = false, flat = false } = {}) {
  * Editing (`?example=draw`, the select mode): a tap selects a polygon (with its gizmo), a second tap shows its vertex
  * handles, a drag on a vertex handle moves it, a tap on a
  * midpoint inserts a vertex, a drag inside moves the polygon whole without panning, a drag off it still pans, and a
- * picked vertex can be deleted. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
+ * picked vertex can be deleted. A tap on the empty map leaves edit mode, a second clears the selection. Each edit fires one update; undo takes the last back. Mouse or finger, globe or flat map.
  */
 async function editing(name, { touch = false, flat = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
@@ -1775,8 +1764,62 @@ async function editing(name, { touch = false, flat = false } = {}) {
   await drag([740, 560], [640, 560])
   result.pannedOffSelection = Math.abs((await view()).longitudeDegrees - viewBeforePan.longitudeDegrees) > 1e-4
   await idle() // a tap while the map still glides only stops it
-  await tap(680, 150) // the empty map clears the selection
+  await tap(680, 150) // the empty map leaves edit mode first, keeping the selection
+  result.leftEditingOnEmptyTap = await page.evaluate(() => { const { editingVertices, selectedIds } = window.draw.getState(); return !editingVertices && selectedIds.length === 1 })
+  await page.waitForTimeout(400)
+  await tap(680, 150) // then clears the selection
   result.selectedAfterEmptyTap = await page.evaluate(() => window.draw.getState().selectedIds.length)
+  if (!touch) {
+    // The keyboard (opted in by the example): G moves the selection under the pointer, X locks it to east, Enter confirms.
+    const middle = await page.evaluate(() => {
+      const feature = window.draw.getFeatures().features[0]
+      window.draw.select([feature.id])
+      const ring = feature.geometry.coordinates[0].slice(0, -1)
+      const longitudeDegrees = ring.reduce((sum, position) => sum + position[0], 0) / ring.length
+      const latitudeDegrees = ring.reduce((sum, position) => sum + position[1], 0) / ring.length
+      const element = window.earth.pointerEventsElement
+      if (!element.hasAttribute('tabindex')) element.tabIndex = -1
+      element.focus()
+      const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0 })
+      return { x: xPixels, y: yPixels }
+    })
+    await page.mouse.move(middle.x - 40, middle.y)
+    const beforeKeys = await ring()
+    const updatesBeforeKeys = await page.evaluate(() => window.drawUpdates)
+    // What the keys reached, for the failure message.
+    const keyState = () => page.evaluate(() => {
+      const element = window.earth.pointerEventsElement
+      const active = document.activeElement
+      return { focused: active === element || element.contains(active), documentFocused: document.hasFocus(), transform: window.draw.inspect().modeState.keyboardTransform, pointerMoves: window.keyCheckPointerMoves, lastPointerMove: window.keyCheckLastPointerMove }
+    })
+    await page.evaluate(() => {
+      window.keyCheckPointerMoves = 0
+      window.earth.pointerEventsElement.addEventListener('pointermove', event => {
+        window.keyCheckPointerMoves++
+        window.keyCheckLastPointerMove = { x: event.clientX, y: event.clientY, buttons: event.buttons, pointerType: event.pointerType }
+      })
+    })
+    const keySteps = { beforeG: await keyState() }
+    await page.keyboard.press('g')
+    keySteps.afterG = await keyState()
+    await page.mouse.move(middle.x + 20, middle.y + 30, { steps: 6 })
+    keySteps.afterMove = await keyState()
+    await page.keyboard.press('x')
+    await page.waitForTimeout(200)
+    keySteps.afterX = await keyState()
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(300)
+    keySteps.afterEnter = await keyState()
+    keySteps.middle = middle
+    const afterKeys = await ring()
+    const shift = afterKeys.map((position, index) => [position[0] - beforeKeys[index][0], position[1] - beforeKeys[index][1]])
+    result.keyboardMove = {
+      updates: (await page.evaluate(() => window.drawUpdates)) - updatesBeforeKeys,
+      eastDegrees: Math.min(...shift.map(([east]) => east)),
+      northDegrees: Math.max(...shift.map(([, north]) => Math.abs(north))),
+      steps: keySteps,
+    }
+  }
   await page.close()
   results.push(result)
 }
@@ -1898,11 +1941,11 @@ async function shapes(name, { touch = false, flat = false } = {}) {
 }
 
 /**
- * The gizmo (`?example=shapes`, the select mode): a tap on the box mesh where it stands in 3D selects it; a corner
- * scales it, the knob beyond its top turns it, and the knob on top raises its top face (on the globe, where the vertical
- * shows). The middle of an edge stretches it with the opposite edge fixed, and the knob under its base lifts it into the
- * air. Each change fires one update; the box is measured from its vertices (width and length from its top face's
- * corners, height from its altitudes). A flat polygon becomes a prism by its middle knob. The previews go once released.
+ * The gizmo (`?example=shapes`, the select mode): a tap on the box mesh where it stands in 3D selects it. Closer, the
+ * gizmo sits at its middle: the east arrow moves it east only, the up arrow raises it, the cube on the east axis
+ * widens it east-west only, the arc around up turns its heading and (on the globe, seen obliquely so the arc shows)
+ * the arc around east tilts it, its top face no longer level. Seen from above on the flat map the up arrow is a knob up
+ * the screen. Each drag fires one update; the box is measured from its vertices. The previews go once released.
  */
 async function transforming(name, { touch = false, flat = false } = {}) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
@@ -1926,61 +1969,48 @@ async function transforming(name, { touch = false, flat = false } = {}) {
     await (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
     await page.waitForTimeout(300)
   }
-  const drag = async (from, to) => {
-    const steps = 10
+  /** A press at `from`, moves through `path` (screen points) and a release at the last. */
+  const drag = async (from, path) => {
     if (touch) {
       await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y, id: 1 }] })
-      for (let step = 1; step <= steps; step++) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps, id: 1 }] })
+      for (const point of path) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x, y: point.y, id: 1 }] })
       await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     } else {
       await page.mouse.move(from.x, from.y)
       await page.mouse.down()
-      await page.mouse.move(to.x, to.y, { steps })
+      for (const point of path) await page.mouse.move(point.x, point.y)
       await page.mouse.up()
     }
     await page.waitForTimeout(500)
   }
-  // Screen positions of the box's gizmo (drawn at its base, its lowest altitude), and the box measured from its vertices.
-  const gizmo = () => page.evaluate(() => {
+  /** A straight drag in ten steps. */
+  const line = (from, to) => Array.from({ length: 10 }, (_, index) => ({ x: from.x + ((to.x - from.x) * (index + 1)) / 10, y: from.y + ((to.y - from.y) * (index + 1)) / 10 }))
+  // The box measured from its vertices (metres east and north of where it started), and where its gizmo's handles are.
+  const measure = () => page.evaluate(() => {
     const box = window.draw.getFeature('box')
-    const frame = window.drawTransformFrame(box)
-    const at = ([longitudeDegrees, latitudeDegrees], heightMeters) => {
-      const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters })
-      return { x: xPixels, y: yPixels }
-    }
+    const positions = box.geometry.coordinates.flat(2)
+    const altitudes = positions.map(position => position[2])
+    const start = window.boxStart ?? positions.reduce((sum, position) => [sum[0] + position[0] / positions.length, sum[1] + position[1] / positions.length], [0, 0])
+    window.boxStart = start
     const radians = Math.PI / 180
-    const distance = (a, b) => {
-      const s = Math.sin(((b[1] - a[1]) * radians) / 2) ** 2 + Math.cos(a[1] * radians) * Math.cos(b[1] * radians) * Math.sin(((b[0] - a[0]) * radians) / 2) ** 2
-      return 2 * 6_371_008.8 * Math.asin(Math.sqrt(s))
-    }
-    const bearing = (a, b) => {
-      const y = Math.sin((b[0] - a[0]) * radians) * Math.cos(b[1] * radians)
-      const x = Math.cos(a[1] * radians) * Math.sin(b[1] * radians) - Math.sin(a[1] * radians) * Math.cos(b[1] * radians) * Math.cos((b[0] - a[0]) * radians)
-      return ((Math.atan2(y, x) / radians) % 360 + 360) % 360
-    }
-    // The top face comes first: its corners give the width (first edge), length and turn (second edge).
-    const corners = box.geometry.coordinates[0][0]
-    const altitudes = box.geometry.coordinates.flat(2).map(position => position[2])
-    const top = Math.max(...altitudes)
-    const highestBase = Math.max(...altitudes.filter(altitude => altitude < top - 1e-6))
-    const base = frame.baseHeightMeters
-    const [longitudeDegrees, latitudeDegrees] = frame.center
-    const center = at(frame.center, base)
+    const east = longitude => (longitude - start[0]) * radians * 6_371_008.8 * Math.cos(start[1] * radians)
+    const north = latitude => (latitude - start[1]) * radians * 6_371_008.8
+    const xs = positions.map(position => east(position[0]))
+    const ys = positions.map(position => north(position[1]))
+    const top = box.geometry.coordinates[0][0]
+    const topAltitudes = top.map(position => position[2])
+    const handles = {}
+    for (const { handle, x, y } of window.draw.getMode().gizmoHandles()) handles[handle] ??= { x, y }
     return {
-      id: box.id,
-      shape: { faces: box.geometry.coordinates.length, widthMeters: distance(corners[0], corners[1]), lengthMeters: distance(corners[1], corners[2]), rotationDegrees: bearing(corners[1], corners[2]) },
-      heightMeters: top - highestBase,
-      altitude: base,
-      groundMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0,
-      center,
-      top: at(frame.center, frame.topHeightMeters),
-      corner: at(frame.corners[2], base),
-      knob: at(frame.rotationHandle, base),
-      right: at(frame.sideHandles[1].position, base),
-      left: at(frame.sideHandles[3].position, base),
-      leftPosition: frame.sideHandles[3].position,
-      centerPosition: frame.center,
-      lift: { x: center.x, y: center.y + 24 },
+      faces: box.geometry.coordinates.length,
+      center: { east: xs.reduce((a, b) => a + b) / xs.length, north: ys.reduce((a, b) => a + b) / ys.length },
+      extent: { east: Math.max(...xs) - Math.min(...xs), north: Math.max(...ys) - Math.min(...ys) },
+      base: Math.min(...altitudes),
+      height: Math.max(...altitudes) - Math.min(...altitudes),
+      // The heading of the top face's second edge, and how far from level the top face is.
+      headingDegrees: (Math.atan2(east(top[2][0]) - east(top[1][0]), north(top[2][1]) - north(top[1][1])) / radians + 360) % 360,
+      topTiltMeters: Math.max(...topAltitudes) - Math.min(...topAltitudes),
+      handles,
     }
   })
   const result = { check: `transforming, ${name}`, errors }
@@ -1989,74 +2019,176 @@ async function transforming(name, { touch = false, flat = false } = {}) {
     window.draw.addEventListener('update', () => window.drawUpdates++)
     window.draw.setMode('select')
   })
-  let box = await gizmo()
-  result.before = box.shape
   // Where the box is drawn: its top, 900 m over its base (on the flat map, seen from above, the same place).
-  await tap(box.top)
-  result.selected = await page.evaluate(id => window.draw.getState().selectedIds.includes(id), box.id)
-  result.gizmoShown = await page.evaluate(() => !window.draw.getState().editingVertices)
-  await page.waitForTimeout(300)
-  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}-gizmo.png`, OUT), await page.screenshot())
-  box = await gizmo()
-  await drag(box.corner, { x: box.center.x + (box.corner.x - box.center.x) * 1.5, y: box.center.y + (box.corner.y - box.center.y) * 1.5 })
-  box = await gizmo()
-  result.afterScale = box.shape
-  const radius = Math.hypot(box.knob.x - box.center.x, box.knob.y - box.center.y)
-  const angle = Math.atan2(box.knob.y - box.center.y, box.knob.x - box.center.x) + Math.PI / 4
-  await drag(box.knob, { x: box.center.x + radius * Math.cos(angle), y: box.center.y + radius * Math.sin(angle) })
-  box = await gizmo()
-  result.afterRotate = box.shape
-  // A flat polygon becomes a prism mesh by dragging the knob in its middle up (on the flat map, up the screen).
-  const flatCenter = await page.evaluate(() => {
-    const corners = [[560, 470], [680, 470], [680, 540], [560, 540]].map(([xPixels, yPixels]) => {
-      const { longitudeDegrees, latitudeDegrees } = window.earth.unproject({ xPixels, yPixels })
-      return [longitudeDegrees, latitudeDegrees]
-    })
-    window.draw.addFeatures([{ type: 'Feature', id: 'flat', properties: {}, geometry: { type: 'Polygon', coordinates: [[...corners, corners[0]]] } }])
-    const frame = window.drawTransformFrame(window.draw.getFeature('flat'))
-    const [longitudeDegrees, latitudeDegrees] = frame.center
-    const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters: window.earth.queryTerrainElevation({ longitudeDegrees, latitudeDegrees }) ?? 0 })
-    return { x: xPixels, y: yPixels }
+  const top = await page.evaluate(() => {
+    const positions = window.draw.getFeature('box').geometry.coordinates.flat(2)
+    const longitudeDegrees = positions.reduce((sum, position) => sum + position[0], 0) / positions.length
+    const latitudeDegrees = positions.reduce((sum, position) => sum + position[1], 0) / positions.length
+    const { xPixels, yPixels } = window.earth.project({ longitudeDegrees, latitudeDegrees, heightMeters: Math.max(...positions.map(position => position[2])) })
+    return { x: xPixels, y: yPixels, longitudeDegrees, latitudeDegrees }
   })
-  await page.waitForTimeout(500)
-  await tap({ x: flatCenter.x + 30, y: flatCenter.y + 15 })
-  result.flatSelected = await page.evaluate(() => window.draw.getState().selectedIds.includes('flat'))
-  await drag(flatCenter, { x: flatCenter.x, y: flatCenter.y - 40 })
-  result.flatExtrusion = await page.evaluate(() => {
-    const flat = window.draw.getFeature('flat')
-    if (flat.geometry.type !== 'MultiPolygon') return { type: flat.geometry.type, faces: 0, heightMeters: 0 }
-    const altitudes = flat.geometry.coordinates.flat(2).map(position => position[2])
-    const top = Math.max(...altitudes)
-    return { type: flat.geometry.type, faces: flat.geometry.coordinates.length, heightMeters: top - Math.max(...altitudes.filter(altitude => altitude < top - 1e-6)) }
-  })
-  // Back to the box, closer: seen pitched from 30 km it is only a few knobs deep on the screen, so its edge handles and
-  // top knob hide (a press inside moves it). The top knob raises it (on the globe, where the vertical shows), the middle
-  // of its right edge stretches it, and the knob under its base lifts it.
-  await page.evaluate(id => window.draw.select([id]), box.id)
-  await page.evaluate(([longitudeDegrees, latitudeDegrees]) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 12_000, headingDegrees: 0, pitchDegrees: -60 }), box.centerPosition)
+  await tap(top)
+  result.selected = await page.evaluate(() => window.draw.getState().selectedIds.includes('box'))
+  result.gizmoShown = await page.evaluate(() => !window.draw.getState().editingVertices && window.draw.getMode().gizmoHandles().length > 0)
+  // The panel folded to its title, so the gizmo's handles are never under it.
+  await page.getByRole('button', { name: 'Hide details' }).click()
+  // Closer, seen from the south-west so every arc shows on the globe (the flat map is seen from above).
+  await page.evaluate(({ longitudeDegrees, latitudeDegrees }) => window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 14_000, headingDegrees: 35, pitchDegrees: -40 }), top)
   await page.waitForTimeout(500)
   await idle()
   await page.waitForTimeout(1000)
-  box = await gizmo()
-  result.heightBeforeRaise = box.heightMeters
-  if (!flat) {
-    await drag(box.top, { x: box.top.x, y: box.top.y - 40 })
-    box = await gizmo()
+  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}-gizmo.png`, OUT), await page.screenshot())
+  let box = await measure()
+  result.before = box
+  result.handleNames = Object.keys(box.handles)
+  const center = () => box.handles['move-free']
+  const along = (handle, pixels) => {
+    const grab = box.handles[handle]
+    const length = Math.hypot(grab.x - center().x, grab.y - center().y)
+    return { x: grab.x + ((grab.x - center().x) / length) * pixels, y: grab.y + ((grab.y - center().y) / length) * pixels }
   }
-  result.heightMeters = box.heightMeters
-  await drag(box.right, { x: box.right.x + (box.right.x - box.left.x) * 0.5, y: box.right.y + (box.right.y - box.left.y) * 0.5 })
-  const leftBefore = box.leftPosition
-  box = await gizmo()
-  result.afterStretch = box.shape
-  const metresPerDegree = 111_320
-  result.fixedSideMovedMeters = Math.hypot((box.leftPosition[0] - leftBefore[0]) * metresPerDegree * Math.cos((leftBefore[1] * Math.PI) / 180), (box.leftPosition[1] - leftBefore[1]) * metresPerDegree)
-  await drag(box.lift, { x: box.lift.x, y: box.lift.y - 40 })
-  box = await gizmo()
-  result.heightBeforeLift = box.heightMeters
-  result.lifted = { altitude: box.altitude, groundMeters: box.groundMeters, heightMeters: box.heightMeters, faces: box.shape.faces }
+  const step = async (key, from, path) => {
+    const updatesBefore = await page.evaluate(() => window.drawUpdates)
+    await drag(from, path)
+    const previous = box
+    box = await measure()
+    result[key] = { before: previous, after: box, updates: (await page.evaluate(() => window.drawUpdates)) - updatesBefore }
+  }
+  // The east arrow, dragged further along itself.
+  await step('east', box.handles['move-x'], line(box.handles['move-x'], along('move-x', 60)))
+  // The up arrow (a knob up the screen from above), dragged further up.
+  await step('up', box.handles['move-z'], line(box.handles['move-z'], flat ? { x: box.handles['move-z'].x, y: box.handles['move-z'].y - 40 } : along('move-z', 40)))
+  // The cube on the east axis, dragged half as far again from the center.
+  const cube = box.handles['scale-x']
+  await step('scale', cube, line(cube, { x: center().x + (cube.x - center().x) * 1.5, y: center().y + (cube.y - center().y) * 1.5 }))
+  // The arc around up, dragged a quarter turn around the center.
+  const arc = box.handles['rotate-z']
+  const radius = Math.hypot(arc.x - center().x, arc.y - center().y)
+  const startAngle = Math.atan2(arc.y - center().y, arc.x - center().x)
+  await step('heading', arc, Array.from({ length: 10 }, (_, index) => ({ x: center().x + radius * Math.cos(startAngle + (index + 1) * 0.08), y: center().y + radius * Math.sin(startAngle + (index + 1) * 0.08) })))
+  // The arc around east (on the globe), dragged along itself: across the line from the center.
+  if (!flat) {
+    const tilt = box.handles['rotate-x']
+    const length = Math.hypot(tilt.x - center().x, tilt.y - center().y)
+    await step('tilt', tilt, line(tilt, { x: tilt.x - ((tilt.y - center().y) / length) * 40, y: tilt.y + ((tilt.x - center().x) / length) * 40 }))
+  }
   result.updates = await page.evaluate(() => window.drawUpdates)
-  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
   await page.waitForTimeout(500)
+  writeFileSync(new URL(`transforming-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
+  result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))
+  await page.close()
+  results.push(result)
+}
+
+/**
+ * Edit mode on a solid (`?example=shapes`, the select mode): a double click (or double tap) on the box's top, where it
+ * stands in 3D, selects it and enters edit mode with that face picked. Dragging the face's arrow pulls the top up: the
+ * box grows along the top's normal, its footprint and base kept, in one update. Extruding the top adds four walls and a
+ * new top above it, in one update. The box is measured from its vertices.
+ */
+async function meshEditing(name, { touch = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=shapes`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  await page.waitForTimeout(1500)
+  const client = touch ? await page.context().newCDPSession(page) : null
+  const drag = async (from, to) => {
+    const path = Array.from({ length: 10 }, (_, index) => ({ x: from.x + ((to.x - from.x) * (index + 1)) / 10, y: from.y + ((to.y - from.y) * (index + 1)) / 10 }))
+    if (touch) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y, id: 1 }] })
+      for (const point of path) await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x, y: point.y, id: 1 }] })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    } else {
+      await page.mouse.move(from.x, from.y)
+      await page.mouse.down()
+      for (const point of path) await page.mouse.move(point.x, point.y)
+      await page.mouse.up()
+    }
+    await page.waitForTimeout(500)
+  }
+  // The box measured from its vertices, in metres from where it started, and the state of edit mode.
+  const measure = () => page.evaluate(() => {
+    const box = window.draw.getFeature('box')
+    const positions = box.geometry.coordinates.flat(2)
+    const altitudes = positions.map(position => position[2])
+    const start = window.boxStart ?? positions.reduce((sum, position) => [sum[0] + position[0] / positions.length, sum[1] + position[1] / positions.length], [0, 0])
+    window.boxStart = start
+    const radians = Math.PI / 180
+    const xs = positions.map(position => (position[0] - start[0]) * radians * 6_371_008.8 * Math.cos(start[1] * radians))
+    const ys = positions.map(position => (position[1] - start[1]) * radians * 6_371_008.8)
+    const { editingVertices, elementMode, canExtrude } = window.draw.getState()
+    return {
+      faces: box.geometry.coordinates.length,
+      extent: { east: Math.max(...xs) - Math.min(...xs), north: Math.max(...ys) - Math.min(...ys) },
+      base: Math.min(...altitudes),
+      height: Math.max(...altitudes) - Math.min(...altitudes),
+      editing: editingVertices,
+      elementMode,
+      canExtrude,
+      picked: window.draw.inspect().modeState.picked,
+      handle: window.draw.getMode().pushPullHandle?.() ?? null,
+      updates: window.drawUpdates,
+    }
+  })
+  const result = { check: `mesh editing, ${name}`, errors }
+  await page.evaluate(() => {
+    window.drawUpdates = 0
+    window.draw.addEventListener('update', () => window.drawUpdates++)
+    window.draw.setMode('select')
+  })
+  await page.getByRole('button', { name: 'Hide details' }).click()
+  // Closer, seen from the south-west, then the middle of the box's top (its first face) where it is drawn.
+  await page.evaluate(() => {
+    const positions = window.draw.getFeature('box').geometry.coordinates.flat(2)
+    const longitudeDegrees = positions.reduce((sum, position) => sum + position[0], 0) / positions.length
+    const latitudeDegrees = positions.reduce((sum, position) => sum + position[1], 0) / positions.length
+    window.earth.camera.jumpTo({ longitudeDegrees, latitudeDegrees, distanceMeters: 14_000, headingDegrees: 35, pitchDegrees: -40 })
+  })
+  await page.waitForTimeout(500)
+  await idle()
+  await page.waitForTimeout(1000)
+  const top = await page.evaluate(() => {
+    const ring = window.draw.getFeature('box').geometry.coordinates[0][0].slice(0, -1)
+    const mean = index => ring.reduce((sum, position) => sum + position[index], 0) / ring.length
+    const { xPixels, yPixels } = window.earth.project({ longitudeDegrees: mean(0), latitudeDegrees: mean(1), heightMeters: mean(2) })
+    return { x: xPixels, y: yPixels }
+  })
+  if (touch) {
+    // Two taps 100 ms apart by their timestamps: on SwiftShader each `touchscreen.tap` waits for a slow frame, too long for a double tap.
+    const now = Date.now() / 1000
+    for (const offset of [0, 0.1]) {
+      await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: top.x, y: top.y, id: 1 }], timestamp: now + offset })
+      await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [], timestamp: now + offset + 0.03 })
+    }
+  } else await page.mouse.dblclick(top.x, top.y)
+  await page.waitForTimeout(500)
+  const before = await measure()
+  result.entered = before
+  writeFileSync(new URL(`mesh-editing-${name.replaceAll(' ', '-')}-face.png`, OUT), await page.screenshot())
+  // The top's arrow, dragged 40 px further up the screen.
+  if (before.handle !== null) await drag(before.handle, { x: before.handle.x, y: before.handle.y - 40 })
+  const pulled = await measure()
+  result.pull = { before, after: pulled, updates: pulled.updates - before.updates }
+  if (touch) {
+    await page.waitForTimeout(500)
+    await page.evaluate(() => window.draw.extrude())
+  } else {
+    // The toolbar's Extrude button, built on `state.canExtrude` and `draw.extrude()`.
+    await page.getByRole('button', { name: 'Show details' }).click()
+    await page.getByRole('button', { name: 'Extrude' }).click()
+    await page.getByRole('button', { name: 'Hide details' }).click()
+  }
+  await page.waitForTimeout(500)
+  const extruded = await measure()
+  result.extrude = { before: pulled, after: extruded, updates: extruded.updates - pulled.updates }
+  writeFileSync(new URL(`mesh-editing-${name.replaceAll(' ', '-')}.png`, OUT), await page.screenshot())
   result.solids = await page.evaluate(() => ({ stored: window.draw.inspect().solids, inScene: window.earth.getObjectByName('DrawSolids').children.length }))
   await page.close()
   results.push(result)
@@ -2510,233 +2642,239 @@ async function gestures() {
   results.push({ ...result, errors: [...desktop.errors, ...wheel.errors] })
 }
 
-const only = process.argv[2]
-try {
-  if (want('precision')) {
-    await precision(true)
-    await precision(false)
-  }
-  if (want('map')) {
-    await map(false)
-    await map(true)
-  }
-  if (want('2d')) {
-    await map(false, '2d')
-    await map(true, '2d')
-  }
-  if (want('vector')) {
-    await vectorMap('overview', '')
-    await vectorMap('close', '&camera=,,,9000,,-50')
-    await vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')
-  }
-  if (want('patterns')) {
-    await vectorPatterns('webgpu', '')
-    await vectorPatterns('webgl2', '&webgl')
-  }
-  if (want('attribution')) await attribution()
-  if (want('controls')) await controls()
-  if (want('accessibility')) await accessibility()
-  if (want('gestures')) await gestures()
-  if (want('invalidate')) await vectorInvalidate()
-  if (want('style')) await vectorStyleRuntime()
-  if (want('geojson')) {
-    await geoJsonSources('webgpu', '')
-    await geoJsonSources('webgl2', '&webgl')
-    await geoJsonSources('strict mode', '&strict')
-  }
-  if (want('heatmap')) {
-    const view = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
-    await heatmaps('2d', view)
-    await heatmaps('2d webgl2', `${view}&webgl`)
-    await heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')
-  }
-  if (want('query')) await featureQueries()
-  if (want('afterburner')) await afterburnerChecks()
-  if (want('camera')) await cameraAndEvents()
-  if (want('markers')) await markers()
-  if (want('animations')) await cameraAnimations()
-  if (want('sdf')) {
-    await sdfShapes('near, atmosphere off', '&atmosphere=0')
-    await sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })
-    await sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })
-    await sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })
-    await sdfShapes('webgl2', '&atmosphere=0&webgl')
-    await sdfShapes('strict mode', '&atmosphere=0&strict')
-  }
-  if (want('layers')) {
-    await styleLayerTypes('webgpu', '')
-    await styleLayerTypes('webgl2', '&webgl')
-    await styleLayerTypes('registered late', '', { late: true })
-  }
-  if (want('relief')) {
-    const fuji = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
-    await reliefMap('2d', `&map=relief${fuji}`)
-    await reliefMap('2d webgl2', `&map=relief${fuji}&webgl`)
-    await reliefMap('3d', '&map=relief&camera=138.75,35.42,0,15000,-20,-60')
-    await reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)
-    await reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)
-    await reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)
-  }
-  if (want('georef')) {
-    await georeferenced('image', '')
-    await georeferenced('image', '&webgl', 'image webgl2')
-    await georeferenced('video', '')
-  }
-  if (want('effects')) {
-    await renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')
-    await renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')
-    await renderPassesAndDrapedLayers('atmosphere on', '')
-  }
-  if (want('labels')) {
-    await screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')
-    await screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('2d', '&atmosphere=0&view=2d&camera=138.74,35.36,0,40000,0,-90')
-    await screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')
-    await screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')
-  }
-  if (want('symbol-effects')) {
-    await symbolEffects('webgpu', '')
-    await symbolEffects('webgl2', '&webgl')
-  }
-  if (want('scripts')) {
-    await scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')
-    await scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')
-  }
-  if (want('buildings')) {
-    // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
-    const pitched = '&camera=-90,0,3900,700,20,-25'
-    await buildings('pitched', `&atmosphere=0${pitched}`)
-    await buildings('top-down', '&atmosphere=0&camera=-90,0,3900,1200,0,-90')
-    // Midday at -90° (19:00 UTC): lit by the sun, hazed.
-    await buildings('atmosphere on', `&date=2026-11-22T19:00:00Z${pitched}`)
-    await buildings('2d', '&atmosphere=0&view=2d&camera=-90,0,3900,1200,20,-90')
-    await buildings('webgl2', `&atmosphere=0&webgl${pitched}`)
-    await buildings('strict mode', `&atmosphere=0&strict${pitched}`)
-    await buildings('draped', `&atmosphere=0&extrusions=draped${pitched}`)
-  }
-  if (want('roads')) {
-    // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
-    await screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')
-    await screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')
-  }
-  if (want('dem')) {
-    await rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })
-    await rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })
-    await rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')
-    await rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')
-    await rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')
-    await rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')
-  }
-  if (want('style-root')) await styleRoot()
-  if (want('exaggeration')) {
-    await terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')
-    await terrainExaggeration('quantized-mesh', '&exaggeration=2')
-    await terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')
-  }
-  if (want('draw')) {
-    await drawing('globe, mouse')
-    await drawing('globe, touch', { touch: true })
-    await drawing('flat map, touch', { touch: true, flat: true })
-    await editing('globe, mouse')
-    await editing('globe, touch', { touch: true })
-    await editing('flat map, touch', { touch: true, flat: true })
-    await shapes('globe, mouse')
-    await transforming('globe, mouse')
-    await transforming('flat map, touch', { touch: true, flat: true })
-    await shapes('flat map, touch', { touch: true, flat: true })
-    await solidsOverSky()
-  }
-  if (want('examples')) {
-    await galleryExample('city')
-    await galleryExample('labels', '', async (page, idle) => {
-      await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
-      await page.waitForTimeout(500)
+// Every check, in suite order: `area/variant` (or the area alone), and what it runs. Ids name checks on the command
+// line (`run.mjs labels/webgl2`) and in the coverage records; renaming one makes it run once more.
+const HEATMAP_2D_VIEW = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
+const RELIEF_FUJI = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
+// Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
+const BUILDINGS_PITCHED = '&camera=-90,0,3900,700,20,-25'
+const CHECKS = [
+  ['precision/on', () => precision(true)],
+  ['precision/off', () => precision(false)],
+  ['map/atmosphere-off', () => map(false)],
+  ['map/atmosphere-on', () => map(true)],
+  ['2d/atmosphere-off', () => map(false, '2d')],
+  ['2d/atmosphere-on', () => map(true, '2d')],
+  ['vector/overview', () => vectorMap('overview', '')],
+  ['vector/close', () => vectorMap('close', '&camera=,,,9000,,-50')],
+  ['vector/webgl2', () => vectorMap('webgl2', '&camera=,,,9000,,-50&webgl')],
+  ['patterns/webgpu', () => vectorPatterns('webgpu', '')],
+  ['patterns/webgl2', () => vectorPatterns('webgl2', '&webgl')],
+  ['attribution', () => attribution()],
+  ['controls', () => controls()],
+  ['accessibility', () => accessibility()],
+  ['gestures', () => gestures()],
+  ['invalidate', () => vectorInvalidate()],
+  ['style', () => vectorStyleRuntime()],
+  ['geojson/webgpu', () => geoJsonSources('webgpu', '')],
+  ['geojson/webgl2', () => geoJsonSources('webgl2', '&webgl')],
+  ['geojson/strict-mode', () => geoJsonSources('strict mode', '&strict')],
+  ['heatmap/2d', () => heatmaps('2d', HEATMAP_2D_VIEW)],
+  ['heatmap/2d-webgl2', () => heatmaps('2d webgl2', `${HEATMAP_2D_VIEW}&webgl`)],
+  ['heatmap/3d', () => heatmaps('3d', '&camera=139.15,35.3,0,30000,20,-35')],
+  ['query', () => featureQueries()],
+  ['afterburner', () => afterburnerChecks()],
+  ['camera', () => cameraAndEvents()],
+  ['markers', () => markers()],
+  ['animations', () => cameraAnimations()],
+  ['sdf/near-atmosphere-off', () => sdfShapes('near, atmosphere off', '&atmosphere=0')],
+  ['sdf/near-atmosphere-on', () => sdfShapes('near, atmosphere on', '', { distanceMeters: 3000, pitchDegrees: -10 })],
+  ['sdf/far-atmosphere-on', () => sdfShapes('far, atmosphere on', '', { distanceMeters: 40000, pitchDegrees: -10 })],
+  ['sdf/2d', () => sdfShapes('2d', '&atmosphere=0', { pitchDegrees: -60, view: '2d' })],
+  ['sdf/webgl2', () => sdfShapes('webgl2', '&atmosphere=0&webgl')],
+  ['sdf/strict-mode', () => sdfShapes('strict mode', '&atmosphere=0&strict')],
+  ['layers/webgpu', () => styleLayerTypes('webgpu', '')],
+  ['layers/webgl2', () => styleLayerTypes('webgl2', '&webgl')],
+  ['layers/registered-late', () => styleLayerTypes('registered late', '', { late: true })],
+  ['relief/2d', () => reliefMap('2d', `&map=relief${RELIEF_FUJI}`)],
+  ['relief/2d-webgl2', () => reliefMap('2d webgl2', `&map=relief${RELIEF_FUJI}&webgl`)],
+  ['relief/3d', () => reliefMap('3d', '&map=relief&camera=138.75,35.42,0,15000,-20,-60')],
+  ['relief/hillshade-seams', () => reliefMap('hillshade seams', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89', SEAMS)],
+  ['relief/hillshade-seams-webgl2', () => reliefMap('hillshade seams webgl2', '&map=hillshade&view=2d&camera=-89.8,0.03,0,30000,0,-89&webgl', SEAMS)],
+  ['relief/hillshade-globe', () => reliefMap('hillshade globe', '&map=hillshade&camera=-90,0,3000,150000,0,-89', SEAMS)],
+  ['georef/image', () => georeferenced('image', '')],
+  ['georef/image-webgl2', () => georeferenced('image', '&webgl', 'image webgl2')],
+  ['georef/video', () => georeferenced('video', '')],
+  ['effects/webgpu', () => renderPassesAndDrapedLayers('webgpu', '&atmosphere=0')],
+  ['effects/webgl2', () => renderPassesAndDrapedLayers('webgl2', '&atmosphere=0&webgl')],
+  ['effects/atmosphere-on', () => renderPassesAndDrapedLayers('atmosphere on', '')],
+  ['labels/top-down', () => screenSymbols('top-down', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-90')],
+  ['labels/pitched', () => screenSymbols('pitched', '&atmosphere=0&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/atmosphere-on', () => screenSymbols('atmosphere on', '&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/2d', () => screenSymbols('2d', '&atmosphere=0&view=2d&camera=138.74,35.36,0,40000,0,-90')],
+  ['labels/webgl2', () => screenSymbols('webgl2', '&atmosphere=0&webgl&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/strict-mode', () => screenSymbols('strict mode', '&atmosphere=0&strict&camera=138.74,35.36,0,40000,0,-30')],
+  ['labels/draped', () => screenSymbols('draped', '&atmosphere=0&symbols=draped&camera=138.74,35.36,0,40000,0,-30')],
+  ['symbol-effects/webgpu', () => symbolEffects('webgpu', '')],
+  ['symbol-effects/webgl2', () => symbolEffects('webgl2', '&webgl')],
+  ['scripts/top-down', () => scriptLabels('top-down', '&atmosphere=0&camera=138.66,35.37,0,40000,0,-90')],
+  ['scripts/webgl2', () => scriptLabels('webgl2', '&atmosphere=0&webgl&camera=138.66,35.37,0,40000,0,-90')],
+  ['buildings/pitched', () => buildings('pitched', `&atmosphere=0${BUILDINGS_PITCHED}`)],
+  ['buildings/top-down', () => buildings('top-down', '&atmosphere=0&camera=-90,0,3900,1200,0,-90')],
+  // Midday at -90° (19:00 UTC): lit by the sun, hazed.
+  ['buildings/atmosphere-on', () => buildings('atmosphere on', `&date=2026-11-22T19:00:00Z${BUILDINGS_PITCHED}`)],
+  ['buildings/2d', () => buildings('2d', '&atmosphere=0&view=2d&camera=-90,0,3900,1200,20,-90')],
+  ['buildings/webgl2', () => buildings('webgl2', `&atmosphere=0&webgl${BUILDINGS_PITCHED}`)],
+  ['buildings/strict-mode', () => buildings('strict mode', `&atmosphere=0&strict${BUILDINGS_PITCHED}`)],
+  ['buildings/draped', () => buildings('draped', `&atmosphere=0&extrusions=draped${BUILDINGS_PITCHED}`)],
+  // Without the town grid and from zoom 11 (the road-label minzoom), road names win room: along their roads, glyph by glyph.
+  ['roads/pitched', () => screenSymbols('road names, pitched', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-30', 'vector')],
+  ['roads/top-down', () => screenSymbols('road names, top-down', '&atmosphere=0&camera=138.74,35.36,0,12000,0,-90', 'vector')],
+  ['dem/heights', () => rasterDemTerrain('heights', '&camera=-90,0,0,400000,0,-90', { heights: true })],
+  ['dem/heights-quantized-mesh', () => rasterDemTerrain('heights, quantized-mesh for comparison', '&terrain=quantized-mesh&camera=-90,0,0,400000,0,-90', { heights: true })],
+  ['dem/pitched', () => rasterDemTerrain('pitched', '&camera=-90,0,0,80000,30,-25')],
+  ['dem/pitched-webgl2', () => rasterDemTerrain('pitched webgl2', '&camera=-90,0,0,80000,30,-25&webgl')],
+  ['dem/north-pole', () => rasterDemTerrain('north pole', '&camera=0,90,0,6000000,0,-90')],
+  ['dem/2d', () => rasterDemTerrain('2d', '&camera=-90,0,0,80000,30,-40&view=2d')],
+  ['style-root', () => styleRoot()],
+  ['exaggeration/raster-dem', () => terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')],
+  ['exaggeration/quantized-mesh', () => terrainExaggeration('quantized-mesh', '&exaggeration=2')],
+  ['exaggeration/2d', () => terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')],
+  ['draw/drawing-globe-mouse', () => drawing('globe, mouse')],
+  ['draw/drawing-globe-touch', () => drawing('globe, touch', { touch: true })],
+  ['draw/drawing-flat-touch', () => drawing('flat map, touch', { touch: true, flat: true })],
+  ['draw/editing-globe-mouse', () => editing('globe, mouse')],
+  ['draw/editing-globe-touch', () => editing('globe, touch', { touch: true })],
+  ['draw/editing-flat-touch', () => editing('flat map, touch', { touch: true, flat: true })],
+  ['draw/shapes-globe-mouse', () => shapes('globe, mouse')],
+  ['draw/transforming-globe-mouse', () => transforming('globe, mouse')],
+  ['draw/transforming-flat-touch', () => transforming('flat map, touch', { touch: true, flat: true })],
+  ['draw/shapes-flat-touch', () => shapes('flat map, touch', { touch: true, flat: true })],
+  ['draw/solids-over-sky', () => solidsOverSky()],
+  ['draw/mesh-editing-globe-mouse', () => meshEditing('globe, mouse')],
+  ['draw/mesh-editing-globe-touch', () => meshEditing('globe, touch', { touch: true })],
+  ['examples/city', () => galleryExample('city')],
+  ['examples/labels', () => galleryExample('labels', '', async (page, idle) => {
+    await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    await page.waitForTimeout(1500)
+    // A vertical label is taller than wide.
+    const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
+    return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
+  })],
+  ['examples/geojson', () => galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
+    // Manaslu stands alone at this zoom: a click on it opens its popup.
+    const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
+    await page.mouse.click(point.xPixels, point.yPixels)
+    await page.waitForTimeout(1000)
+    return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
+  })],
+  ['examples/heatmap', () => galleryExample('heatmap')],
+  ['examples/terrain', () => galleryExample('terrain', '', async (page, idle) => {
+    await page.locator('input[type=range]').fill('3')
+    await page.getByRole('button', { name: 'Map and hillshade' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+  })],
+  ['examples/overlay', () => galleryExample('overlay', '', async (page, idle) => {
+    const radarShare = async () => {
       await idle()
-      await page.waitForTimeout(1500)
-      // A vertical label is taller than wide.
-      const tokyo = await page.evaluate(() => window.earth.terrain.getScreenLabels().find(label => label.text === '東京都庁'))
-      return { verticalLabel: tokyo === undefined ? null : { width: tokyo.box[2] - tokyo.box[0], height: tokyo.box[3] - tokyo.box[1] } }
-    })
-    await galleryExample('geojson', '&camera=86,28.3,0,400000,0,-90', async page => {
-      // Manaslu stands alone at this zoom: a click on it opens its popup.
-      const point = await page.evaluate(() => window.earth.project({ longitudeDegrees: 84.5597, latitudeDegrees: 28.5494 }))
-      await page.mouse.click(point.xPixels, point.yPixels)
       await page.waitForTimeout(1000)
-      return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
-    })
-    await galleryExample('heatmap')
-    await galleryExample('terrain', '', async (page, idle) => {
-      await page.locator('input[type=range]').fill('3')
-      await page.getByRole('button', { name: 'Map and hillshade' }).click()
-      await page.waitForTimeout(500)
-      await idle()
-      return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
-    })
-    await galleryExample('overlay', '', async (page, idle) => {
-      const radarShare = async () => {
-        await idle()
-        await page.waitForTimeout(1000)
-        return analyse(page, await page.screenshot(), `
-          // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
-          // of the rain moves between frames.
-          let radar = 0, sumX = 0
-          for (let y = Math.floor(height / 3); y < height - 40; y++) {
-            for (let x = 0; x < width; x++) {
-              const i = (y * width + x) * 4
-              if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
-            }
+      return analyse(page, await page.screenshot(), `
+        // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
+        // of the rain moves between frames.
+        let radar = 0, sumX = 0
+        for (let y = Math.floor(height / 3); y < height - 40; y++) {
+          for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4
+            if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
           }
-          return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
-        `)
-      }
-      const shown = await radarShare()
-      await page.getByRole('button', { name: 'Play' }).click()
-      await page.waitForTimeout(2000)
-      await page.getByRole('button', { name: 'Pause' }).click()
-      const played = await radarShare()
-      await page.locator('input[type=range]').fill('0')
-      const hidden = await radarShare()
-      return { radar: { shown, played, hidden } }
-    })
-    await galleryExample('night', '', async (page, idle) => {
-      // Glow pixels by hue, before and after the glow colour changes.
-      const glow = async () => analyse(page, await page.screenshot(), `
-        let amber = 0, cyan = 0, magenta = 0
-        for (let i = 0; i < px.length; i += 4) {
-          const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
-          if (r > 80 && r > g * 1.5 && r > b * 2) amber++
-          if (b > 80 && g > 60 && b > r * 2) cyan++
-          // The neon outline (#ff2bd6) around the place names.
-          if (r > 170 && b > 150 && g < 110) magenta++
         }
-        return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+        return { share: radar / (width * height), centreX: radar === 0 ? null : sumX / radar }
       `)
-      const before = await glow()
-      await page.getByRole('button', { name: 'Cyan glow' }).click()
-      // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
-      let after = null
-      for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
-        await page.waitForTimeout(1000)
-        await idle()
-        after = await glow()
+    }
+    const shown = await radarShare()
+    await page.getByRole('button', { name: 'Play' }).click()
+    await page.waitForTimeout(2000)
+    await page.getByRole('button', { name: 'Pause' }).click()
+    const played = await radarShare()
+    await page.locator('input[type=range]').fill('0')
+    const hidden = await radarShare()
+    return { radar: { shown, played, hidden } }
+  })],
+  ['examples/night', () => galleryExample('night', '', async (page, idle) => {
+    // Glow pixels by hue, before and after the glow colour changes.
+    const glow = async () => analyse(page, await page.screenshot(), `
+      let amber = 0, cyan = 0, magenta = 0
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+        if (r > 80 && r > g * 1.5 && r > b * 2) amber++
+        if (b > 80 && g > 60 && b > r * 2) cyan++
+        // The neon outline (#ff2bd6) around the place names.
+        if (r > 170 && b > 150 && g < 110) magenta++
       }
-      return { glow: { before, after } }
-    })
-    await galleryExample('embedded', '', async page => {
-      // A plain wheel over the map scrolls the page and leaves the camera where it was.
-      const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
-      const box = await page.locator('.example-embedded canvas').boundingBox()
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-      await page.mouse.wheel(0, 400)
-      await page.waitForTimeout(1500)
-      const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
-      return { wheel: { before, after } }
-    })
+      return { amber: amber / (width * height), cyan: cyan / (width * height), magenta: magenta / (width * height) }
+    `)
+    const before = await glow()
+    await page.getByRole('button', { name: 'Cyan glow' }).click()
+    // The new paint reprocesses every tile of the layer: wait for the cyan, up to about 15 s.
+    let after = null
+    for (let attempt = 0; attempt < 10 && !(after?.cyan > 0.01); attempt++) {
+      await page.waitForTimeout(1000)
+      await idle()
+      after = await glow()
+    }
+    return { glow: { before, after } }
+  })],
+  ['examples/embedded', () => galleryExample('embedded', '', async page => {
+    // A plain wheel over the map scrolls the page and leaves the camera where it was.
+    const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+    const box = await page.locator('.example-embedded canvas').boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.wheel(0, 400)
+    await page.waitForTimeout(1500)
+    const after = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
+    return { wheel: { before, after } }
+  })],
+]
+
+const arguments_ = process.argv.slice(2)
+const selected = selectChecks(arguments_, CHECKS.map(([id]) => id))
+if (arguments_.includes('--list')) {
+  for (const [id, reason] of selected) console.log(`${id.padEnd(36)} ${reason}`)
+  console.log(`${selected.size} of ${CHECKS.length} checks would run`)
+  process.exit(0)
+}
+mkdirSync(OUT, { recursive: true })
+// A run that crashes leaves no results, so assert-results.mjs fails instead of reading an earlier run's.
+rmSync(new URL('results.json', OUT), { force: true })
+rmSync(new URL('selection.json', OUT), { force: true })
+rmSync(PENDING, { force: true })
+console.error(selected.size === CHECKS.length ? 'Browser checks: every check' : `Browser checks: ${selected.size} of ${CHECKS.length}${selected.size === 0 ? ', no change reaches them since they last passed' : ''}`)
+for (const [id, reason] of selected) if (selected.size < CHECKS.length) console.error(`  ${id}: ${reason}`)
+if (selected.size === 0) {
+  writeResults([])
+  process.exit(0)
+}
+
+// WebGPU needs a headed Chromium on SwiftShader's Vulkan here: in headless mode, presenting a WebGPU
+// canvas drops the GPU instance. Run under xvfb-run on machines without a display.
+// `BROWSER_CHECKS_GPU=1` runs on the machine's own GPU instead (much faster; proves the same correctness).
+const useGpu = process.env.BROWSER_CHECKS_GPU === '1'
+const browser = recorder.instrument(await chromium.launch({
+  headless: false,
+  args: useGpu
+    ? ['--enable-unsafe-webgpu', '--force_high_performance_gpu', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', '--disable-background-timer-throttling']
+    : ['--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--enable-features=Vulkan', '--use-vulkan=swiftshader'],
+}))
+
+const pending = emptyRecord()
+const environment = environmentHashes()
+try {
+  for (const [id, run] of CHECKS) {
+    if (!selected.has(id)) continue
+    console.error(`▸ ${id}`)
+    await recorder.beginCheck()
+    const first = results.length
+    await run()
+    pending.checks[id] = checkRecord(results.slice(first).map(result => result.check), await recorder.endCheck(), environment, pending.fingerprints)
   }
 } finally {
   await browser.close()
+  // assert-results.mjs keeps the checks that passed: next time, only a change to a line they ran runs them again.
+  writeRecord(PENDING, pending)
 }
 writeResults(results)
 console.log(JSON.stringify(results, null, 2))

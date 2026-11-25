@@ -2,6 +2,7 @@ import type { Earth } from 'react-three-earth'
 
 import type { FeatureStore } from '../FeatureStore.js'
 import type { HeightSampler, OverlayContent } from '../render/LiveOverlay.js'
+import type { ElementMode } from './SelectMode.js'
 import type { DrawFeature, DrawPointerEvent, DrawStyle, DrawStyleState, LongitudeLatitude } from '../types.js'
 
 /** What a mode reaches its `Draw` through. */
@@ -22,6 +23,13 @@ export interface DrawModeContext {
   project(position: LongitudeLatitude, fallbackHeightMeters?: number): { x: number; y: number } | null
   /** Screen pixels of a position at a height above the WGS84 ellipsoid, or null when hidden. */
   projectAtHeight(position: LongitudeLatitude, heightMeters: number): { x: number; y: number } | null
+  /**
+   * How far in front of the camera a position at a height is, in scene units (larger is farther), or null. Optional:
+   * the select mode turns gizmo axes pointing away from the camera around with it.
+   */
+  depthAtHeight?(position: LongitudeLatitude, heightMeters: number): number | null
+  /** A number that changes whenever the view (camera, viewport, morph) changes, to cache screen work. Optional. */
+  viewVersion?(): number
   /** The mode's state or overlay changed: redraw the overlay and tell subscribers. */
   changed(): void
   /** Adds finished features to the store and fires `create`. */
@@ -34,6 +42,8 @@ export interface DrawModeContext {
   setCursor(cursor: string | null): void
   /** Turns double-click and double-tap zoom off while the mode places things by tapping. Released on `exit`. */
   holdDoubleClickZoom(): void
+  /** Gives double-click and double-tap zoom back before `exit`. */
+  releaseDoubleClickZoom(): void
 }
 
 /** What a mode reports for `Draw.getState()`. */
@@ -46,8 +56,12 @@ export interface DrawModeStatus {
   canFinish: boolean
   /** `undo()` would remove the last vertex. */
   canUndo: boolean
-  /** The select mode shows the selected feature's vertex handles rather than its gizmo. Default: false. */
+  /** The select mode is in edit mode: the selected feature shows its elements rather than its gizmo. Default: false. */
   editingVertices?: boolean
+  /** The elements the select mode's edit mode picks. Default: the select mode's. */
+  elementMode?: ElementMode
+  /** The select mode's `extrude()` would act: a face is picked. Default: false. */
+  canExtrude?: boolean
 }
 
 export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false, editingVertices: false })
@@ -108,6 +122,17 @@ export abstract class DrawMode {
   keyDown(_event: KeyboardEvent): boolean {
     return false
   }
+
+  /**
+   * A press of the mouse's secondary (right) button on the map, while the `Draw`'s `keyboard` option is on: return true
+   * to take it (the camera controls and the context menu then ignore it). The select mode cancels a keyboard move.
+   */
+  secondaryPress(): boolean {
+    return false
+  }
+
+  /** The map lost the keyboard focus (or the window its focus): drop what keys started. */
+  focusLost(): void {}
 
   /** Completes the feature being drawn, if it can be. */
   finish(): void {}

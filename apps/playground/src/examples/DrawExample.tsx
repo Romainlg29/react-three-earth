@@ -5,6 +5,7 @@ import { useDrawState } from 'react-three-earth-draw/react'
 import { useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'
+import { DrawGizmoToolbar, GIZMO_HELP } from './DrawGizmoToolbar'
 import { ExampleShell } from './ExampleShell'
 
 const TOOLS = [
@@ -27,6 +28,7 @@ function DrawToolbar({ draw }: { draw: Draw }) {
           </button>
         ))}
       </div>
+      {state.mode === 'select' && <DrawGizmoToolbar draw={draw} />}
       <div className="example-buttons">
         <button type="button" disabled={!state.canFinish} onClick={() => draw.finish()}>
           Finish
@@ -51,8 +53,8 @@ function DrawToolbar({ draw }: { draw: Draw }) {
             ? state.selectedIds.length === 0
               ? 'Tap a feature to select it.'
               : state.editingVertices
-                ? 'Drag a vertex or the feature; tap a midpoint to add a vertex, a vertex then Delete to remove it. Tap the feature again for the gizmo.'
-                : 'Drag the feature to move it, or the gizmo to scale, stretch, turn, extrude or lift it. Tap it again to edit its vertices.'
+                ? 'Drag a vertex or the feature; tap a midpoint to add a vertex, a vertex then Delete to remove it. Tap the empty map for the gizmo.'
+                : `${GIZMO_HELP} Drag the feature itself to move it; tap it again to edit its vertices.`
             : `${state.features.features.length} features drawn.`}
       </p>
     </>
@@ -67,6 +69,8 @@ export function DrawExample() {
   const [, setEarth] = useState<EarthImpl | null>(null)
   const draw = useMemo(() => {
     const created = new Draw({
+      // Opt-in: Escape, Enter, Backspace and Delete, and G, R, S with X, Y, Z for the gizmo.
+      keyboard: true,
       style: (feature, { drawing }) => ({
         fillColor: drawing ? '#f59e0b' : '#22c55e',
         lineColor: drawing ? '#f59e0b' : feature.geometry.type === 'LineString' ? '#e11d48' : '#16a34a',
@@ -83,7 +87,7 @@ export function DrawExample() {
   return (
     <ExampleShell
       title="Draw and edit points, lines and polygons"
-      description="Pick a tool and tap the map to place vertices; tap the last vertex to finish. Select a feature to move, scale, stretch, turn, extrude or lift it with its gizmo; tap it again to drag its vertices and add new ones at the midpoints. One finger still pans between taps and two fingers pinch, on the globe and the flat map. Features are kept as GeoJSON."
+      description="Pick a tool and tap the map to place vertices; tap the last vertex to finish. Select a feature to move, turn or scale it with its gizmo; tap it again to drag its vertices and add new ones at the midpoints. One finger still pans between taps and two fingers pinch, on the globe and the flat map. Features are kept as GeoJSON."
       camera={{ longitudeDegrees: 6.6, latitudeDegrees: 46.45, heightMeters: 0, distanceMeters: 70_000, headingDegrees: 0, pitchDegrees: -60 }}
       onEarth={setEarth}
       plugins={plugins}

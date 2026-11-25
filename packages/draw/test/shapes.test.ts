@@ -420,6 +420,7 @@ function createContext() {
     projectAtHeight: ([longitude, latitude]) => ({ x: longitude * 1000, y: latitude * 1000 }),
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
+    releaseDoubleClickZoom: vi.fn(),
   }
   return { context, created }
 }

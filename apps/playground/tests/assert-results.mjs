@@ -1,9 +1,18 @@
 // Fails (exit 1) when the browser checks in test-results/results.json fall outside their expected ranges.
 // Run after tests/run.mjs. Thresholds leave margin over the values measured on SwiftShader (docs/spike/SPIKE.md).
-import { readFileSync } from 'node:fs'
+// The checks that pass keep their coverage record, so the next run skips them until a line they ran changes;
+// `--save-baseline` also writes those records to the committed tests/check-coverage.json.gz.
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+import { CoverageRecorder, mergeLines } from './coverage.mjs'
+import { BASELINE, LOCAL, PENDING, checkRecord, readRecord, readRecords, writeRecord } from './selection.mjs'
+
+// Started first, so the coverage of this script's top level is complete
+const recorder = await new CoverageRecorder({ scripts: [fileURLToPath(import.meta.url)] }).start()
 
 const results = JSON.parse(readFileSync(new URL('../test-results/results.json', import.meta.url), 'utf8'))
-// A run of some areas (run.mjs labels, run.mjs --changed) skips the other checks: only a full run reports them missing.
+// A run of some checks (the default, or named ones) skips the others: only a full run reports them missing.
 let selection = { every: true }
 try {
   selection = JSON.parse(readFileSync(new URL('../test-results/selection.json', import.meta.url), 'utf8'))
@@ -477,7 +486,8 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
     ['each edit fires one update', r.updates === 3],
     ['a picked vertex is deleted, and undo brings it back', r.deleted && r.verticesAfterDelete === 4 && r.verticesAfterUndo === 5],
     ['a drag off the selection still pans', r.pannedOffSelection],
-    ['a tap on the empty map clears the selection', r.selectedAfterEmptyTap === 0],
+    ['a tap on the empty map leaves edit mode, keeping the selection; a second clears it', r.leftEditingOnEmptyTap && r.selectedAfterEmptyTap === 0],
+    ...(name === 'globe, mouse' ? [['G, then X, moves the selection east only under the pointer, in one update on Enter', r.keyboardMove.updates === 1 && r.keyboardMove.eastDegrees > 1e-4 && r.keyboardMove.northDegrees < r.keyboardMove.eastDegrees * 0.01]] : []),
   ]
 }
 
@@ -496,25 +506,42 @@ expectations['solids over the sky'] = r => [
   ['its shaded face keeps its shade across the horizon: hazed at its own distance, not the ground\'s', r.shadeStep < 30],
 ]
 
-for (const [name, height] of [['globe, mouse', true], ['flat map, touch', false]]) {
-  expectations[`transforming, ${name}`] = r => [
-    ['a tap where the box stands in 3D selects it, with its gizmo', r.selected && r.gizmoShown],
-    ['a corner scales it, keeping its six faces and its proportions', r.afterScale.faces === 6 && r.afterScale.widthMeters > r.before.widthMeters * 1.2 && Math.abs(r.afterScale.lengthMeters / r.afterScale.widthMeters - r.before.lengthMeters / r.before.widthMeters) < 0.01],
-    ['the knob turns it', r.afterRotate.faces === 6 && Math.abs(((r.afterRotate.rotationDegrees - r.before.rotationDegrees + 540) % 360) - 180) > 20],
-    ...(height ? [['the top knob raises its top face', r.heightMeters > r.heightBeforeRaise * 1.1]] : []),
-    ['the knob in the middle of a flat polygon extrudes it into a prism mesh', r.flatSelected && r.flatExtrusion.type === 'MultiPolygon' && r.flatExtrusion.faces === 6 && r.flatExtrusion.heightMeters > 50],
-    // The gizmo's box turns with the box by quarter turns, so its right edge may be the box's side or its end.
-    ['the middle of an edge stretches it, a box still, the opposite edge fixed', r.afterStretch.faces === 6 && r.fixedSideMovedMeters < 1 && (
-      (r.afterStretch.widthMeters > r.afterRotate.widthMeters * 1.2 && Math.abs(r.afterStretch.lengthMeters - r.afterRotate.lengthMeters) < 0.5) ||
-      (r.afterStretch.lengthMeters > r.afterRotate.lengthMeters * 1.2 && Math.abs(r.afterStretch.widthMeters - r.afterRotate.widthMeters) < 0.5))],
-    ['the knob under its base lifts it into the air, keeping its height and faces', r.lifted.altitude > r.lifted.groundMeters + 50 && Math.abs(r.lifted.heightMeters - r.heightBeforeLift) < 1e-6 && r.lifted.faces === 6],
-    ['each change fires one update', r.updates === (height ? 6 : 5)],
-    ['the previews leave once released: one solid per stored feature', r.solids.stored === 7 && r.solids.inScene === 7],
-  ]
+for (const [name, globe] of [['globe, mouse', true], ['flat map, touch', false]]) {
+  expectations[`transforming, ${name}`] = r => {
+    const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance
+    const turned = (a, b) => Math.abs(((a - b + 540) % 360) - 180)
+    return [
+      ['a tap where the box stands in 3D selects it, with its gizmo', r.selected && r.gizmoShown],
+      ['the gizmo shows its arrows, planes, rings, arcs and cubes', ['move-x', 'move-y', 'move-z', 'move-xy', 'move-free', 'rotate-z', 'scale-x', 'scale-y', 'scale-uniform', ...(globe ? ['rotate-x', 'rotate-y', 'scale-z'] : [])].every(handle => r.handleNames.includes(handle))],
+      // The east arrow may point west: an axis pointing away from the camera is drawn towards it.
+      ['the east arrow moves it along east-west only', r.east.updates === 1 && Math.abs(r.east.after.center.east - r.east.before.center.east) > 50 && Math.abs(r.east.after.center.north - r.east.before.center.north) < Math.abs(r.east.after.center.east - r.east.before.center.east) * 0.02 && near(r.east.after.base, r.east.before.base, 1e-3)],
+      ['the up arrow raises it, keeping its footprint and height', r.up.updates === 1 && r.up.after.base > r.up.before.base + 50 && near(r.up.after.height, r.up.before.height, 0.01) && near(r.up.after.center.east, r.up.before.center.east, 0.5) && near(r.up.after.center.north, r.up.before.center.north, 0.5)],
+      ['the cube on the east axis widens it east-west only', r.scale.updates === 1 && r.scale.after.extent.east > r.scale.before.extent.east * 1.15 && near(r.scale.after.extent.north, r.scale.before.extent.north, r.scale.before.extent.north * 0.01) && r.scale.after.faces === 6],
+      ['the arc around up turns its heading, its top level', r.heading.updates === 1 && turned(r.heading.after.headingDegrees, r.heading.before.headingDegrees) > 15 && r.heading.after.topTiltMeters < 1],
+      ...(globe ? [['the arc around east tilts it: its top face no longer level', r.tilt.updates === 1 && r.tilt.after.topTiltMeters > 10 && r.tilt.after.faces === 6]] : []),
+      ['each drag fires one update', r.updates === (globe ? 5 : 4)],
+      ['the previews leave once released: one solid per stored feature', r.solids.stored === 6 && r.solids.inScene === 6],
+    ]
+  }
+}
+
+for (const name of ['globe, mouse', 'globe, touch']) {
+  expectations[`mesh editing, ${name}`] = r => {
+    const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance
+    const { before, after } = r.pull
+    return [
+      ['a double tap on the box\'s top enters edit mode with that face picked, its arrow shown', r.entered.editing && r.entered.elementMode === 'face' && r.entered.picked?.kind === 'face' && r.entered.picked.index === 0 && r.entered.canExtrude && r.entered.handle !== null],
+      ['the arrow pulls the top up: the box grows along its normal, footprint and base kept, in one update', r.pull.updates === 1 && after.height > before.height + 50 && near(after.base, before.base, 1e-3) && near(after.extent.east, before.extent.east, before.extent.east * 0.01) && near(after.extent.north, before.extent.north, before.extent.north * 0.01) && after.faces === 6],
+      ['extrude adds four walls and a new top above, in one update, the top still picked', r.extrude.updates === 1 && r.extrude.after.faces === 10 && r.extrude.after.height > r.extrude.before.height + 10 && r.extrude.after.picked?.index === 0],
+      ['one solid per stored feature', r.solids.stored === 6 && r.solids.inScene === 6],
+    ]
+  }
 }
 
 let failures = 0
 let skipped = 0
+/** result name → whether every assertion passed, and the lines of this script its assertions ran. */
+const outcomes = new Map()
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)
   if (result === undefined && !selection.every) {
@@ -526,15 +553,51 @@ for (const [check, assertions] of Object.entries(expectations)) {
     failures++
     continue
   }
+  await recorder.beginCheck()
   const all = [...assertions(result), ['no console errors', result.errors.length === 0]]
+  let passed = true
   for (const [description, passes] of all) {
     console.log(`${passes ? '✓' : '✗'} ${check}: ${description}`)
     if (!passes) failures++
+    passed &&= Boolean(passes)
   }
   if (result.errors.length > 0) console.error(result.errors.join('\n'))
+  outcomes.set(check, { passed, lines: await recorder.endCheck() })
 }
 
-if (skipped > 0) console.log(`\n${skipped} check(s) outside ${selection.areas.join(', ') || 'the selected areas'} skipped: run the full suite before merging.`)
+if (skipped > 0) console.log(`\n${skipped} result(s) outside the ${selection.checks?.length ?? 0} check(s) that ran skipped: no line they ran has changed since they last passed.`)
+
+// Keep the coverage of the checks that passed, with the lines of this script their assertions ran. Mark those that
+// failed, so that they run again whatever the baseline says.
+if (existsSync(PENDING)) {
+  const pending = readRecord(PENDING)
+  const local = readRecord(LOCAL)
+  local.fingerprints = { ...local.fingerprints, ...pending.fingerprints }
+  const names = Object.values(pending.checks).flatMap(record => record.results)
+  for (const name of new Set(names.filter((name, index) => names.indexOf(name) !== index))) {
+    console.error(`✗ ${name}: pushed more than once, so its results cannot be told apart: give each check its own result name`)
+    failures++
+  }
+  for (const [id, record] of Object.entries(pending.checks)) {
+    const asserted = record.results.filter(name => name in expectations).map(name => outcomes.get(name))
+    if (asserted.some(outcome => outcome === undefined || !outcome.passed) || record.results.some(name => names.indexOf(name) !== names.lastIndexOf(name))) {
+      local.checks[id] = { failed: true }
+      continue
+    }
+    if (asserted.length === 0) console.log(`${id}: no expectation names its results, so only a crash fails it`)
+    const lines = new Map()
+    for (const outcome of asserted) mergeLines(lines, outcome.lines)
+    const assertion = checkRecord([], lines, {}, local.fingerprints)
+    local.checks[id] = { ...record, files: { ...record.files, ...assertion.files } }
+    if (assertion.alwaysRun !== undefined) local.checks[id].alwaysRun ??= assertion.alwaysRun
+  }
+  writeRecord(LOCAL, local)
+}
+if (process.argv.includes('--save-baseline')) {
+  const records = readRecords({ passingOnly: true })
+  writeRecord(BASELINE, records)
+  console.log(`Saved the coverage of ${Object.keys(records.checks).length} check(s) to ${BASELINE}: commit it so other clones skip unchanged checks too.`)
+}
 
 if (failures > 0) {
   console.error(`\n${failures} browser check assertion(s) failed.`)

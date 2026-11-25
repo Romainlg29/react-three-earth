@@ -102,6 +102,26 @@ export function moveVertex(feature: DrawFeature, path: VertexPath, position: Lon
   return withRings(feature, rings)
 }
 
+/**
+ * The feature with the vertices at `paths` moved together by the step from `from` to `to` (each keeps its distance and
+ * bearing from the pointer, and its altitude), as dragging an edge moves both its ends. Multipolygons are returned
+ * unchanged (`moveMeshVertices` moves a mesh's).
+ */
+export function moveVertices(feature: DrawFeature, paths: readonly VertexPath[], from: LongitudeLatitude, to: LongitudeLatitude): DrawFeature {
+  const rings = openRings(feature).map(ring => [...ring])
+  const distance = distanceMeters(from, to)
+  if (distance === 0) return feature
+  const bearing = bearingDegrees(from, to)
+  let changed = false
+  for (const path of paths) {
+    const original = rings[path.ring]?.[path.index]
+    if (original === undefined) continue
+    rings[path.ring]![path.index] = moved(original, destination(original, distance, bearing))
+    changed = true
+  }
+  return changed ? withRings(feature, rings) : feature
+}
+
 /** The feature with a vertex inserted at `path` (pushing the others along). Its altitude is its neighbours' average. */
 export function insertVertex(feature: DrawFeature, path: VertexPath, position: LongitudeLatitude): DrawFeature {
   if (feature.geometry.type === 'Point' || feature.geometry.type === 'MultiPolygon') return feature

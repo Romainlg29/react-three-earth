@@ -110,6 +110,7 @@ function createContext() {
     remove: vi.fn(),
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
+    releaseDoubleClickZoom: vi.fn(),
   }
   return { context, created }
 }

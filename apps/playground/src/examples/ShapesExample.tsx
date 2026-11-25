@@ -14,7 +14,6 @@ import {
   SelectMode,
   SphereMode,
   StaticMode,
-  transformFrame,
   wallMesh,
   type GroundHeight,
 } from 'react-three-earth-draw'
@@ -22,6 +21,7 @@ import { useDrawState } from 'react-three-earth-draw/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'
+import { DrawGizmoToolbar, EDIT_HELP, GIZMO_HELP } from './DrawGizmoToolbar'
 import { ExampleShell } from './ExampleShell'
 
 const CENTER: [number, number] = [6.6, 46.45]
@@ -100,6 +100,7 @@ function ShapesToolbar({ draw, setSolidHeight }: { draw: Draw; setSolidHeight: (
           </button>
         ))}
       </div>
+      {state.mode === 'select' && <DrawGizmoToolbar draw={draw} />}
       <div className="example-buttons">
         <button type="button" disabled={!state.canFinish} onClick={() => draw.finish()}>
           Finish
@@ -124,8 +125,8 @@ function ShapesToolbar({ draw, setSolidHeight }: { draw: Draw; setSolidHeight: (
             ? state.selectedIds.length === 0
               ? 'Tap a shape to select it.'
               : state.editingVertices
-                ? 'Drag a vertex or a midpoint; tap the shape again for the gizmo.'
-                : 'Drag the shape to move it, a corner to scale it, an edge to stretch it, the outer knob to turn it, the middle knob to extrude it or raise its top, the knob below to lift it. Tap a flat shape again to edit its vertices.'
+                ? EDIT_HELP
+                : `${GIZMO_HELP} Drag the shape itself to move it. Tap it again, or double tap a solid's face, to edit it.`
             : `${state.features.features.length} shapes.`}
       </p>
     </>
@@ -146,15 +147,17 @@ export function ShapesExample() {
     }
     setSolidHeight(600)
     const created = new Draw({
-      modes: [new StaticMode(), new SelectMode(), ...solidModes, new SphereMode({ properties: { kind: 'sphere' } })],
+      modes: [new StaticMode(), new SelectMode({ snapping: true }), ...solidModes, new SphereMode({ properties: { kind: 'sphere' } })],
+      // Opt-in: Escape, Enter, Delete, and G, R, S with X, Y, Z for the gizmo.
+      keyboard: true,
       style: feature => ({
         fillColor: feature.properties?.kind === 'sphere' ? '#d946ef' : '#f97316',
         lineColor: '#7c2d12',
         lineWidthPixels: 2,
       }),
     })
-    // `window.draw` lets the browser checks drive it; `transformFrame` tells them where the gizmo's handles are.
-    Object.assign(window, { draw: created, drawTransformFrame: transformFrame })
+    // `window.draw` lets the browser checks drive it (`draw.getMode().gizmoHandles()` says where the gizmo's handles are).
+    Object.assign(window, { draw: created })
     return { draw: created, setSolidHeight }
   }, [])
   useStartingShapes(earth, draw)

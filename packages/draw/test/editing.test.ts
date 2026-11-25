@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature } from '../src/editing.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
-import { prismMesh } from '../src/mesh.js'
+import { indexMesh, meshFromIndexed, prismMesh } from '../src/mesh.js'
+import { moveMeshVertices } from '../src/meshEditing.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
 import { SelectMode } from '../src/modes/SelectMode.js'
 import { createCircle, createRectangle, createSphere } from '../src/shapes.js'
@@ -132,6 +133,7 @@ function createContext(features: DrawFeature[]) {
     },
     setCursor: vi.fn(),
     holdDoubleClickZoom: vi.fn(),
+    releaseDoubleClickZoom: vi.fn(),
   }
   return { context, store, events }
 }
@@ -188,13 +190,11 @@ describe('select mode', () => {
     expect(mode.status().canUndo).toBe(true)
     store.set([square()]) // replaced by the app
     expect(mode.status().canUndo).toBe(false)
-    // The pick was on the old version, so it is gone: Delete takes the selected feature, never another vertex.
+    // The pick was on the old version, so it is gone: Delete removes nothing, never another vertex (nor the feature
+    // in edit mode).
     expect(mode.inspect()).toMatchObject({ selectedVertex: null })
-    expect(mode.deleteSelection()).toBe(true)
-    expect(store.has('square')).toBe(false)
-    store.set([square()])
-    mode.setSelection(['square'])
-    mode.setEditingVertices(true)
+    expect(mode.deleteSelection()).toBe(false)
+    expect((store.get('square')!.geometry as Polygon).coordinates[0]).toHaveLength(5)
     mode.pointerDown(pointer(100, 100))
     store.set([{ ...square(), properties: { name: 'renamed' } }])
     mode.pointerMove(pointer(150, 150))
@@ -265,7 +265,7 @@ describe('select mode', () => {
     expect(events.at(-1)).toBe('create square')
   })
 
-  it('moves sphere meshes whole, with a gizmo of corners, a turning knob and a lift knob, and no vertex handles', () => {
+  it('moves sphere meshes whole with the gizmo, and a double tap edits their faces', () => {
     const sphere = { ...createSphere([0.5, 0.5], 20_000), id: 'ball' } as DrawFeature
     const { context, store } = createContext([sphere])
     const mode = new SelectMode()
@@ -275,11 +275,14 @@ describe('select mode', () => {
     expect(mode.selectedFeatureIds()).toEqual(['ball'])
     const content = { features: [], lines: [], handles: [] }
     mode.overlay(content)
-    // Scale corners, the turning knob and the lift knob: no height knob (no level top), no side handles (small on screen).
-    expect(content.handles).toHaveLength(4 + 1 + 1)
-    // A second tap keeps the gizmo: a mesh's vertices are not edited one by one.
+    // The gizmo's handles: three scale cubes, the center ring and the outer ring (its arrows and arcs are lines).
+    expect(content.handles).toHaveLength(3 + 2)
+    // A second tap at once, a double tap: edit mode, picking the face under it.
     mode.click(pointer(50, 30))
-    expect(mode.editingVertices).toBe(false)
+    expect(mode.editingVertices).toBe(true)
+    expect(mode.elementMode).toBe('face')
+    expect(mode.canExtrude).toBe(true)
+    mode.setEditingVertices(false)
     expect(mode.pointerDown(pointer(50, 30))).toBe(true)
     mode.pointerMove(pointer(150, 30))
     mode.pointerUp(pointer(150, 30))
@@ -302,7 +305,7 @@ describe('select mode', () => {
     expect((store.get('square')!.geometry as Polygon).coordinates[0]![2]).toEqual([1, 1])
   })
 
-  it('shows the gizmo first, swaps it for vertex handles with a second tap, and back with a third', () => {
+  it('shows the gizmo first, vertex handles after a second tap, and the gizmo again after a tap on the empty map', () => {
     const { context } = createContext([square(), { ...square(), id: 'other', geometry: { type: 'Polygon', coordinates: [[[2, 0], [3, 0], [3, 1], [2, 1], [2, 0]]] } }])
     const mode = new SelectMode()
     mode.enter(context)
@@ -314,27 +317,29 @@ describe('select mode', () => {
     mode.click(pointer(30, 70))
     expect(mode.selectedFeatureIds()).toEqual(['square'])
     expect(mode.editingVertices).toBe(false)
-    expect(handles()).toBe(4 + 4 + 1 + 1 + 1) // corners, sides, turning knob, height knob, lift knob
+    expect(handles()).toBe(3 + 2) // the gizmo's scale cubes, center ring and outer ring
     // A tap (no drag) on the selected feature: vertex handles and midpoints instead.
     expect(mode.pointerDown(pointer(30, 70))).toBe(true)
     mode.pointerUp(pointer(30, 70))
     expect(mode.editingVertices).toBe(true)
     expect(mode.status().editingVertices).toBe(true)
     expect(handles()).toBe(4 + 4)
-    // Again: the gizmo.
+    // Again: still editing (a tap off its handles picks nothing).
     mode.pointerDown(pointer(30, 70))
     mode.pointerUp(pointer(30, 70))
-    expect(mode.editingVertices).toBe(false)
-    // Another feature, or the empty map, starts with the gizmo again.
-    mode.setEditingVertices(true)
+    expect(mode.editingVertices).toBe(true)
+    // Another feature starts with the gizmo again.
     mode.click(pointer(250, 50))
     expect(mode.selectedFeatureIds()).toEqual(['other'])
     expect(mode.editingVertices).toBe(false)
+    // The empty map leaves edit mode first, keeping the selection, then clears it.
     mode.setEditingVertices(true)
     mode.click(pointer(500, 500))
-    expect(mode.selectedFeatureIds()).toEqual([])
+    expect(mode.selectedFeatureIds()).toEqual(['other'])
     expect(mode.editingVertices).toBe(false)
-    // A tap on the knob in the middle of a flat shape is a tap on the shape; Escape steps back to the gizmo first.
+    mode.click(pointer(500, 500))
+    expect(mode.selectedFeatureIds()).toEqual([])
+    // A tap on the gizmo's center ring over a flat shape is a tap on the shape; Escape steps back to the gizmo first.
     mode.setSelection(['square'])
     expect(mode.pointerDown(pointer(50, 50))).toBe(true)
     mode.pointerUp(pointer(50, 50))
@@ -401,6 +406,9 @@ describe('select mode', () => {
     mode.enter(context)
     mode.setSelection(['square'])
     mode.setEditingVertices(true)
+    // Edit mode never deletes the whole feature: out of it, Delete does.
+    expect(mode.deleteSelection()).toBe(false)
+    mode.setEditingVertices(false)
     expect(mode.deleteSelection()).toBe(true)
     expect(mode.editingVertices).toBe(false)
     mode.setSelection(['other'])
@@ -408,5 +416,202 @@ describe('select mode', () => {
     store.remove(['other'])
     expect(mode.status().editingVertices).toBe(false)
     expect(mode.editingVertices).toBe(false)
+  })
+})
+
+describe('select mode, edit mode', () => {
+  /** A box mesh 30 km tall over 0.2° to 0.8° east and north. */
+  const box = (): DrawFeature<MultiPolygon> => ({ type: 'Feature', id: 'box', properties: {}, geometry: prismMesh([[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]], 0, 30_000) })
+  /** Seen from the south and above, north up the screen: x = longitude × 100, y = -latitude × 100, heights 1 px per kilometre up. */
+  function northUp(features: DrawFeature[]) {
+    const created = createContext(features)
+    created.context.project = ([longitude, latitude]) => ({ x: longitude * 100, y: -latitude * 100 })
+    created.context.projectAtHeight = ([longitude, latitude], heightMeters) => ({ x: longitude * 100, y: -latitude * 100 - heightMeters / 1000 })
+    return created
+  }
+  const at = (x: number, y: number, pointerType = 'mouse'): DrawPointerEvent => ({ screen: { xPixels: x, yPixels: y }, geographic: { longitudeDegrees: x / 100, latitudeDegrees: -y / 100, heightMeters: 0 }, pointerType, originalEvent: {} as MouseEvent })
+  const drag = (mode: SelectMode, from: { x: number; y: number }, to: { x: number; y: number }) => {
+    expect(mode.pointerDown(at(from.x, from.y))).toBe(true)
+    mode.pointerMove(at((from.x + to.x) / 2, (from.y + to.y) / 2))
+    mode.pointerMove(at(to.x, to.y))
+    mode.pointerUp(at(to.x, to.y))
+  }
+  const altitudes = (feature: DrawFeature) => (feature.geometry as MultiPolygon).coordinates.flat(2).map(position => position[2]!)
+
+  it('double tap on a face picks it; its arrow pulls the box taller in one update, and undo takes it back', () => {
+    const { context, store, events } = northUp([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.click(at(50, -80)) // the top, 30 px above its footprint
+    mode.click(at(50, -80))
+    expect(mode.editingVertices).toBe(true)
+    expect(mode.elementMode).toBe('face')
+    expect(mode.inspect()).toMatchObject({ picked: { featureId: 'box', kind: 'face', index: 0 } })
+    const handle = mode.pushPullHandle()!
+    expect(handle.x).toBeCloseTo(50, 0)
+    expect(handle.y).toBeLessThan(-80) // up the screen from the top's middle
+    // The top's arrow is about 69 km long (80 px): 20 px further up is about 17 km taller.
+    drag(mode, handle, { x: handle.x, y: handle.y - 20 })
+    expect(events).toEqual(['update box'])
+    const pulled = store.get('box')!
+    expect(Math.max(...altitudes(pulled))).toBeGreaterThan(45_000)
+    expect(Math.min(...altitudes(pulled))).toBeCloseTo(0, 6)
+    expect((pulled.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(mode.inspect()).toMatchObject({ picked: { featureId: 'box', kind: 'face', index: 0 } })
+    mode.undo()
+    expect(Math.max(...altitudes(store.get('box')!))).toBeCloseTo(30_000, 6)
+  })
+
+  it('extrudes the picked face with E (one update, the new face picked) and from code', () => {
+    const { context, store, events } = northUp([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['box'])
+    mode.setElementMode('face')
+    expect(mode.extrude()).toBe(false) // nothing picked
+    expect(mode.keyDown({ key: 'Tab' } as KeyboardEvent)).toBe(true)
+    expect(mode.editingVertices).toBe(true)
+    expect(mode.pointerDown(at(50, -80))).toBe(true)
+    mode.pointerUp(at(50, -80))
+    expect(mode.status().canExtrude).toBe(true)
+    expect(mode.keyDown({ key: 'e' } as KeyboardEvent)).toBe(true)
+    expect(events).toEqual(['update box'])
+    const extruded = store.get('box')!
+    expect((extruded.geometry as MultiPolygon).coordinates).toHaveLength(10)
+    // Half the arrow's length, about 35 km.
+    expect(Math.max(...altitudes(extruded))).toBeGreaterThan(55_000)
+    expect(mode.extrude(1000)).toBe(true)
+    expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(14)
+    expect(() => mode.extrude(0)).toThrow(/other than 0/)
+    // A picked face is never deleted, nor its feature.
+    expect(mode.deleteSelection()).toBe(false)
+    expect(store.has('box')).toBe(true)
+    expect(mode.keyDown({ key: 'Tab' } as KeyboardEvent)).toBe(true)
+    expect(mode.editingVertices).toBe(false)
+  })
+
+  it('drags a mesh vertex level, moving it in every face that shares it', () => {
+    const { context, store, events } = northUp([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    expect(mode.keyDown({ key: '1' } as KeyboardEvent)).toBe(true)
+    // The top's south-west corner, 30 km up.
+    const content = { features: [], lines: [], handles: [] as Array<{ position: number[] }> }
+    mode.overlay(content as never)
+    expect(content.handles.length).toBeGreaterThan(0)
+    drag(mode, { x: 20, y: -50 }, { x: 30, y: -50 })
+    expect(events).toEqual(['update box'])
+    const positions = (store.get('box')!.geometry as MultiPolygon).coordinates.flat(2)
+    expect(positions.some(position => position[0] === 0.2 && position[1] === 0.2 && position[2] === 30_000)).toBe(false)
+    const moved = positions.filter(position => Math.abs(position[0]! - 0.3) < 1e-6 && Math.abs(position[1]! - 0.2) < 1e-6)
+    expect(moved.length).toBeGreaterThanOrEqual(3)
+    expect(moved.every(position => Math.abs(position[2]! - 30_000) < 1e-3)).toBe(true)
+  })
+
+  it('survives undo after hovering an element the restored version lacks, and an app replacing the mesh', () => {
+    const { context, store } = northUp([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.click(at(50, -80))
+    mode.click(at(50, -80))
+    expect(mode.extrude(35_000)).toBe(true)
+    mode.setElementMode('edge')
+    // An edge of the new top (65 km up), whose vertices the box before the extrusion does not have.
+    mode.hover(at(50, -85))
+    const overlay = () => mode.overlay({ features: [], lines: [], handles: [], polygons: [] })
+    expect(overlay).not.toThrow()
+    mode.undo()
+    expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(overlay).not.toThrow()
+    // Again, the smaller mesh coming from the app.
+    expect(mode.extrude(35_000)).toBe(false) // nothing picked after undo
+    mode.setElementMode('face')
+    mode.pointerDown(at(50, -80))
+    mode.pointerUp(at(50, -80))
+    mode.extrude(35_000)
+    mode.setElementMode('vertex')
+    mode.hover(at(20, -85))
+    store.set([box()])
+    expect(overlay).not.toThrow()
+  })
+
+  it('never shows nor picks an edge that only faces turned away from the camera hold', () => {
+    class Probe extends SelectMode {
+      visibleEdges(feature: DrawFeature) {
+        const elements = this.elementsOf(feature)!
+        const screens = this.screensOf(feature, elements)
+        return elements.edges.filter((_, index) => screens.visibleEdges[index] === 1).map(([a, b]) => [elements.positions[a]!, elements.positions[b]!])
+      }
+    }
+    // A box with its north-east bottom corner raised 5 km: its bottom splits into two triangles along a diagonal.
+    const mesh = indexMesh(box().geometry)
+    const corner = mesh.vertices.findIndex(position => position[0] === 0.8 && position[1] === 0.8 && position[2] === 0)
+    const bent: DrawFeature = { ...box(), geometry: meshFromIndexed(moveMeshVertices(mesh, [corner], [0, 0, 5000])) }
+    // Seen from the south-west and above: the south and west walls face the camera, so both ends of the diagonal show.
+    const { context } = northUp([bent])
+    context.projectAtHeight = ([longitude, latitude], heightMeters) => ({ x: longitude * 100 - latitude * 40, y: -latitude * 100 - heightMeters / 1000 })
+    const mode = new Probe()
+    mode.enter(context)
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    const isDiagonal = ([a, b]: Position[]) => Math.abs(a![0]! - b![0]!) > 0.5 && Math.abs(a![1]! - b![1]!) > 0.5
+    expect(mode.visibleEdges(bent).some(isDiagonal)).toBe(false)
+    expect(mode.visibleEdges(bent).length).toBeGreaterThan(0)
+    // A tap on it, a quarter along from the south-east corner, on the south wall away from its edges, picks nothing.
+    mode.pointerDown(at(51, -35))
+    mode.pointerUp(at(51, -35))
+    expect(mode.inspect()).toMatchObject({ picked: null })
+    const content = { features: [], lines: [] as Array<{ positions: number[][] }>, handles: [], polygons: [] }
+    mode.overlay(content as never)
+    expect(content.lines.some(line => line.positions.length === 2 && Math.abs(line.positions[0]![0]! - line.positions[1]![0]!) > 0.5 && Math.abs(line.positions[0]![1]! - line.positions[1]![1]!) > 0.5)).toBe(false)
+  })
+
+  it('drops a drag when the element mode changes during it, so its release picks nothing', () => {
+    const { context, store, events } = northUp([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    // A press on the top's south-west corner, moved, then the mode switched to faces before the release.
+    expect(mode.pointerDown(at(20, -50))).toBe(true)
+    mode.pointerMove(at(25, -50))
+    mode.setElementMode('face')
+    mode.pointerMove(at(30, -50))
+    mode.pointerUp(at(30, -50))
+    expect(events).toEqual([])
+    expect(mode.inspect()).toMatchObject({ picked: null, drag: null, elementMode: 'face' })
+    expect(Math.max(...altitudes(store.get('box')!))).toBe(30_000)
+  })
+
+  it('drags an edge of a polygon, moving both its ends, and pulls a picked polygon face up into a prism', () => {
+    const { context, store, events } = createContext([square()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['square'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    // The east edge, from (1, 0) to (1, 1).
+    expect(mode.pointerDown(pointer(100, 50))).toBe(true)
+    mode.pointerMove(pointer(115, 50))
+    mode.pointerMove(pointer(130, 50))
+    mode.pointerUp(pointer(130, 50))
+    const ring = (store.get('square')!.geometry as Polygon).coordinates[0]!
+    expect(ring[1]![0]).toBeCloseTo(1.3, 3)
+    expect(ring[2]![0]).toBeCloseTo(1.3, 3)
+    expect(ring[0]).toEqual([0, 0])
+    expect(events).toEqual(['update square'])
+    mode.setElementMode('face')
+    mode.pointerDown(pointer(50, 50))
+    mode.pointerUp(pointer(50, 50))
+    expect(mode.canExtrude).toBe(true)
+    expect(mode.extrude(500)).toBe(true)
+    const prism = store.get('square')!
+    expect(prism.geometry.type).toBe('MultiPolygon')
+    expect((prism.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(Math.max(...altitudes(prism))).toBeCloseTo(500, 6)
+    expect(mode.inspect()).toMatchObject({ picked: { kind: 'face', index: 0 }, elementMode: 'face' })
   })
 })
