@@ -2,7 +2,7 @@ import { EventDispatcher } from 'three'
 
 import type { Earth } from '../core/Earth.js'
 import { groundMetersPerPixelToZoom } from '../core/zoom.js'
-import { CONTROLS_CLASS_NAME, MapControl } from './Controls.js'
+import { CONTROLS_ATTRIBUTE, MapControl } from './Controls.js'
 import { resolveLocale, type ControlsLocale } from './locale.js'
 
 export interface GeolocateControlOptions {
@@ -10,7 +10,7 @@ export interface GeolocateControlOptions {
   /**
    * The element around the map: pressing, wheeling or touching it while the map follows the user pauses the
    * following, while the control has a listener (`subscribe`). Presses inside an element with the
-   * `react-three-earth-controls` class (a `Controls`) do not count. Without it, only `trigger` pauses and resumes.
+   * `data-earthkit-controls` attribute (a `Controls`) do not count. Without it, only `trigger` pauses and resumes.
    */
   container?: HTMLElement
   /** Keep following the user: the map re-centres on every new position until the user moves it or triggers again. Default: false. */
@@ -264,7 +264,7 @@ export class GeolocateControl extends MapControl<GeolocateControlState> {
   protected onUserInput = (event: Event): void => {
     // A press on a control (the geolocate button among them) is not the user taking the map
     const target = event.target as Element | null
-    if (typeof target?.closest === 'function' && target.closest(`.${CONTROLS_CLASS_NAME}`) !== null) return
+    if (typeof target?.closest === 'function' && target.closest(`[${CONTROLS_ATTRIBUTE}]`) !== null) return
     if (this.status === 'tracking') this.setStatus('background')
   }
 

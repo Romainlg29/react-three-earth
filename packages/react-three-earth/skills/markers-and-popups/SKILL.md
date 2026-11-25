@@ -15,6 +15,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Marker.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Popup.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/markerLayout.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/ScreenOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/events.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Marker.tsx'
@@ -262,23 +263,30 @@ once. Pass an element as `content` or `element` for rich HTML.
 ### Styling
 
 The CSS is injected once per document (it needs `style-src 'unsafe-inline'` under a strict CSP). Restyle
-with variables on any ancestor, or override the classes `react-three-earth-marker`,
-`react-three-earth-popup`, `-popup-content`, `-popup-close`, `-popup-tip`:
+with variables on any ancestor, or override the classes `earthkit-marker`,
+`earthkit-popup`, `-popup-content`, `-popup-close`, `-popup-tip`:
 
 ```css
 .map-wrapper {
-  --react-three-earth-marker-color: #e8590c;
-  --react-three-earth-popup-background: #1b1b1f;
-  --react-three-earth-popup-color: #f4f4f5;
-  --react-three-earth-popup-radius: 10px;
-  --react-three-earth-popup-padding: 12px 14px;
-  --react-three-earth-popup-font: 14px / 1.4 system-ui, sans-serif;
-  --react-three-earth-popup-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  --earthkit-marker-color: #e8590c;
+  --earthkit-popup-background: #1b1b1f;
+  --earthkit-popup-color: #f4f4f5;
+  --earthkit-popup-radius: 10px;
+  --earthkit-popup-padding: 12px 14px;
+  --earthkit-popup-font: 14px / 1.4 system-ui, sans-serif;
+  --earthkit-popup-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 ```
 
 `className` on `<Marker>` and `<Popup>` adds your own classes. A marker's root carries
 `data-visibility="visible" | "occluded" | "hidden"`, `data-draggable` and `data-dragging`, so CSS can react.
+
+To bring your own design, turn the built-in look off with `<Earth defaultOverlayStyles={false}>` (vanilla:
+`new Earth({ defaultOverlayStyles: false })`): the popup's font, colours, box and tip, the close button's look and the focus
+rings go (the close button stays, as a plain `<button class="earthkit-popup-close">`), and what places markers and
+popups stays. The default pin keeps its shape and `--earthkit-marker-color`; pass your own `element` or
+children for another. The library finds its elements by the `data-earthkit-marker`, `data-earthkit-popup` and
+`data-earthkit-markers` attributes, never by class, so leave those alone and style the classes.
 
 ### Keyboard and focus
 

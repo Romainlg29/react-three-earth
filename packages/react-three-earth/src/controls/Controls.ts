@@ -2,11 +2,12 @@ import type { Earth } from '../core/Earth.js'
 import { holdContainerPosition, releaseContainerPosition } from '../core/containerPosition.js'
 
 /**
- * The class that marks map UI: presses inside an element with it are not the user taking the map (a following
+ * The attribute that marks map UI: presses inside an element with it are not the user taking the map (a following
  * `GeolocateControl` keeps following, cooperative gestures leave its touches and wheel alone). `Controls` puts it on
- * its element; put it on your own buttons when they sit over the map outside a `Controls`.
+ * its element; put it on your own buttons when they sit over the map outside a `Controls`
+ * (`<button data-earthkit-controls>`). It carries no styles.
  */
-export const CONTROLS_CLASS_NAME = 'react-three-earth-controls'
+export const CONTROLS_ATTRIBUTE = 'data-earthkit-controls'
 
 export interface ControlsOptions {
   /** The element the controls go in: the one around the canvas. It is made `position: relative` if it is static. */
@@ -20,8 +21,8 @@ function stop(event: Event): void {
 const STOPPED_EVENTS = ['pointerdown', 'pointermove', 'pointerup', 'click', 'dblclick', 'contextmenu', 'wheel', 'touchstart'] as const
 
 /**
- * An unstyled element over the map for your controls: a `<div class="react-three-earth-controls">` added to the
- * container, with no CSS of its own. Presses, clicks and wheel turns inside it never reach the map. Place and style it
+ * An unstyled element over the map for your controls: a `<div data-earthkit-controls>` added to the
+ * container, with no class and no CSS of its own. Presses, clicks and wheel turns inside it never reach the map. Place and style it
  * yourself (`element.style`, or a class), and put your buttons in it.
  *
  * ```ts
@@ -40,7 +41,7 @@ export class Controls {
     this.container = container
     holdContainerPosition(container)
     this.element = container.ownerDocument.createElement('div')
-    this.element.className = CONTROLS_CLASS_NAME
+    this.element.setAttribute(CONTROLS_ATTRIBUTE, '')
     for (const type of STOPPED_EVENTS) this.element.addEventListener(type, stop, { passive: true })
     container.append(this.element)
   }

@@ -35,6 +35,15 @@ export interface EarthProps {
    */
   cameraLimits?: CameraLimits
   /**
+   * Whether markers and popups get the built-in look: the popup's font, colours, box, tip and close button,
+   * the focus rings (the default pin keeps its shape and `--earthkit-marker-color`). False leaves them unstyled
+   * apart from what places them, for an app that brings its own CSS
+   * (target `.earthkit-marker`, `.earthkit-popup`, `.earthkit-popup-content`, …). With it on, restyle through
+   * the same classes or the `--earthkit-popup-*` and `--earthkit-marker-color` CSS variables. Read once at mount.
+   * Default: true.
+   */
+  defaultOverlayStyles?: boolean
+  /**
    * Plugins to install (`earth.addPlugin`). Compared by identity: create the array once, outside render or
    * in a `useMemo`, or every render reinstalls them. When the array changes, plugins in both arrays stay
    * installed; new ones are installed and dropped ones removed. Default: none.
@@ -57,13 +66,13 @@ export interface EarthProps {
  * (ECEF) metres.
  *
   * Everything else (`<Terrain>`, `<Imagery>`, `<Atmosphere>`, `<EarthControls>`) goes inside it. */
-export function Earth({ date, view, viewTransitionSeconds, initialView, cameraLimits, plugins, renderPipeline = true, children }: EarthProps) {
+export function Earth({ date, view, viewTransitionSeconds, initialView, cameraLimits, defaultOverlayStyles, plugins, renderPipeline = true, children }: EarthProps) {
   const renderer = useThree(state => state.renderer) as unknown as WebGPURenderer
   const scene = useThree(state => state.scene)
   const invalidate = useThree(state => state.invalidate)
   const domElement = useThree(state => state.events.connected ?? state.renderer.domElement) as HTMLElement
   const canvas = useThree(state => state.renderer.domElement) as HTMLElement
-  const [earth] = useState(() => new EarthImpl({ date, view, initialView, cameraLimits }))
+  const [earth] = useState(() => new EarthImpl({ date, view, initialView, cameraLimits, defaultOverlayStyles }))
 
   useLayoutEffect(() => {
     earth.connect(renderer)

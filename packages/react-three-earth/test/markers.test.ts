@@ -157,14 +157,36 @@ describe('Marker', () => {
     const { earth, container } = createMap()
     const first = new Marker({ longitudeDegrees: 0, latitudeDegrees: 0 }).addTo(earth, container)
     const second = new Marker({ longitudeDegrees: 1, latitudeDegrees: 0 }).addTo(earth, container)
-    expect(container.querySelectorAll('.react-three-earth-markers')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-earthkit-markers]')).toHaveLength(1)
     expect(first.element.style.transform).not.toBe('')
     expect(container.style.position).toBe('relative')
     first.remove()
-    expect(container.querySelectorAll('.react-three-earth-markers')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-earthkit-markers]')).toHaveLength(1)
     second.remove()
-    expect(container.querySelector('.react-three-earth-markers')).toBeNull()
+    expect(container.querySelector('[data-earthkit-markers]')).toBeNull()
     expect(container.style.position).toBe('')
+  })
+
+  it('finds its elements by data attribute, and leaves the built-in look off with defaultOverlayStyles: false', () => {
+    const { earth, container } = createMap()
+    const marker = new Marker({ longitudeDegrees: 0, latitudeDegrees: 0 }).addTo(earth, container)
+    const popup = new Popup({ longitudeDegrees: 0, latitudeDegrees: 0, content: 'Hi' }).addTo(earth, container)
+    expect(marker.element.matches('.earthkit-marker[data-earthkit-marker]')).toBe(true)
+    expect(popup.element.matches('.earthkit-popup[data-earthkit-popup]')).toBe(true)
+    const layer = container.querySelector('[data-earthkit-markers]')!
+    expect(layer.hasAttribute('data-earthkit-unstyled')).toBe(false)
+    const style = document.head.querySelector('style[data-earthkit-styles]')!.textContent!
+    // The look is scoped to styled layers; what places markers is not.
+    expect(style).toMatch(/:where\(\[data-earthkit-markers\]:not\(\[data-earthkit-unstyled\]\)\) \.earthkit-popup-content \{/)
+    expect(style).toMatch(/^\[data-earthkit-marker\] \{/m)
+    popup.remove()
+    marker.remove()
+
+    const unstyled = createMap()
+    const plain = new Earth({ defaultOverlayStyles: false })
+    expect(plain.defaultOverlayStyles).toBe(false)
+    new Marker({ longitudeDegrees: 0, latitudeDegrees: 0 }).addTo(plain, unstyled.container)
+    expect(unstyled.container.querySelector('[data-earthkit-markers]')!.hasAttribute('data-earthkit-unstyled')).toBe(true)
   })
 
   it('is a focusable button with a label, also around an element of its own', () => {

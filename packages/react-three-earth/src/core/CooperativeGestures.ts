@@ -36,9 +36,9 @@ export function touchDecision(touchCount: number): CooperativeDecision {
 }
 
 /** Overlays that take the wheel themselves: a popup's or a control's scrolling. */
-const WHEEL_OVERLAYS = '.react-three-earth-popup, .react-three-earth-controls'
+const WHEEL_OVERLAYS = '[data-earthkit-popup], [data-earthkit-controls]'
 /** Overlays that take touches themselves: a draggable marker, a popup's content, a control. */
-const TOUCH_OVERLAYS = '.react-three-earth-marker[data-draggable], .react-three-earth-popup, .react-three-earth-controls'
+const TOUCH_OVERLAYS = '[data-earthkit-marker][data-draggable], [data-earthkit-popup], [data-earthkit-controls]'
 
 /** True for targets inside one of the overlays over the map that `selector` names. */
 function isInsideOverlay(target: EventTarget | null, selector: string): boolean {
@@ -115,7 +115,7 @@ export class CooperativeGestures {
     this.savedTouchAction = domElement.style.touchAction
     domElement.style.touchAction = 'pan-x pan-y'
     const hint = domElement.ownerDocument.createElement('div')
-    hint.className = 'react-three-earth-cooperative-hint'
+    hint.className = 'earthkit-cooperative-hint'
     hint.setAttribute('role', 'status')
     hint.setAttribute('aria-live', 'polite')
     Object.assign(hint.style, {
@@ -129,9 +129,9 @@ export class CooperativeGestures {
       textAlign: 'center',
       pointerEvents: 'none',
       zIndex: '3',
-      font: 'var(--react-three-earth-cooperative-hint-font, 500 20px/1.3 system-ui, sans-serif)',
-      color: 'var(--react-three-earth-cooperative-hint-color, #fff)',
-      background: 'var(--react-three-earth-cooperative-hint-background, rgba(0, 0, 0, 0.6))',
+      font: 'var(--earthkit-cooperative-hint-font, 500 20px/1.3 system-ui, sans-serif)',
+      color: 'var(--earthkit-cooperative-hint-color, #fff)',
+      background: 'var(--earthkit-cooperative-hint-background, rgba(0, 0, 0, 0.6))',
       opacity: '0',
       transition: 'opacity 0.3s',
     })

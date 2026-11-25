@@ -22,7 +22,7 @@ interface StoredEntry {
   data: AtmosphereTextureData
 }
 
-const DATABASE_NAME = 'react-three-earth-atmosphere'
+const DATABASE_NAME = 'earthkit-atmosphere'
 const DATABASE_VERSION = 2
 const STORE_NAME = 'atmosphere-textures'
 const AGE_INDEX = 'storedAtMilliseconds'

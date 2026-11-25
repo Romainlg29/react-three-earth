@@ -309,74 +309,86 @@ export function localHeadingAndPitch(frame: ScreenOverlayFrame, longitudeDegrees
 
 // --- The DOM layer over the canvas, shared by the markers and popups of a container -----------------------
 
-const STYLE_ELEMENT_ATTRIBUTE = 'data-react-three-earth-markers-style'
+const STYLE_ELEMENT_ATTRIBUTE = 'data-earthkit-styles'
+/** On the layer while its earth was made with `defaultOverlayStyles: false`: the built-in look stays off. */
+const UNSTYLED_ATTRIBUTE = 'data-earthkit-unstyled'
+/** The built-in look applies inside a layer without the unstyled attribute. `:where` keeps its specificity at zero. */
+const THEMED = `:where([data-earthkit-markers]:not([${UNSTYLED_ATTRIBUTE}]))`
 const layers = new WeakMap<HTMLElement, { element: HTMLElement; users: number }>()
 
 /**
- * The CSS, injected once per document. Restyle through CSS variables, or override the classes:
- * `--react-three-earth-marker-color` (the default pin), `--react-three-earth-popup-background`, `-color`,
- * `-shadow`, `-radius`, `-padding`, `-font`.
+ * The CSS, injected once per document, in two parts.
+ *
+ * What places markers and popups, always on, found by data attributes (`data-earthkit-markers`,
+ * `-marker`, `-popup`) so app class names never clash with it.
+ *
+ * The built-in look, off with `defaultOverlayStyles: false`, on classes (`:where` keeps the scope out of their
+ * specificity). Restyle through the classes or CSS variables:
+ * `--earthkit-marker-color` (the default pin), `--earthkit-popup-background`, `-color`, `-shadow`, `-radius`,
+ * `-padding`, `-font`.
  */
 const STYLE = `
-.react-three-earth-markers {
+[data-earthkit-markers] {
   position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none;
 }
-.react-three-earth-marker {
+[data-earthkit-marker] {
   position: absolute; left: 0; top: 0; pointer-events: auto; will-change: transform; cursor: pointer;
 }
-.react-three-earth-marker[data-visibility="hidden"], .react-three-earth-popup[data-visibility="hidden"] { visibility: hidden; }
-.react-three-earth-marker[data-draggable] { cursor: grab; touch-action: none; }
-.react-three-earth-marker[data-dragging] { cursor: grabbing; }
-.react-three-earth-marker:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; border-radius: 2px; }
-.react-three-earth-marker-pin {
+[data-earthkit-marker][data-visibility="hidden"], [data-earthkit-popup][data-visibility="hidden"] { visibility: hidden; }
+[data-earthkit-marker][data-draggable] { cursor: grab; touch-action: none; }
+[data-earthkit-marker][data-dragging] { cursor: grabbing; }
+.earthkit-marker-pin {
   appearance: none; box-sizing: border-box; display: block; width: 27px; height: 41px; margin: 0; padding: 0;
-  border: 0; background: none; font: inherit; cursor: inherit;
-  color: var(--react-three-earth-marker-color, #3fb1ce);
+  border: 0; background: none; font: inherit; cursor: inherit; color: var(--earthkit-marker-color, #3fb1ce);
 }
-.react-three-earth-marker-pin svg, .react-three-earth-marker-fallback-pin svg { display: block; width: 100%; height: 100%; }
+.earthkit-marker-pin svg, .earthkit-marker-fallback-pin svg { display: block; width: 100%; height: 100%; }
 /* The pin a React <Marker> shows while it has no content of its own (popups render nothing in it). */
-.react-three-earth-marker-fallback-pin {
-  display: block; width: 27px; height: 41px; color: var(--react-three-earth-marker-color, #3fb1ce);
-}
-.react-three-earth-marker-fallback-pin:not(:only-child) { display: none; }
-.react-three-earth-popup {
+.earthkit-marker-fallback-pin { display: block; width: 27px; height: 41px; color: var(--earthkit-marker-color, #3fb1ce); }
+.earthkit-marker-fallback-pin:not(:only-child) { display: none; }
+[data-earthkit-popup] {
   position: absolute; left: 0; top: 0; z-index: 3; display: flex; pointer-events: auto; will-change: transform;
-  font: var(--react-three-earth-popup-font, 13px / 1.4 system-ui, sans-serif);
-  color: var(--react-three-earth-popup-color, #222);
 }
-.react-three-earth-popup[data-tracking-pointer] { pointer-events: none; }
-.react-three-earth-popup-content {
-  position: relative; box-sizing: border-box; min-width: 0; max-width: 100%;
-  padding: var(--react-three-earth-popup-padding, 10px 12px);
-  background: var(--react-three-earth-popup-background, #fff);
-  border-radius: var(--react-three-earth-popup-radius, 6px);
-  box-shadow: var(--react-three-earth-popup-shadow, 0 1px 4px rgba(0, 0, 0, 0.3));
+[data-earthkit-popup][data-tracking-pointer] { pointer-events: none; }
+/* Lets the box shrink under the popup's maximumWidthPixels. */
+:where([data-earthkit-popup]) > .earthkit-popup-content { box-sizing: border-box; min-width: 0; max-width: 100%; }
+[data-earthkit-popup][data-anchor="bottom"], [data-earthkit-popup][data-anchor^="bottom-"] { flex-direction: column-reverse; }
+[data-earthkit-popup][data-anchor="top"], [data-earthkit-popup][data-anchor^="top-"] { flex-direction: column; }
+[data-earthkit-popup][data-anchor="left"] { flex-direction: row; }
+[data-earthkit-popup][data-anchor="right"] { flex-direction: row-reverse; }
+
+${THEMED} .earthkit-marker:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; border-radius: 2px; }
+${THEMED} .earthkit-popup {
+  font: var(--earthkit-popup-font, 13px / 1.4 system-ui, sans-serif);
+  color: var(--earthkit-popup-color, #222);
+}
+${THEMED} .earthkit-popup-content {
+  position: relative;
+  padding: var(--earthkit-popup-padding, 10px 12px);
+  background: var(--earthkit-popup-background, #fff);
+  border-radius: var(--earthkit-popup-radius, 6px);
+  box-shadow: var(--earthkit-popup-shadow, 0 1px 4px rgba(0, 0, 0, 0.3));
 }
 /* Focused only to bring screen readers into the popup: no ring around the whole box. */
-.react-three-earth-popup-content:focus { outline: none; }
-.react-three-earth-popup[data-close-button] .react-three-earth-popup-content { padding-right: 28px; }
-.react-three-earth-popup-close {
+${THEMED} .earthkit-popup-content:focus { outline: none; }
+${THEMED} .earthkit-popup[data-close-button] .earthkit-popup-content { padding-right: 28px; }
+${THEMED} .earthkit-popup-close {
   all: unset; position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; border-radius: 4px;
   display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 18px; line-height: 1;
 }
-.react-three-earth-popup-close:hover { background: rgba(0, 0, 0, 0.06); }
-.react-three-earth-popup-close:focus-visible { outline: 2px solid #1a73e8; }
-.react-three-earth-popup-tip { width: 0; height: 0; border: 8px solid transparent; z-index: 1; align-self: center; }
-.react-three-earth-popup[data-anchor="bottom"], .react-three-earth-popup[data-anchor^="bottom-"] { flex-direction: column-reverse; }
-.react-three-earth-popup[data-anchor="top"], .react-three-earth-popup[data-anchor^="top-"] { flex-direction: column; }
-.react-three-earth-popup[data-anchor="left"] { flex-direction: row; }
-.react-three-earth-popup[data-anchor="right"] { flex-direction: row-reverse; }
-.react-three-earth-popup[data-anchor="center"] .react-three-earth-popup-tip { display: none; }
-.react-three-earth-popup[data-anchor^="bottom"] .react-three-earth-popup-tip { border-bottom: none; border-top-color: var(--react-three-earth-popup-background, #fff); }
-.react-three-earth-popup[data-anchor^="top"] .react-three-earth-popup-tip { border-top: none; border-bottom-color: var(--react-three-earth-popup-background, #fff); }
-.react-three-earth-popup[data-anchor="left"] .react-three-earth-popup-tip { border-left: none; border-right-color: var(--react-three-earth-popup-background, #fff); }
-.react-three-earth-popup[data-anchor="right"] .react-three-earth-popup-tip { border-right: none; border-left-color: var(--react-three-earth-popup-background, #fff); }
-.react-three-earth-popup[data-anchor$="-left"] .react-three-earth-popup-tip { align-self: flex-start; }
-.react-three-earth-popup[data-anchor$="-right"] .react-three-earth-popup-tip { align-self: flex-end; }
-.react-three-earth-popup[data-anchor="top-left"] .react-three-earth-popup-content { border-top-left-radius: 0; }
-.react-three-earth-popup[data-anchor="top-right"] .react-three-earth-popup-content { border-top-right-radius: 0; }
-.react-three-earth-popup[data-anchor="bottom-left"] .react-three-earth-popup-content { border-bottom-left-radius: 0; }
-.react-three-earth-popup[data-anchor="bottom-right"] .react-three-earth-popup-content { border-bottom-right-radius: 0; }
+${THEMED} .earthkit-popup-close:hover { background: rgba(0, 0, 0, 0.06); }
+${THEMED} .earthkit-popup-close:focus-visible { outline: 2px solid #1a73e8; }
+${THEMED} .earthkit-popup-tip { width: 0; height: 0; border: 8px solid transparent; z-index: 1; align-self: center; }
+${THEMED} .earthkit-popup[data-anchor="center"] .earthkit-popup-tip { display: none; }
+${THEMED} .earthkit-popup[data-anchor^="bottom"] .earthkit-popup-tip { border-bottom: none; border-top-color: var(--earthkit-popup-background, #fff); }
+${THEMED} .earthkit-popup[data-anchor^="top"] .earthkit-popup-tip { border-top: none; border-bottom-color: var(--earthkit-popup-background, #fff); }
+${THEMED} .earthkit-popup[data-anchor="left"] .earthkit-popup-tip { border-left: none; border-right-color: var(--earthkit-popup-background, #fff); }
+${THEMED} .earthkit-popup[data-anchor="right"] .earthkit-popup-tip { border-right: none; border-left-color: var(--earthkit-popup-background, #fff); }
+${THEMED} .earthkit-popup[data-anchor$="-left"] .earthkit-popup-tip { align-self: flex-start; }
+${THEMED} .earthkit-popup[data-anchor$="-right"] .earthkit-popup-tip { align-self: flex-end; }
+${THEMED} .earthkit-popup[data-anchor="top-left"] .earthkit-popup-content { border-top-left-radius: 0; }
+${THEMED} .earthkit-popup[data-anchor="top-right"] .earthkit-popup-content { border-top-right-radius: 0; }
+${THEMED} .earthkit-popup[data-anchor="bottom-left"] .earthkit-popup-content { border-bottom-left-radius: 0; }
+${THEMED} .earthkit-popup[data-anchor="bottom-right"] .earthkit-popup-content { border-bottom-right-radius: 0; }
 `
 
 function ensureStyle(document: Document): void {
@@ -387,22 +399,32 @@ function ensureStyle(document: Document): void {
   document.head.append(style)
 }
 
+export interface ScreenLayerOptions {
+  /**
+   * Whether the markers and popups in the layer get the built-in look (pass `earth.defaultOverlayStyles`). The last
+   * call for a container sets it. Default: true.
+   */
+  defaultStyles?: boolean
+}
+
 /**
  * The layer markers and popups go in, filling `container` above the canvas (and below the attribution).
  * Shared by everything in the container; give it back with `releaseScreenLayer`. The container is made
  * `position: relative` while it is static.
  */
-export function acquireScreenLayer(container: HTMLElement): HTMLElement {
+export function acquireScreenLayer(container: HTMLElement, { defaultStyles = true }: ScreenLayerOptions = {}): HTMLElement {
   const existing = layers.get(container)
   if (existing !== undefined) {
     existing.users++
+    existing.element.toggleAttribute(UNSTYLED_ATTRIBUTE, !defaultStyles)
     return existing.element
   }
   const document = container.ownerDocument
   ensureStyle(document)
   holdContainerPosition(container)
   const element = document.createElement('div')
-  element.className = 'react-three-earth-markers'
+  element.setAttribute('data-earthkit-markers', '')
+  element.toggleAttribute(UNSTYLED_ATTRIBUTE, !defaultStyles)
   container.append(element)
   layers.set(container, { element, users: 1 })
   return element

@@ -42,7 +42,8 @@ export interface MarkerOptions {
    */
   heightMeters?: MarkerHeight
   /**
-   * The element to show. It becomes the marker's root: it gets the `react-three-earth-marker` class, an
+   * The element to show. It becomes the marker's root: it gets the `earthkit-marker` class (and the
+   * `data-earthkit-marker` attribute the library finds it by), an
    * absolute position and a transform. Default: a pin (27 × 41 pixels) in `color`.
    */
   element?: HTMLElement
@@ -164,7 +165,8 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     this.occludedOpacity = options.occludedOpacity ?? 0.2
 
     this.element = options.element ?? this.createPin(options.color)
-    this.element.classList.add('react-three-earth-marker')
+    this.element.classList.add('earthkit-marker')
+    this.element.setAttribute('data-earthkit-marker', '')
     if (options.className) this.element.classList.add(...options.className.split(/\s+/).filter(Boolean))
     this.element.style.transformOrigin = anchorTransformOrigin(this.anchor)
     this.element.dataset.visibility = 'hidden'
@@ -198,7 +200,7 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
     if (this.earth !== null) this.remove()
     this.earth = earth
     this.container = container
-    acquireScreenLayer(container).append(this.element)
+    acquireScreenLayer(container, { defaultStyles: earth.defaultOverlayStyles }).append(this.element)
     this.resizeObserver?.observe(this.element, { box: 'border-box' })
     ScreenOverlay.of(earth).add(this, 'marker')
     return this
@@ -473,9 +475,9 @@ export class Marker extends EventDispatcher<MarkerEventMap> implements ScreenOve
   protected createPin(color: string | undefined): HTMLElement {
     const pin = document.createElement('button')
     pin.type = 'button'
-    pin.className = 'react-three-earth-marker-pin'
+    pin.className = 'earthkit-marker-pin'
     pin.innerHTML = PIN_SVG // a constant: no outside text
-    if (color !== undefined) pin.style.setProperty('--react-three-earth-marker-color', color)
+    if (color !== undefined) pin.style.setProperty('--earthkit-marker-color', color)
     return pin
   }
 

@@ -3,7 +3,7 @@ import { FiberProvider } from 'its-fine'
 import { use, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from 'react'
 import type { WebGPURenderer } from 'three/webgpu'
 
-import { CONTROLS_CLASS_NAME, Controls as ControlsImpl, type MapControl } from '../controls/Controls.js'
+import { Controls as ControlsImpl, type MapControl } from '../controls/Controls.js'
 import { FullscreenControl as FullscreenControlImpl, type FullscreenControlOptions, type FullscreenControlState } from '../controls/FullscreenControl.js'
 import { GeolocateControl as GeolocateControlImpl, type GeolocateControlOptions, type GeolocateControlState, type GeolocateEventMap } from '../controls/GeolocateControl.js'
 import type { ControlsLocale } from '../controls/locale.js'
@@ -15,7 +15,7 @@ import { ControlsContext, useEarth } from './context.js'
 import { useDomRoot } from './domRoot.js'
 
 export interface ControlsProps {
-  /** Class names for the element, added to `react-three-earth-controls`. Place it over the map with them. */
+  /** Class names for the element (it has none of its own). Place it over the map with them. */
   className?: string
   /** Inline style of the element. */
   style?: CSSProperties
@@ -60,7 +60,7 @@ function ControlsContent({ className, style, container, children }: ControlsProp
 
   useLayoutEffect(() => {
     if (controls === null) return
-    controls.element.className = className === undefined ? CONTROLS_CLASS_NAME : `${CONTROLS_CLASS_NAME} ${className}`
+    controls.element.className = className ?? ''
   }, [controls, className])
 
   const appliedStyle = useRef<string[]>([])
