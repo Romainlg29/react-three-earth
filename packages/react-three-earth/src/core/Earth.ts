@@ -5,6 +5,7 @@ import { ViewMorph, type ViewMode, type ViewTransitionOptions } from '../view/Vi
 import { collectAttributions, type AttributionProvider } from './attribution.js'
 import type { Atmosphere } from './Atmosphere.js'
 import type { GeographicPosition } from './camera.js'
+import type { CameraLimits } from './cameraLimits.js'
 import { EarthCamera, type MapView, type MapViewChange } from './EarthCamera.js'
 import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type EarthPointerEvent, type ViewSample } from './events.js'
 import type { Imagery } from './Imagery.js'
@@ -64,6 +65,8 @@ export interface EarthOptions {
    * nothing moved the camera before; otherwise the camera stays where it is.
    */
   initialView?: MapViewChange
+  /** Bounds the camera stays within: zoom, tilt and the box the centre stays in (`earth.camera.setLimits`). Default: none. */
+  cameraLimits?: CameraLimits
 }
 
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
@@ -208,12 +211,13 @@ export class Earth extends Group<EarthEventMap> {
   protected pointerTarget: { element: HTMLElement; remove: () => void } | null = null
   protected readonly viewSample: ViewSample = { groundMetersPerPixel: 0, headingDegrees: 0, pitchDegrees: 0 }
 
-  constructor({ date = new Date(), view, initialView }: EarthOptions = {}) {
+  constructor({ date = new Date(), view, initialView, cameraLimits }: EarthOptions = {}) {
     super()
     this.name = 'Earth'
     this.date = date
     this.pendingInitialView = initialView ?? null
     this.initialViewSettled = initialView !== undefined
+    if (cameraLimits !== undefined) this.camera.setLimits(cameraLimits)
     this.viewChosen = view !== undefined
     if (view === '2d') this.view.setMode('2d', { durationSeconds: 0 })
   }
@@ -572,6 +576,9 @@ export class Earth extends Group<EarthEventMap> {
     }
     // Before the morph and the tiles, so they follow this frame's camera.
     const animating = this.camera.advanceAnimation(delta)
+    // After the animation and the controls (which ran before this update), so every move keeps to the limits. Not
+    // before the camera is placed: a fresh camera inside the Earth would be moved out, and a style's start view lost.
+    if (this.camera.hasLimits && this.pendingInitialView === null && !this.cameraUnplaced()) this.camera.applyLimits()
     const morphing = this.view.update(camera, Math.min(delta, 0.1))
     this.view.updateWorldCopies(camera)
     this.updateAnchors()
