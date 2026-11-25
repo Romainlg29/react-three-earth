@@ -84,7 +84,12 @@ export class NominatimProvider implements GeocoderProvider {
     if (longitudeDegrees === null || latitudeDegrees === null) return []
     const displayName = asString(item.display_name) ?? ''
     const parts = displayName.split(', ')
-    const name = asString(item.name) ?? parts[0] ?? ''
+    // An address has an empty `name`: its number and road name it, not the number alone.
+    const address = isRecord(item.address) ? item.address : {}
+    const road = asString(address.road) ?? asString(address.pedestrian)
+    const houseNumber = asString(address.house_number)
+    const street = road === null ? null : houseNumber === null ? road : `${houseNumber} ${road}`
+    const name = asString(item.name) ?? street ?? parts[0] ?? ''
     // `boundingbox` is south, north, west, east, as strings.
     const box = Array.isArray(item.boundingbox) ? item.boundingbox : []
     const osmType = asString(item.osm_type)
@@ -93,7 +98,7 @@ export class NominatimProvider implements GeocoderProvider {
       {
         id: `${this.name}:${osmType !== null && osmId !== null ? `${osmType}/${osmId}` : (asString(item.place_id) ?? displayName)}`,
         name,
-        description: joinDescription(name, parts),
+        description: joinDescription(name, street === name && houseNumber !== null ? parts.filter(part => part !== houseNumber && part !== road) : parts),
         longitudeDegrees,
         latitudeDegrees,
         bounds: toBounds(box[2], box[0], box[3], box[1]),

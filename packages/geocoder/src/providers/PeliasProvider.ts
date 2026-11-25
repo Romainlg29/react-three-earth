@@ -43,7 +43,8 @@ export class PeliasProvider implements GeocoderProvider {
       }),
       signal,
     )
-    return featuresOf(this.name, json).flatMap(feature => this.toResult(feature))
+    // `/autocomplete` ignores `size` and returns up to 10.
+    return featuresOf(this.name, json).flatMap(feature => this.toResult(feature)).slice(0, limit)
   }
 
   async reverse({ longitudeDegrees, latitudeDegrees }: GeographicPosition, { signal, limit, language }: GeocoderReverseOptions): Promise<GeocoderResult[]> {

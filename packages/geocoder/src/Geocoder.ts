@@ -151,6 +151,8 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
   protected searchNumber = 0
   protected reverseNumber = 0
   protected readonly cache = new Map<string, GeocoderResult[]>()
+  /** The user closed the list (Escape, blur): an answer arriving later does not reopen it, until they type or submit. */
+  protected closedByUser = false
 
   constructor(options: GeocoderOptions) {
     super()
@@ -162,6 +164,9 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
     for (const provider of this.providers) {
       if (names.has(provider.name)) throw new Error(`Geocoder: two providers are named "${provider.name}"; give one another \`name\` in its options.`)
       names.add(provider.name)
+    }
+    if (options.reverseOnClick === true && !this.providers.some(provider => provider.reverse !== undefined)) {
+      throw new Error(`Geocoder: \`reverseOnClick\` needs a provider that can reverse geocode, and none of ${this.providers.map(provider => provider.name).join(', ')} can; add one with a \`reverse\` method (all bundled providers have one).`)
     }
     this.state = { query: '', status: 'idle', results: NO_RESULTS, resultsQuery: '', activeIndex: -1, open: false, selected: null, error: null, reverse: IDLE_REVERSE }
   }
@@ -176,6 +181,9 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
         if (position !== null) void this.reverse(position)
       })
     }
+    // Reinstalled (a remount, StrictMode): the selection's marker comes back, once `<Earth>` gave an element.
+    const selected = this.state.selected
+    if (selected !== null && (this.options.markerContainer ?? context.earth.pointerEventsElement) !== null) this.placeMarker(selected)
     context.onDispose(() => {
       this.removeMarker()
       this.earth = null
@@ -185,6 +193,16 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
   uninstall(): void {
     this.cancelSearch()
     this.reverseController?.abort()
+    this.reverseController = null
+    this.reverseNumber++
+    // Answers in flight are dropped: nothing is loading any more.
+    if (this.state.status === 'loading') this.setState({ status: this.state.results.length > 0 ? 'success' : 'idle' })
+    if (this.state.reverse.status === 'loading') this.setState({ reverse: { ...this.state.reverse, status: this.state.reverse.results.length > 0 ? 'success' : 'idle' } })
+  }
+
+  /** Forgets the cached answers, for example after a provider's data changed. */
+  clearCache(): void {
+    this.cache.clear()
   }
 
   inspect(): unknown {
@@ -217,6 +235,7 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
   setQuery(query: string): void {
     if (query === this.state.query) return
     this.cancelSearch()
+    this.closedByUser = false
     const typed = query.trim().length >= this.minimumQueryLength && this.providers.some(provider => provider.autocomplete)
     if (!typed) {
       this.setState({ query, status: 'idle', results: NO_RESULTS, resultsQuery: query, activeIndex: -1, open: false, error: null })
@@ -235,6 +254,7 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
    */
   search(query: string = this.state.query): Promise<GeocoderResult[]> {
     this.cancelSearch()
+    this.closedByUser = false
     if (query !== this.state.query) this.setState({ query, activeIndex: -1 })
     return this.runSearch(query, false)
   }
@@ -293,7 +313,7 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
       results: failed ? NO_RESULTS : results,
       resultsQuery: query,
       activeIndex: -1,
-      open: !failed,
+      open: !failed && results.length > 0 && !this.closedByUser,
       error: failed ? (failures[0]?.error ?? null) : null,
     })
     for (const failure of failures) this.dispatchEvent({ type: 'error', query, ...failure })
@@ -304,6 +324,7 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
   protected async searchProvider(provider: GeocoderProvider, query: string, options: GeocoderSearchOptions): Promise<GeocoderResult[]> {
     const { proximity } = options
     const key = JSON.stringify([provider.name, options.autocomplete, query, options.limit, options.language ?? '', proximity === null || proximity === undefined ? null : [proximity.longitudeDegrees.toFixed(2), proximity.latitudeDegrees.toFixed(2)]])
+    if (provider.cacheable === false) return provider.search(query, options)
     const cached = this.cache.get(key)
     if (cached !== undefined) {
       // Most recently used last.
@@ -342,6 +363,7 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
     const count = this.state.results.length
     if (count === 0) return
     if (!this.state.open) {
+      this.closedByUser = false
       this.setState({ open: true, activeIndex: step > 0 ? 0 : count - 1 })
       return
     }
@@ -352,11 +374,13 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
 
   /** Shows the list of results, if there are any (on focus). */
   open(): void {
+    this.closedByUser = false
     if (!this.state.open && this.state.results.length > 0) this.setState({ open: true })
   }
 
   /** Hides the list of results, keeping them (on Escape, on blur). */
   close(): void {
+    this.closedByUser = true
     if (this.state.open || this.state.activeIndex !== -1) this.setState({ open: false, activeIndex: -1 })
   }
 
@@ -415,10 +439,20 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
     const earth = this.earth
     if (earth === null) return Promise.resolve(false)
     const merged = { ...DEFAULT_FIT, ...options }
-    const moved =
-      result.bounds === null
-        ? earth.camera.flyTo({ longitudeDegrees: result.longitudeDegrees, latitudeDegrees: result.latitudeDegrees, zoom: Math.min(this.options.pointZoom ?? 16, merged.maximumZoom ?? Number.POSITIVE_INFINITY) }, merged)
-        : earth.camera.fitBounds(result.bounds, merged)
+    let moved: Promise<boolean>
+    if (result.bounds === null) {
+      // A point: its centre at `pointZoom`, with the heading, pitch and `linear` of a fit (padding needs an extent).
+      const change = {
+        longitudeDegrees: result.longitudeDegrees,
+        latitudeDegrees: result.latitudeDegrees,
+        zoom: Math.min(this.options.pointZoom ?? 16, merged.maximumZoom ?? Number.POSITIVE_INFINITY),
+        ...(merged.headingDegrees === undefined ? {} : { headingDegrees: merged.headingDegrees }),
+        ...(merged.pitchDegrees === undefined ? {} : { pitchDegrees: merged.pitchDegrees }),
+      }
+      moved = merged.linear === true ? earth.camera.easeTo(change, merged) : earth.camera.flyTo(change, merged)
+    } else {
+      moved = earth.camera.fitBounds(result.bounds, merged)
+    }
     earth.requestFrame()
     return moved
   }
@@ -442,12 +476,14 @@ export class Geocoder extends EventDispatcher<GeocoderEventMap> implements Earth
     const option = this.options.marker
     const earth = this.earth
     if (option === undefined || option === false || earth === null) return
-    const container = this.options.markerContainer ?? earth.pointerEventsElement
+    this.removeMarker()
+    // A canvas cannot hold the marker layer: its parent is the element it fills.
+    const listened = earth.pointerEventsElement
+    const container = this.options.markerContainer ?? (listened?.tagName === 'CANVAS' ? listened.parentElement : listened)
     if (container === null) {
       console.warn('Geocoder: no element to put the marker in; pass `markerContainer` (the canvas\'s parent), or call `earth.attachPointerEvents` (`<Earth>` does).')
       return
     }
-    this.removeMarker()
     const custom = typeof option === 'function' ? option(result) : {}
     this.marker = new Marker({ label: result.name, ...custom, longitudeDegrees: result.longitudeDegrees, latitudeDegrees: result.latitudeDegrees }).addTo(earth, container)
     earth.requestFrame()

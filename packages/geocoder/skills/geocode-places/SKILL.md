@@ -153,6 +153,9 @@ const geocoder = new Geocoder({
 })
 ```
 
+Photon takes only the language's primary subtag (`'fr-CH'` is sent as `'fr'`), and a server answers 400 for a language
+it was not built with (the public one: `en`, `de`, `fr`): set `language` to one it has.
+
 Several providers are asked together; their results are listed in provider order, each up to `limit`. One that fails
 fires `error` and the others still show; `status` is `'error'` only when every provider failed.
 
@@ -194,7 +197,8 @@ null `bounds` flies to the point at `pointZoom`.
 
 `setQuery` (what `inputProps.onChange` calls) waits for a pause in typing (`debounceMilliseconds`, 250), then asks the
 providers whose `autocomplete` is true. A newer query aborts the older requests and drops their answers, answers are
-cached (`cacheSize`, 64), and queries shorter than `minimumQueryLength` (2) clear the list. Old results stay listed
+cached (`cacheSize`, 64; `geocoder.clearCache()` forgets them; `GeoJSONProvider` is never cached, so its `setFeatures`
+shows at once), and queries shorter than `minimumQueryLength` (2) clear the list. Old results stay listed
 while the next search runs, so the list does not flicker; `resultsQuery` tells which query they answer.
 
 From `proximityMinimumZoom` (9) in, the view's centre is sent as `proximity`, so "Main Street" finds the one nearby;
@@ -205,6 +209,7 @@ farther out the world ranks the same. `bounds` keeps to a box. `proximity: false
 `select(indexOrResult)` (Enter, a click) puts the name in the box, closes the list, fits the camera to the place's
 `bounds` (padding 48 px, zoom up to 17) or flies to its point at zoom `pointZoom` (16), and fires `select`. Change the
 move with `flyTo: { durationSeconds: 2, paddingPixels: 80, maximumZoom: 14 }` (`fitBounds` and `flyTo` options), or
+`paddingPixels` needs an extent: a point keeps only the heading, pitch and `linear`. Or
 turn it off with `flyTo: false` and move the camera yourself in the `select` event.
 
 `marker: true` drops the default pin on the selection (removed on `clear` or the next selection);
@@ -263,7 +268,8 @@ In React, `useGeocoderEvent(geocoder, 'select', handler)` listens while mounted.
 ### HIGH: Search as you type on the public Nominatim server
 
 Its usage policy forbids autocomplete and allows one request a second; breaking it gets the app blocked.
-`NominatimProvider` is asked only on Enter by default. Keep it so, put Photon (or your own Nominatim with
+`NominatimProvider` is asked only on Enter by default, but nothing throttles repeated Enters to one a second: an app
+that lets users submit fast must wait between them. Keep it off typing, put Photon (or your own Nominatim with
 `autocomplete: true`) in front for typing, and set `email`.
 
 ### HIGH: A new `Geocoder` or plugins array every render

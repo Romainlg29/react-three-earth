@@ -247,6 +247,39 @@ describe('Geocoder', () => {
     expect(geocoder.getState()).not.toBe(first)
   })
 
+  it('keeps the list closed when an answer arrives after Escape or blur, and closed with no results', async () => {
+    const { provider, calls } = controlledProvider('remote')
+    const geocoder = new Geocoder({ provider })
+    geocoder.setQuery('paris')
+    await vi.runAllTimersAsync()
+    geocoder.close()
+    calls[0]!.resolve([result('Paris')])
+    await vi.runAllTimersAsync()
+    expect(geocoder.getState()).toMatchObject({ open: false, status: 'success' })
+    geocoder.open()
+    expect(geocoder.getState().open).toBe(true)
+    // No place found: nothing to show, and one Escape clears.
+    geocoder.setQuery('zz')
+    await vi.runAllTimersAsync()
+    calls[1]!.resolve([])
+    await vi.runAllTimersAsync()
+    expect(geocoder.getState()).toMatchObject({ open: false, status: 'success', results: [] })
+    geocoder.handleKeyDown(key('Escape'))
+    expect(geocoder.getState().query).toBe('')
+  })
+
+  it('never caches an in-memory provider, so setFeatures shows at once', async () => {
+    const provider = new GeoJSONProvider({ features: [{ type: 'Feature', properties: { name: 'Old Store' }, geometry: { type: 'Point', coordinates: [0, 0] } }] })
+    const geocoder = new Geocoder({ provider })
+    expect((await geocoder.search('store')).map(each => each.name)).toEqual(['Old Store'])
+    provider.setFeatures([{ type: 'Feature', properties: { name: 'New Store' }, geometry: { type: 'Point', coordinates: [0, 0] } }])
+    expect((await geocoder.search('store')).map(each => each.name)).toEqual(['New Store'])
+  })
+
+  it('refuses reverseOnClick without a provider that can reverse geocode', () => {
+    expect(() => new Geocoder({ provider: { name: 'forward', autocomplete: true, search: async () => [] }, reverseOnClick: true })).toThrow(/reverseOnClick` needs a provider/)
+  })
+
   it('refuses no provider or two with the same name, saying the fix', () => {
     expect(() => new Geocoder({ provider: [] })).toThrow(/no provider/)
     expect(() => new Geocoder({ provider: [local(), local()] })).toThrow(/two providers are named "geojson"/)
@@ -281,6 +314,33 @@ describe('Geocoder', () => {
       await geocoder.search('montreux')
       geocoder.select(0)
       expect(camera.flyTo).toHaveBeenCalledWith({ longitudeDegrees: 6.91, latitudeDegrees: 46.43, zoom: 15 }, { paddingPixels: 48, maximumZoom: 17, durationSeconds: 1 })
+    })
+
+    it('stops loading on uninstall, for searches and reverse searches in flight', async () => {
+      const { context } = fakeEarth()
+      const { provider, calls } = controlledProvider('remote')
+      const reversing: GeocoderProvider = { ...provider, reverse: (_position, options) => new Promise((_resolve, reject) => options.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))) }
+      const geocoder = new Geocoder({ provider: reversing })
+      geocoder.install(context)
+      void geocoder.search('paris')
+      const reverse = vi.fn()
+      geocoder.addEventListener('reverse', reverse)
+      void geocoder.reverse({ longitudeDegrees: 2, latitudeDegrees: 48 })
+      geocoder.uninstall()
+      await vi.runAllTimersAsync()
+      expect(calls[0]!.options.signal?.aborted).toBe(true)
+      expect(geocoder.getState().status).toBe('idle')
+      expect(geocoder.getState().reverse.status).toBe('idle')
+      expect(reverse).not.toHaveBeenCalled()
+    })
+
+    it('keeps the heading and pitch asked for when flying to a point', async () => {
+      const { camera, context } = fakeEarth()
+      const geocoder = new Geocoder({ provider: local(), flyTo: { pitchDegrees: -45 } })
+      geocoder.install(context)
+      await geocoder.search('montreux')
+      geocoder.select(0)
+      expect(camera.flyTo).toHaveBeenCalledWith({ longitudeDegrees: 6.91, latitudeDegrees: 46.43, zoom: 16, pitchDegrees: -45 }, expect.anything())
     })
 
     it('leaves the camera with flyTo: false', async () => {

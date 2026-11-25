@@ -16,15 +16,16 @@ export function useGeocoderState<T>(geocoder: Geocoder, selector: (state: Geocod
 export function useGeocoderState<T>(geocoder: Geocoder, selector?: (state: GeocoderState) => T): T | GeocoderState {
   const latestSelector = useRef(selector)
   latestSelector.current = selector
-  const memory = useRef<{ state: GeocoderState; selected: T | GeocoderState } | null>(null)
+  const memory = useRef<{ state: GeocoderState; select: ((state: GeocoderState) => T) | undefined; selected: T | GeocoderState } | null>(null)
   const getSnapshot = useCallback((): T | GeocoderState => {
     const state = geocoder.getState()
-    const previous = memory.current
-    if (previous !== null && previous.state === state) return previous.selected
     const select = latestSelector.current
+    const previous = memory.current
+    // A new selector (one closing over a prop) selects again from the same state.
+    if (previous !== null && previous.state === state && previous.select === select) return previous.selected
     const next = select === undefined ? state : select(state)
     const selected = previous !== null && Object.is(previous.selected, next) ? previous.selected : next
-    memory.current = { state, selected }
+    memory.current = { state, select, selected }
     return selected
   }, [geocoder])
   return useSyncExternalStore(geocoder.subscribe, getSnapshot, getSnapshot)

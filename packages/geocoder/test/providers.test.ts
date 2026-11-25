@@ -58,6 +58,12 @@ describe('NominatimProvider', () => {
     })
   })
 
+  it('names an address by its number and road, not the number alone', async () => {
+    const house = { osm_type: 'node', osm_id: 1, lat: '48.86', lon: '2.34', name: '', display_name: '12, Rue de Rivoli, Paris, France', address: { house_number: '12', road: 'Rue de Rivoli', city: 'Paris' } }
+    const [result] = await new NominatimProvider({ url: 'https://nominatim.example', fetch: fakeFetch([house]) }).search('12 rue de rivoli', searchOptions)
+    expect(result).toMatchObject({ name: '12 Rue de Rivoli', description: 'Paris, France', bounds: null })
+  })
+
   it('stays out of search as you type by default, as the public server asks', () => {
     expect(new NominatimProvider({ url: 'https://nominatim.example' }).autocomplete).toBe(false)
     expect(new NominatimProvider({ url: 'https://nominatim.example', autocomplete: true }).autocomplete).toBe(true)
@@ -107,6 +113,8 @@ describe('PhotonProvider', () => {
     const fetch = fakeFetch(answer)
     await new PhotonProvider({ url: 'https://photon.example', fetch }).reverse({ longitudeDegrees: 6.87, latitudeDegrees: 45.92 }, { limit: 1 })
     expect(fetch.urls[0]).toBe('https://photon.example/reverse?lon=6.87&lat=45.92&limit=1')
+    await new PhotonProvider({ url: 'https://photon.example', fetch }).search('x', { ...searchOptions, language: 'fr-CH' })
+    expect(new URL(fetch.urls[1]!).searchParams.get('lang')).toBe('fr')
   })
 
   it('says when the answer is not GeoJSON', async () => {

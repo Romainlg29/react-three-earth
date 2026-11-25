@@ -60,6 +60,11 @@ export interface GeocoderProvider {
    * Nominatim server): it is then asked only when the user submits (Enter, `geocoder.search()`).
    */
   readonly autocomplete: boolean
+  /**
+   * Whether the `Geocoder` may cache its answers. Default: true. False for an in-memory index whose data changes
+   * (`GeoJSONProvider`): it answers at once anyway.
+   */
+  readonly cacheable?: boolean
   /** Places matching `query`, best first. Rejects on a network or service error. */
   search(query: string, options: GeocoderSearchOptions): Promise<GeocoderResult[]>
   /** Places at a position, the most precise first (the building, then the street, the town…). */

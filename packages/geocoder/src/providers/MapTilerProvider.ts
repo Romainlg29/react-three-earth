@@ -46,8 +46,9 @@ export class MapTilerProvider implements GeocoderProvider {
     return featuresOf(this.name, json).flatMap(feature => this.toResult(feature))
   }
 
-  async reverse({ longitudeDegrees, latitudeDegrees }: GeographicPosition, { signal, limit, language }: GeocoderReverseOptions): Promise<GeocoderResult[]> {
-    const json = await this.fetch(buildUrl(this.options.url, `${longitudeDegrees},${latitudeDegrees}.json`, { key: this.options.key, limit, language: languageParameter(language), ...this.options.parameters }), signal)
+  /** No `limit`: the service refuses one above 1 on a reverse search without a single `types`. */
+  async reverse({ longitudeDegrees, latitudeDegrees }: GeographicPosition, { signal, language }: GeocoderReverseOptions): Promise<GeocoderResult[]> {
+    const json = await this.fetch(buildUrl(this.options.url, `${longitudeDegrees},${latitudeDegrees}.json`, { key: this.options.key, language: languageParameter(language), ...this.options.parameters }), signal)
     return featuresOf(this.name, json).flatMap(feature => this.toResult(feature))
   }
 

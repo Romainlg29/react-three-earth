@@ -1,7 +1,7 @@
 import type { GeographicPosition } from '@earthkit/globe'
 
 import type { GeocoderProvider, GeocoderResult, GeocoderReverseOptions, GeocoderSearchOptions } from '../types.js'
-import { asString, boundsParameter, buildUrl, featuresOf, fetchJson, joinDescription, languageParameter, pointOf, toBounds, type HttpProviderOptions } from './http.js'
+import { asString, boundsParameter, buildUrl, featuresOf, fetchJson, joinDescription, pointOf, toBounds, type HttpProviderOptions } from './http.js'
 
 export interface PhotonProviderOptions extends HttpProviderOptions {
   /** Whether search as you type may call it. Default: true (Photon is built for it). */
@@ -29,7 +29,7 @@ export class PhotonProvider implements GeocoderProvider {
       buildUrl(this.options.url, 'api', {
         q: query,
         limit,
-        lang: languageParameter(language),
+        lang: photonLanguage(language),
         lon: proximity?.longitudeDegrees,
         lat: proximity?.latitudeDegrees,
         bbox: boundsParameter(bounds),
@@ -41,7 +41,7 @@ export class PhotonProvider implements GeocoderProvider {
   }
 
   async reverse({ longitudeDegrees, latitudeDegrees }: GeographicPosition, { signal, limit, language }: GeocoderReverseOptions): Promise<GeocoderResult[]> {
-    const json = await this.fetch(buildUrl(this.options.url, 'reverse', { lon: longitudeDegrees, lat: latitudeDegrees, limit, lang: languageParameter(language), ...this.options.parameters }), signal)
+    const json = await this.fetch(buildUrl(this.options.url, 'reverse', { lon: longitudeDegrees, lat: latitudeDegrees, limit, lang: photonLanguage(language), ...this.options.parameters }), signal)
     return featuresOf(this.name, json).flatMap(feature => this.toResult(feature))
   }
 
@@ -75,4 +75,13 @@ export class PhotonProvider implements GeocoderProvider {
       },
     ]
   }
+}
+
+/**
+ * The language Photon takes: the primary subtag only (`'fr-CH'` → `'fr'`). A server answers 400 for a language it was
+ * not built with (the public one: `en`, `de`, `fr`), so pick one it has in the geocoder's `language`.
+ */
+function photonLanguage(language: string | undefined): string | undefined {
+  if (language === undefined || language === '') return undefined
+  return language.split(/[-_]/)[0]?.toLowerCase()
 }

@@ -45,6 +45,8 @@ const RADIANS = Math.PI / 180
 export class GeoJSONProvider implements GeocoderProvider {
   readonly name: string
   readonly autocomplete = true
+  /** Answers at once from data that `setFeatures` changes: never cached. */
+  readonly cacheable = false
   protected readonly options: GeoJSONProviderOptions
   protected entries: IndexEntry[] = []
 
@@ -91,12 +93,12 @@ export class GeoJSONProvider implements GeocoderProvider {
     for (const { feature, result } of this.entries) {
       const geometry = feature.geometry
       if (geometry === null) continue
-      if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') {
-        if (result.bounds !== null && containsPoint(result.bounds, position) && polygonContains(geometry.type === 'Polygon' ? [geometry.coordinates] : geometry.coordinates, position)) {
-          containing.push({ result, area: boundsArea(result.bounds) })
-        }
+      const polygons = polygonsOf(geometry)
+      if (polygons.length > 0 && result.bounds !== null && containsPoint(result.bounds, position) && polygonContains(polygons, position)) {
+        containing.push({ result, area: boundsArea(result.bounds) })
         continue
       }
+      if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') continue
       const distance = geometryDistanceMeters(geometry, position)
       if (distance <= tolerance) near.push({ result, distance })
     }
@@ -125,7 +127,7 @@ export class GeoJSONProvider implements GeocoderProvider {
       order,
       texts,
       result: {
-        id: `${this.name}:${feature.id ?? order}`,
+        id: feature.id === undefined || feature.id === null ? `${this.name}:#${order}` : `${this.name}:${feature.id}`,
         name,
         description: readText(feature, this.options.description ?? (() => '')) ?? '',
         longitudeDegrees,
@@ -199,6 +201,14 @@ function ringContains(ring: Position[], { longitudeDegrees: x, latitudeDegrees: 
     if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside
   }
   return inside
+}
+
+/** The polygons of a geometry, those inside a collection too. */
+function polygonsOf(geometry: Geometry): Position[][][] {
+  if (geometry.type === 'Polygon') return [geometry.coordinates]
+  if (geometry.type === 'MultiPolygon') return geometry.coordinates
+  if (geometry.type === 'GeometryCollection') return geometry.geometries.flatMap(polygonsOf)
+  return []
 }
 
 /** Whether polygons (outer ring, then holes) hold a position. */
