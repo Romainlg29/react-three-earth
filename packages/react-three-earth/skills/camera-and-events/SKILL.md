@@ -165,7 +165,7 @@ MapLibre's pitch (0 looks down), so links work in both.
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { Earth, EarthControls } from 'react-three-earth/react'
+import { Earth, EarthControls } from '@earthkit/globe/react'
 
 export function AlpsMap() {
   return (
