@@ -20,6 +20,11 @@ const REANCHOR_DISTANCE_METERS = 20_000
  * straight down), so `update` skips the simulation, metres.
  */
 export const WAVE_MAXIMUM_CAMERA_HEIGHT_METERS = 30_000
+/**
+ * Texels per side of each cascade on the GPU. Four times the CPU's: each tile then holds four times the wavelengths, so
+ * the waves that show at a given distance come from a longer tile and its repeats are far apart.
+ */
+export const WAVE_COMPUTE_GRID_SIZE = 256
 
 export interface WaveSurfaceNodes {
   /** The resolved waves' slope at the fragment, east and north, dimensionless. 0 where the waves fade out. */
@@ -44,7 +49,14 @@ export interface WaveSurfaceNodes {
  * roughness takes them back.
  */
 export class WaveSurface {
+  /** The CPU simulation (WebGL2), `WAVE_GRID_SIZE` texels a side. */
   readonly field: WaveField
+  /** The spectrum the GPU simulates, `WAVE_COMPUTE_GRID_SIZE` texels a side: made with the GPU simulation. */
+  protected computeSpectrum: WaveField | null = null
+  protected readonly fieldOptions: WaveFieldOptions
+  protected seaState: SeaStateOptions | null = null
+  /** Per cascade: the metres a texel spans in the simulation drawn now (CPU or GPU). */
+  protected readonly texelSizes: UniformNode<'float', number>[]
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
   protected computeField: WaveComputeField | null = null
   /** 1 draws the waves, 0 leaves the sea flat. */
@@ -70,8 +82,10 @@ export class WaveSurface {
   protected timeSecondsValue = 0
 
   constructor(options: WaveFieldOptions = {}) {
+    this.fieldOptions = options
     this.field = new WaveField(options)
     this.meanSquareSlopes = this.field.cascades.map(() => uniform(0) as UniformNode<'float', number>)
+    this.texelSizes = this.field.cascades.map(cascade => uniform(cascade.lengthMeters / this.field.gridSize) as UniformNode<'float', number>)
     this.surfaceSampler = texture(this.field.texture)
     // Until the GPU writes them, no fold: zeros, one texel per cascade.
     const layers = this.field.cascades.length
@@ -104,9 +118,17 @@ export class WaveSurface {
   }
 
   setSeaState(options: SeaStateOptions): void {
+    this.seaState = { ...options }
     this.field.setSeaState(options)
-    this.field.cascades.forEach((cascade, index) => {
+    this.computeSpectrum?.setSeaState(options)
+    this.useField(this.computeSpectrum ?? this.field)
+  }
+
+  /** Points the uniforms at the simulation drawn now: its texel sizes and slope variances. */
+  protected useField(field: WaveField): void {
+    field.cascades.forEach((cascade, index) => {
       this.meanSquareSlopes[index]!.value = cascade.meanSquareSlope
+      this.texelSizes[index]!.value = cascade.lengthMeters / field.gridSize
     })
   }
 
@@ -134,7 +156,11 @@ export class WaveSurface {
 
   /** Moves the simulation to the GPU: the shaders already built sample its textures from now on. */
   protected startCompute(): WaveComputeField {
-    const compute = new WaveComputeField(this.field)
+    const spectrum = new WaveField({ ...this.fieldOptions, gridSize: WAVE_COMPUTE_GRID_SIZE })
+    if (this.seaState !== null) spectrum.setSeaState(this.seaState)
+    this.computeSpectrum = spectrum
+    this.useField(spectrum)
+    const compute = new WaveComputeField(spectrum)
     this.surfaceSampler.value = compute.surfaceTexture
     this.foldSampler.value = compute.foldTexture
     this.foamFromWaves.value = 1
@@ -148,6 +174,9 @@ export class WaveSurface {
     this.foamFromWaves.value = 0
     this.computeField?.dispose()
     this.computeField = null
+    this.computeSpectrum?.dispose()
+    this.computeSpectrum = null
+    this.useField(this.field)
   }
 
   protected followCamera(cameraWorld: Vector3, cameraEarth: Vector3, earth: Object3D): void {
@@ -177,9 +206,9 @@ export class WaveSurface {
     let resolved: Node = float(0)
     let total: Node = float(0)
     this.field.cascades.forEach((cascade, index) => {
-      const texelMeters = cascade.lengthMeters / this.field.gridSize
+      const texelMeters = this.texelSizes[index]!
       // Gone before a pixel spans two texels: without mipmaps, a cascade sampled sparser than that shimmers.
-      const fade = float(1).sub(smoothstep(texelMeters * 0.75, texelMeters * 2, footprint)).mul(this.weight)
+      const fade = float(1).sub(smoothstep(texelMeters.mul(0.75), texelMeters.mul(2), footprint)).mul(this.weight)
       const uv = plane.div(cascade.lengthMeters)
       const surface = this.surfaceSampler.sample(uv).depth(int(index))
       slope = (slope as Node<'vec2'>).add(surface.xy.mul(fade))
