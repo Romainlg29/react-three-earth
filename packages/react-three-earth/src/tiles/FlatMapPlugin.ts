@@ -4,6 +4,7 @@ import { attribute, diffuseColor, output, float, instanceIndex, mat3, mix, norma
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { ViewMorph } from '../view/ViewMorph.js'
+import { getTerrainMaterialBase, setTerrainMaterialBase } from './terrainMaterialSlots.js'
 import { setBaseOutputNode } from './wrapFadeNodeMaterial.js'
 import {
   ecefToGeodetic,
@@ -359,7 +360,8 @@ function wrapMaterial(material: Material, hasNormals: boolean): void {
   if ((material as { isNodeMaterial?: boolean }).isNodeMaterial !== true || nodeMaterial[WRAPPED] === true) return
   nodeMaterial[WRAPPED] = true
   nodeMaterial.positionNode = morphedPosition
-  if (hasNormals && nodeMaterial.normalNode == null) nodeMaterial.normalNode = morphedNormal
+  // Through the terrain material's slots: a plugin's terrain shading reads it as its input normal.
+  if (hasNormals && getTerrainMaterialBase(nodeMaterial, 'normal') === null) setTerrainMaterialBase(nodeMaterial, 'normal', morphedNormal)
   setBaseOutputNode(nodeMaterial, unrollOutput as unknown as Node)
   nodeMaterial.needsUpdate = true
 }

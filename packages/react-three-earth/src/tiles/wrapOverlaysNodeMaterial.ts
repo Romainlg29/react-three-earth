@@ -22,6 +22,7 @@ import { screenClipFactor, screenClipPlane } from '../core/screenClip.js'
 import { reinterpretType } from '../core/types.js'
 
 import type { OverlayParams } from './ImageOverlayPlugin.js'
+import { setTerrainMaterialOverlay } from './terrainMaterialSlots.js'
 
 const OVERLAY_PARAMS = Symbol('OVERLAY_PARAMS')
 
@@ -117,8 +118,6 @@ const layerUV = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
 // Weak: a factory that builds its colour node per tile must not keep every one alive.
 const colorNodeCache = new WeakMap<object, Map<number, Node>>()
 const MATERIAL_COLOR_KEY = {}
-/** The blends this module made: a cloned tile material carries one, which must not become the next blend's base. */
-const overlayColorNodes = new WeakSet<Node>()
 
 function getColorNode(layerCount: number, baseColorNode: Node | null): Node {
   const key = baseColorNode ?? MATERIAL_COLOR_KEY
@@ -177,7 +176,6 @@ function getColorNode(layerCount: number, baseColorNode: Node | null): Node {
   })()
 
   byLayerCount.set(layerCount, colorNode)
-  overlayColorNodes.add(colorNode)
   return colorNode
 }
 
@@ -197,16 +195,10 @@ export function wrapOverlaysNodeMaterial(
   material[OVERLAY_PARAMS] = params
 
   let layerCount = 0
-  // The colour node the material's factory set, kept under the layers. Read once: the overlay owns `colorNode` from here.
-  // A material cloned from a wrapped one (imagery tile splitting) already holds a blend: its base is the plain colour.
-  const factoryColorNode = material.colorNode ?? null
-  const baseColorNode = factoryColorNode !== null && overlayColorNodes.has(factoryColorNode) ? null : factoryColorNode
-
-  // The colour node of each layer count is a parameterless `Fn`, so three's node cache key does not tell them
-  // apart: without the count in the program key, a layer added after the first compile (an imagery layer or a
-  // plugin's draped layer added at runtime) would keep the old shader.
-  const baseProgramCacheKey = material.customProgramCacheKey.bind(material)
-  material.customProgramCacheKey = () => `${baseProgramCacheKey()}:overlayLayers${layerCount}:base${baseColorNode?.id ?? 'color'}`
+  // The blend goes over the colour the material's factory set and under the plugins' terrain shadings
+  // (`terrainMaterialSlots`), which own the slots. The layer count names the blend in the program cache: the colour
+  // node of each count is a parameterless `Fn`, so three's node cache key does not tell them apart, and a layer added
+  // after the first compile (an imagery layer or a plugin's draped layer added at runtime) would keep the old shader.
 
   // Use the same interface used for non-node materials:
   // Copies the descriptors, not the values, so the fade wrapper's accessor survives whichever wraps first.
@@ -222,7 +214,7 @@ export function wrapOverlaysNodeMaterial(
     set(value: number) {
       if (value !== layerCount) {
         layerCount = value
-        material.colorNode = getColorNode(value, baseColorNode)
+        setTerrainMaterialOverlay(material, `overlayLayers${value}`, baseColorNode => getColorNode(value, baseColorNode))
       }
     },
   })

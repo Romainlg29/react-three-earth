@@ -1,15 +1,17 @@
-import { Group, type Camera, type Object3D } from 'three'
+import { Group, type Camera, type Material, type Object3D } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
+import type { TerrainShadingRegistry } from '../plugins/terrainShadings.js'
 import { EarthTilesRenderer } from '../tiles/EarthTilesRenderer.js'
 import { FlatMapPlugin } from '../tiles/FlatMapPlugin.js'
 import { ImageOverlayPlugin } from '../tiles/ImageOverlayPlugin.js'
 import { MAXIMUM_TERRAIN_LAYERS } from '../tiles/wrapOverlaysNodeMaterial.js'
 import { TileMaterialReplacementPlugin, type MaterialFactory } from '../tiles/TileMaterialReplacementPlugin.js'
 import { TilesFadePlugin } from '../tiles/TilesFadePlugin.js'
+import { recomposeTerrainMaterial, TerrainShadingSet } from '../tiles/terrainMaterialSlots.js'
 import { sampleTerrainHeight } from '../tiles/terrainHeights.js'
 import type { ImageryFrameStatistics } from '../tiles/imagery/ImageryStatistics.js'
 import type { ViewMorph } from '../view/ViewMorph.js'
@@ -71,6 +73,9 @@ export class Terrain implements AttributionProvider {
   /** Set when the tiles ask for another `update` (a tile finished loading), cleared by `update`. */
   protected updateRequested = false
   protected visibleTilesVersionValue = 0
+  /** The plugins' terrain shadings its tile materials run, from the earth's registry (`setTerrainShadings`). */
+  protected readonly shadings = new TerrainShadingSet()
+  protected unsubscribeShadings: (() => void) | null = null
 
   constructor({
     sources,
@@ -88,13 +93,18 @@ export class Terrain implements AttributionProvider {
     this.source = source
     this.tiles = new EarthTilesRenderer(source.url)
     for (const plugin of source.createPlugins()) this.tiles.registerPlugin(plugin)
-    this.tiles.registerPlugin(new TileMaterialReplacementPlugin(createMaterial))
-    this.overlays = new ImageOverlayPlugin({ compositionBudgetMilliseconds: imageryCompositionBudgetMilliseconds })
+    this.tiles.registerPlugin(new TileMaterialReplacementPlugin(createMaterial, this.shadings))
+    this.overlays = new ImageOverlayPlugin({ compositionBudgetMilliseconds: imageryCompositionBudgetMilliseconds, shadings: this.shadings })
     this.tiles.registerPlugin(this.overlays)
     if (fade) this.tiles.registerPlugin(new TilesFadePlugin())
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
 
+    // A tile whose plugins were still processing it when the shadings changed was not listed as loaded then: catch it up.
+    ;(this.tiles as unknown as { addEventListener(type: 'load-model', listener: (event: { scene: Object3D }) => void): void }).addEventListener(
+      'load-model',
+      ({ scene }) => recomposeScene(scene),
+    )
     ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('tile-visibility-change', () => {
       this.visibleTilesVersionValue++
     })
@@ -157,6 +167,22 @@ export class Terrain implements AttributionProvider {
   /** The symbol effects (plugins) its map style sources draw labels with. `Earth.setTerrain` calls it. */
   setSymbolEffects(registry: SymbolEffectRegistry | null): void {
     this.overlays.setSymbolEffects(registry)
+  }
+
+  /**
+   * The terrain shadings (plugins) its tile materials run over their own nodes and the imagery. `Earth.setTerrain`
+   * calls it. A change rebuilds the loaded tiles' shaders, without reloading them.
+   */
+  setTerrainShadings(registry: TerrainShadingRegistry | null): void {
+    this.unsubscribeShadings?.()
+    this.unsubscribeShadings = null
+    const apply = (): void => {
+      this.shadings.setDefinitions(registry?.ordered() ?? [])
+      this.tiles.forEachLoadedModel((scene: Object3D) => recomposeScene(scene))
+      ;(this.tiles as unknown as { dispatchEvent(event: { type: string }): void }).dispatchEvent({ type: 'needs-render' })
+    }
+    if (registry !== null) this.unsubscribeShadings = registry.subscribe(apply)
+    if (registry !== null || this.shadings.definitions.length > 0) apply()
   }
 
   /** The draped layers (plugins) it draws above its imagery. `Earth.setTerrain` calls it. */
@@ -350,8 +376,18 @@ export class Terrain implements AttributionProvider {
   }
 
   dispose(): void {
+    this.unsubscribeShadings?.()
+    this.unsubscribeShadings = null
     this.tiles.dispose()
   }
+}
+
+/** Rebuilds the terrain materials of a tile's meshes for the terrain's current shadings (cached: cheap when unchanged). */
+function recomposeScene(scene: Object3D): void {
+  scene.traverse(object => {
+    const { material } = object as { material?: Material | Material[] }
+    if (material !== undefined && !Array.isArray(material)) recomposeTerrainMaterial(material)
+  })
 }
 
 function extrusionsOf(overlay: unknown): Extrusions | null {

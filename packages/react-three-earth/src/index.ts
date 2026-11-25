@@ -21,6 +21,12 @@ export {
   type SymbolEffectDefinition,
   type SymbolEffectInputs,
 } from './plugins/symbolEffects.js'
+export {
+  TerrainShadingRegistry,
+  type TerrainShadingDefinition,
+  type TerrainShadingInputs,
+  type TerrainShadingOutputs,
+} from './plugins/terrainShadings.js'
 export type * from './plugins/pluginWorker.js'
 export {
   RenderPassRegistry,
