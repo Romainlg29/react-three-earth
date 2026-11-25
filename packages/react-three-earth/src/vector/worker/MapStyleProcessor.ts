@@ -208,6 +208,8 @@ export class MapStyleProcessor {
   /** Line layers with a `line-gradient` on a source without line metrics, warned about once. */
   protected readonly warnedLineGradients = new Set<string>()
   protected readonly warnedTranslateAnchors = new Set<string>()
+  /** Each shape layer's translate at the zoom last asked (layers are replaced, never mutated, when the style changes). */
+  protected readonly translateByLayer = new WeakMap<CompiledStyleLayer, { zoom: number; pixels: [number, number] }>()
   /** Which processor the glyph provider fetches through; shared with the processors that reload this one. */
   protected glyphRoute!: { processor: MapStyleProcessor }
   /** Sources whose TileJSON or PMTiles header is loading. */
@@ -735,6 +737,7 @@ export class MapStyleProcessor {
     const byteLength =
       (shapeMesh === null ? 0 : shapeMesh.positions.byteLength + shapeMesh.colors.byteLength + shapeMesh.indices.byteLength + (shapeMesh.colorSlots?.byteLength ?? 0)) +
       (shapeMesh?.patterns == null ? 0 : shapeMesh.patterns.byteLength + (shapeMesh.patternCoordinates?.byteLength ?? 0)) +
+      (shapeMesh?.edges?.byteLength ?? 0) +
       (text === null ? 0 : text.positions.byteLength * 2 + text.colors.byteLength * 2 + text.haloEdges.byteLength + text.indices.byteLength) +
       customMeshes.reduce((sum, mesh) => sum + mesh.indices.byteLength + mesh.attributes.reduce((bytes, attribute) => bytes + attribute.array.byteLength, 0), 0)
     return {
@@ -1182,7 +1185,12 @@ export class MapStyleProcessor {
         const patternOpacity = opacity(state)
         if (rectangle === null || patternOpacity <= 0) return
         shapes.setColor([255, 255, 255, Math.round(patternOpacity * 255)])
-        shapes.setPattern(rectangle, planePatternMapping(rectangle, placement, unitsPerPixel))
+        // The image moves with a translated fill, as in MapLibre: map it from where the shape was before the move.
+        const mapping = planePatternMapping(rectangle, placement, unitsPerPixel)
+        const [rightPixels, downPixels] = this.shapeTranslate(layer, zoom)
+        mapping.originX -= rightPixels * unitsPerPixel * mapping.imagePixelsPerUnit
+        mapping.originY -= downPixels * unitsPerPixel * mapping.imagePixelsPerUnit
+        shapes.setPattern(rectangle, mapping)
         shapes.addPolygons(polygons)
         shapes.setPattern(null)
         return
@@ -1267,13 +1275,14 @@ export class MapStyleProcessor {
         layer.evaluateColor('circle-color', zoom, feature, layer.evaluate<number>('paint', 'circle-opacity', zoom, feature, featureState), featureState)
       const stroke = (featureState: FeatureState) =>
         layer.evaluateColor('circle-stroke-color', zoom, feature, layer.evaluate<number>('paint', 'circle-stroke-opacity', zoom, feature, featureState), featureState)
-      // A share of the radius (MapLibre's `circle-blur`); the stroke fades over the same distance at its own rim.
+      // MapLibre's `circle-blur` is a share of the outer radius (stroke included): the circle fades over that distance
+      // from its outer rim, and the fill over the same distance at its own rim, onto the stroke.
       const blur = Math.max(0, layer.evaluate<number>('paint', 'circle-blur', zoom, feature, state))
       const outerRadius = radius + strokeWidth
       for (const ring of geometry) {
         for (const point of ring) {
-          if (strokeWidth > 0 && useColor('stroke', stroke)) shapes.addCircle(point, outerRadius, outerRadius > 0 ? (blur * radius) / outerRadius : 0)
-          if (useColor('circle', fill)) shapes.addCircle(point, radius, blur)
+          if (strokeWidth > 0 && useColor('stroke', stroke)) shapes.addCircle(point, outerRadius, blur)
+          if (useColor('circle', fill)) shapes.addCircle(point, radius, radius > 0 ? (blur * outerRadius) / radius : 0)
         }
       }
     }
@@ -1285,16 +1294,29 @@ export class MapStyleProcessor {
    * warning once per layer.
    */
   protected translateGeometry(layer: CompiledStyleLayer, geometry: Point[][], zoom: number, unitsPerPixel: number): Point[][] {
-    const [rightPixels, downPixels] = shapeTranslatePixels(layer, zoom)
+    const [rightPixels, downPixels] = this.shapeTranslate(layer, zoom)
     if (rightPixels === 0 && downPixels === 0) return geometry
+    const right = rightPixels * unitsPerPixel
+    const down = downPixels * unitsPerPixel
+    return geometry.map(ring => ring.map(point => ({ x: point.x + right, y: point.y + down })))
+  }
+
+  /**
+   * `shapeTranslatePixels`, evaluated once per layer and zoom (not data-driven, so the same for every feature), with the
+   * `viewport` anchor warning.
+   */
+  protected shapeTranslate(layer: CompiledStyleLayer, zoom: number): [number, number] {
+    const cached = this.translateByLayer.get(layer)
+    if (cached !== undefined && cached.zoom === zoom) return cached.pixels
+    const pixels = shapeTranslatePixels(layer, zoom)
+    this.translateByLayer.set(layer, { zoom, pixels })
+    if (pixels[0] === 0 && pixels[1] === 0) return pixels
     const property = `${layer.type}-translate`
     if (layer.evaluate<string>('paint', `${property}-anchor`, zoom) === 'viewport' && !this.warnedTranslateAnchors.has(layer.id)) {
       this.warnedTranslateAnchors.add(layer.id)
       console.warn(`MapStyleSource: layer "${layer.id}" has ${property}-anchor "viewport", which draped layers cannot follow; it is drawn as "map". Use "map" to silence this.`)
     }
-    const right = rightPixels * unitsPerPixel
-    const down = downPixels * unitsPerPixel
-    return geometry.map(ring => ring.map(point => ({ x: point.x + right, y: point.y + down })))
+    return pixels
   }
 
   /**

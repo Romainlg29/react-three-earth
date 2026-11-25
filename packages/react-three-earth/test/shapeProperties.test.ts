@@ -125,6 +125,32 @@ describe('blur', () => {
     expect(edges[2]).toBe(1)
   })
 
+  it('fades a casing\'s sides only at their outer edges, the gap side staying sharp', () => {
+    const builder = new ShapeBuilder()
+    builder.setGroup(0)
+    builder.addLine([{ x: 0, y: 0 }, { x: 100, y: 0 }], { width: 4, gapWidth: 10, blurWidth: 2 })
+    const { positions, edges } = builder.build()!
+    for (let vertex = 0; vertex < positions.length / 2; vertex++) {
+      const across = Math.abs(positions[vertex * 2 + 1]!) // the line runs along y = 0
+      const edge = edges![vertex * 2]!
+      if (across === 5) expect(edge).toBe(0) // along the gap: sharp
+      else expect(Math.abs(edge)).toBeCloseTo(1, 6) // the outer edge, 9 units out
+      expect(edges![vertex * 2 + 1]).toBeCloseTo(2 / 4, 6) // blur over the side's whole width
+    }
+  })
+
+  it('fades a stroked circle over a share of its outer radius, the fill over the same distance', async () => {
+    const tile = encodeVectorTile([{ name: 'places', features: [{ type: 'Point', geometry: [[[3000, 1000]]] }] }])
+    const { bucket } = await processWith(
+      [{ id: 'places', type: 'circle', source: 'base', 'source-layer': 'places', paint: { 'circle-radius': 4, 'circle-stroke-width': 4, 'circle-blur': 0.5 } }],
+      tile,
+    )
+    const edges = bucket.shapes!.edges!
+    const circleVertices = 17
+    expect(edges[1]).toBeCloseTo(0.5, 6) // the stroke disc, radius 8
+    expect(edges[circleVertices * 2 + 1]).toBeCloseTo(1, 6) // the fill disc, radius 4: 4 units of 4
+  })
+
   it('keeps shapes added before and after a blurred one sharp', () => {
     const builder = new ShapeBuilder()
     builder.setGroup(0)

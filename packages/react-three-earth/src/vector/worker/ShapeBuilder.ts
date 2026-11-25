@@ -9,6 +9,8 @@ export interface Point {
 }
 
 export type LineCap = 'butt' | 'round' | 'square'
+/** Which edges of a stroked band fade with `line-blur`: both, or only the outer one of a casing's side. */
+type FadingEdges = 'both' | 'left' | 'right'
 export type LineJoin = 'miter' | 'bevel' | 'round'
 
 export interface LineStyle {
@@ -116,6 +118,8 @@ export class ShapeBuilder {
    */
   protected edges: Growable<Float32Array> | null = null
   protected blurShare = 0
+  /** The band being stroked: signed distances of its edges right of the line, and which of them fade. */
+  protected band: { left: number; right: number; fadingEdges: FadingEdges } = { left: -1, right: 1, fadingEdges: 'both' }
   /** The local frame of the line being stroked with a pattern: image coordinates follow it. */
   protected lineFrame = { originX: 0, originY: 0, directionX: 1, directionY: 0, distance: 0, left: 0, right: 1, acrossScale: 1 }
 
@@ -204,6 +208,17 @@ export class ShapeBuilder {
     this.useBlur(0)
   }
 
+  /**
+   * The across position of a point this far right of the line, in the band being stroked: -1 and 1 at fading edges, 0
+   * at a sharp edge (or at the middle when both fade).
+   */
+  protected edgeAt(distance: number): number {
+    const { left, right, fadingEdges } = this.band
+    if (fadingEdges === 'right') return (distance - left) / (right - left)
+    if (fadingEdges === 'left') return (distance - right) / (right - left)
+    return (distance - (left + right) / 2) / ((right - left) / 2)
+  }
+
   /** The blur of the vertices about to be added, as a share of their shape's half width; creates the edges on first use. */
   protected useBlur(share: number): void {
     this.blurShare = share > 0 && Number.isFinite(share) ? share : 0
@@ -230,8 +245,9 @@ export class ShapeBuilder {
         continue
       }
       if (gap > 0) {
-        this.addStroke(piece, offset + gap / 2, offset + gap / 2 + style.width, style)
-        this.addStroke(piece, offset - gap / 2 - style.width, offset - gap / 2, style)
+        // A casing's two sides fade only at their outer edges; the edges along the gap stay sharp.
+        this.addStroke(piece, offset + gap / 2, offset + gap / 2 + style.width, style, 'right')
+        this.addStroke(piece, offset - gap / 2 - style.width, offset - gap / 2, style, 'left')
       } else this.addStroke(piece, offset - style.width / 2, offset + style.width / 2, style)
     }
   }
@@ -302,10 +318,16 @@ export class ShapeBuilder {
    * Strokes the band between two signed distances right of the line (`left < right`). Joins are mitred
    * where the miter stays within the limit, beveled or rounded otherwise.
    */
-  protected addStroke(line: readonly Point[], left: number, right: number, style: LineStyle): void {
+  protected addStroke(line: readonly Point[], left: number, right: number, style: LineStyle, fadingEdges: FadingEdges = 'both'): void {
     const halfWidth = (right - left) / 2
     const center = (left + right) / 2
-    this.useBlur((style.blurWidth ?? 0) / halfWidth)
+    this.band.left = left
+    this.band.right = right
+    this.band.fadingEdges = fadingEdges
+    // One fading edge: the across position runs over the whole width, so the blur is a share of it.
+    this.useBlur((style.blurWidth ?? 0) / (fadingEdges === 'both' ? halfWidth : right - left))
+    const leftEdge = this.edgeAt(left)
+    const rightEdge = this.edgeAt(right)
     const join = style.join ?? 'miter'
     const miterLimit = style.miterLimit ?? 2
     const closed = line.length > 2 && line[0]!.x === line.at(-1)!.x && line[0]!.y === line.at(-1)!.y
@@ -336,8 +358,8 @@ export class ShapeBuilder {
       if (isEndpoint) {
         const normal = (incoming ?? outgoing)!
         if (distances !== null) this.setLineFrame(point.x, point.y, normal, distances[index]!)
-        const leftVertex = this.addVertex(point.x + normal.x * left, point.y + normal.y * left, -1)
-        const rightVertex = this.addVertex(point.x + normal.x * right, point.y + normal.y * right, 1)
+        const leftVertex = this.addVertex(point.x + normal.x * left, point.y + normal.y * left, leftEdge)
+        const rightVertex = this.addVertex(point.x + normal.x * right, point.y + normal.y * right, rightEdge)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
         this.addCap(point, normal, center, halfWidth, style.cap ?? 'butt', incoming === null)
         previousLeft = leftVertex
@@ -354,8 +376,8 @@ export class ShapeBuilder {
         const miter = { x: (bisector.x / bisectorLength) * miterScale, y: (bisector.y / bisectorLength) * miterScale }
         // The mitre points along the normals' bisector: the frame of the mean direction, stretched by the mitre.
         if (distances !== null) this.setLineFrame(point.x, point.y, { x: bisector.x / bisectorLength, y: bisector.y / bisectorLength }, distances[index]!, miterScale)
-        const leftVertex = this.addVertex(point.x + miter.x * left, point.y + miter.y * left, -1)
-        const rightVertex = this.addVertex(point.x + miter.x * right, point.y + miter.y * right, 1)
+        const leftVertex = this.addVertex(point.x + miter.x * left, point.y + miter.y * left, leftEdge)
+        const rightVertex = this.addVertex(point.x + miter.x * right, point.y + miter.y * right, rightEdge)
         if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, leftVertex, rightVertex)
         previousLeft = leftVertex
         previousRight = rightVertex
@@ -365,12 +387,12 @@ export class ShapeBuilder {
       // Bevel or round: end the incoming segment, start the outgoing one, and fill the wedge between them on
       // the outer side only (the inner side is covered by both segments), around the line's own vertex.
       if (distances !== null) this.setLineFrame(point.x, point.y, incoming, distances[index]!)
-      const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left, -1)
-      const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right, 1)
+      const endLeft = this.addVertex(point.x + incoming.x * left, point.y + incoming.y * left, leftEdge)
+      const endRight = this.addVertex(point.x + incoming.x * right, point.y + incoming.y * right, rightEdge)
       if (previousLeft !== -1) this.addQuad(previousLeft, previousRight, endLeft, endRight)
       if (distances !== null) this.setLineFrame(point.x, point.y, outgoing, distances[index]!)
-      const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left, -1)
-      const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right, 1)
+      const startLeft = this.addVertex(point.x + outgoing.x * left, point.y + outgoing.y * left, leftEdge)
+      const startRight = this.addVertex(point.x + outgoing.x * right, point.y + outgoing.y * right, rightEdge)
       this.addJoinWedge(point, left, right, incoming, outgoing, join === 'round')
       previousLeft = startLeft
       previousRight = startRight
@@ -389,15 +411,18 @@ export class ShapeBuilder {
     const direction = isStart ? { x: -normal.y, y: normal.x } : { x: normal.y, y: -normal.x } // along the line, outwards
     const base = { x: point.x + normal.x * center, y: point.y + normal.y * center }
     if (cap === 'square') {
-      const a = this.addVertex(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth, -1)
-      const b = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth, 1)
-      const c = this.addVertex(base.x + normal.x * halfWidth + direction.x * halfWidth, base.y + normal.y * halfWidth + direction.y * halfWidth, 1)
-      const d = this.addVertex(base.x - normal.x * halfWidth + direction.x * halfWidth, base.y - normal.y * halfWidth + direction.y * halfWidth, -1)
+      const leftEdge = this.edgeAt(center - halfWidth)
+      const rightEdge = this.edgeAt(center + halfWidth)
+      const a = this.addVertex(base.x - normal.x * halfWidth, base.y - normal.y * halfWidth, leftEdge)
+      const b = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth, rightEdge)
+      const c = this.addVertex(base.x + normal.x * halfWidth + direction.x * halfWidth, base.y + normal.y * halfWidth + direction.y * halfWidth, rightEdge)
+      const d = this.addVertex(base.x - normal.x * halfWidth + direction.x * halfWidth, base.y - normal.y * halfWidth + direction.y * halfWidth, leftEdge)
       this.indices.push3(a, b, c)
       this.indices.push3(a, c, d)
       return
     }
-    const pivot = this.addVertex(base.x, base.y, 0)
+    // Fades radially from the band's middle (a casing side's round cap fades all round, as its outer edge does).
+    const pivot = this.addVertex(base.x, base.y, this.edgeAt(center))
     const start = Math.atan2(normal.y, normal.x)
     const sweep = isStart ? Math.PI : -Math.PI
     let previous = this.addVertex(base.x + normal.x * halfWidth, base.y + normal.y * halfWidth, 1)
@@ -425,11 +450,8 @@ export class ShapeBuilder {
     if (turn > Math.PI) turn -= Math.PI * 2
     if (turn < -Math.PI) turn += Math.PI * 2
     const steps = round ? Math.max(1, Math.ceil((Math.abs(turn) / Math.PI) * ROUND_SEGMENTS)) : 1
-    // Across the band: the ring's signed distance right of the line, against the band's middle and half width.
-    const center = (left + right) / 2
-    const halfWidth = (right - left) / 2
-    const ring = (radius: number, angle: number) =>
-      this.addVertex(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius, (side * radius - center) / halfWidth)
+    // Across the band: from the ring's signed distance right of the line.
+    const ring = (radius: number, angle: number) => this.addVertex(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius, this.edgeAt(side * radius))
     let previousInner = ring(innerRadius, from)
     let previousOuter = ring(outerRadius, from)
     for (let step = 1; step <= steps; step++) {
