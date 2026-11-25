@@ -538,13 +538,19 @@ export class MapStyleProcessor {
         return
       }
       case 'setGeoJSONSourceData':
-      case 'updateGeoJSONSourceData': {
+      case 'updateGeoJSONSourceData':
+      case 'setGeoJSONSourceHiddenFeatures': {
         const [sourceId] = command.args
         const provider = this.fetchers.get(sourceId)
         // Not loaded yet: it loads from the document, which holds the new data, when a layer reads it
         if (!(provider instanceof GeoJsonTileSource)) return
         this.dropRawTiles(sourceId)
-        const change = command.command === 'setGeoJSONSourceData' ? provider.setData(command.args[1]) : provider.updateData(command.args[1])
+        const change =
+          command.command === 'setGeoJSONSourceData'
+            ? provider.setData(command.args[1])
+            : command.command === 'updateGeoJSONSourceData'
+              ? provider.updateData(command.args[1])
+              : provider.setHiddenFeatures(command.args[1])
         sourceLoads.push(
           change.then(
             ({ rectangles, marginTiles }) => void areas.push({ sourceId, rectangles, marginTiles }),

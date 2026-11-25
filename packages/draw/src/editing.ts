@@ -237,6 +237,47 @@ function insideFace(rings: readonly Position[][], input: HitTestInput): boolean 
   return rings.length > 0
 }
 
+/** A longitude-latitude box, in degrees: west, south, east, north. */
+export type GroundBox = readonly [number, number, number, number]
+
+/** Each feature version's `groundBox` (features are replaced, never changed in place). */
+const groundBoxes = new WeakMap<DrawFeature, GroundBox | null>()
+
+/**
+ * The box around a draped feature's positions, or null for a feature with altitudes (it stands where its altitudes put
+ * it, so the ground under a tap says nothing). Computed once per feature version.
+ */
+export function groundBox(feature: DrawFeature): GroundBox | null {
+  const cached = groundBoxes.get(feature)
+  if (cached !== undefined) return cached
+  let west = Infinity
+  let south = Infinity
+  let east = -Infinity
+  let north = -Infinity
+  let box: GroundBox | null = null
+  const visit = (position: Position): boolean => {
+    if (hasAltitude(position)) return false
+    west = Math.min(west, position[0]!)
+    east = Math.max(east, position[0]!)
+    south = Math.min(south, position[1]!)
+    north = Math.max(north, position[1]!)
+    return true
+  }
+  const geometry = feature.geometry
+  const lines = geometry.type === 'Point' ? [[geometry.coordinates]] : geometry.type === 'LineString' ? [geometry.coordinates] : geometry.type === 'Polygon' ? geometry.coordinates : geometry.coordinates.flat()
+  if (lines.every(line => line.every(visit))) box = [west, south, east, north]
+  groundBoxes.set(feature, box)
+  return box
+}
+
+/** Whether ground within `reachLongitudeDegrees` and `reachLatitudeDegrees` of `ground` meets a box, across the antimeridian too. */
+export function groundBoxWithinReach(box: GroundBox, ground: LongitudeLatitude, reachLongitudeDegrees: number, reachLatitudeDegrees: number): boolean {
+  const [longitude, latitude] = ground
+  if (latitude < box[1] - reachLatitudeDegrees || latitude > box[3] + reachLatitudeDegrees) return false
+  for (const shifted of [longitude, longitude + 360, longitude - 360]) if (shifted >= box[0] - reachLongitudeDegrees && shifted <= box[2] + reachLongitudeDegrees) return true
+  return false
+}
+
 /**
  * Whether a tap hits a feature where it is drawn: within the tolerance of a point or a line (in pixels), inside a
  * draped polygon's outline on the ground, inside a face of a mesh or of a polygon at an altitude (on the screen, at the

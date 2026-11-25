@@ -1,6 +1,6 @@
 import type { MultiPolygon, Position } from 'geojson'
 
-import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, moveVertices, offsetVertices, removeVertex, translateFeature, type VertexPath } from '../editing.js'
+import { featureMidpoints, featureVertices, groundBox, groundBoxWithinReach, hitFeature, insertVertex, moveVertex, moveVertices, offsetVertices, removeVertex, translateFeature, type VertexPath } from '../editing.js'
 import { distanceToSegment, hasAltitude, lowestAltitude, storedLines, storedPositions, unwrapLongitudeNear } from '../geometry.js'
 import { LocalFrame, type LocalPoint } from '../localFrame.js'
 import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshSharpEdges, prismMesh, type IndexedMesh } from '../mesh.js'
@@ -2028,8 +2028,25 @@ export class SelectMode extends DrawMode {
     const context = this.context
     if (context === null) return null
     const input = this.hitInput(event)
+    // Draped features whose box is out of reach of the tap are skipped unprojected: a tap on a large data set
+    // projects only the features near it.
+    const reach = groundReachDegrees(input)
+    const found = this.nearestFeature(input, reach)
+    // In a tilted view, ground in front of the tapped ground (a ridge's crest) may be drawn within reach while lying
+    // far from it: a tap that found nothing there tests every feature.
+    if (found === null && reach?.tilted === true) return this.nearestFeature(input, null)
+    return found
+  }
+
+  /** The best feature under a tap, among those whose box is within `reach` (all of them without one). */
+  protected nearestFeature(input: ReturnType<SelectMode['hitInput']>, reach: GroundReach | null): DrawFeature | null {
+    const context = this.context!
     let best: { feature: DrawFeature; rank: number; distance: number } | null = null
     for (const feature of context.store.values()) {
+      if (reach !== null) {
+        const box = groundBox(feature)
+        if (box !== null && !groundBoxWithinReach(box, input.ground, reach.longitudeDegrees, reach.latitudeDegrees)) continue
+      }
       const distance = hitFeature(feature, input)
       if (distance === null) continue
       // 0: points and lines, 1: polygons and meshes containing the tap, 2: those whose outline is near it.
@@ -2835,4 +2852,66 @@ function insideScreenFace(face: readonly number[][], x: Float64Array, y: Float64
     }
   }
   return inside
+}
+
+/** Degrees of longitude and latitude a step from a tap's ground position, to measure the screen around it. */
+const REACH_STEP_DEGREES = 1e-4
+/** The reach is measured on the screen's local linear map: doubled, it stays above the true one over the tolerance. */
+const REACH_SAFETY = 2
+/** Above this ratio of metres per pixel between two screen directions, the view is tilted (seen at a slant). */
+const TILTED_ANISOTROPY = 1.3
+const METERS_PER_DEGREE = 111_320
+
+/** How far a tap reaches on the ground, in degrees, and whether the view around it is tilted. */
+interface GroundReach {
+  longitudeDegrees: number
+  latitudeDegrees: number
+  tilted: boolean
+}
+
+/**
+ * How far on the ground, in degrees of longitude and latitude, a tap reaches within its tolerance: the box around the
+ * tolerance circle mapped back to the ground (through the screen's local linear map at the tap), with a margin, and
+ * checked: each side of the box must project at least the tolerance away from the tap. Null (test every feature) on
+ * the sky, where the map is seen edge-on, or near the horizon where the linear map underestimates the reach.
+ */
+function groundReachDegrees(input: { ground: LongitudeLatitude; screen: { x: number; y: number }; tolerancePixels: number; project: (position: Position) => { x: number; y: number } | null }): GroundReach | null {
+  const [longitude, latitude] = input.ground
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null
+  const latitudeStep = latitude > 0 ? -REACH_STEP_DEGREES : REACH_STEP_DEGREES
+  const origin = input.project([longitude, latitude])
+  const east = input.project([longitude + REACH_STEP_DEGREES, latitude])
+  const north = input.project([longitude, latitude + latitudeStep])
+  if (origin === null || east === null || north === null) return null
+  // Screen pixels per degree east and north: the columns of the local linear map.
+  const eastX = (east.x - origin.x) / REACH_STEP_DEGREES
+  const eastY = (east.y - origin.y) / REACH_STEP_DEGREES
+  const northX = (north.x - origin.x) / latitudeStep
+  const northY = (north.y - origin.y) / latitudeStep
+  const determinant = Math.abs(eastX * northY - eastY * northX)
+  if (!(determinant > 1e-9)) return null
+  const reachPixels = input.tolerancePixels * REACH_SAFETY
+  // The inverse map's rows have lengths |north| / det and |east| / det: the half-widths of the tolerance circle's image.
+  const latitudeDegrees = (reachPixels * Math.hypot(eastX, eastY)) / determinant
+  // Over a pole, every longitude is within reach.
+  const longitudeDegrees = Math.abs(latitude) + latitudeDegrees >= 90 ? 360 : (reachPixels * Math.hypot(northX, northY)) / determinant
+  // Each side of the box projects at least the tolerance away, or the reach is not trusted.
+  for (const [offsetLongitude, offsetLatitude] of [[longitudeDegrees, 0], [-longitudeDegrees, 0], [0, latitudeDegrees], [0, -latitudeDegrees]] as const) {
+    if (longitudeDegrees >= 360 && offsetLongitude !== 0) continue
+    const side = input.project([longitude + offsetLongitude, Math.max(-90, Math.min(90, latitude + offsetLatitude))])
+    if (side === null || Math.hypot(side.x - input.screen.x, side.y - input.screen.y) < input.tolerancePixels) return null
+  }
+  // Metres per pixel along the screen's two principal directions differ in a tilted view: the singular values of the
+  // map from metres east and north to pixels.
+  const metersEast = METERS_PER_DEGREE * Math.max(Math.cos((latitude * Math.PI) / 180), 1e-6)
+  const a = eastX / metersEast
+  const b = northX / METERS_PER_DEGREE
+  const c = eastY / metersEast
+  const d = northY / METERS_PER_DEGREE
+  const sum = a * a + b * b + c * c + d * d
+  const product = Math.abs(a * d - b * c)
+  const spread = Math.sqrt(Math.max(sum * sum - 4 * product * product, 0))
+  const largest = Math.sqrt((sum + spread) / 2)
+  const smallest = Math.sqrt(Math.max((sum - spread) / 2, 0))
+  return { longitudeDegrees, latitudeDegrees, tilted: !(smallest > 0) || largest / smallest > TILTED_ANISOTROPY }
 }

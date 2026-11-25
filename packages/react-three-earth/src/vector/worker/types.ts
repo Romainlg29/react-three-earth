@@ -6,7 +6,7 @@
 import type { GeoJSON } from 'geojson'
 
 import type { WorkerLayerTypeDescriptor } from '../../plugins/styleLayerTypes.js'
-import type { GeoJsonSourceDiff } from './geoJsonData.js'
+import type { GeoJsonFeatureId, GeoJsonSourceDiff } from './geoJsonData.js'
 import type { MercatorRectangle } from './rectangles.js'
 import { extrusionMeshBuffers } from './extrusions.js'
 import { symbolMeshBuffers } from './symbols.js'
@@ -99,6 +99,11 @@ export type StyleCommand =
   | { command: 'setGeoJSONSourceData'; args: [sourceId: string, data: GeoJSON | string] }
   /** Changes a `geojson` source's features by id (MapLibre's `updateData`); runtime-only. */
   | { command: 'updateGeoJSONSourceData'; args: [sourceId: string, diff: GeoJsonSourceDiff] }
+  /**
+   * Leaves features of a `geojson` source out of its tiles, by id, without changing its data (an editor draws them
+   * itself meanwhile); the ids replace the previous ones. Runtime-only.
+   */
+  | { command: 'setGeoJSONSourceHiddenFeatures'; args: [sourceId: string, ids: GeoJsonFeatureId[]] }
   /** Adds a source, or replaces the one of that id while layers keep reading it (`GeoJsonSource`); runtime-only. */
   | { command: 'setSource'; args: [sourceId: string, source: object] }
   /** Replaces the style root `state` (the defaults of `global-state`). */

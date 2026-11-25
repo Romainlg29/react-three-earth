@@ -1,5 +1,6 @@
+import type { GeoJsonSource as GeoJsonSourceImpl } from '@earthkit/globe'
 import { GeoJsonSource, StyleLayer } from '@earthkit/globe/react'
-import { useEffect, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type Ref } from 'react'
 
 import { readGeoJsonFiles, type LoadedGeoJsonFile } from './geojsonFiles'
 
@@ -80,14 +81,15 @@ export function useGeoJsonFiles(onLoaded: (file: LoadedGeoJsonFile) => void) {
 
 /**
  * One file's layers, styled for what it holds: translucent fills with an outline for polygons, lines, circles for
- * points, and labels when the features have a name. Hovered features (`generateId` gives them ids) stand out.
- * Inside `<MapStyleSource>`.
+ * points, and labels when the features have a name. Hovered features (`generateId` gives them ids) stand out. While
+ * the file is edited, every kind of layer is there, for the shapes the user adds. Inside `<MapStyleSource>`.
  */
-export function GeoJsonFileLayers({ file }: { file: LoadedGeoJsonFile }) {
+export function GeoJsonFileLayers({ file, editing = false, sourceRef }: { file: LoadedGeoJsonFile; editing?: boolean; sourceRef?: Ref<GeoJsonSourceImpl> }) {
   const visibility = file.visible ? 'visible' : 'none'
-  const { color, counts, labelProperty } = file
+  const { color, labelProperty } = file
+  const counts = editing ? { points: 1, lines: 1, polygons: 1 } : file.counts
   return (
-    <GeoJsonSource id={file.id} data={file.data} generateId>
+    <GeoJsonSource ref={sourceRef} id={file.id} data={file.data} generateId>
       {counts.polygons > 0 ? (
         <StyleLayer id={`${file.id}-fill`} type="fill" filter={IS_POLYGON} layout={{ visibility }} paint={{ 'fill-color': color, 'fill-opacity': ['case', HOVER, 0.55, 0.3] }} />
       ) : null}
@@ -139,10 +141,14 @@ export interface GeoJsonFilesPanelProps {
   onToggle: (id: string) => void
   onRemove: (id: string) => void
   onZoom: (file: LoadedGeoJsonFile) => void
+  /** Edits the file in place with the draw plugin; absent, files cannot be edited. */
+  onEdit?: (file: LoadedGeoJsonFile) => void
+  /** The file being edited, if any. */
+  editingId?: string | null
 }
 
 /** The file list: a picker for phones (no drag and drop there), a sample, and a row per file. */
-export function GeoJsonFilesPanel({ files, errors, onAdd, onSample, onToggle, onRemove, onZoom }: GeoJsonFilesPanelProps) {
+export function GeoJsonFilesPanel({ files, errors, onAdd, onSample, onToggle, onRemove, onZoom, onEdit, editingId = null }: GeoJsonFilesPanelProps) {
   const input = useRef<HTMLInputElement>(null)
   const pick = (event: ChangeEvent<HTMLInputElement>) => {
     onAdd([...(event.target.files ?? [])])
@@ -182,6 +188,11 @@ export function GeoJsonFilesPanel({ files, errors, onAdd, onSample, onToggle, on
               <button type="button" aria-label={`Zoom to ${file.name}`} title="Zoom to" disabled={file.bounds === null} onClick={() => onZoom(file)}>
                 ⤢
               </button>
+              {onEdit !== undefined ? (
+                <button type="button" aria-pressed={editingId === file.id} aria-label={`Edit ${file.name}`} title="Edit in place" onClick={() => onEdit(file)}>
+                  ✎
+                </button>
+              ) : null}
               <button type="button" aria-label={`Remove ${file.name}`} title="Remove" onClick={() => onRemove(file.id)}>
                 ×
               </button>

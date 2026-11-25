@@ -1,10 +1,12 @@
-import type { FeatureCollection } from 'geojson'
+import type { Feature, FeatureCollection } from 'geojson'
 import {
   PLUGIN_API_VERSION,
   type DrapedLayerHandle,
   type Earth,
   type EarthPlugin,
   type EarthPointerEvent,
+  type GeoJsonFeatureId,
+  type GeoJsonSource,
   type GeographicBounds,
   type PluginContext,
   type PluginFrame,
@@ -12,7 +14,7 @@ import {
 } from '@earthkit/globe'
 import { EventDispatcher, Matrix4 } from 'three'
 
-import { createFeatureId, FeatureStore, type FeatureStoreChange } from './FeatureStore.js'
+import { createFeatureId, FeatureStore, isDrawableFeature, type FeatureStoreChange } from './FeatureStore.js'
 import { geometryBounds, padBounds, unionBounds } from './geometry.js'
 import { DrawMode, StaticMode, type DrawModeContext, type DrawModeStatus } from './modes/DrawMode.js'
 import { ELEMENT_MODES, GIZMO_SPACES, GIZMO_TOOLS, SelectMode, type ElementMode, type GizmoSpace, type GizmoTool } from './modes/SelectMode.js'
@@ -51,6 +53,10 @@ export interface DrawOptions {
   keyboard?: boolean
   /** Makes the id of each new feature. Default: a random UUID. */
   createId?: () => string
+  /**
+   * A GeoJSON source to edit in place instead of holding features of its own: see `setSource`. Default: none.
+   */
+  source?: GeoJsonSource
 }
 
 /** What `getState()` returns: a new object on each change, so it can be compared by identity. */
@@ -157,8 +163,19 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   protected cursor: string | null = null
   protected doubleClickZoomRelease: (() => void) | null = null
   protected readonly modeContext: DrawModeContext
+  /** The GeoJSON source edited in place (`setSource`), or null. */
+  protected source: GeoJsonSource | null = null
+  /**
+   * For features of the source whose Draw id is not their own: the id the source knows them by (a number, or the
+   * `promoteId` property) and their GeoJSON `id` as it was. Features with a string `id` and no `promoteId` need none.
+   */
+  protected readonly sourceKeys = new Map<string, { key: GeoJsonFeatureId; featureId: GeoJsonFeatureId | undefined }>()
+  /** The edited source's `promoteId`, read when editing starts. */
+  protected sourcePromoteId: string | undefined
+  /** Set while the store is filled from the source: those changes are not written back. */
+  protected fillingFromSource = false
 
-  constructor({ name = 'draw', modes, mode = 'static', style, features, keyboard = false, createId = createFeatureId }: DrawOptions = {}) {
+  constructor({ name = 'draw', modes, mode = 'static', style, features, keyboard = false, createId = createFeatureId, source }: DrawOptions = {}) {
     super()
     this.name = name
     this.styleInput = style
@@ -181,6 +198,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     if (features !== undefined) this.store.replace(this.withIds(features))
     this.store.subscribe(this.onStoreChange)
     this.state = this.computeState()
+    if (source !== undefined) this.setSource(source)
   }
 
   // ---- State, for toolbars ----
@@ -358,6 +376,47 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     this.removeFeatures([...this.store.values()].map(feature => feature.id))
   }
 
+  // ---- Editing a GeoJSON source in place ----
+
+  /**
+   * Edits a `GeoJsonSource` in place: its features become Draw's features, with no copy of their coordinates (the store
+   * holds the source's own feature objects), and every change (a move, a vertex, a new feature, a delete, `addFeatures`)
+   * is written back to it with `updateData` once it is made, on release, never on each frame of a drag. The source's
+   * layers keep drawing its features in their own style; Draw drapes none of them and only draws, in its overlay, the
+   * features it edits, which it hides from the source's tiles meanwhile (`GeoJsonSource.setHiddenFeatureIds`: no
+   * tiling again). The features Draw held before are dropped; `null` stops editing (the source keeps its data).
+   *
+   * Points, line strings, polygons and multipolygons are editable; other features stay in the source, untouched.
+   * Features without an id are given one first (a single `setData`). The source's data must be an object, not a URL.
+   * Change the data through Draw while it edits, or call `setSource` again after changing it elsewhere: the same source
+   * reloads its features (dropping the selection only when the source changes).
+   */
+  setSource(source: GeoJsonSource | null): void {
+    if (source === null && this.source === null) return
+    if (source === null) this.sourceKeys.clear()
+    const features = source === null ? [] : this.featuresOfSource(source)
+    if (source !== this.source) {
+      this.source?.setHiddenFeatureIds([])
+      // Another data set: what was selected there must not select a feature of the same id here.
+      for (const mode of this.modes.values()) mode.setSelection([])
+    }
+    this.source = source
+    this.fillingFromSource = true
+    try {
+      // Checked once already, in `featuresOfSource`.
+      this.store.replace(features, { validated: true })
+    } finally {
+      this.fillingFromSource = false
+    }
+    this.refreshDraped(null, true)
+    this.dispatchChange()
+  }
+
+  /** The GeoJSON source edited in place (`setSource`), or null. */
+  getSource(): GeoJsonSource | null {
+    return this.source
+  }
+
   /** Changes how features look, and redraws them. */
   setStyle(style: DrawStyleInput | undefined): void {
     this.styleInput = style
@@ -434,6 +493,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     })
     context.onDispose(() => {
       this.exitMode()
+      this.source?.setHiddenFeatureIds([])
       this.applyCursor(null)
       overlay.dispose()
       this.overlay = null
@@ -505,7 +565,14 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   /** The features with string ids (a new one when missing) and properties. */
   protected withIds(features: DrawFeatureInput): DrawFeature[] {
     const list = 'features' in features ? features.features : features
-    return list.map(feature => ({ ...feature, id: feature.id === undefined || feature.id === null ? this.makeId() : String(feature.id), properties: feature.properties ?? {} }) as DrawFeature)
+    // Editing a source with `promoteId`, a feature without an id is known by that property when it has it.
+    const promoteId = this.source === null ? undefined : this.sourcePromoteId
+    const idOf = (feature: (typeof list)[number]): string => {
+      if (feature.id !== undefined && feature.id !== null) return String(feature.id)
+      const promoted: unknown = promoteId === undefined ? undefined : feature.properties?.[promoteId]
+      return typeof promoted === 'string' || typeof promoted === 'number' ? String(promoted) : this.makeId()
+    }
+    return list.map(feature => ({ ...feature, id: idOf(feature), properties: feature.properties ?? {} }) as DrawFeature)
   }
 
   protected requireOverlay(): LiveOverlay {
@@ -600,9 +667,100 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   }
 
   protected onStoreChange = (change: FeatureStoreChange): void => {
+    this.writeToSource(change)
     const changed = new Set<string>([...change.added, ...change.updated, ...change.removed.map(feature => feature.id)])
     this.refreshDraped(changed, false)
     this.refresh()
+  }
+
+  /**
+   * The editable features of a source, as Draw features: the source's own objects where their id is a string and
+   * there is no `promoteId`, shallow copies (sharing the geometry) otherwise. Gives features without an id one first.
+   */
+  protected featuresOfSource(source: GeoJsonSource): DrawFeature[] {
+    const data = source.data
+    if (typeof data === 'string') {
+      throw new Error(`Draw.setSource: GeoJsonSource "${source.id}" loads its data from a URL; fetch the GeoJSON in the app and pass the object as its \`data\`, then edit it.`)
+    }
+    const promoteId = source.toSpecification().promoteId
+    let list: readonly Feature[] = data.type === 'FeatureCollection' ? data.features : data.type === 'Feature' ? [data] : []
+    if (data.type !== 'FeatureCollection' && data.type !== 'Feature') {
+      throw new Error(`Draw.setSource: GeoJsonSource "${source.id}" holds a bare ${data.type} geometry; give it a Feature or a FeatureCollection to edit.`)
+    }
+    const keyOf = (feature: Feature): unknown => (promoteId === undefined ? feature.id : feature.properties?.[promoteId])
+    const hasKey = (feature: Feature) => {
+      const key = keyOf(feature)
+      return typeof key === 'string' || typeof key === 'number'
+    }
+    if (!list.every(hasKey)) {
+      // Ids already taken are not made again.
+      const taken = new Set(list.map(keyOf))
+      // Once, so every feature can be updated by id from now on.
+      list = list.map(feature => {
+        if (hasKey(feature)) return feature
+        let id = this.makeId()
+        while (taken.has(id)) id = this.makeId()
+        taken.add(id)
+        return promoteId === undefined ? { ...feature, id } : { ...feature, properties: { ...feature.properties, [promoteId]: id } }
+      })
+      source.setData({ type: 'FeatureCollection', features: [...list] })
+    }
+    this.sourcePromoteId = promoteId
+    this.sourceKeys.clear()
+    const seen = new Set<string>()
+    const features: DrawFeature[] = []
+    for (const feature of list) {
+      const key = keyOf(feature) as GeoJsonFeatureId
+      const id = String(key)
+      const own = promoteId === undefined && typeof key === 'string' && feature.properties !== null && feature.properties !== undefined
+      const drawFeature = (own ? feature : { ...feature, id, properties: feature.properties ?? {} }) as DrawFeature
+      if (!isDrawableFeature(drawFeature)) continue
+      if (seen.has(id)) {
+        throw new Error(`Draw.setSource: GeoJsonSource "${source.id}" has two features whose id reads ${JSON.stringify(id)} (the same id, or 1 and "1"); give each feature a distinct id.`)
+      }
+      seen.add(id)
+      if (!own) this.sourceKeys.set(id, { key, featureId: feature.id })
+      features.push(drawFeature)
+    }
+    return features
+  }
+
+  /** The id the source knows a Draw feature by. */
+  protected sourceKey(id: string): GeoJsonFeatureId {
+    return this.sourceKeys.get(id)?.key ?? id
+  }
+
+  /** A Draw feature as the source holds it: its own id (a number, or none with `promoteId`) and the promoted property. */
+  protected toSourceFeature(feature: DrawFeature): Feature {
+    const promoteId = this.sourcePromoteId
+    if (promoteId === undefined) {
+      const entry = this.sourceKeys.get(feature.id)
+      return entry === undefined ? feature : { ...feature, id: entry.key }
+    }
+    let entry = this.sourceKeys.get(feature.id)
+    if (entry === undefined) {
+      // New: the source finds it by the promoted property, kept as the app gave it (a number stays a number).
+      const given: unknown = feature.properties?.[promoteId]
+      entry = { key: (typeof given === 'number' || typeof given === 'string') && String(given) === feature.id ? given : feature.id, featureId: undefined }
+      this.sourceKeys.set(feature.id, entry)
+    }
+    const { id: _drawId, ...rest } = feature
+    const properties = rest.properties?.[promoteId] === entry.key ? rest.properties : { ...rest.properties, [promoteId]: entry.key }
+    return entry.featureId === undefined ? { ...rest, properties } : { ...rest, id: entry.featureId, properties }
+  }
+
+  /** Writes a store change to the edited source, as one `updateData`. */
+  protected writeToSource(change: FeatureStoreChange): void {
+    const source = this.source
+    if (source === null || this.fillingFromSource) return
+    // Removed features keep their keys: an undo adds them back under the id the source knew.
+    const remove = change.removed.map(feature => this.sourceKey(feature.id))
+    const add: Feature[] = []
+    for (const id of [...change.added, ...change.updated]) {
+      const feature = this.store.get(id)
+      if (feature !== undefined) add.push(this.toSourceFeature(feature))
+    }
+    if (remove.length > 0 || add.length > 0) source.updateData({ ...(remove.length > 0 ? { remove } : {}), ...(add.length > 0 ? { add } : {}) })
   }
 
   protected dispatchChange(): void {
@@ -620,6 +778,18 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
     for (const id of live) if (!this.liveIds.has(id)) touched.add(id)
     for (const id of this.liveIds) if (!live.has(id)) touched.add(id)
     this.liveIds = live
+    const source = this.source
+    if (source !== null) {
+      // The source's layers draw its features; the ones edited live are drawn by the overlay, hidden from its tiles.
+      source.setHiddenFeatureIds([...live].filter(id => this.store.has(id)).map(id => this.sourceKey(id)))
+      if (this.drapedBounds.size > 0 || all) {
+        this.solids?.setFeatures([])
+        this.draped.setFeatures([])
+        this.drapedBounds = new Map()
+        this.drapedLayer?.invalidate()
+      }
+      return
+    }
     const entries: Array<{ feature: DrawFeature; style: DrawStyle }> = []
     const solidEntries: Array<{ feature: DrawFeature; style: DrawStyle }> = []
     const bounds = new Map<string, GeographicBounds>()

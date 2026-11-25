@@ -252,6 +252,36 @@ describe('GeoJSON sources in the worker', () => {
     expect(box.some(rectangle => rectangle.minimumX < 0.1)).toBe(true) // clusters can move anywhere in the data
   })
 
+  it('hides features by id without tiling again, redrawing only around them, and keeps them across a reload', async () => {
+    const data = collection(point(1, -150, 0), point(2, 150, 0))
+    const processor = await createProcessor({ shapes: { type: 'geojson', data } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    const east = { sourceId: 'shapes', x: 14, y: 7, z: 4, zoom: 4 }
+    expect((await processor.processTile(east)).shapes).not.toBeNull()
+    const hide = await processor.applyCommands([{ command: 'setGeoJSONSourceHiddenFeatures', args: ['shapes', [2]] }])
+    const rectangles = hide.rebuiltAreas![0]!.rectangles!
+    expect(rectangles.length).toBe(1)
+    expect(rectangles[0]!.minimumX).toBeGreaterThan(0.8) // around the hidden point only
+    expect((await processor.processTile(east)).shapes).toBeNull()
+    // An update of a hidden feature changes the data, and it stays hidden until shown
+    await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { update: [{ id: 2, newGeometry: { type: 'Point', coordinates: [140, 10] } }] }] }])
+    expect((await processor.processTile(east)).shapes).toBeNull()
+    await processor.applyCommands([{ command: 'setGeoJSONSourceHiddenFeatures', args: ['shapes', []] }])
+    expect((await processor.processTile({ sourceId: 'shapes', x: 14, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
+    // Promoted ids hide by their property
+    const promoted = await createProcessor({ shapes: { type: 'geojson', data: collection(point('a', 0, 0, { code: 7 })), promoteId: 'code', hiddenFeatureIds: [7] } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    expect((await promoted.processTile({ sourceId: 'shapes', x: 0, y: 0, z: 0, zoom: 0 })).shapes).toBeNull()
+    // With generateId, tiles number features by index: the hidden one is found by its own id all the same
+    const generated = await createProcessor({ shapes: { type: 'geojson', data: collection(point('west', -150, 0), point('east', 150, 0)), generateId: true, hiddenFeatureIds: ['east'] } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    expect((await generated.processTile(east)).shapes).toBeNull()
+    expect((await generated.processTile({ sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
+    await generated.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { remove: ['west'] }] }])
+    expect((await generated.processTile(east)).shapes).toBeNull() // its index changed with the data
+    // Clustered with generateId: unclustered points carry their index among the points
+    const clustered = await createProcessor({ shapes: { type: 'geojson', data: collection(point('west', -150, 0), point('east', 150, 0)), cluster: true, generateId: true, hiddenFeatureIds: ['east'] } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    expect((await clustered.processTile(east)).shapes).toBeNull()
+    expect((await clustered.processTile({ sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
+  })
+
   it('keeps the previous data when a new URL fails, and reports it', async () => {
     const processor = await createProcessor({ shapes: { type: 'geojson', data: collection(point(1, 0, 0)) } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -405,6 +435,24 @@ describe('GeoJsonSource', () => {
     geoJson.updateData({ add: [point(2, 1, 1)] })
     expect((geoJson.data as FeatureCollection).features.map(feature => feature.id)).toEqual([1, 2])
     expect(() => new GeoJsonSource({ id: 'remote', data: 'a.geojson' }).updateData({ remove: [1] })).toThrow(/loads its data from a URL/)
+  })
+
+  it('hides features in the style source, keeping them in its data, and carries the ids into a replaced source', async () => {
+    const source = await setUp()
+    const commands: string[] = []
+    source.getMapStyle().subscribe(batch => commands.push(...batch.map(({ change }) => (change.type === 'command' ? change.command.command : change.type))))
+    const geoJson = new GeoJsonSource({ id: 'route', data: collection(point(1, 0, 0), point(2, 1, 1)) })
+    geoJson.addTo(source)
+    geoJson.setHiddenFeatureIds([2])
+    geoJson.setHiddenFeatureIds([2])
+    expect(source.getSource('route')).toMatchObject({ hiddenFeatureIds: [2] })
+    expect((geoJson.data as FeatureCollection).features).toHaveLength(2)
+    geoJson.update({ id: 'route', data: geoJson.data, cluster: true })
+    expect(source.getSource('route')).toMatchObject({ hiddenFeatureIds: [2], cluster: true })
+    geoJson.setHiddenFeatureIds([])
+    expect(source.getSource('route')).not.toHaveProperty('hiddenFeatureIds')
+    await Promise.resolve()
+    expect(commands).toEqual(['setSource', 'setGeoJSONSourceHiddenFeatures', 'setSource', 'setGeoJSONSourceHiddenFeatures'])
   })
 
   it('keeps updateData changes when only other options change', async () => {

@@ -150,6 +150,12 @@ export function applyStyleCommand(document: StyleDocument, command: StyleCommand
       document.sources[sourceId] = { ...source, data: { type: 'FeatureCollection', features } }
       return
     }
+    case 'setGeoJSONSourceHiddenFeatures': {
+      const [sourceId, ids] = command.args
+      const { hiddenFeatureIds: _previous, ...source } = findGeoJsonSource(document, sourceId, 'setGeoJsonSourceHiddenFeatures')
+      document.sources[sourceId] = ids.length === 0 ? source : { ...source, hiddenFeatureIds: [...ids] }
+      return
+    }
     case 'setSource': {
       const [sourceId, source] = command.args
       if (typeof source !== 'object' || source === null || typeof (source as { type?: unknown }).type !== 'string') {

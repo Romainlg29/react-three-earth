@@ -30,6 +30,7 @@ The package ships skills for coding agents in `skills/`:
 | --- | --- |
 | `@earthkit/draw#draw-features` | an app lets users draw points, lines, polygons and shapes on the map |
 | `@earthkit/draw#edit-shapes` | users must reshape what they drew: vertices, push and pull, extrude |
+| `@earthkit/draw#edit-geojson-sources` | users must edit GeoJSON already on the map (an imported file) in place, with no second copy |
 
 Load one with `npx @tanstack/intent@latest load @earthkit/draw#draw-features`.
 

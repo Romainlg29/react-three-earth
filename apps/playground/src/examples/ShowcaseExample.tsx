@@ -262,10 +262,15 @@ export function ShowcaseExample() {
   // The plugins, created once. Draw, measure and the geocoder stay installed (idle in their `static` mode); the
   // comparison is installed only while its tool is on, which clips the layers it lists.
   const draw = useMemo(() => new Draw(), [])
+  // A second draw edits a dropped file in place (`setSource`), leaving the user's own drawings in the first one.
+  const fileDraw = useMemo(() => new Draw({ name: 'file-edit' }), [])
   const measure = useMemo(() => new Measure(), [])
   const geocoder = useMemo(() => new Geocoder({ provider: createProviders(), marker: true }), [])
   const compare = useMemo(() => new Compare(), [])
-  const plugins = useMemo(() => (tool === 'compare' ? [draw, measure, geocoder, compare] : [draw, measure, geocoder]), [tool, draw, measure, geocoder, compare])
+  const plugins = useMemo(() => (tool === 'compare' ? [draw, fileDraw, measure, geocoder, compare] : [draw, fileDraw, measure, geocoder]), [tool, draw, fileDraw, measure, geocoder, compare])
+  // The files' sources, by file id, for `fileDraw.setSource`; and the file being edited.
+  const fileSources = useRef(new Map<string, GeoJsonSourceImpl>())
+  const [editingFileId, setEditingFileId] = useState<string | null>(null)
   const beforeRef = useCompareImagery(compare, 'before')
   const afterRef = useCompareImagery(compare, 'after')
 
@@ -284,14 +289,38 @@ export function ShowcaseExample() {
   const terrainStyle = useTerrainStyle({ color: preset })
   const date = useMemo(() => (hourUtc === null ? undefined : dateAtHour(hourUtc)), [hourUtc])
 
+  const stopEditingFile = () => {
+    fileDraw.setMode('static')
+    fileDraw.setSource(null)
+    setEditingFileId(null)
+  }
+  const editFile = (file: LoadedGeoJsonFile) => {
+    const source = fileSources.current.get(file.id)
+    if (source === undefined) return
+    if (editingFileId === file.id) {
+      stopEditingFile()
+      return
+    }
+    draw.setMode('static')
+    measure.setMode('static')
+    setSelection(null)
+    fileDraw.setSource(source)
+    fileDraw.setMode('select')
+    setEditingFileId(file.id)
+    setTool('draw')
+  }
   const chooseTool = (next: Tool) => {
-    if (next !== 'draw') draw.setMode('static')
+    if (next !== 'draw') {
+      draw.setMode('static')
+      if (editingFileId !== null) stopEditingFile()
+    }
     if (next !== 'measure') measure.setMode('static')
     if (next !== 'explore') setSelection(null)
     setTool(next)
   }
   const toggleLayer = (key: keyof DataLayers) => setLayers(current => ({ ...current, [key]: !current[key] }))
   const removeFile = (id: string) => {
+    if (id === editingFileId) stopEditingFile()
     geoJsonFiles.remove(id)
     setSelection(null)
   }
@@ -380,13 +409,26 @@ export function ShowcaseExample() {
               ))}
             </div>
             {tool === 'explore' ? <p className="example-status">Tap a summit, a cluster, a pin or a file’s feature. Hover highlights with a mouse.</p> : null}
-            {tool === 'draw' ? <DrawToolbar draw={draw} /> : null}
+            {tool === 'draw' && editingFileId !== null ? (
+              <>
+                <p className="example-status" data-testid="showcase-editing">
+                  Editing {geoJsonFiles.shown.find(file => file.id === editingFileId)?.name ?? 'a file'} in place: tap a feature to select it, drag to move it, tap it again for its vertices.
+                </p>
+                <div className="example-buttons">
+                  <button type="button" onClick={stopEditingFile}>
+                    Done editing
+                  </button>
+                </div>
+                <DrawToolbar draw={fileDraw} />
+              </>
+            ) : null}
+            {tool === 'draw' && editingFileId === null ? <DrawToolbar draw={draw} /> : null}
             {tool === 'measure' ? <MeasurePanel measure={measure} unitSystem={unitSystem} setUnitSystem={setUnitSystem} /> : null}
             {tool === 'compare' ? <p className="example-status">Drag the slider: {basemap === 'satellite' ? 'streets' : 'satellite'} on the right, your basemap and data on the left.</p> : null}
           </Section>
 
           <Section title={`Your GeoJSON${geoJsonFiles.shown.length > 0 ? ` (${geoJsonFiles.shown.length})` : ''}`} open>
-            <GeoJsonFilesPanel files={geoJsonFiles.shown} errors={geoJsonFiles.errors} onAdd={files => void geoJsonFiles.add(files)} onSample={addSample} onToggle={geoJsonFiles.toggle} onRemove={removeFile} onZoom={fitFile} />
+            <GeoJsonFilesPanel files={geoJsonFiles.shown} errors={geoJsonFiles.errors} onAdd={files => void geoJsonFiles.add(files)} onSample={addSample} onToggle={geoJsonFiles.toggle} onRemove={removeFile} onZoom={fitFile} onEdit={editFile} editingId={editingFileId} />
           </Section>
         </div>
       }
@@ -396,7 +438,16 @@ export function ShowcaseExample() {
           {layers.cities ? <CityLayers /> : null}
           <PeakLayers source={peakSource} visible={layers.peaks} />
           {geoJsonFiles.files.map(file => (
-            <GeoJsonFileLayers key={file.id} file={file} />
+            <GeoJsonFileLayers
+              key={file.id}
+              file={file}
+              editing={file.id === editingFileId}
+              sourceRef={source => {
+                if (source === null) return
+                fileSources.current.set(file.id, source)
+                return () => void fileSources.current.delete(file.id)
+              }}
+            />
           ))}
         </MapStyleSource>
       </Imagery>

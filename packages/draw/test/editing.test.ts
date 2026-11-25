@@ -1,7 +1,7 @@
 import type { LineString, MultiPolygon, Point, Polygon, Position } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
-import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, offsetVertices, removeVertex, translateFeature } from '../src/editing.js'
+import { featureMidpoints, featureVertices, groundBox, groundBoxWithinReach, hitFeature, insertVertex, moveVertex, offsetVertices, removeVertex, translateFeature } from '../src/editing.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
 import { LocalFrame } from '../src/localFrame.js'
@@ -176,6 +176,34 @@ describe('select mode', () => {
     expect(mode.selectedFeatureIds()).toBe(selection) // the same array until it changes
     mode.click(pointer(300, 300))
     expect(mode.selectedFeatureIds()).toEqual([])
+  })
+
+  it('projects only the draped features near a tap, so a tap on a large data set stays cheap', () => {
+    const far = Array.from({ length: 500 }, (_, index): DrawFeature<Polygon> => ({ ...square(), id: `far-${index}`, geometry: { type: 'Polygon', coordinates: [[[20, 20], [21, 20], [21, 21], [20, 21], [20, 20]]] } }))
+    const across: DrawFeature<LineString> = { ...line(), id: 'across', geometry: { type: 'LineString', coordinates: [[179.9, 0], [180.1, 0]] } }
+    const { context } = createContext([...far, square()])
+    const project = vi.spyOn(context, 'project')
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.click(pointer(50, 50))
+    expect(mode.selectedFeatureIds()).toEqual(['square'])
+    expect(project.mock.calls.length).toBeLessThan(50)
+    // A box past 180° is within reach of a tap at -179.95°; features with altitudes are always tested
+    expect(groundBoxWithinReach(groundBox(across)!, [-179.95, 0], 0.01, 0.01)).toBe(true)
+    expect(groundBoxWithinReach(groundBox(across)!, [-179.5, 0], 0.01, 0.01)).toBe(false)
+    expect(groundBox(line())).toBeNull()
+  })
+
+  it('tests every feature when a tap in a tilted view found none near the tapped ground', () => {
+    // A view squashed 3 times north-south: tilted. A ridge trail 2° north is drawn 6 px from the tap.
+    const ridge: DrawFeature<LineString> = { ...line(), id: 'ridge', geometry: { type: 'LineString', coordinates: [[-1, 2], [1, 2]] } }
+    const { context } = createContext([ridge])
+    context.project = ([longitude, latitude]) => ({ x: longitude * 100, y: latitude * 3 })
+    const mode = new SelectMode()
+    mode.enter(context)
+    // The ray hits the ground far beyond the ridge, as past a crest.
+    mode.click({ ...pointer(0, 0, 'mouse'), geographic: { longitudeDegrees: 0, latitudeDegrees: -40, heightMeters: 0 } })
+    expect(mode.selectedFeatureIds()).toEqual(['ridge'])
   })
 
   it('selects the polygon that contains a tap over a neighbour whose edge is near', () => {

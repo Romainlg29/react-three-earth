@@ -1,9 +1,11 @@
+import { GeoJsonSource } from '@earthkit/globe'
+import type { Feature, FeatureCollection } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Draw } from '../src/Draw.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { closeRing, distanceMeters, fromMercator, geometryBounds, pointInPolygon, toMercator, triangulatePolygon, unwrapPositions, wrapLongitude } from '../src/geometry.js'
-import type { DrawModeContext } from '../src/modes/DrawMode.js'
+import { DrawMode, StaticMode, type DrawModeContext } from '../src/modes/DrawMode.js'
 import { LineStringMode, PointMode, PolygonMode } from '../src/modes/PathModes.js'
 import type { OverlayContent } from '../src/render/LiveOverlay.js'
 import { DEFAULT_DRAW_STYLE } from '../src/style.js'
@@ -89,6 +91,121 @@ describe('Draw', () => {
       features: { type: 'FeatureCollection', features: [{ type: 'Feature', id: 7, properties: null, geometry: { type: 'Point', coordinates: [1, 2] } }, { type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [3, 4] } }] },
     })
     expect(draw.getFeatures().features.map(feature => [feature.id, feature.properties])).toEqual([['7', {}], ['made', {}]])
+  })
+})
+
+describe('Draw editing a GeoJSON source in place', () => {
+  const pointFeature = (id: string | number | undefined, longitude: number, properties: Record<string, unknown> | null = {}): Feature => ({
+    type: 'Feature',
+    ...(id === undefined ? {} : { id }),
+    properties,
+    geometry: { type: 'Point', coordinates: [longitude, 0] },
+  })
+  const features = (source: GeoJsonSource) => (source.data as FeatureCollection).features
+
+  /** A mode that shows some features live (as the select mode does with the selection). */
+  class LiveMode extends DrawMode {
+    readonly name = 'live'
+    live: string[] = []
+    override liveFeatureIds(): readonly string[] {
+      return this.live
+    }
+  }
+
+  it('holds the source’s own feature objects, and writes each change back by id', () => {
+    const a = pointFeature('a', 1)
+    const lines: Feature = { type: 'Feature', id: 'lines', properties: {}, geometry: { type: 'MultiLineString', coordinates: [[[0, 0], [1, 1]]] } }
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [a, pointFeature('b', 2), lines] } })
+    const draw = new Draw({ source })
+    expect(draw.getSource()).toBe(source)
+    expect(draw.getFeature('a')).toBe(a) // no copy
+    expect(draw.getFeatures().features.map(feature => feature.id)).toEqual(['a', 'b']) // the MultiLineString is not editable
+
+    const updates = vi.spyOn(source, 'updateData')
+    draw.addFeatures([{ ...pointFeature('a', 5), properties: { moved: true } } as never, pointFeature('c', 3) as never])
+    draw.removeFeatures(['b'])
+    expect(updates).toHaveBeenCalledTimes(2)
+    expect(features(source).map(feature => feature.id)).toEqual(['a', 'lines', 'c'])
+    expect(features(source)[0]).toMatchObject({ properties: { moved: true }, geometry: { coordinates: [5, 0] } })
+
+    draw.setSource(null)
+    expect(draw.getFeatures().features).toEqual([])
+    expect(features(source)).toHaveLength(3) // the source keeps its data
+  })
+
+  it('gives features without an id one in a single setData, and keeps numeric ids numeric in the source', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature(7, 1, null), pointFeature(undefined, 2)] } })
+    const setData = vi.spyOn(source, 'setData')
+    const draw = new Draw({ source, createId: () => 'made' })
+    expect(setData).toHaveBeenCalledTimes(1)
+    expect(features(source).map(feature => feature.id)).toEqual([7, 'made'])
+    expect(draw.getFeatures().features.map(feature => feature.id)).toEqual(['7', 'made'])
+    draw.addFeatures([{ ...pointFeature('7', 9) } as never])
+    expect(features(source).map(feature => feature.id)).toEqual([7, 'made'])
+    expect((features(source)[0]!.geometry as { coordinates: number[] }).coordinates[0]).toBe(9)
+    draw.removeFeatures(['7'])
+    expect(features(source).map(feature => feature.id)).toEqual(['made'])
+  })
+
+  it('finds features by the promoted property, and gives new ones that property', () => {
+    const source = new GeoJsonSource({ id: 'places', promoteId: 'code', data: { type: 'FeatureCollection', features: [pointFeature('x', 1, { code: 12 })] } })
+    const draw = new Draw({ source })
+    expect(draw.getFeatures().features.map(feature => feature.id)).toEqual(['12'])
+    draw.addFeatures([{ ...pointFeature('12', 4, { code: 12 }) } as never, pointFeature('new', 5) as never])
+    expect(features(source).map(feature => [feature.id, feature.properties?.['code']])).toEqual([['x', 12], [undefined, 'new']])
+  })
+
+  it('hides the features it draws live from the source’s tiles, and drapes none itself', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature(1, 1), pointFeature(2, 2)] } })
+    const live = new LiveMode()
+    const draw = new Draw({ source, modes: [new StaticMode(), live] })
+    live.live = ['1', 'unknown']
+    draw.setMode('live')
+    expect(source.hiddenFeatureIds).toEqual([1])
+    draw.setMode('static')
+    expect(source.hiddenFeatureIds).toEqual([])
+    live.live = ['2']
+    draw.setMode('live')
+    draw.setSource(null)
+    expect(source.hiddenFeatureIds).toEqual([]) // shown again when editing stops
+  })
+
+  it('adds a removed feature back under the id the source knew (an undo), numeric and promoted alike', () => {
+    const numeric = new GeoJsonSource({ id: 'numeric', data: { type: 'FeatureCollection', features: [pointFeature(7, 1)] } })
+    const draw = new Draw({ source: numeric })
+    const removed = draw.getFeature('7')!
+    draw.removeFeatures(['7'])
+    draw.addFeatures([removed])
+    expect(features(numeric).map(feature => feature.id)).toEqual([7])
+
+    const promoted = new GeoJsonSource({ id: 'promoted', promoteId: 'code', data: { type: 'FeatureCollection', features: [pointFeature('x', 1, { code: 12 })] } })
+    draw.setSource(promoted)
+    const promotedFeature = draw.getFeature('12')!
+    draw.removeFeatures(['12'])
+    draw.addFeatures([promotedFeature, { ...pointFeature(undefined, 2, { code: 99 }) } as never])
+    expect(features(promoted).map(feature => [feature.id, feature.properties?.['code']])).toEqual([['x', 12], [undefined, 99]])
+    expect(draw.getFeature('99')).toBeDefined()
+  })
+
+  it('reloads the same source after a change made elsewhere, and drops the selection when the source changes', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature('a', 1)] } })
+    const other = new GeoJsonSource({ id: 'other', data: { type: 'FeatureCollection', features: [pointFeature('a', 9)] } })
+    const draw = new Draw({ source })
+    source.setData({ type: 'FeatureCollection', features: [pointFeature('a', 1), pointFeature('b', 2)] })
+    draw.setSource(source)
+    expect(draw.getFeatures().features.map(feature => feature.id)).toEqual(['a', 'b'])
+    draw.select(['a'])
+    draw.setSource(other)
+    expect(draw.getSelectedIds()).toEqual([])
+  })
+
+  it('states the fix for two features whose ids read the same', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature(1, 1), pointFeature('1', 2)] } })
+    expect(() => new Draw({ source })).toThrow(/distinct id/)
+  })
+
+  it('states the fix for data loaded from a URL', () => {
+    expect(() => new Draw({ source: new GeoJsonSource({ id: 'remote', data: 'places.geojson' }) })).toThrow(/fetch the GeoJSON in the app/)
   })
 })
 

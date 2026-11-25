@@ -119,7 +119,7 @@ export function loadGeoJsonText(name: string, text: string): LoadedGeoJsonFile {
   } catch {
     throw new Error(`${name} is not valid JSON.`)
   }
-  const data = toFeatureCollection(parsed)
+  const data = withIds(toFeatureCollection(parsed))
   const number = nextFileNumber++
   return {
     id: `file-${number}`,
@@ -131,6 +131,23 @@ export function loadGeoJsonText(name: string, text: string): LoadedGeoJsonFile {
     counts: countGeometries(data),
     visible: true,
   }
+}
+
+/**
+ * The collection with an id on every feature (`f1`, `f2`… where one is missing), so the draw plugin can edit the file in
+ * place: it updates features by id. Given here, at load, rather than by the plugin, which would replace the data the
+ * `<GeoJsonSource>` was rendered with.
+ */
+function withIds(collection: FeatureCollection): FeatureCollection {
+  const missing = (feature: Feature) => feature.id === undefined || feature.id === null
+  if (!collection.features.some(missing)) return collection
+  const taken = new Set(collection.features.map(feature => String(feature.id)))
+  let next = 1
+  const freshId = () => {
+    while (taken.has(`f${next}`)) next++
+    return `f${next++}`
+  }
+  return { ...collection, features: collection.features.map(feature => (missing(feature) ? { ...feature, id: freshId() } : feature)) }
 }
 
 /** Whether a dropped file looks like GeoJSON by its name or type. */

@@ -79,10 +79,11 @@ export class FeatureStore {
     if (removed.length > 0) this.changed({ added: [], updated: [], removed })
   }
 
-  /** Replaces every feature. */
-  replace(features: readonly DrawFeature[]): void {
-    for (const feature of features) validateFeature(feature)
-    const removed = [...this.features.values()].filter(feature => !features.some(next => next.id === feature.id))
+  /** Replaces every feature; `validated` skips checking them again (`validateFeature` passed on each). */
+  replace(features: readonly DrawFeature[], { validated = false }: { validated?: boolean } = {}): void {
+    if (!validated) for (const feature of features) validateFeature(feature)
+    const nextIds = new Set(features.map(feature => feature.id))
+    const removed = [...this.features.values()].filter(feature => !nextIds.has(feature.id))
     const added: string[] = []
     const updated: string[] = []
     const previous = new Set(this.features.keys())
@@ -106,6 +107,16 @@ export class FeatureStore {
 }
 
 const GEOMETRY_TYPES = new Set(['Point', 'LineString', 'Polygon', 'MultiPolygon'])
+
+/** Whether a `Draw` can hold a feature (`validateFeature` would not throw). */
+export function isDrawableFeature(feature: DrawFeature): boolean {
+  try {
+    validateFeature(feature)
+    return true
+  } catch {
+    return false
+  }
+}
 
 /** Throws, stating the fix, for a feature a `Draw` cannot hold. */
 export function validateFeature(feature: DrawFeature): void {
