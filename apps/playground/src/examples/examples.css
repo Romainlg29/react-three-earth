@@ -238,3 +238,74 @@
   color: #b4bdcc;
   font-size: 0.9em;
 }
+
+/* The compare example's slider: a line across the map at --compare-position (set by @earthkit/compare), with a grip. */
+.compare-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--compare-position, 50%);
+  width: 44px;
+  margin-left: -22px;
+  cursor: ew-resize;
+  outline: none;
+}
+
+.compare-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 21px;
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+}
+
+.compare-handle[aria-orientation='vertical'] {
+  top: var(--compare-position, 50%);
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 44px;
+  margin: -22px 0 0;
+  cursor: ns-resize;
+}
+
+.compare-handle[aria-orientation='vertical']::before {
+  top: 21px;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 2px;
+}
+
+.compare-grip {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 36px;
+  margin: -18px 0 0 -18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+.compare-grip::before {
+  content: '‹ ›';
+  display: block;
+  color: #1f2430;
+  font: 600 16px/36px system-ui, sans-serif;
+  text-align: center;
+}
+
+.compare-handle[aria-orientation='vertical'] .compare-grip::before {
+  content: '⌃⌄';
+}
+
+.compare-handle:focus-visible .compare-grip {
+  box-shadow: 0 0 0 3px #5b8def, 0 1px 6px rgba(0, 0, 0, 0.45);
+}

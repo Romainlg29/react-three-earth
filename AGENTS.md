@@ -21,6 +21,8 @@ instead.
   the services and the in-memory GeoJSON index, `src/react` for the combobox hook). Ships its own skill.
 - `packages/measure`: `@earthkit/measure`, headless measuring (geodesic distances and areas, elevation profiles) as a
   plugin on `@earthkit/draw` and the public API. Ships its skill in `packages/measure/skills/`.
+- `packages/compare`: `@earthkit/compare`, a headless swipe comparison as a plugin on the public API: `before` and
+  `after` imagery layers clipped to either side of a line (`Imagery.screenClip`), with a slider handle. Ships its skill.
 - `packages/terrain-style`: `@earthkit/terrain-style`, stylised terrain: MapLibre-style expressions over elevation, slope
   and aspect compiled to TSL for a terrain material, with presets. Ships its skill in `packages/terrain-style/skills/`.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`

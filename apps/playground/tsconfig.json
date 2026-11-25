@@ -14,6 +14,8 @@
       "@earthkit/geocoder/react": ["../../packages/geocoder/src/react/index.ts"],
       "@earthkit/measure": ["../../packages/measure/src/index.ts"],
       "@earthkit/measure/react": ["../../packages/measure/src/react/index.ts"],
+      "@earthkit/compare": ["../../packages/compare/src/index.ts"],
+      "@earthkit/compare/react": ["../../packages/compare/src/react/index.ts"],
       "@earthkit/terrain-style": ["../../packages/terrain-style/src/index.ts"],
       "@earthkit/terrain-style/react": ["../../packages/terrain-style/src/react/index.ts"]
     }

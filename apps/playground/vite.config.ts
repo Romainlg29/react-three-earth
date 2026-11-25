@@ -9,6 +9,7 @@ const library = (path: string) => fileURLToPath(new URL(`../../packages/react-th
 const drawLibrary = (path: string) => fileURLToPath(new URL(`../../packages/draw/src/${path}`, import.meta.url))
 const geocoderLibrary = (path: string) => fileURLToPath(new URL(`../../packages/geocoder/src/${path}`, import.meta.url))
 const measureLibrary = (path: string) => fileURLToPath(new URL(`../../packages/measure/src/${path}`, import.meta.url))
+const compareLibrary = (path: string) => fileURLToPath(new URL(`../../packages/compare/src/${path}`, import.meta.url))
 const terrainStyleLibrary = (path: string) => fileURLToPath(new URL(`../../packages/terrain-style/src/${path}`, import.meta.url))
 
 export default defineConfig({
@@ -29,6 +30,8 @@ export default defineConfig({
       { find: /^@earthkit\/geocoder$/, replacement: geocoderLibrary('index.ts') },
       { find: /^@earthkit\/measure\/react$/, replacement: measureLibrary('react/index.ts') },
       { find: /^@earthkit\/measure$/, replacement: measureLibrary('index.ts') },
+      { find: /^@earthkit\/compare\/react$/, replacement: compareLibrary('react/index.ts') },
+      { find: /^@earthkit\/compare$/, replacement: compareLibrary('index.ts') },
       { find: /^@earthkit\/terrain-style\/react$/, replacement: terrainStyleLibrary('react/index.ts') },
       { find: /^@earthkit\/terrain-style$/, replacement: terrainStyleLibrary('index.ts') },
     ],

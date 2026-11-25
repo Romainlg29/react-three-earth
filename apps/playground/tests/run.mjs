@@ -3056,6 +3056,51 @@ const CHECKS = [
     const searches = await page.evaluate(() => window.geocoderSearches)
     return { geocoder: { searches, options, expanded, activeDescendant, activeOptionId, query: await input.inputValue(), view, marker, listHidden, reverse } }
   })],
+  ['examples/compare', () => galleryExample('compare', '', async (page, idle) => {
+    // The street map (beige) before the line, the fixture imagery (green checker) after it: green per band of the screen.
+    const green = async bands => {
+      await idle()
+      await page.waitForTimeout(1000)
+      return analyse(page, await page.screenshot(), `
+        const bands = ${JSON.stringify(bands)}
+        return bands.map(([axis, from, to]) => {
+          let greenPixels = 0, count = 0
+          for (let y = 80; y < height; y++) for (let x = 0; x < width; x++) {
+            const along = axis === 'x' ? x / width : y / height
+            if (along < from || along >= to) continue
+            const i = (y * width + x) * 4
+            if (px[i + 1] > px[i] + 25 && px[i + 1] > px[i + 2] + 25) greenPixels++
+            count++
+          }
+          return +(greenPixels / count).toFixed(3)
+        })
+      `)
+    }
+    const handle = page.getByRole('slider', { name: 'Before and after' })
+    const initial = await green([['x', 0.05, 0.45], ['x', 0.55, 0.95]])
+    // Drag the grip from the middle to three quarters: the band between turns to the street map.
+    const box = await handle.boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width / 2 + 100, box.y + box.height / 2, { steps: 5 })
+    await page.mouse.move(box.x + box.width / 2 + 200, box.y + box.height / 2, { steps: 5 })
+    await page.mouse.up()
+    const dragged = { valueNow: Number(await handle.getAttribute('aria-valuenow')), camera: await page.evaluate(() => window.earth.camera.getView().longitudeDegrees), bands: await green([['x', 0.55, 0.7], ['x', 0.8, 0.95]]) }
+    // The keyboard: Home puts the line at the left edge, the imagery everywhere.
+    await handle.focus()
+    await page.keyboard.press('Home')
+    const keyboard = { valueNow: Number(await handle.getAttribute('aria-valuenow')), bands: await green([['x', 0.05, 0.95]]) }
+    await page.keyboard.press('End')
+    await page.keyboard.press('PageDown')
+    await page.keyboard.press('PageDown')
+    await page.keyboard.press('PageDown')
+    await page.keyboard.press('PageDown')
+    await page.keyboard.press('PageDown')
+    // Top and bottom: the street map above the line, the imagery below.
+    await page.getByRole('button', { name: 'Top and bottom' }).click()
+    const horizontal = { orientation: await handle.getAttribute('aria-orientation'), bands: await green([['y', 0.15, 0.45], ['y', 0.55, 0.95]]) }
+    return { compare: { initial, dragged, keyboard, horizontal } }
+  })],
   ['examples/embedded', () => galleryExample('embedded', '', async page => {
     // A plain wheel over the map scrolls the page and leaves the camera where it was.
     const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
