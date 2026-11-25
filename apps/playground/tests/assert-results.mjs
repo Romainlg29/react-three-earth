@@ -481,7 +481,7 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
     ['a tap selects the polygon, with its gizmo', r.selected === 1 && r.gizmoFirst],
     ['a second tap on it shows its vertex handles', r.editingVertices],
     ['a drag on a vertex handle moves that vertex only', r.vertexMoved],
-    ['a tap on a midpoint inserts a vertex', r.verticesAfterInsert === 5],
+    ['a tap on a midpoint inserts a vertex, which is picked', r.verticesAfterInsert === 5 && r.pickedAfterInsert === 1],
     ['a drag inside the selection moves it whole, and the camera stays', r.movedWhole && r.cameraHeldDuringMove],
     ['each edit fires one update', r.updates === 3],
     ['a picked vertex is deleted, and undo brings it back', r.deleted && r.verticesAfterDelete === 4 && r.verticesAfterUndo === 5],

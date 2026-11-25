@@ -37,6 +37,9 @@ export function DrawGizmoToolbar({ draw }: { draw: Draw }) {
             {label}
           </button>
         ))}
+        <button type="button" onClick={() => draw.selectAllElements()}>
+          Select all
+        </button>
         <button type="button" disabled={!canExtrude} onClick={() => draw.extrude()}>
           Extrude
         </button>
@@ -69,4 +72,4 @@ export const GIZMO_HELP =
 
 /** What edit mode does, for the status line. */
 export const EDIT_HELP =
-  'Tap a vertex, edge or face to pick it, drag it to move it; drag a picked face\'s arrow to push or pull it. Tap the empty map for the gizmo. Keys: Tab, 1, 2, 3, E.'
+  'Tap a vertex, edge or face to pick it (Shift adds), drag it or its gizmo to move it; drag a picked face\'s arrow to push or pull it. Tap the empty map for the gizmo. Keys: Tab, 1, 2, 3, A, G, E.'

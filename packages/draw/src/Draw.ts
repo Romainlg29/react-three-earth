@@ -44,7 +44,8 @@ export interface DrawOptions {
   /**
    * Keys act on the mode while the map has focus: Escape, Enter, Backspace and Delete, and in the select mode G, R and
    * S (move, rotate, scale under the pointer), then X, Y and Z (lock to an axis); a right click cancels such a move.
-   * Tab enters and leaves edit mode, where 1, 2 and 3 pick vertices, edges or faces and E extrudes the picked face.
+   * Tab enters and leaves edit mode, where 1, 2 and 3 pick vertices, edges or faces, A picks them all (Alt+A none), G
+   * moves what is picked (then X, Y or Z for one axis) and E extrudes the picked face. Shift+tap adds to what is picked.
    * Default: false (opt-in).
    */
   keyboard?: boolean
@@ -71,6 +72,8 @@ export interface DrawState extends DrawModeStatus {
   elementMode: ElementMode
   /** `extrude()` would act: in edit mode, a face of a mesh or polygon is picked. */
   canExtrude: boolean
+  /** Elements picked in edit mode (Shift+tap adds one, `selectAllElements` picks them all); 0 outside it. */
+  pickedElementCount: number
   /** The gizmo's handles: `'all'` (the default), or only those of `'move'`, `'rotate'` or `'scale'`. See `setGizmoTool`. */
   gizmoTool: GizmoTool
   /** The gizmo's axes: east, north and up (`'world'`, the default), or the feature's own (`'local'`). See `setGizmoSpace`. */
@@ -267,6 +270,23 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
    */
   extrude(distanceMeters?: number): boolean {
     return this.mode instanceof SelectMode ? this.mode.extrude(distanceMeters) : false
+  }
+
+  /**
+   * Picks every vertex, edge or face (`state.elementMode`) of the selected feature in edit mode, as A does with
+   * `keyboard`: a drag on one of them, or the move gizmo over them, moves them all. Returns false outside edit mode.
+   */
+  selectAllElements(): boolean {
+    const done = this.mode instanceof SelectMode && this.mode.selectAllElements()
+    this.refresh()
+    return done
+  }
+
+  /** Drops what is picked in edit mode, as Alt+A does with `keyboard`. Returns false when nothing was picked. */
+  clearElementSelection(): boolean {
+    const done = this.mode instanceof SelectMode && this.mode.clearElementSelection()
+    this.refresh()
+    return done
   }
 
   // ---- Selection ----
@@ -646,6 +666,7 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
       editingVertices: status.editingVertices ?? false,
       elementMode: status.elementMode ?? [...this.modes.values()].find((each): each is SelectMode => each instanceof SelectMode)?.elementMode ?? 'vertex',
       canExtrude: status.canExtrude ?? false,
+      pickedElementCount: status.pickedElementCount ?? 0,
       gizmoTool: this.gizmoTool,
       gizmoSpace: this.gizmoSpace,
     }

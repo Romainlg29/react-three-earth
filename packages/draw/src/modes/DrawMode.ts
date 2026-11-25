@@ -62,6 +62,8 @@ export interface DrawModeStatus {
   elementMode?: ElementMode
   /** The select mode's `extrude()` would act: a face is picked. Default: false. */
   canExtrude?: boolean
+  /** Elements picked in the select mode's edit mode. Default: 0. */
+  pickedElementCount?: number
 }
 
 export const IDLE_STATUS: DrawModeStatus = Object.freeze({ drawing: false, vertexCount: 0, canFinish: false, canUndo: false, editingVertices: false })
