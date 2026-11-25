@@ -126,25 +126,26 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.focusAfterOpen = options.focusAfterOpen ?? true
 
     this.element = document.createElement('div')
-    this.element.className = 'react-three-earth-popup'
+    this.element.className = 'earthkit-popup'
+    this.element.setAttribute('data-earthkit-popup', '')
     if (options.className) this.element.classList.add(...options.className.split(/\s+/).filter(Boolean))
     this.element.setAttribute('role', 'dialog')
     this.element.setAttribute('aria-label', options.label ?? 'Map popup')
     this.element.dataset.visibility = 'hidden'
     this.element.dataset.anchor = 'bottom'
     const tip = document.createElement('div')
-    tip.className = 'react-three-earth-popup-tip'
+    tip.className = 'earthkit-popup-tip'
     this.boxElement = document.createElement('div')
-    this.boxElement.className = 'react-three-earth-popup-content'
+    this.boxElement.className = 'earthkit-popup-content'
     this.boxElement.tabIndex = -1
     this.contentElement = document.createElement('div')
-    this.contentElement.className = 'react-three-earth-popup-body'
+    this.contentElement.className = 'earthkit-popup-body'
     this.boxElement.append(this.contentElement)
     this.closeButtonElement = null
     if (options.closeButton ?? true) {
       const button = document.createElement('button')
       button.type = 'button'
-      button.className = 'react-three-earth-popup-close'
+      button.className = 'earthkit-popup-close'
       button.setAttribute('aria-label', 'Close popup')
       button.textContent = '×'
       button.addEventListener('click', this.onCloseButton)
@@ -180,7 +181,7 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     this.openedAtMilliseconds = performance.now()
     // On a marker, focus goes back to it: a press on the map may have kept it from taking focus.
     this.focusBeforeOpen = this.marker?.element ?? container.ownerDocument.activeElement
-    acquireScreenLayer(container).append(this.element)
+    acquireScreenLayer(container, { defaultStyles: earth.defaultOverlayStyles }).append(this.element)
     this.resizeObserver?.observe(this.element, { box: 'border-box' })
     container.addEventListener('pointerdown', this.onContainerPointerDown, true)
     // Capture: a click on another marker closes this popup before that marker opens its own (or asks the app to).
@@ -462,8 +463,8 @@ export class Popup extends EventDispatcher<PopupEventMap> implements ScreenOverl
     const target = event.target as Element | null
     if (target === null || this.marker?.element.contains(target) === true) return
     // Only clicks on the map close it: the canvas, or another marker. Not this popup or another, nor a control.
-    if (target.closest?.('.react-three-earth-popup') != null) return
-    const onMap = target instanceof HTMLCanvasElement || target.closest?.('.react-three-earth-markers') != null
+    if (target.closest?.('[data-earthkit-popup]') != null) return
+    const onMap = target instanceof HTMLCanvasElement || target.closest?.('[data-earthkit-markers]') != null
     if (!onMap) return
     const down = this.pointerDownPosition
     if (down !== null && Math.hypot(event.clientX - down.clientX, event.clientY - down.clientY) > CLICK_TOLERANCE_PIXELS) return

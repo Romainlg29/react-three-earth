@@ -170,8 +170,8 @@ export function MapWithControls() {
 ```
 
 - `<Controls>` has no CSS: give it `className` or `style`. Clicks, presses and wheel turns inside it never reach the map.
-  Its element has the class `react-three-earth-controls`; buttons of yours over the map outside a `<Controls>` should
-  carry it too, or a press on them pauses a following geolocate.
+  Its element has no class of its own, only the `data-earthkit-controls` attribute (`CONTROLS_ATTRIBUTE`); buttons of
+  yours over the map outside a `<Controls>` should carry it too, or a press on them pauses a following geolocate.
 - `useNavigationControl`: `zoomIn` / `zoomOut` zoom by `zoomStep` (1) levels over `durationSeconds` (0.3); calls during
   the ease add up. `compassTransform` is a CSS transform that turns a needle against the heading (and tilts it with
   `visualizePitch`; `compassRotateDegrees` and `compassTiltDegrees` are the numbers); `north` is true when there is
@@ -311,8 +311,8 @@ override for other bindings); `keyboardAction(press, steps)` is the binding tabl
 
 `Shift` + drag with the mouse on the map draws a box; releasing eases the camera to centre the box and zoom until it
 fills the screen, keeping heading and pitch (`Escape` cancels; the release is not a map `click`). It takes `Shift` + drag over from rotating: rotate with the right button, as in MapLibre.
-`boxZoom={false}` gives `Shift` + drag back to rotation. The box is `.react-three-earth-box-zoom`, styled by
-`--react-three-earth-box-zoom-border` and `--react-three-earth-box-zoom-background`.
+`boxZoom={false}` gives `Shift` + drag back to rotation. The box is `.earthkit-box-zoom`, styled by
+`--earthkit-box-zoom-border` and `--earthkit-box-zoom-background`.
 
 For a map inside a page that scrolls, turn on `cooperativeGestures`: the wheel then zooms only with `Ctrl` (`⌘` on
 Apple systems), and one finger scrolls the page while two fingers pinch, twist, pan and tilt the map. A hint over the
@@ -329,7 +329,7 @@ export const mapInArticle = (
 )
 ```
 
-The hint is `.react-three-earth-cooperative-hint`, styled by `--react-three-earth-cooperative-hint-font`, `-color` and
+The hint is `.earthkit-cooperative-hint`, styled by `--earthkit-cooperative-hint-font`, `-color` and
 `-background`. In vanilla: `controls.boxZoom` (`BoxZoom`: `enabled`, `durationSeconds`) and
 `controls.cooperativeGestures` (`CooperativeGestures`: `enabled`, `setLocale`, `hintDurationSeconds`, `showHint`).
 

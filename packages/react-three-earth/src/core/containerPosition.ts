@@ -1,4 +1,4 @@
-const POSITIONED_ATTRIBUTE = 'data-react-three-earth-positioned'
+const POSITIONED_ATTRIBUTE = 'data-earthkit-positioned'
 const holders = new WeakMap<HTMLElement, number>()
 
 /**

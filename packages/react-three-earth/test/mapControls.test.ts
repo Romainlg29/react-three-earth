@@ -134,7 +134,8 @@ describe('Controls', () => {
   it('adds an unstyled element that keeps presses from the map, and removes it', () => {
     const { container } = setup()
     const controls = new Controls({ container })
-    expect(controls.element.className).toBe('react-three-earth-controls')
+    expect(controls.element.className).toBe('')
+    expect(controls.element.hasAttribute('data-earthkit-controls')).toBe(true)
     expect(controls.element.getAttribute('style')).toBeNull()
     expect(document.head.querySelector('style')).toBeNull()
     const button = document.createElement('button')
@@ -146,7 +147,7 @@ describe('Controls', () => {
     button.dispatchEvent(new Event('pointerdown', { bubbles: true }))
     expect(onContainer).not.toHaveBeenCalled()
     controls.dispose()
-    expect(container.querySelector('.react-three-earth-controls')).toBeNull()
+    expect(container.querySelector('[data-earthkit-controls]')).toBeNull()
   })
 })
 

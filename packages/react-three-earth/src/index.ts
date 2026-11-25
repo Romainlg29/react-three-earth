@@ -83,7 +83,7 @@ export {
 } from './core/featureQuery.js'
 export { PointerInteractions, type PointerInteraction, type PointerInteractionEvent } from './core/PointerInteractions.js'
 export { LayerEvents, type LayerEventListener, type LayerEventOptions, type LayerEventType, type LayerPointerEvent } from './core/LayerEvents.js'
-export { Controls, CONTROLS_CLASS_NAME, MapControl, type ControlsOptions, type ControlStateListener } from './controls/Controls.js'
+export { Controls, CONTROLS_ATTRIBUTE, MapControl, type ControlsOptions, type ControlStateListener } from './controls/Controls.js'
 export { NavigationControl, type NavigationControlOptions, type NavigationControlState } from './controls/NavigationControl.js'
 export { ScaleControl, type ScaleControlOptions, type ScaleControlState } from './controls/ScaleControl.js'
 export {

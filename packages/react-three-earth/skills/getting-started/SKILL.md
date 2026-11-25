@@ -204,9 +204,9 @@ export function MyCredits() {
 }
 ```
 
-`<AttributionControl>` ships no CSS: its element has the classes `react-three-earth-controls react-three-earth-attribution`
-plus yours, and holds a `role="group"` element with `.react-three-earth-attribution-text` and, in compact mode, the
-`.react-three-earth-attribution-toggle` button (`hidden` otherwise; make `[hidden]` `display: none` if your CSS sets
+`<AttributionControl>` ships no CSS: its element has the class `earthkit-attribution`
+plus yours (and the `data-earthkit-controls` attribute), and holds a `role="group"` element with `.earthkit-attribution-text` and, in compact mode, the
+`.earthkit-attribution-toggle` button (`hidden` otherwise; make `[hidden]` `display: none` if your CSS sets
 `display`). `useAttributionControl` gives `entries` (each a list of `{ text, href? }` segments), `visible`, `compact`,
 `textVisible`, `toggle`, and props for the group and the toggle. Vanilla: `new AttributionControl({ earth, container,
 compact, customAttribution })` with `getState()` and `subscribe()`, and `appendAttribution(element, entries)` builds

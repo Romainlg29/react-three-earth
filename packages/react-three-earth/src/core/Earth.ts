@@ -64,6 +64,13 @@ export interface EarthOptions {
    * nothing moved the camera before; otherwise the camera stays where it is.
    */
   initialView?: MapViewChange
+  /**
+   * Whether markers and popups get the built-in look: the default pin, the popup's box, tip and close button,
+   * focus rings. False leaves them unstyled apart from what places them, for an app that brings its own CSS
+   * (target `.earthkit-marker`, `.earthkit-popup`, `.earthkit-popup-content`, …). With it on, restyle through
+   * the same classes or the `--earthkit-popup-*` and `--earthkit-marker-color` CSS variables. Default: true.
+   */
+  defaultOverlayStyles?: boolean
 }
 
 /** A JSON snapshot of what the Earth is doing, for agents and devtools. */
@@ -147,6 +154,8 @@ function inspectImagery(terrain: Terrain) {
  */
 export class Earth extends Group<EarthEventMap> {
   date: Date
+  /** Whether markers and popups get the built-in look (`EarthOptions.defaultOverlayStyles`). */
+  readonly defaultOverlayStyles: boolean
   terrain: Terrain | null = null
   atmosphere: Atmosphere | null = null
   /** The globe-to-map morph, shared with the terrain, atmosphere and controls. Change it with `setView`. */
@@ -208,10 +217,11 @@ export class Earth extends Group<EarthEventMap> {
   protected pointerTarget: { element: HTMLElement; remove: () => void } | null = null
   protected readonly viewSample: ViewSample = { groundMetersPerPixel: 0, headingDegrees: 0, pitchDegrees: 0 }
 
-  constructor({ date = new Date(), view, initialView }: EarthOptions = {}) {
+  constructor({ date = new Date(), view, initialView, defaultOverlayStyles = true }: EarthOptions = {}) {
     super()
     this.name = 'Earth'
     this.date = date
+    this.defaultOverlayStyles = defaultOverlayStyles
     this.pendingInitialView = initialView ?? null
     this.initialViewSettled = initialView !== undefined
     this.viewChosen = view !== undefined

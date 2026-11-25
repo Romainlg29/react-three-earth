@@ -175,15 +175,15 @@ export class BoxZoom {
     if (domElement === null) return
     if (this.box === null) {
       const box = domElement.ownerDocument.createElement('div')
-      box.className = 'react-three-earth-box-zoom'
+      box.className = 'earthkit-box-zoom'
       box.setAttribute('aria-hidden', 'true')
       Object.assign(box.style, {
         position: 'absolute',
         boxSizing: 'border-box',
         pointerEvents: 'none',
         zIndex: '1',
-        border: 'var(--react-three-earth-box-zoom-border, 2px dotted #202020)',
-        background: 'var(--react-three-earth-box-zoom-background, rgba(56, 135, 190, 0.1))',
+        border: 'var(--earthkit-box-zoom-border, 2px dotted #202020)',
+        background: 'var(--earthkit-box-zoom-background, rgba(56, 135, 190, 0.1))',
       })
       holdContainerPosition(domElement)
       domElement.append(box)

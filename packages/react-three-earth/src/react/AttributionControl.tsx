@@ -66,7 +66,7 @@ export function AttributionText({ entries, separator = ' | ' }: { entries: Attri
 }
 
 export interface AttributionControlProps extends UseAttributionControlOptions {
-  /** Class names for the control's element, added to `react-three-earth-controls react-three-earth-attribution`. Place it with them. */
+  /** Class names for the control's element, added to `earthkit-attribution`. Place it with them. */
   className?: string
   /** Inline style of the control's element. */
   style?: CSSProperties
@@ -74,12 +74,12 @@ export interface AttributionControlProps extends UseAttributionControlOptions {
 
 /**
  * The credits of the sources inside `<Earth>`, as unstyled HTML: a `role="group"` element with the text and links
- * (`.react-three-earth-attribution-text`) and, in compact mode, an "ⓘ" toggle (`.react-three-earth-attribution-toggle`).
+ * (`.earthkit-attribution-text`) and, in compact mode, an "ⓘ" toggle (`.earthkit-attribution-toggle`).
  * No CSS ships: place and style it with `className`. For markup of your own, use `useAttributionControl`.
  */
 export function AttributionControl({ className, style, container, ...options }: AttributionControlProps) {
   return (
-    <Controls className={className === undefined ? 'react-three-earth-attribution' : `react-three-earth-attribution ${className}`} style={style} container={container}>
+    <Controls className={className === undefined ? 'earthkit-attribution' : `earthkit-attribution ${className}`} style={style} container={container}>
       <AttributionContent {...options} container={container} />
     </Controls>
   )
@@ -89,10 +89,10 @@ function AttributionContent(options: UseAttributionControlOptions) {
   const attribution = useAttributionControl(options)
   return (
     <div {...attribution.groupProps}>
-      <span className="react-three-earth-attribution-text" hidden={!attribution.textVisible}>
+      <span className="earthkit-attribution-text" hidden={!attribution.textVisible}>
         <AttributionText entries={attribution.entries} />
       </span>
-      <button className="react-three-earth-attribution-toggle" {...attribution.toggleButtonProps}>
+      <button className="earthkit-attribution-toggle" {...attribution.toggleButtonProps}>
         ⓘ
       </button>
     </div>

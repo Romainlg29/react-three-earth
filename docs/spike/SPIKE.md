@@ -1104,7 +1104,7 @@ is the example.
   after the last), so construction has no side effect and React can build it in a `useMemo`. Each hook
   (`useNavigationControl`…) wraps the vanilla class of the same name and adds `…ButtonProps` objects (type, `aria-label`,
   `title`, `onClick`, `aria-pressed`…) to spread on the app's own buttons.
-- **Controls.** `Controls({ container })` is an unstyled `<div class="react-three-earth-controls">` that stops
+- **Controls.** `Controls({ container })` is an unstyled `<div data-earthkit-controls>` that stops
   `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart`, so a press on a control never starts a map
   gesture or a map `click`. The React `<Controls className style>` renders its children as HTML in it through `useDomRoot`
   (contexts bridged, so the hooks and `<Marker>` work inside). The class also marks map UI for `GeolocateControl` and
@@ -1117,7 +1117,7 @@ is the example.
 - **Geolocate.** Statuses `off | waiting | tracking | background | error`. The state carries `userLocation` and
   `accuracyDiameterPixels` (accuracy over metres per pixel at the centre); the app draws the dot and circle (the
   playground uses two `<Marker>`s, the circle `pitchAlignment: 'map'`). "The user took the map" is a `pointerdown`, `wheel`
-  or `touchstart` on the container outside `.react-three-earth-controls` (a `movestart` check was dropped because viewport
+  or `touchstart` on the container outside `[data-earthkit-controls]` (a `movestart` check was dropped because viewport
   resizes, the iPhone address bar and the view morph also fire it). A lost fix keeps the status before it and restores it on
   the next fix; `trackuserlocationend` pairs with every `trackuserlocationstart`. A denied Permissions API state or a code-1
   error disables it. A one-off request answered after `stop` is ignored.
@@ -1296,9 +1296,10 @@ HTML markers and popups, MapLibre-style, on the globe and the flat map (`src/cor
 
 Changed from the brief:
 
-- The CSS is injected once per document and themed with CSS variables (`--react-three-earth-marker-color`,
-  `--react-three-earth-popup-background`, `-color`, `-shadow`, `-radius`, `-padding`, `-font`), like `AttributionControl`,
-  instead of a separate CSS export to import.
+- The CSS is injected once per document and themed with CSS variables (`--earthkit-marker-color`,
+  `--earthkit-popup-background`, `-color`, `-shadow`, `-radius`, `-padding`, `-font`), like `AttributionControl`,
+  instead of a separate CSS export to import. What places them is found by data attributes (`data-earthkit-marker`,
+  `-popup`, `-markers`); the look sits on the classes and `defaultOverlayStyles: false` on the Earth turns it off.
 - `anchor` defaults to `'bottom'` for the default pin and `'center'` for an element or content of your own.
 - A popup on a marker opens beside the marker's box (`popupPointOnBox`), so it clears any pin or content size, instead of
   a per-anchor offset table.

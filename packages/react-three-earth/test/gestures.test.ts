@@ -100,7 +100,7 @@ describe('BoxZoom', () => {
     pointer('pointerdown', canvas, { shiftKey: true, clientX: 100, clientY: 100 })
     expect(controlsSaw).not.toHaveBeenCalled()
     pointer('pointermove', canvas, { shiftKey: true, clientX: 200, clientY: 150 })
-    const box = element.querySelector<HTMLElement>('.react-three-earth-box-zoom')!
+    const box = element.querySelector<HTMLElement>('.earthkit-box-zoom')!
     expect(box.style.width).toBe('100px')
     expect(box.style.height).toBe('50px')
     pointer('pointerup', canvas, { clientX: 300, clientY: 200 })
@@ -109,7 +109,7 @@ describe('BoxZoom', () => {
     expect(fits[0]!.eastDegrees).toBeCloseTo(3)
     expect(fits[0]!.northDegrees).toBeCloseTo(-1)
     expect(fits[0]!.southDegrees).toBeCloseTo(-2)
-    expect(element.querySelector('.react-three-earth-box-zoom')).toBeNull()
+    expect(element.querySelector('.earthkit-box-zoom')).toBeNull()
   })
 
   it('swallows the click that the release of a box fires, but not a plain Shift + click', async () => {
@@ -130,7 +130,7 @@ describe('BoxZoom', () => {
   it('leaves Shift + drag on a marker or control to it', () => {
     const { element, controlsSaw, boxZoom } = setUp()
     const marker = document.createElement('button')
-    marker.className = 'react-three-earth-marker'
+    marker.setAttribute('data-earthkit-marker', '')
     element.append(marker)
     pointer('pointerdown', marker, { shiftKey: true })
     expect(boxZoom.active).toBe(false)
@@ -207,7 +207,7 @@ describe('cooperative gestures', () => {
     canvas.dispatchEvent(plain)
     expect(plain.defaultPrevented).toBe(false)
     expect(controlsSaw.wheel).not.toHaveBeenCalled()
-    const hint = element.querySelector<HTMLElement>('.react-three-earth-cooperative-hint')!
+    const hint = element.querySelector<HTMLElement>('.earthkit-cooperative-hint')!
     expect(hint.getAttribute('role')).toBe('status')
     expect(hint.textContent).toMatch(/scroll to zoom the map/)
     expect(hint.style.opacity).toBe('1')
@@ -231,7 +231,7 @@ describe('cooperative gestures', () => {
     expect(controlsSaw.pointerdown).toHaveBeenCalledOnce()
     // A plain marker is stopped like the map; a draggable one keeps its touches
     const marker = document.createElement('div')
-    marker.className = 'react-three-earth-marker'
+    marker.setAttribute('data-earthkit-marker', '')
     element.append(marker)
     pointer('pointerdown', marker, { pointerType: 'touch', pointerId: 3 })
     expect(controlsSaw.pointerdown).toHaveBeenCalledOnce()
@@ -246,21 +246,21 @@ describe('cooperative gestures', () => {
       return event
     }
     expect(touch(1).defaultPrevented).toBe(false)
-    expect(element.querySelector('.react-three-earth-cooperative-hint')!.textContent).toBe('Deux doigts')
+    expect(element.querySelector('.earthkit-cooperative-hint')!.textContent).toBe('Deux doigts')
     expect(touch(2).defaultPrevented).toBe(true)
   })
 
   it('changes nothing while off, and puts everything back when turned off', () => {
     const off = setUp(false)
     expect(off.element.style.touchAction).toBe('none')
-    expect(off.element.querySelector('.react-three-earth-cooperative-hint')).toBeNull()
+    expect(off.element.querySelector('.earthkit-cooperative-hint')).toBeNull()
     off.canvas.dispatchEvent(new WheelEvent('wheel', { bubbles: true }))
     expect(off.controlsSaw.wheel).toHaveBeenCalledOnce()
 
     const on = setUp(true)
     on.cooperative.enabled = false
     expect(on.element.style.touchAction).toBe('none')
-    expect(on.element.querySelector('.react-three-earth-cooperative-hint')).toBeNull()
+    expect(on.element.querySelector('.earthkit-cooperative-hint')).toBeNull()
     pointer('pointerdown', on.canvas, { pointerType: 'touch' })
     expect(on.controlsSaw.pointerdown).toHaveBeenCalledOnce()
     on.cooperative.enabled = true

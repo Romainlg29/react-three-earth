@@ -151,9 +151,9 @@ async function vectorMap(name, query) {
 async function attribution() {
   const read = page =>
     page.evaluate(() => {
-      const element = document.querySelector('.react-three-earth-attribution')
+      const element = document.querySelector('.earthkit-attribution')
       const button = element?.querySelector('button')
-      const text = element?.querySelector('.react-three-earth-attribution-text')
+      const text = element?.querySelector('.earthkit-attribution-text')
       const links = [...(element?.querySelectorAll('a') ?? [])].map(a => ({ text: a.textContent, href: a.href, target: a.target, rel: a.rel }))
       const visible = node => node !== null && node !== undefined && node.getBoundingClientRect().width > 0
       const box = element?.getBoundingClientRect()
@@ -167,7 +167,7 @@ async function attribution() {
         bottomRight: box ? { right: Math.round(innerWidth - box.right), bottom: Math.round(innerHeight - box.bottom) } : null,
       }
     })
-  const waitForControl = (page, needle) => page.waitForFunction(needle => document.querySelector('.react-three-earth-attribution-text')?.textContent.includes(needle), needle, { timeout: 120_000 })
+  const waitForControl = (page, needle) => page.waitForFunction(needle => document.querySelector('.earthkit-attribution-text')?.textContent.includes(needle), needle, { timeout: 120_000 })
 
   // Wide window: full text, no button
   const wide = await open('/?fixtures&stats=0&atmosphere=0', { width: 1000, height: 600 })
@@ -175,9 +175,9 @@ async function attribution() {
   const wideState = await read(wide.page)
   // Narrow window: compact, the button expands it
   await wide.page.setViewportSize({ width: 400, height: 600 })
-  await wide.page.waitForFunction(() => document.querySelector('.react-three-earth-attribution-toggle')?.getBoundingClientRect().width > 0, null, { timeout: 30_000 })
+  await wide.page.waitForFunction(() => document.querySelector('.earthkit-attribution-toggle')?.getBoundingClientRect().width > 0, null, { timeout: 30_000 })
   const compactState = await read(wide.page)
-  await wide.page.click('.react-three-earth-attribution-toggle')
+  await wide.page.click('.earthkit-attribution-toggle')
   const expandedState = await read(wide.page)
   writeFileSync(new URL('attribution-compact-expanded.png', OUT), await wide.page.screenshot())
   await wide.page.close()
@@ -724,11 +724,11 @@ async function markers() {
   await page.evaluate(() => window.earth.camera.jumpTo({ longitudeDegrees: -90, latitudeDegrees: 0, zoom: 10, pitchDegrees: -60, headingDegrees: -40 }))
   await page.waitForFunction(() => window.markers.peak.visibility === 'visible', null, { timeout: 30_000 })
   await page.waitForTimeout(500)
-  await page.click('.react-three-earth-marker[aria-label="Fixture peak"]')
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  await page.click('.earthkit-marker[aria-label="Fixture peak"]')
+  await page.waitForFunction(() => document.querySelector('.earthkit-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
   await page.waitForTimeout(300)
   const popup = await page.evaluate(() => {
-    const element = document.querySelector('.react-three-earth-popup')
+    const element = document.querySelector('.earthkit-popup')
     const box = element.getBoundingClientRect()
     const pin = window.markers.peak.element.getBoundingClientRect()
     return {
@@ -743,26 +743,26 @@ async function markers() {
   writeFileSync(new URL('markers-popup.png', OUT), await page.screenshot())
   await page.keyboard.press('Escape')
   const afterEscape = await page.evaluate(() => ({
-    open: document.querySelector('.react-three-earth-popup') !== null,
+    open: document.querySelector('.earthkit-popup') !== null,
     focusOnMarker: document.activeElement === window.markers.peak.element,
   }))
 
   // Controlled popups, one selected at a time: clicking the other marker moves the selection, not clears it.
-  const openPopups = () => page.evaluate(() => [...document.querySelectorAll('.react-three-earth-popup')].map(element => element.textContent.replace('×', '').trim()))
-  await page.click('.react-three-earth-marker[aria-label="Place east"]')
-  await page.waitForFunction(() => window.selectedPlace === 'east' && document.querySelectorAll('.react-three-earth-popup').length === 1, null, { timeout: 10_000 })
+  const openPopups = () => page.evaluate(() => [...document.querySelectorAll('.earthkit-popup')].map(element => element.textContent.replace('×', '').trim()))
+  await page.click('.earthkit-marker[aria-label="Place east"]')
+  await page.waitForFunction(() => window.selectedPlace === 'east' && document.querySelectorAll('.earthkit-popup').length === 1, null, { timeout: 10_000 })
   const afterFirst = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
-  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.click('.earthkit-marker[aria-label="Place west"]')
   await page.waitForTimeout(300)
   const afterSecond = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
-  await page.click('.react-three-earth-marker[aria-label="Place west"]')
+  await page.click('.earthkit-marker[aria-label="Place west"]')
   await page.waitForTimeout(300)
   const afterThird = { selected: await page.evaluate(() => window.selectedPlace), open: await openPopups() }
   const selection = { afterFirst, afterSecond, afterThird }
 
   // Drag the orange pin 80 pixels to the right: it moves, the map does not.
   const viewBefore = await page.evaluate(() => window.earth.camera.getView())
-  const handle = await page.$('.react-three-earth-marker[aria-label="Draggable marker"]')
+  const handle = await page.$('.earthkit-marker[aria-label="Draggable marker"]')
   const start = await handle.boundingBox()
   await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
   await page.mouse.down()
@@ -786,13 +786,13 @@ async function markers() {
   const strict = await open('/?fixtures&stats=0&atmosphere=0&markers&strict&camera=-90,0,3900,40000,-40,-30')
   await strict.page.waitForFunction(() => window.earth?.inspect().loaded === true && window.markers?.peak?.visibility === 'visible', null, { timeout: 240_000, polling: 500 })
   await strict.page.waitForTimeout(500)
-  await strict.page.click('.react-three-earth-marker[aria-label="Fixture peak"]')
-  await strict.page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  await strict.page.click('.earthkit-marker[aria-label="Fixture peak"]')
+  await strict.page.waitForFunction(() => document.querySelector('.earthkit-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
   const strictMode = await strict.page.evaluate(() => ({
-    markerElements: document.querySelectorAll('.react-three-earth-marker').length,
-    pinsShown: [...document.querySelectorAll('.react-three-earth-marker-fallback-pin')].filter(pin => getComputedStyle(pin).display !== 'none').length,
+    markerElements: document.querySelectorAll('.earthkit-marker').length,
+    pinsShown: [...document.querySelectorAll('.earthkit-marker-fallback-pin')].filter(pin => getComputedStyle(pin).display !== 'none').length,
     buriedText: window.markers.buried.element.textContent,
-    popupText: document.querySelector('.react-three-earth-popup')?.textContent ?? '',
+    popupText: document.querySelector('.earthkit-popup')?.textContent ?? '',
   }))
   await strict.page.close()
   results.push({
@@ -2522,9 +2522,9 @@ async function accessibility() {
 
   // axe with the controls and markers, then with a popup open (opened from the keyboard)
   result.violations = await runAxe(page)
-  await page.focus('.react-three-earth-marker[aria-label="Fixture peak"]')
+  await page.focus('.earthkit-marker[aria-label="Fixture peak"]')
   await page.keyboard.press('Enter')
-  await page.waitForFunction(() => document.querySelector('.react-three-earth-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
+  await page.waitForFunction(() => document.querySelector('.earthkit-popup')?.dataset.visibility === 'visible', null, { timeout: 10_000 })
   result.popupViolations = await runAxe(page)
   writeFileSync(new URL('accessibility.png', OUT), await page.screenshot())
   await page.close()
@@ -2568,7 +2568,7 @@ async function gestures() {
   await desktop.page.mouse.down()
   await desktop.page.mouse.move(400, 260, { steps: 4 })
   await desktop.page.mouse.move(500, 320, { steps: 4 })
-  result.boxShown = await desktop.page.evaluate(() => document.querySelector('.react-three-earth-box-zoom') !== null)
+  result.boxShown = await desktop.page.evaluate(() => document.querySelector('.earthkit-box-zoom') !== null)
   writeFileSync(new URL('box-zoom.png', OUT), await desktop.page.screenshot())
   await desktop.page.mouse.up()
   await desktop.page.keyboard.up('Shift')
@@ -2578,7 +2578,7 @@ async function gestures() {
   result.boxZoomDelta = after.zoom - before.zoom
   result.boxCentreOffsetDegrees = Math.hypot(after.longitudeDegrees - boxCentre.longitudeDegrees, after.latitudeDegrees - boxCentre.latitudeDegrees)
   result.boxHeadingChange = after.headingDegrees - before.headingDegrees
-  result.boxRemoved = await desktop.page.evaluate(() => document.querySelector('.react-three-earth-box-zoom') === null)
+  result.boxRemoved = await desktop.page.evaluate(() => document.querySelector('.earthkit-box-zoom') === null)
   result.boxMapClicks = await desktop.page.evaluate(() => window.boxMapClicks)
   await desktop.page.close()
 
@@ -2592,7 +2592,7 @@ async function gestures() {
   await wheel.page.waitForTimeout(500)
   result.plainWheelZoomDelta = (await view(wheel.page)).zoom - wheelStart.zoom
   result.wheelHint = await wheel.page.evaluate(() => {
-    const hint = document.querySelector('.react-three-earth-cooperative-hint')
+    const hint = document.querySelector('.earthkit-cooperative-hint')
     return hint === null ? null : { text: hint.textContent, opacity: hint.style.opacity, role: hint.getAttribute('role') }
   })
   writeFileSync(new URL('cooperative-hint.png', OUT), await wheel.page.screenshot())
@@ -2621,7 +2621,7 @@ async function gestures() {
     await settleFrames()
     await settle(page)
     const afterOne = await view(page)
-    const hint = await page.evaluate(() => document.querySelector('.react-three-earth-cooperative-hint')?.textContent ?? null)
+    const hint = await page.evaluate(() => document.querySelector('.earthkit-cooperative-hint')?.textContent ?? null)
     // Two fingers spread apart: zoom in
     await touch('touchStart', [[165, 350], [225, 350]])
     for (let step = 1; step <= 10; step++) await touch('touchMove', [[165 - step * 8, 350], [225 + step * 8, 350]])

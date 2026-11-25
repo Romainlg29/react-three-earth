@@ -132,8 +132,8 @@ function MarkerContent({
   useLayoutEffect(() => void marker.setOccludedOpacity(occludedOpacity), [marker, occludedOpacity])
   useLayoutEffect(() => void marker.setLabel(label ?? 'Map marker'), [marker, label])
   useLayoutEffect(() => {
-    if (color === undefined) marker.element.style.removeProperty('--react-three-earth-marker-color')
-    else marker.element.style.setProperty('--react-three-earth-marker-color', color)
+    if (color === undefined) marker.element.style.removeProperty('--earthkit-marker-color')
+    else marker.element.style.setProperty('--earthkit-marker-color', color)
   }, [marker, color])
   useLayoutEffect(() => {
     const names = className?.split(/\s+/).filter(Boolean) ?? []
@@ -196,5 +196,5 @@ function FallbackPin({ marker, anchor }: { marker: MarkerImpl; anchor: ScreenAnc
     const host = element.current?.parentElement
     if (host != null && anchor === undefined) marker.setAnchor(host.childElementCount === 1 ? 'bottom' : 'center')
   }, [marker, anchor])
-  return <span ref={element} className="react-three-earth-marker-fallback-pin" aria-hidden="true" dangerouslySetInnerHTML={{ __html: PIN_SVG }} />
+  return <span ref={element} className="earthkit-marker-fallback-pin" aria-hidden="true" dangerouslySetInnerHTML={{ __html: PIN_SVG }} />
 }
