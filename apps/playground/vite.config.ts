@@ -7,6 +7,7 @@ import { fixtureTiles } from './fixtures/vitePlugin.ts'
 
 const library = (path: string) => fileURLToPath(new URL(`../../packages/react-three-earth/src/${path}`, import.meta.url))
 const drawLibrary = (path: string) => fileURLToPath(new URL(`../../packages/draw/src/${path}`, import.meta.url))
+const geocoderLibrary = (path: string) => fileURLToPath(new URL(`../../packages/geocoder/src/${path}`, import.meta.url))
 
 export default defineConfig({
   // GitHub Pages serves the playground under /<repository>/ (see .github/workflows/playground-pages.yml).
@@ -22,6 +23,8 @@ export default defineConfig({
       { find: /^@earthkit\/globe$/, replacement: library('index.ts') },
       { find: /^@earthkit\/draw\/react$/, replacement: drawLibrary('react/index.ts') },
       { find: /^@earthkit\/draw$/, replacement: drawLibrary('index.ts') },
+      { find: /^@earthkit\/geocoder\/react$/, replacement: geocoderLibrary('react/index.ts') },
+      { find: /^@earthkit\/geocoder$/, replacement: geocoderLibrary('index.ts') },
     ],
   },
   // The library is aliased to its source, so Vite would only discover these on first load, re-bundle and

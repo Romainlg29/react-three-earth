@@ -2818,6 +2818,38 @@ const CHECKS = [
     }
     return { glow: { before, after } }
   })],
+  ['examples/geocoder', () => galleryExample('geocoder', '', async (page, idle) => {
+    // Typed letter by letter, faster than the pause: one search as you type, for the whole word.
+    await page.evaluate(() => {
+      window.geocoderSearches = []
+      window.geocoder.addEventListener('results', event => window.geocoderSearches.push(event.query))
+    })
+    const input = page.getByTestId('geocoder-input')
+    await input.click()
+    await input.pressSequentially('fixture', { delay: 40 })
+    await page.waitForFunction(() => window.geocoder.getState().status === 'success' && window.geocoder.getState().results.length > 0, null, { timeout: 30_000, polling: 100 })
+    const options = await page.locator('[role="option"]').allTextContents()
+    const expanded = await input.getAttribute('aria-expanded')
+    await input.press('ArrowDown')
+    const activeDescendant = await input.getAttribute('aria-activedescendant')
+    const activeOptionId = await page.locator('[role="option"][aria-selected="true"]').getAttribute('id')
+    await input.press('Enter')
+    await page.waitForTimeout(300)
+    await idle()
+    await page.waitForTimeout(1000) // the marker's terrain height and fade
+    const view = await page.evaluate(() => window.earth.camera.getView())
+    const marker = await page.evaluate(() => {
+      const element = document.querySelector('.react-three-earth-marker')
+      return element === null ? null : { visibility: element.dataset.visibility, label: element.getAttribute('aria-label') }
+    })
+    const listHidden = await page.locator('[role="listbox"]').evaluate(element => element.hidden)
+    // A click near the peak, off the pin: what is there.
+    await page.mouse.click(600, 400)
+    await page.waitForFunction(() => window.geocoder.getState().reverse.status === 'success', null, { timeout: 30_000, polling: 100 })
+    const reverse = await page.getByTestId('geocoder-reverse').textContent()
+    const searches = await page.evaluate(() => window.geocoderSearches)
+    return { geocoder: { searches, options, expanded, activeDescendant, activeOptionId, query: await input.inputValue(), view, marker, listHidden, reverse } }
+  })],
   ['examples/embedded', () => galleryExample('embedded', '', async page => {
     // A plain wheel over the map scrolls the page and leaves the camera where it was.
     const before = await page.evaluate(() => ({ scroll: scrollY, distance: window.earth.camera.getView().distanceMeters }))
