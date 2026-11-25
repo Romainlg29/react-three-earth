@@ -117,6 +117,36 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* `?example=measure`: the labels let taps through to the map (the last vertex finishes a line under its label). */
+.measure-label {
+  pointer-events: none;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(17, 24, 39, 0.85);
+  color: #fde68a;
+  font: 600 12px/1.4 system-ui, -apple-system, sans-serif;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.measure-profile {
+  margin: 8px 0 0;
+}
+
+.measure-profile svg {
+  display: block;
+  width: 100%;
+  height: 80px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.measure-profile figcaption {
+  margin-top: 4px;
+  color: #b4bdcc;
+  font-variant-numeric: tabular-nums;
+}
+
 /* `?example=embedded`: an article that scrolls past a map. */
 .example-article {
   box-sizing: border-box;
@@ -158,4 +188,53 @@
   border-radius: 14px;
   overflow: hidden;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* `?example=geocoder`: the search box, built on `useGeocoder`'s combobox props. */
+.example-search {
+  position: relative;
+  margin-top: 10px;
+}
+
+.example-search-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #b4bdcc;
+}
+
+.example-search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #34405a;
+  border-radius: 8px;
+  background: #1b2333;
+  color: inherit;
+  font: inherit;
+}
+
+.example-search-results {
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid #34405a;
+  border-radius: 8px;
+  background: #141a26;
+}
+
+.example-search-results li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.example-search-results li[aria-selected='true'] {
+  background: #24365e;
+}
+
+.example-search-results li span {
+  display: block;
+  color: #b4bdcc;
+  font-size: 0.9em;
 }
