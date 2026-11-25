@@ -258,4 +258,27 @@ describe('terrain materials wrapped for overlays and fades', () => {
     defines.FEATURE_FADE = 1
     expect(material.outputNode).not.toBeNull()
   })
+
+  it('blend imagery over the colour node the material factory set, so terrain coloured by elevation stays under the layers', async () => {
+    const { MeshStandardNodeMaterial } = await import('three/webgpu')
+    const { color } = await import('three/tsl')
+    const { wrapOverlaysNodeMaterial } = await import('../src/tiles/wrapOverlaysNodeMaterial.js')
+    const tinted = new MeshStandardNodeMaterial()
+    const base = color('#88aa66')
+    tinted.colorNode = base
+    wrapOverlaysNodeMaterial(tinted)
+    const plain = new MeshStandardNodeMaterial()
+    wrapOverlaysNodeMaterial(plain)
+    ;(tinted.defines as Record<string, number>).LAYER_COUNT = 1
+    ;(plain.defines as Record<string, number>).LAYER_COUNT = 1
+    // Different bases, different shaders: neither node nor program is shared with a plain material's.
+    expect(tinted.colorNode).not.toBe(plain.colorNode)
+    expect(tinted.customProgramCacheKey()).not.toBe(plain.customProgramCacheKey())
+    // Materials sharing the same base node share the colour node (one shader for every tile).
+    const sibling = new MeshStandardNodeMaterial()
+    sibling.colorNode = base
+    wrapOverlaysNodeMaterial(sibling)
+    ;(sibling.defines as Record<string, number>).LAYER_COUNT = 1
+    expect(sibling.colorNode).toBe(tinted.colorNode)
+  })
 })

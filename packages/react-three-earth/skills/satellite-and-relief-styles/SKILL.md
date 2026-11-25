@@ -81,6 +81,8 @@ export function ReliefMap() {
   `multidirectional` with up to 4 lights). Shading is continuous across tile and texture edges.
 - `color-relief`: `color-relief-color` is an `interpolate` or `step` over `['elevation']` (up to 256 stops;
   longer ramps are resampled), with `color-relief-opacity`.
+- Without a map style or raster-dem source, a terrain material can colour the ground by elevation, slope and
+  aspect itself (`customize-terrain-shading`).
 - A raster-dem source shades and colours the drape; it does not raise the terrain. Elevation comes from the
   `<Terrain>` source: for terrain from the same tiles, put a `<RasterDemSource>` there (`terrain-and-imagery-sources`).
 

@@ -42,6 +42,8 @@ export interface ExampleShellProps {
   terrain?: ReactNode
   /** `<Terrain exaggeration>`. */
   exaggeration?: number
+  /** `<Terrain createMaterial>`: a stable function, defined outside render. */
+  createTerrainMaterial?: ComponentProps<typeof Terrain>['createMaterial']
   /** Buttons and inputs under the description. */
   panel?: ReactNode
   /** `<Earth plugins>`: create them once, outside render. */
@@ -63,14 +65,14 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, panel, controls, onEarth, plugins, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
         <Earth plugins={plugins} date={date}>
           <InitialView view={camera} onEarth={onEarth} />
-          <Terrain exaggeration={exaggeration}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
+          <Terrain exaggeration={exaggeration} createMaterial={createTerrainMaterial}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
           {atmosphere ? <Atmosphere /> : <PlainLights />}
           <EarthControls {...controls} />

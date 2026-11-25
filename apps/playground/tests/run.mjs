@@ -2761,12 +2761,30 @@ const CHECKS = [
     return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
   })],
   ['examples/heatmap', () => galleryExample('heatmap')],
-  ['examples/terrain', () => galleryExample('terrain', '', async (page, idle) => {
+  ['examples/terrain', () => galleryExample('terrain', '&camera=-77.15,0.02,0,30000,20,-30', async (page, idle) => {
     await page.locator('input[type=range]').fill('3')
     await page.getByRole('button', { name: 'Map and hillshade' }).click()
     await page.waitForTimeout(500)
     await idle()
-    return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+    const exaggeration = await page.evaluate(() => window.earth.terrain.exaggeration)
+    // No layers: the terrain material colours the ground by elevation, slope and aspect.
+    await page.getByRole('button', { name: 'Stylised, no layers' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    await page.waitForTimeout(1500)
+    const stylized = await analyse(page, await page.screenshot(), `
+      // Low ground between the fixture hills: green below 1200 m, earthy hilltops above.
+      let green = 0, earth = 0, ground = 0
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+        if (r + g + b < 60) continue // sky
+        ground++
+        if (g > r + 8 && g > b + 15) green++
+        else if (r > g && g > b && r - b > 30) earth++
+      }
+      return { green: green / ground, earth: earth / ground }
+    `)
+    return { exaggeration, stylized }
   })],
   ['examples/overlay', () => galleryExample('overlay', '', async (page, idle) => {
     const radarShare = async () => {

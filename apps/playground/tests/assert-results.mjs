@@ -452,7 +452,10 @@ expectations['gallery example, geojson'] = r => [
   ['a click on a peak opens its popup', /Manaslu.*8,163 m/.test(r.popup ?? '')],
 ]
 expectations['gallery example, heatmap'] = r => [['the heat draws', r.heatShare > 0.007]]
-expectations['gallery example, terrain'] = r => [['the slider exaggerates the terrain', r.exaggeration === 3]]
+expectations['gallery example, terrain'] = r => [
+  ['the slider exaggerates the terrain', r.exaggeration === 3],
+  ['with no layers the terrain material colours the ground by elevation: green lowlands, earthy hilltops', r.stylized.green > 0.2 && r.stylized.earth > 0.02],
+]
 expectations['gallery example, overlay'] = r => [
   ['the radar picture draws', r.radar.shown.share > 0.003],
   ['playing steps to other frames: the rain moves', r.radar.played.share > 0.003 && Math.abs(r.radar.played.centreX - r.radar.shown.centreX) > 4],

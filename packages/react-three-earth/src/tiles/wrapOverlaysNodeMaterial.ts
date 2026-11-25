@@ -103,15 +103,26 @@ const layerUV = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
   attribute(`layer_uv_${index}`, 'vec3').toVarying(`layerUV${index}`)
 )
 
-const colorNodeCache = new Map<number, Node>()
+// By the base colour node (the material's own `colorNode`, or none for `material.color`), then by layer count.
+// Weak: a factory that builds its colour node per tile must not keep every one alive.
+const colorNodeCache = new WeakMap<object, Map<number, Node>>()
+const MATERIAL_COLOR_KEY = {}
 
-function getColorNode(layerCount: number): Node {
-  if (colorNodeCache.has(layerCount)) {
-    return colorNodeCache.get(layerCount)!
+function getColorNode(layerCount: number, baseColorNode: Node | null): Node {
+  const key = baseColorNode ?? MATERIAL_COLOR_KEY
+  let byLayerCount = colorNodeCache.get(key)
+  if (byLayerCount === undefined) {
+    byLayerCount = new Map()
+    colorNodeCache.set(key, byLayerCount)
+  }
+  if (byLayerCount.has(layerCount)) {
+    return byLayerCount.get(layerCount)!
   }
 
   const colorNode = Fn(() => {
-    const result = vec4(materialColor).toVar()
+    // Layers blend over the material's own colour node when its factory set one (terrain coloured by elevation or
+    // slope), else over its `color`.
+    const result = vec4(baseColorNode ?? materialColor).toVar()
 
     for (let i = 0; i < layerCount; ++i) {
       const tint = layerMap[i]
@@ -153,7 +164,7 @@ function getColorNode(layerCount: number): Node {
     return result
   })()
 
-  colorNodeCache.set(layerCount, colorNode)
+  byLayerCount.set(layerCount, colorNode)
   return colorNode
 }
 
@@ -173,12 +184,14 @@ export function wrapOverlaysNodeMaterial(
   material[OVERLAY_PARAMS] = params
 
   let layerCount = 0
+  // The colour node the material's factory set, kept under the layers. Read once: the overlay owns `colorNode` from here.
+  const baseColorNode = material.colorNode ?? null
 
   // The colour node of each layer count is a parameterless `Fn`, so three's node cache key does not tell them
   // apart: without the count in the program key, a layer added after the first compile (an imagery layer or a
   // plugin's draped layer added at runtime) would keep the old shader.
   const baseProgramCacheKey = material.customProgramCacheKey.bind(material)
-  material.customProgramCacheKey = () => `${baseProgramCacheKey()}:overlayLayers${layerCount}`
+  material.customProgramCacheKey = () => `${baseProgramCacheKey()}:overlayLayers${layerCount}:base${baseColorNode?.id ?? 'color'}`
 
   // Use the same interface used for non-node materials:
   // Copies the descriptors, not the values, so the fade wrapper's accessor survives whichever wraps first.
@@ -194,7 +207,7 @@ export function wrapOverlaysNodeMaterial(
     set(value: number) {
       if (value !== layerCount) {
         layerCount = value
-        material.colorNode = getColorNode(value)
+        material.colorNode = getColorNode(value, baseColorNode)
       }
     },
   })

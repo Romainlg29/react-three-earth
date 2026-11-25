@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { elevationAttribution, elevationTilesUrl, rasterAttribution, rasterTilesUrl, useFixtures } from './data'
 import { ExampleShell } from './ExampleShell'
 import { flyToPlace, placesFor, type Place } from './places'
+import { createStylizedTerrainMaterial } from './stylizedTerrain'
 
 const MOUNTAINS = placesFor<Place>(
   [
@@ -16,13 +17,15 @@ const MOUNTAINS = placesFor<Place>(
   [{ name: 'Fixture peak', view: { longitudeDegrees: -90, latitudeDegrees: 0, heightMeters: 2000, distanceMeters: 60_000, headingDegrees: 30, pitchDegrees: -25 } }],
 )
 
-type Look = 'relief' | 'map'
+type Look = 'relief' | 'map' | 'stylized'
 
 /**
  * Colour relief and hillshade from the same Terrarium tiles the terrain is built from (`raster-dem`), or
- * OpenStreetMap with a softer hillshade on top.
+ * OpenStreetMap with a softer hillshade on top. The stylised look has no style: the terrain material colours the
+ * ground by elevation, slope and aspect (`stylizedTerrain.ts`).
  */
-function terrainStyle(look: Look): object {
+function terrainStyle(look: Look): object | null {
+  if (look === 'stylized') return null
   const demSource = { type: 'raster-dem', tiles: [elevationTilesUrl], tileSize: 256, maxzoom: useFixtures ? 12 : 15, encoding: 'terrarium', attribution: elevationAttribution }
   const hillshade = (exaggeration: number) => ({ id: 'hillshade', type: 'hillshade', source: 'dem', paint: { 'hillshade-exaggeration': exaggeration, 'hillshade-shadow-color': '#2b2140' } })
   if (look === 'map') {
@@ -64,7 +67,8 @@ function terrainStyle(look: Look): object {
 
 /**
  * `?example=terrain`: terrain from Terrarium elevation tiles (`<RasterDemSource>`), shaded with colour relief and
- * hillshade from the same tiles, with an exaggeration slider (`<Terrain exaggeration>`).
+ * hillshade from the same tiles, or stylised with no imagery at all (a terrain material reading `terrainElevationMeters`,
+ * `terrainSlopeDegrees` and `terrainAspectRadians`), with an exaggeration slider (`<Terrain exaggeration>`).
  */
 export function TerrainExample() {
   const [earth, setEarth] = useState<EarthImpl | null>(null)
@@ -79,6 +83,7 @@ export function TerrainExample() {
       camera={MOUNTAINS[0]!.view}
       onEarth={setEarth}
       exaggeration={exaggeration}
+      createTerrainMaterial={createStylizedTerrainMaterial}
       terrain={<RasterDemSource url={elevationTilesUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={elevationAttribution} />}
       panel={
         <>
@@ -96,6 +101,9 @@ export function TerrainExample() {
             <button type="button" aria-pressed={look === 'map'} onClick={() => setLook('map')}>
               Map and hillshade
             </button>
+            <button type="button" aria-pressed={look === 'stylized'} onClick={() => setLook('stylized')}>
+              Stylised, no layers
+            </button>
           </div>
           <label className="example-field">
             Exaggeration
@@ -105,9 +113,11 @@ export function TerrainExample() {
         </>
       }
     >
-      <Imagery>
-        <MapStyleSource style={style} />
-      </Imagery>
+      {style === null ? null : (
+        <Imagery>
+          <MapStyleSource style={style} />
+        </Imagery>
+      )}
     </ExampleShell>
   )
 }
