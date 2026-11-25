@@ -9,7 +9,9 @@
       "@earthkit/globe/react": ["../../packages/react-three-earth/src/react/index.tsx"],
       "@earthkit/globe/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"],
       "@earthkit/draw": ["../../packages/draw/src/index.ts"],
-      "@earthkit/draw/react": ["../../packages/draw/src/react/index.ts"]
+      "@earthkit/draw/react": ["../../packages/draw/src/react/index.ts"],
+      "@earthkit/measure": ["../../packages/measure/src/index.ts"],
+      "@earthkit/measure/react": ["../../packages/measure/src/react/index.ts"]
     }
   },
   "include": ["src", "fixtures", "vite.config.ts"]

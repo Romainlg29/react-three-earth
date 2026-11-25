@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@earthkit/globe": ["../react-three-earth/src/index.ts"],
+      "@earthkit/globe/react": ["../react-three-earth/src/react/index.tsx"],
+      "@earthkit/draw": ["../draw/src/index.ts"],
+      "@earthkit/draw/react": ["../draw/src/react/index.ts"]
+    }
+  },
+  "include": ["src", "test"]
+}

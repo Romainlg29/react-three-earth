@@ -476,6 +476,19 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
   ]
 }
 
+for (const name of ['globe, mouse', 'flat map, touch']) {
+  expectations[`measuring, ${name}`] = r => [
+    ...(name === 'globe, mouse' ? [['the length follows the pointer while drawing', r.liveFollowsPointer]] : []),
+    ['four taps show the area being drawn', r.liveArea > 0],
+    ['taps on the last and first vertices finish a distance and an area', JSON.stringify(r.kinds) === '["distance","area"]' && JSON.stringify(r.vertices) === '[3,4]' && r.liveAfter === null],
+    ['the length is geodesic: within 0.5 % of the spherical one', r.lengthMeters > 1000 && Math.abs(r.lengthAgainstSphere - 1) < 0.005],
+    ['the area and its perimeter are measured', r.areaSquareMeters > 1e6 && r.perimeterMeters > 1000],
+    ['the elevation profile samples the loaded terrain along the line', r.profile?.samples === 64 && r.profile.known >= 60 && r.profile.finite && Math.abs(r.profile.lengthMeters - r.lengthMeters) < 1e-6],
+    ['each measurement has its label, and the panel draws the profile', r.labels.length === 2 && r.labels.every(text => /\d/.test(text)) && r.chart],
+    ['the measurements drape on the terrain in yellow', r.yellowPixels > 1500],
+  ]
+}
+
 for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
   expectations[`editing, ${name}`] = r => [
     ['a tap selects the polygon, with its gizmo', r.selected === 1 && r.gizmoFirst],
