@@ -182,7 +182,7 @@ npx @tanstack/intent@latest load @earthkit/globe#getting-started
 | `map-styles` | MapLibre vector styles and PMTiles with `MapStyleSource`, GeoJSON and clusters with `GeoJsonSource`, redrawing changed tiles with `invalidate` |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |
 | `react-hooks-and-frame-loop` | Earth state in React UI, per-frame code, scheduler order, `frameloop="demand"` |
-| `customize-terrain-shading` | custom terrain materials and TSL effects |
+| `customize-terrain-shading` | custom terrain materials and TSL effects, colouring by elevation, slope and aspect |
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
 | `write-a-plugin` | extending the map: style layer types, render passes, draped layers, 3D objects, taking presses from the controls |
 
@@ -192,6 +192,12 @@ The drawing package, `@earthkit/draw`, ships its own skills:
 | --- | --- |
 | `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
 | `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
+
+The terrain style package, `@earthkit/terrain-style`, ships its own skill:
+
+| Skill | Use when |
+| --- | --- |
+| `style-terrain` | a stylised globe with no imagery: colouring the ground by elevation, slope and aspect with expressions or presets, legends |
 
 Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 

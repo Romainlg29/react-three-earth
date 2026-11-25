@@ -2875,7 +2875,23 @@ const CHECKS = [
       }
       return { green: green / ground, earth: earth / ground }
     `)
-    return { exaggeration, stylized }
+    // Another preset is another material factory: the tiles reload with it.
+    await page.getByRole('button', { name: 'monochrome' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    await page.waitForTimeout(1500)
+    const monochrome = await analyse(page, await page.screenshot(), `
+      let grey = 0, ground = 0
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+        const x = (i / 4) % width, y = Math.floor(i / 4 / width)
+        if (r + g + b < 60 || (x < 360 && y < 400)) continue // sky, the example's card
+        ground++
+        if (Math.max(r, g, b) - Math.min(r, g, b) < 12) grey++
+      }
+      return { grey: grey / ground }
+    `)
+    return { exaggeration, stylized, monochrome }
   })],
   ['examples/overlay', () => galleryExample('overlay', '', async (page, idle) => {
     const radarShare = async () => {

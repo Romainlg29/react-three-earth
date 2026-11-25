@@ -454,7 +454,8 @@ expectations['gallery example, geojson'] = r => [
 expectations['gallery example, heatmap'] = r => [['the heat draws', r.heatShare > 0.007]]
 expectations['gallery example, terrain'] = r => [
   ['the slider exaggerates the terrain', r.exaggeration === 3],
-  ['with no layers the terrain material colours the ground by elevation: green lowlands, earthy hilltops', r.stylized.green > 0.2 && r.stylized.earth > 0.02],
+  ['with no layers the alpine terrain style colours the ground by elevation: green lowlands, earthy hilltops', r.stylized.green > 0.2 && r.stylized.earth > 0.02],
+  ['the monochrome preset reloads the tiles grey', r.monochrome.grey > 0.8],
 ]
 expectations['gallery example, overlay'] = r => [
   ['the radar picture draws', r.radar.shown.share > 0.003],
