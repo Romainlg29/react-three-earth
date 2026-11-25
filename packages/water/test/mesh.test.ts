@@ -6,7 +6,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { Water } from '../src/Water.js'
 import type { SeaStateOptions } from '../src/waves/spectrum.js'
 import { WaveField } from '../src/waves/WaveField.js'
-import { createRings, WATER_INDEX_OF_REFRACTION, WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS, WaveMesh } from '../src/waves/WaveMesh.js'
+import {
+  createRings,
+  lookAhead,
+  WATER_INDEX_OF_REFRACTION,
+  WAVE_MESH_LOOK_AHEAD_HEIGHTS,
+  WAVE_MESH_LOOK_AHEAD_SHARE,
+  WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS,
+  WAVE_MESH_MINIMUM_CELL_METERS,
+  WaveMesh,
+} from '../src/waves/WaveMesh.js'
 import { WaveProbe } from '../src/waves/WaveProbe.js'
 import { earthCenteredFromGeographic, geodeticLatitudeAndHeight, WaveSurface } from '../src/waves/WaveSurface.js'
 
@@ -64,10 +73,11 @@ describe('WaveMesh', () => {
     expect(mesh.mesh.visible).toBe(true)
     expect(mesh.active.value).toBe(1)
     const cellSize = (mesh as unknown as { cellSize: { value: number } }).cellSize
-    expect(cellSize.value).toBe(1)
+    // About a 96th of the height, a power of two.
+    expect(cellSize.value).toBe(1 / 4)
     surface.cameraHeightAboveSeaMeters = 2
     mesh.update(true)
-    expect(cellSize.value).toBe(1 / 16)
+    expect(cellSize.value).toBe(WAVE_MESH_MINIMUM_CELL_METERS)
     // Laid on the plane's frame: sea level under the anchor.
     expect(mesh.mesh.matrix.elements[12]).toBeCloseTo(6378137, 3)
     mesh.update(false)
@@ -80,6 +90,22 @@ describe('WaveMesh', () => {
     const cpuMesh = new WaveMesh(cpu, shade)
     cpuMesh.update(true)
     expect(cpuMesh.mesh.visible).toBe(false)
+  })
+})
+
+describe('lookAhead', () => {
+  it('centres the rings ahead along the view, never past a few camera heights, and under a camera looking down', () => {
+    const camera = new Vector2(100, -50)
+    const target = new Vector2()
+    // Looking east, 45° down from 10 m: the view meets the sea 10 m ahead.
+    lookAhead(camera, new Vector3(1, 0, -1).normalize(), 10, target)
+    expect(target.x).toBeCloseTo(100 + 10 * WAVE_MESH_LOOK_AHEAD_SHARE, 9)
+    expect(target.y).toBeCloseTo(-50, 9)
+    // Looking north at the horizon: as far as the bottom of the view allows.
+    lookAhead(camera, new Vector3(0, 1, 0), 10, target)
+    expect(target.y).toBeCloseTo(-50 + 10 * WAVE_MESH_LOOK_AHEAD_HEIGHTS, 9)
+    lookAhead(camera, new Vector3(0, 0, -1), 10, target)
+    expect(target.equals(camera)).toBe(true)
   })
 })
 
@@ -254,12 +280,12 @@ describe('WaveDepthCache', () => {
     // 30 m over the Dead Sea's surface at -430 m.
     mesh.update(true, { renderer: webgpu(), terrain: fakeTerrain(-430) as never, earth: new Group() })
     expect(mesh.mesh.visible).toBe(true)
-    expect(cellSize.value).toBe(1)
+    expect(cellSize.value).toBe(1 / 4)
     // 3 m over a sea whose seafloor the terrain draws 2 km down: by the sea's level.
     surface.cameraHeightMeters = 3
     surface.cameraHeightAboveSeaMeters = 3
     mesh.update(true, { renderer: webgpu(), terrain: fakeTerrain(-2000) as never, earth: new Group() })
     expect(mesh.mesh.visible).toBe(true)
-    expect(cellSize.value).toBe(1 / 8)
+    expect(cellSize.value).toBe(1 / 32)
   })
 })

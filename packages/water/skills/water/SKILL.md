@@ -137,12 +137,14 @@ it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: th
 
 ### The sea mesh near the camera
 
-Under WebGPU the waves also move geometry: rings of cells around the camera, each twice the size of the one inside it
-(geometry clipmaps, as Crest lays them), so detail per pixel stays even from the camera's feet out to the mesh's edge. The
-innermost cell shrinks with the camera's height, down to 6 cm at the water (the mesh then reaches about 360 m; from 25 m
-up, with 1 m cells, about 6 km). Vertices take the waves' height and the choppy
-waves' pull towards the crests; the fragments shade per pixel, with the foam. The outer ring flattens and the terrain's sea
-takes over, seamlessly, Earth's curvature included. It costs one draw of about 120 000 triangles.
+Under WebGPU the waves also move geometry: rings of cells, each twice the size of the one inside it (geometry
+clipmaps, as Crest lays them), so detail per pixel stays even out to the mesh's edge. The rings centre ahead of the
+camera along its view (half the way to where the view meets the sea, at most four camera heights), so the finest lie in
+view rather than under and behind it; each ring still snaps to its own cells, so the waves never swim. The innermost cell
+shrinks with the camera's height, down to 1.6 cm at the water (`WAVE_MESH_MINIMUM_CELL_METERS`), where the short chop
+becomes geometry; the mesh reaches about 380 m then, and about 6 km from 25 m up. Vertices take the waves' height and the
+choppy waves' pull towards the crests; the fragments shade per pixel, with the foam. The outer ring flattens and the
+terrain's sea takes over, seamlessly, Earth's curvature included. It costs one draw of about 146 000 triangles.
 
 - `waveMesh: false` keeps the normals-only sea. The mesh hides above 1.5 km, on the flat map and on WebGL2 (no GPU
   displacement there).

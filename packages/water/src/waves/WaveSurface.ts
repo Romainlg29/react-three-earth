@@ -84,6 +84,8 @@ export class WaveSurface {
   protected readonly cameraFromAnchor = uniform(new Vector3())
   /** The camera on the wave plane: metres east and north of the anchor. */
   readonly cameraPlane = uniform(new Vector2())
+  /** The camera's view direction in the plane's frame (x east, y north, z up), unit, as of the last `update`. */
+  readonly cameraForward = new Vector3(0, 0, -1)
   /** The camera's height over the wave plane, metres (the plane lies at sea level under the anchor). */
   readonly cameraPlaneHeight = uniform(0)
   /** Sea level, metres above the ellipsoid: where a mesh of the waves lies. */
@@ -221,6 +223,8 @@ export class WaveSurface {
       this.field.update(this.timeSecondsValue)
     }
     this.followCamera(cameraWorld, cameraEarth, earth)
+    const forward = camera.getWorldDirection(scratchForward).transformDirection(scratchMatrix)
+    this.directionToPlane(forward, this.cameraForward)
     return true
   }
 
@@ -492,6 +496,7 @@ const scratchCameraEarth = new Vector3()
 const scratchAnchor = new Vector3()
 const scratchOffset = new Vector3()
 const scratchMatrix = new Matrix4()
+const scratchForward = new Vector3()
 
 function horizontalDistance(point: Vector3, anchor: Vector3, up: Vector3): number {
   const offset = scratchOffset.copy(point).sub(anchor)
