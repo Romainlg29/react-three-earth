@@ -46,7 +46,16 @@ export interface WaterOptics {
   deepAlbedo: [number, number, number]
   /** How fast downwelling light fades with depth, per metre: light reaching depth z is `exp(-k × z)`. */
   diffuseAttenuationPerMeter: [number, number, number]
+  /**
+   * The share of sunlight a wave's crest sends on towards the eye when the sun shines through it from behind, in linear
+   * RGB: the light scattered once in `WATER_CREST_THICKNESS_METERS` of water, the rest absorbed or scattered away. The
+   * turquoise of a crest against the light: red is absorbed within the crest, blue scattered out of it.
+   */
+  crestTransmittance: [number, number, number]
 }
+
+/** How much water the sun shines through in a wave's crest, metres: what `crestTransmittance` is computed for. */
+export const WATER_CREST_THICKNESS_METERS = 3
 
 const BANDS = [
   [600, 700],
@@ -58,7 +67,7 @@ const BANDS = [
 export function inherentOpticalProperties(
   wavelength: number,
   { chlorophyllMilligramsPerCubicMeter: chlorophyll, salinityPartsPerThousand: salinity }: WaterOpticsOptions,
-): { absorptionPerMeter: number; backscatteringPerMeter: number } {
+): { absorptionPerMeter: number; backscatteringPerMeter: number; scatteringPerMeter: number } {
   const index = Math.round((wavelength - 400) / 10)
   const water = PURE_WATER_ABSORPTION[Math.min(Math.max(index, 0), PURE_WATER_ABSORPTION.length - 1)]!
   const phytoplankton440 = chlorophyll > 0 ? phytoplanktonAbsorption440(chlorophyll) : 0
@@ -68,27 +77,35 @@ export function inherentOpticalProperties(
 
   const waterScattering = PURE_WATER_SCATTERING_500 * (1 + (0.3 * salinity) / SEAWATER_SCATTERING_SALINITY) * (wavelength / 500) ** -4.32
   let particleBackscattering = 0
+  let particleScattering = 0
   if (chlorophyll > 0) {
     // Morel & Maritorena 2001: particle scattering, its backscattered share and its spectral slope from chlorophyll.
     const logChlorophyll = Math.log10(chlorophyll)
     const scattering550 = 0.416 * chlorophyll ** 0.766
     const slope = chlorophyll < 2 ? 0.5 * (logChlorophyll - 0.3) : 0
     const backscatteredShare = 0.002 + 0.01 * (0.5 - 0.25 * logChlorophyll)
-    particleBackscattering = backscatteredShare * scattering550 * (wavelength / 550) ** slope
+    particleScattering = scattering550 * (wavelength / 550) ** slope
+    particleBackscattering = backscatteredShare * particleScattering
   }
-  return { absorptionPerMeter: water + phytoplankton + dissolved, backscatteringPerMeter: 0.5 * waterScattering + particleBackscattering }
+  return {
+    absorptionPerMeter: water + phytoplankton + dissolved,
+    backscatteringPerMeter: 0.5 * waterScattering + particleBackscattering,
+    scatteringPerMeter: waterScattering + particleScattering,
+  }
 }
 
 /** The colour and clarity of a water body (see the module comment for the model). */
 export function computeWaterOptics(options: WaterOpticsOptions): WaterOptics {
   const deepAlbedo: [number, number, number] = [0, 0, 0]
   const diffuseAttenuationPerMeter: [number, number, number] = [0, 0, 0]
+  const crestTransmittance: [number, number, number] = [0, 0, 0]
   BANDS.forEach(([from, to], band) => {
     const inBand = WAVELENGTHS.filter(wavelength => wavelength >= from && wavelength <= to)
     let albedo = 0
     let attenuation = 0
+    let throughCrest = 0
     for (const wavelength of inBand) {
-      const { absorptionPerMeter: absorption, backscatteringPerMeter: backscattering } = inherentOpticalProperties(wavelength, options)
+      const { absorptionPerMeter: absorption, backscatteringPerMeter: backscattering, scatteringPerMeter: scattering } = inherentOpticalProperties(wavelength, options)
       const backscatteredShare = backscattering / (absorption + backscattering)
       // Subsurface remote-sensing reflectance (Gordon et al. 1988), taken through the surface (Lee et al. 2002), then
       // as a diffuse albedo: π × Rrs gives the water-leaving radiance from a Lambertian surface.
@@ -97,11 +114,15 @@ export function computeWaterOptics(options: WaterOpticsOptions): WaterOptics {
       albedo += Math.PI * above
       // Diffuse attenuation for a high sun (Gordon 1989).
       attenuation += 1.0395 * (absorption + backscattering)
+      // Single scattering through the crest: what is scattered, of what is not absorbed or scattered away on the way.
+      const extinction = absorption + scattering
+      throughCrest += (1 - Math.exp(-extinction * WATER_CREST_THICKNESS_METERS)) * (scattering / extinction) * Math.exp(-extinction * WATER_CREST_THICKNESS_METERS * 0.5)
     }
     deepAlbedo[band] = albedo / inBand.length
     diffuseAttenuationPerMeter[band] = attenuation / inBand.length
+    crestTransmittance[band] = throughCrest / inBand.length
   })
-  return { deepAlbedo, diffuseAttenuationPerMeter }
+  return { deepAlbedo, diffuseAttenuationPerMeter, crestTransmittance }
 }
 
 /**

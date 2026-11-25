@@ -1,11 +1,12 @@
 import { Group, PerspectiveCamera, Vector2, Vector3 } from 'three'
-import type { WebGPURenderer } from 'three/webgpu'
+import { vec3 } from 'three/tsl'
+import type { MeshPhysicalNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Water } from '../src/Water.js'
 import type { SeaStateOptions } from '../src/waves/spectrum.js'
 import { WaveField } from '../src/waves/WaveField.js'
-import { createRings, WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS, WaveMesh } from '../src/waves/WaveMesh.js'
+import { createRings, WATER_INDEX_OF_REFRACTION, WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS, WaveMesh } from '../src/waves/WaveMesh.js'
 import { WaveProbe } from '../src/waves/WaveProbe.js'
 import { earthCenteredFromGeographic, geodeticLatitudeAndHeight, WaveSurface } from '../src/waves/WaveSurface.js'
 
@@ -79,6 +80,23 @@ describe('WaveMesh', () => {
     const cpuMesh = new WaveMesh(cpu, shade)
     cpuMesh.update(true)
     expect(cpuMesh.mesh.visible).toBe(false)
+  })
+})
+
+describe('wave mesh material', () => {
+  it('reflects as water does, and glows with the light its shading scatters', () => {
+    const plain = new WaveMesh(laidSurface(30), shade)
+    expect((plain.mesh.material as MeshPhysicalNodeMaterial).ior).toBe(WATER_INDEX_OF_REFRACTION)
+    expect((plain.mesh.material as MeshPhysicalNodeMaterial).metalness).toBe(0)
+    expect((plain.mesh.material as MeshPhysicalNodeMaterial).emissiveNode).toBeNull()
+    const glow = vec3(0, 0.1, 0.2)
+    let seen: Parameters<ConstructorParameters<typeof WaveMesh>[1]>[2] | undefined
+    const glowing = new WaveMesh(laidSurface(30), (_waves, _ground, view) => {
+      seen = view
+      return { ...shade(), emissive: glow }
+    })
+    expect((glowing.mesh.material as MeshPhysicalNodeMaterial).emissiveNode).toBe(glow)
+    expect(seen?.significantWaveHeightMeters).toBe(glowing.significantWaveHeightMeters)
   })
 })
 

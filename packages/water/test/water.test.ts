@@ -35,6 +35,18 @@ describe('water optics', () => {
     expect(red).toBeGreaterThan(0.3)
   })
 
+  it('glow turquoise through a crest: red absorbed, blue scattered away, greener with chlorophyll', () => {
+    const [red, green, blue] = computeWaterOptics({ ...ocean, chlorophyllMilligramsPerCubicMeter: 0.2 }).crestTransmittance
+    expect(green).toBeGreaterThan(red * 2)
+    expect(blue).toBeGreaterThan(red * 2)
+    expect(blue).toBeLessThan(1)
+    const productive = computeWaterOptics({ ...ocean, chlorophyllMilligramsPerCubicMeter: 5 }).crestTransmittance
+    expect(productive[1]).toBeGreaterThan(productive[2])
+    expect(resolveState({}).crestTransmittance).toEqual(computeWaterOptics({ chlorophyllMilligramsPerCubicMeter: resolveState({}).chlorophyllMilligramsPerCubicMeter, salinityPartsPerThousand: 35 }).crestTransmittance)
+    // A fixed colour draws the sea as given: no glow.
+    expect(resolveState({ color: '#123456' }).crestTransmittance).toEqual([0, 0, 0])
+  })
+
   it('scatter more in salt water than in fresh', () => {
     const salt = inherentOpticalProperties(450, ocean).backscatteringPerMeter
     const fresh = inherentOpticalProperties(450, { ...ocean, salinityPartsPerThousand: 0 }).backscatteringPerMeter
