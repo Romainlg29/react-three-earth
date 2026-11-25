@@ -191,9 +191,15 @@ npx @tanstack/intent@latest load @earthkit/globe#getting-started
 | `flat-map-2d` | a flat 2D map (Web Mercator, like MapLibre) and the globe-to-map transition |
 | `atmosphere-and-sun` | sky, time of day, exposure, haze, custom post-processing |
 | `react-hooks-and-frame-loop` | Earth state in React UI, per-frame code, scheduler order, `frameloop="demand"` |
-| `customize-terrain-shading` | custom terrain materials and TSL effects |
+| `customize-terrain-shading` | custom terrain materials and TSL effects, colouring by elevation, slope and aspect |
 | `write-a-plugin` | extending the library with plugins: `<Earth plugins>`, objects that follow the 2D morph, raymarched SDF shapes, custom style layer types, render passes, draped layers |
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
+
+The terrain style package, `@earthkit/terrain-style`, ships its own skill:
+
+| Skill | Use when |
+| --- | --- |
+| `style-terrain` | a stylised globe with no imagery: colouring the ground by elevation, slope and aspect with expressions or presets, legends |
 
 Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 

@@ -1,11 +1,12 @@
 import type { Earth as EarthImpl } from '@earthkit/globe'
 import { Imagery, MapStyleSource, RasterDemSource } from '@earthkit/globe/react'
+import { TERRAIN_STYLE_PRESETS, type TerrainStylePreset } from '@earthkit/terrain-style'
+import { useTerrainStyle } from '@earthkit/terrain-style/react'
 import { useMemo, useState } from 'react'
 
 import { elevationAttribution, elevationTilesUrl, rasterAttribution, rasterTilesUrl, useFixtures } from './data'
 import { ExampleShell } from './ExampleShell'
 import { flyToPlace, placesFor, type Place } from './places'
-import { createStylizedTerrainMaterial } from './stylizedTerrain'
 
 const MOUNTAINS = placesFor<Place>(
   [
@@ -22,7 +23,7 @@ type Look = 'relief' | 'map' | 'stylized'
 /**
  * Colour relief and hillshade from the same Terrarium tiles the terrain is built from (`raster-dem`), or
  * OpenStreetMap with a softer hillshade on top. The stylised look has no style: the terrain material colours the
- * ground by elevation, slope and aspect (`stylizedTerrain.ts`).
+ * ground by elevation and slope (`@earthkit/terrain-style`: a preset, or an expression of your own).
  */
 function terrainStyle(look: Look): object | null {
   if (look === 'stylized') return null
@@ -67,15 +68,18 @@ function terrainStyle(look: Look): object | null {
 
 /**
  * `?example=terrain`: terrain from Terrarium elevation tiles (`<RasterDemSource>`), shaded with colour relief and
- * hillshade from the same tiles, or stylised with no imagery at all (a terrain material reading `terrainElevationMeters`,
- * `terrainSlopeDegrees` and `terrainAspectRadians`), with an exaggeration slider (`<Terrain exaggeration>`).
+ * hillshade from the same tiles, or stylised with no imagery at all (`useTerrainStyle` from `@earthkit/terrain-style`, its
+ * presets one click apart), with an exaggeration slider (`<Terrain exaggeration>`).
  */
 export function TerrainExample() {
   const [earth, setEarth] = useState<EarthImpl | null>(null)
   const [mountain, setMountain] = useState<Place>(MOUNTAINS[0]!)
   const [look, setLook] = useState<Look>('relief')
   const [exaggeration, setExaggeration] = useState(1.5)
+  const [preset, setPreset] = useState<TerrainStylePreset>('alpine')
   const style = useMemo(() => terrainStyle(look), [look])
+  // A new preset is a new material factory: the terrain reloads its tiles with it.
+  const createTerrainMaterial = useTerrainStyle({ color: preset })
   return (
     <ExampleShell
       title="Terrain and relief"
@@ -83,7 +87,7 @@ export function TerrainExample() {
       camera={MOUNTAINS[0]!.view}
       onEarth={setEarth}
       exaggeration={exaggeration}
-      createTerrainMaterial={createStylizedTerrainMaterial}
+      createTerrainMaterial={createTerrainMaterial}
       terrain={<RasterDemSource url={elevationTilesUrl} encoding="terrarium" maximumZoom={useFixtures ? 12 : 15} attribution={elevationAttribution} />}
       panel={
         <>
@@ -105,6 +109,15 @@ export function TerrainExample() {
               Stylised, no layers
             </button>
           </div>
+          {look === 'stylized' ? (
+            <div className="example-buttons">
+              {(Object.keys(TERRAIN_STYLE_PRESETS) as TerrainStylePreset[]).map(name => (
+                <button key={name} type="button" aria-pressed={name === preset} onClick={() => setPreset(name)}>
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <label className="example-field">
             Exaggeration
             <input type="range" min={1} max={3} step={0.1} value={exaggeration} onChange={event => setExaggeration(Number(event.target.value))} />
