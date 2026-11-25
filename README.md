@@ -201,6 +201,12 @@ The terrain style package, `@earthkit/terrain-style`, ships its own skill:
 | --- | --- |
 | `style-terrain` | a stylised globe with no imagery: colouring the ground by elevation, slope and aspect with expressions or presets, legends |
 
+The water package, `@earthkit/water`, ships its own skill:
+
+| Skill | Use when |
+| --- | --- |
+| `water` | a sea that looks real or like a map: colour from the water's optics, gloss and whitecaps from the wind, shallow water, presets |
+
 Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 
 ## Develop

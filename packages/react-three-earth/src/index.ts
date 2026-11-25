@@ -170,7 +170,7 @@ export { TouchGestures, type TwoFingerFrame } from './core/TouchGestures.js'
 export { ViewMorph, type ViewMode, type ViewTransitionOptions } from './view/ViewMorph.js'
 export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
-export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE } from './tiles/FlatMapPlugin.js'
+export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE, terrainFlatMorph } from './tiles/FlatMapPlugin.js'
 export {
   TERRAIN_SURFACE_ATTRIBUTE,
   terrainAspectDegrees,

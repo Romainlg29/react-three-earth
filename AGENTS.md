@@ -25,6 +25,9 @@ instead.
   `after` imagery layers clipped to either side of a line (`Imagery.screenClip`), with a slider handle. Ships its skill.
 - `packages/terrain-style`: `@earthkit/terrain-style`, stylised terrain: MapLibre-style expressions over elevation, slope
   and aspect compiled to TSL for a terrain material, with presets. Ships its skill in `packages/terrain-style/skills/`.
+- `packages/water`: `@earthkit/water`, a physically based sea as a plugin on the public API (a terrain shading over
+  `terrainWaterMask`): colour from the water's optics (`src/optics.ts`), gloss and whitecaps from the wind, presets. Ships
+  its skill in `packages/water/skills/`.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
   is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
   renders under React's StrictMode, `?example=<name>` opens a gallery example (`src/examples/`, live data or `?fixtures`). `tests/run.mjs` drives it in Chromium.
