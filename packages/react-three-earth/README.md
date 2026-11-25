@@ -192,6 +192,7 @@ The drawing package, `@earthkit/draw`, ships its own skills:
 | --- | --- |
 | `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
 | `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
+| `edit-geojson-sources` | editing a `GeoJsonSource` in place with the draw plugin: no second copy, edits written back on release |
 
 The comparison package, `@earthkit/compare`, ships its own:
 

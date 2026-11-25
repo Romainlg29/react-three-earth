@@ -3,7 +3,7 @@ import type { Feature, GeoJSON } from 'geojson'
 import GeoJSONVT, { type LegacyFeature } from 'geojson-vt'
 import Supercluster from 'supercluster'
 
-import { applyGeoJsonDiff, boundsRectangles, featureRectangles, geoJsonBounds, toFeatures, type GeoJsonSourceDiff } from './geoJsonData.js'
+import { applyGeoJsonDiff, boundsRectangles, featureRectangles, geoJsonBounds, geoJsonFeatureId, toFeatures, type GeoJsonFeatureId, type GeoJsonSourceDiff } from './geoJsonData.js'
 import type { MercatorRectangle } from './rectangles.js'
 import type { Point } from './ShapeBuilder.js'
 import { tileFeatureGeometry, type TileSourceSpecification, type VectorTileFeatureLike, type VectorTileLayerLike, type VectorTileLike, type VectorTileProvider, type VectorTileProviderFactory } from './tileProviders.js'
@@ -31,6 +31,11 @@ export interface GeoJsonSourceSpecification extends TileSourceSpecification {
   generateId?: boolean
   promoteId?: string
   filter?: unknown
+  /**
+   * Ids of features left out of the tiles while they stay in the data (an editor draws them itself meanwhile).
+   * An earthkit runtime extension, not in MapLibre's specification: `GeoJsonSource.setHiddenFeatureIds` sets it.
+   */
+  hiddenFeatureIds?: GeoJsonFeatureId[]
 }
 
 /** Map pixels per tile unit: GeoJSON options in pixels are multiplied by this. */
@@ -104,6 +109,13 @@ export class GeoJsonTileSource implements VectorTileProvider {
   protected index: TileIndex | null = null
   protected clusters: Supercluster | null = null
   protected readonly filter: FeatureFilter | null
+  /** Ids of the features left out of the tiles (`hiddenFeatureIds`), still in the data. */
+  protected hidden: ReadonlySet<GeoJsonFeatureId>
+  /**
+   * The ids tiles carry for the hidden features: their own, or with `generateId` their index among the tiled
+   * features (geojson-vt numbers them so).
+   */
+  protected hiddenTileIds: ReadonlySet<unknown> = new Set()
 
   protected constructor(
     protected readonly sourceId: string,
@@ -114,6 +126,8 @@ export class GeoJsonTileSource implements VectorTileProvider {
     this.maximumZoom = this.options.maximumZoom
     if (typeof source.attribution === 'string') this.attribution = source.attribution
     this.filter = source.filter === undefined ? null : compileFilter(source.filter, sourceId)
+    this.hidden = new Set(source.hiddenFeatureIds ?? [])
+    this.hiddenTileIds = this.hidden
     if (this.options.cluster && this.options.clusterProperties !== undefined) compileClusterProperties(this.options.clusterProperties, sourceId) // throws early
   }
 
@@ -163,6 +177,30 @@ export class GeoJsonTileSource implements VectorTileProvider {
     })
   }
 
+  /**
+   * Leaves the features of these ids out of the tiles (replacing the previous ids), keeping them in the data: no
+   * tiling again, only the tiles around the features that appear or disappear are processed again (around the whole
+   * data when points are clustered; hidden points still count in their clusters). Applies in order with data changes.
+   */
+  setHiddenFeatures(ids: readonly GeoJsonFeatureId[]): Promise<GeoJsonDataChange> {
+    return this.enqueue(async () => {
+      const next = new Set(ids)
+      const changed = new Set<GeoJsonFeatureId>()
+      for (const id of next) if (!this.hidden.has(id)) changed.add(id)
+      for (const id of this.hidden) if (!next.has(id)) changed.add(id)
+      this.hidden = next
+      this.hiddenTileIds = this.tileIdsOf(next)
+      if (changed.size === 0) return { rectangles: [], marginTiles: this.marginTiles }
+      if (this.options.cluster) return { rectangles: boxOf(this.drawnFeatures(this.features)), marginTiles: this.marginTiles }
+      const promoteId = this.options.promoteId
+      const touched = this.features.filter(feature => {
+        const id = geoJsonFeatureId(feature, promoteId)
+        return id !== undefined && changed.has(id)
+      })
+      return { rectangles: featureRectangles(this.drawnFeatures(touched)), marginTiles: this.marginTiles }
+    })
+  }
+
   /** Runs data changes one after the other, in the order called. */
   protected enqueue<T>(task: () => Promise<T>): Promise<T> {
     const run = this.ready.then(task)
@@ -176,7 +214,28 @@ export class GeoJsonTileSource implements VectorTileProvider {
   async loadTile(x: number, y: number, z: number): Promise<VectorTileLike | null> {
     await this.ready
     const tile = this.index?.getTile(z, x, y) ?? null
-    return tile === null || tile.features.length === 0 ? null : new GeoJsonTile(tile.features)
+    if (tile === null) return null
+    const features = this.hiddenTileIds.size === 0 ? tile.features : tile.features.filter(feature => !this.isHidden(feature))
+    return features.length === 0 ? null : new GeoJsonTile(features)
+  }
+
+  /** Whether a tile feature is hidden (`hiddenFeatureIds`): by its id, or its `promoteId` property. Clusters never are. */
+  protected isHidden(feature: LegacyFeature): boolean {
+    const promoteId = this.options.promoteId
+    const id = promoteId === undefined || this.options.generateId ? feature.id : (feature.tags as Record<string, unknown> | null)?.[promoteId]
+    return id !== undefined && id !== null && this.hiddenTileIds.has(id)
+  }
+
+  /** The ids tiles carry for features of these ids: the same, or with `generateId` their index among the tiled features. */
+  protected tileIdsOf(ids: ReadonlySet<GeoJsonFeatureId>): ReadonlySet<unknown> {
+    if (ids.size === 0 || !this.options.generateId || this.options.cluster) return ids
+    const promoteId = this.options.promoteId
+    const indexes = new Set<number>()
+    this.drawnFeatures(this.features).forEach((feature, index) => {
+      const id = geoJsonFeatureId(feature, promoteId)
+      if (id !== undefined && ids.has(id)) indexes.add(index)
+    })
+    return indexes
   }
 
   /** Answers a cluster query (`getClusterExpansionZoom`, `getClusterChildren`, `getClusterLeaves`). */
@@ -221,6 +280,8 @@ export class GeoJsonTileSource implements VectorTileProvider {
   /** Keeps every feature and tiles those the filter keeps. */
   protected buildIndex(features: Feature[]): void {
     this.features = features
+    // With `generateId`, a feature's tile id is its index, which the new data may change.
+    if (this.options.generateId) this.hiddenTileIds = this.tileIdsOf(this.hidden)
     const drawn = this.drawnFeatures(features)
     const options = this.options
     if (options.cluster) {

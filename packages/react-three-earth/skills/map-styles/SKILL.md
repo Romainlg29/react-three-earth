@@ -238,6 +238,7 @@ style.setGeoJsonSourceData('buses', { type: 'FeatureCollection', features: [] })
 
 - `updateData` needs every feature to have an id (`id`, or the `promoteId` property) and the data as an object.
   It redraws around the changed features only, or around the whole data when points are clustered.
+- `setHiddenFeatureIds(ids)` hides features from the tiles, kept in `data`, without tiling again (an editor draws them: `@earthkit/draw#edit-geojson-sources`).
 - Feature-state on GeoJSON: `setFeatureState({ source: 'buses', id: 12 }, { hover: true })`, no `sourceLayer`.
 - Point density: `heatmap` layers (`heatmap-layers`).
 

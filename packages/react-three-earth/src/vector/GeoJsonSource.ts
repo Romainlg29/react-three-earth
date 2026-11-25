@@ -1,7 +1,7 @@
 import type { Feature, GeoJSON, Point } from 'geojson'
 
 import type { MapStyle } from './MapStyle.js'
-import { applyGeoJsonDiff, toFeatures, type GeoJsonSourceDiff } from './worker/geoJsonData.js'
+import { applyGeoJsonDiff, toFeatures, type GeoJsonFeatureId, type GeoJsonSourceDiff } from './worker/geoJsonData.js'
 import type { GeoJsonSourceSpecification } from './worker/geoJsonSource.js'
 
 /**
@@ -90,6 +90,8 @@ export class GeoJsonSource {
   /** The `data` the app last passed (constructor, `update`, `setData`): `update` compares the next one with it. */
   protected suppliedData: GeoJSON | string
   protected style: MapStyle | null = null
+  /** Ids of the features left out of the tiles (`setHiddenFeatureIds`). */
+  protected hiddenIds: readonly GeoJsonFeatureId[] = []
 
   constructor(options: GeoJsonSourceOptions) {
     this.id = options.id
@@ -120,7 +122,8 @@ export class GeoJsonSource {
       promoteId,
       filter,
     }
-    return { type: 'geojson', data: this.data, ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== undefined)) }
+    const hidden = this.hiddenIds.length > 0 ? { hiddenFeatureIds: [...this.hiddenIds] } : {}
+    return { type: 'geojson', data: this.data, ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== undefined)), ...hidden }
   }
 
   /** Adds the source to a `MapStyleSource`'s style, replacing a source of the same id (its layers keep reading it). */
@@ -197,6 +200,23 @@ export class GeoJsonSource {
     const { features } = applyGeoJsonDiff(toFeatures(data), diff, promoteId, this.id)
     this.options = { ...this.options, data: { type: 'FeatureCollection', features } }
     this.style?.updateGeoJsonSourceData(this.id, diff)
+  }
+
+  /** Ids of the features left out of the tiles (`setHiddenFeatureIds`). */
+  get hiddenFeatureIds(): readonly GeoJsonFeatureId[] {
+    return this.hiddenIds
+  }
+
+  /**
+   * Leaves features out of the tiles, by id (or the `promoteId` property), while they stay in `data`: an editor
+   * (`@earthkit/draw`) hides what it draws itself. The ids replace the previous ones; `[]` shows every feature again.
+   * Cheap whatever the size of the data: nothing is tiled again, only the regions around the features that appear or
+   * disappear are redrawn (the whole data when points are clustered, where hidden points still count in clusters).
+   */
+  setHiddenFeatureIds(ids: readonly GeoJsonFeatureId[]): void {
+    if (ids.length === this.hiddenIds.length && ids.every((id, index) => id === this.hiddenIds[index])) return
+    this.hiddenIds = [...ids]
+    this.style?.setGeoJsonSourceHiddenFeatures(this.id, this.hiddenIds)
   }
 
   /** The zoom at which a cluster splits into several features: zoom there on a cluster click. */

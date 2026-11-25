@@ -2,7 +2,7 @@ import type { GeoJSON } from 'geojson'
 import { EventDispatcher } from 'three'
 
 import { featureKey, parseFeatureKey, type FeatureIdentifier } from './worker/featureState.js'
-import type { GeoJsonSourceDiff } from './worker/geoJsonData.js'
+import type { GeoJsonFeatureId, GeoJsonSourceDiff } from './worker/geoJsonData.js'
 import { APPLICABLE_COMMANDS, applyStyleCommand, copyStyleDocument, IGNORED_COMMANDS, type StyleDocument, type StyleDocumentLayer } from './worker/styleDocument.js'
 import type { FeatureState, GeoJsonSourceQuery, ResourceAnswer, ResourceKind, ResourceRequest, StyleCommand } from './worker/types.js'
 
@@ -347,6 +347,15 @@ export class MapStyle extends EventDispatcher<MapStyleEventMap> {
    */
   updateGeoJsonSourceData(sourceId: string, diff: GeoJsonSourceDiff): void {
     this.command({ command: 'updateGeoJSONSourceData', args: [sourceId, clone(diff)] })
+  }
+
+  /**
+   * Leaves features of a `geojson` source out of its tiles, by id (or the `promoteId` property), keeping them in its
+   * data; the ids replace the previous ones, and an empty list shows every feature again. No tiling again: only the
+   * regions around the features that appear or disappear are redrawn. An editor draws them itself meanwhile.
+   */
+  setGeoJsonSourceHiddenFeatures(sourceId: string, ids: readonly GeoJsonFeatureId[]): void {
+    this.command({ command: 'setGeoJSONSourceHiddenFeatures', args: [sourceId, [...ids]] })
   }
 
   /**
