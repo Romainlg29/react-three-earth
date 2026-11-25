@@ -1,4 +1,4 @@
-# Working on react-three-earth
+# Working on earthkit
 
 Guidance for coding agents and contributors changing this repository. To *use* the library in an app,
 read the shipped skills in [packages/react-three-earth/skills/](packages/react-three-earth/skills/)
@@ -14,9 +14,11 @@ instead.
   - `src/tiles`: 3DTilesRenderer plugins; `src/tiles/imagery` is the GPU imagery compositor.
   - `skills/`: Agent Skills shipped in the npm package (TanStack Intent format).
   - `test/`: vitest unit tests.
-- `packages/draw`: `react-three-earth-draw`, headless drawing and editing as a plugin, built only on the library's
+- `packages/draw`: `@earthkit/draw`, headless drawing and editing as a plugin, built only on the library's
   public API (`src/modes` for the tools, `src/render` for the draped features and the live overlay). Ships its own
   skills in `packages/draw/skills/`.
+- `packages/measure`: `@earthkit/measure`, headless measuring (geodesic distances and areas, elevation profiles) as a
+  plugin on `@earthkit/draw` and the public API. Ships its skill in `packages/measure/skills/`.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
   is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
   renders under React's StrictMode, `?example=<name>` opens a gallery example (`src/examples/`, live data or `?fixtures`). `tests/run.mjs` drives it in Chromium.
@@ -36,6 +38,12 @@ instead.
 - Performance floor: 60 fps on a Pixel, constant 60 fps on an iPhone.
 - three is pinned to r187, 3d-tiles-renderer to 0.5.4 and @mapbox/tiny-sdf to 2.3.0: some code overrides their private APIs
   (`composeRegionsOnGpu.ts`, `ImageOverlayPlugin.ts`, `MapStyleOverlay.setRegionVisible`; `Earth.hasListeners` reads three's `EventDispatcher._listeners`; `GlyphProvider.drawLocal` sets TinySDF's untyped `ctx.font` for clusters). Re-check those when bumping.
+
+## Releases
+
+The packages publish to npm under the `@earthkit` scope (`@earthkit/globe`, `@earthkit/draw`, …) with changesets. A
+pull request that changes a published package adds one (`pnpm changeset`); see [.changeset/README.md](.changeset/README.md).
+Never publish from a local machine.
 
 ## Checks
 

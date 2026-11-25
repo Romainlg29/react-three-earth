@@ -1,4 +1,4 @@
-import { terrainAspectRadians, terrainElevationMeters, terrainSlopeDegrees } from 'react-three-earth'
+import { terrainAspectRadians, terrainElevationMeters, terrainSlopeDegrees } from '@earthkit/globe'
 import { color, cos, float, mix, smoothstep } from 'three/tsl'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 

@@ -1,14 +1,14 @@
 ---
 name: atmosphere-and-sun
 description: >
-  Use when adding or tuning the sky, sunlight, haze, time of day or exposure of a react-three-earth globe:
+  Use when adding or tuning the sky, sunlight, haze, time of day or exposure of an earthkit globe:
   the Atmosphere component or class, the date that drives the sun, brightness and tone mapping, hazier or
   clearer air, another planet's atmosphere, combining the atmosphere with your own post-processing, or
   waiting for the atmosphere to be ready.
 metadata:
   purpose: 'Explains the physically based atmosphere (Bruneton 2017 precomputed scattering), its lifecycle, the sun ephemeris, exposure, parameters and render-pipeline ownership.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Atmosphere.ts'
@@ -44,7 +44,7 @@ with neutral sunlight and no sky. No network request is made.
 ### Set the time of day
 
 ```tsx
-import { Atmosphere, Earth } from 'react-three-earth/react'
+import { Atmosphere, Earth } from '@earthkit/globe/react'
 
 export function Sunset() {
   // 16:00 in Tokyo on 22 November: low sun in the south-west
@@ -61,7 +61,7 @@ or in a frame callback assign `earth.date = new Date(...)`; the sun is re-aimed 
 almost nothing.
 
 ```tsx
-import { useEarthFrame } from 'react-three-earth/react'
+import { useEarthFrame } from '@earthkit/globe/react'
 
 /** Ten simulated minutes per real second. Render inside <Earth>. */
 export function FastClock() {
@@ -82,8 +82,8 @@ daylight, raise it towards 20 to 40 at dusk. Vanilla: set `renderer.toneMapping 
 ### Change the air (haze, other planets)
 
 ```tsx
-import { AtmosphereParameters } from 'react-three-earth'
-import { Atmosphere } from 'react-three-earth/react'
+import { AtmosphereParameters } from '@earthkit/globe'
+import { Atmosphere } from '@earthkit/globe/react'
 import { Vector3 } from 'three'
 import { useMemo } from 'react'
 
@@ -110,7 +110,7 @@ remount with a React `key`.
 ### Wait for the atmosphere
 
 ```ts
-import { Atmosphere } from 'react-three-earth'
+import { Atmosphere } from '@earthkit/globe'
 import type { WebGPURenderer } from 'three/webgpu'
 
 export async function startAtmosphere(renderer: WebGPURenderer) {
@@ -136,7 +136,7 @@ pipeline, and the output is rebuilt once, not per frame.
 Vanilla, attach an `EarthRenderPipeline` to your own three `RenderPipeline`:
 
 ```ts
-import { EarthRenderPipeline, type Atmosphere, type Earth } from 'react-three-earth'
+import { EarthRenderPipeline, type Atmosphere, type Earth } from '@earthkit/globe'
 import type { Camera, Scene } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, type WebGPURenderer } from 'three/webgpu'
@@ -192,7 +192,7 @@ see-through face crossing the horizon changes shade along it. Put see-through so
 they are drawn after the atmosphere, hazed at their own distance and hidden behind nearer ground.
 
 ```ts
-import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth } from 'react-three-earth'
+import { TRANSLUCENT_LAYER, TRANSLUCENT_RENDER_PASS_NAME, type Earth } from '@earthkit/globe'
 import { Mesh, type BufferGeometry } from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 

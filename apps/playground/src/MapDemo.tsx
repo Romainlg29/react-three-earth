@@ -9,7 +9,7 @@ import {
   type RenderedFeature,
   type Marker as MarkerImpl,
   type ViewMode,
-} from 'react-three-earth'
+} from '@earthkit/globe'
 import {
   Atmosphere,
   Earth,
@@ -31,7 +31,7 @@ import {
   useHoverFeatureState,
   useLayerCursor,
   VideoSource,
-} from 'react-three-earth/react'
+} from '@earthkit/globe/react'
 import { useEffect, useLayoutEffect, useState } from 'react'
 import { useThree } from '@react-three/fiber'
 
@@ -201,7 +201,7 @@ declare global {
     setExaggeration?: (exaggeration: number) => void
     camera?: import('three').Camera
     mapStyleSource?: MapStyleSourceImpl | null
-    videoSource?: import('react-three-earth').VideoSource | null
+    videoSource?: import('@earthkit/globe').VideoSource | null
     markers?: Record<string, MarkerImpl | null>
     dragEnds?: GeographicPosition[]
     selectedPlace?: string | null

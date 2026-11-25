@@ -1,13 +1,13 @@
 ---
 name: flat-map-2d
 description: >
-  Use when showing a react-three-earth map flat (2D, Web Mercator, like MapLibre) instead of as a globe,
+  Use when showing an earthkit map flat (2D, Web Mercator, like MapLibre) instead of as a globe,
   switching between globe and flat map with a transition, tuning that transition, limiting zoom on the
   flat map, or lighting terrain on the flat map.
 metadata:
   purpose: 'Explains the 2D view, the unroll transition, repeated worlds and the zoom limit on the flat map, and the lighting rules in 2D.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/view/ViewMorph.ts'
@@ -42,7 +42,7 @@ transition: the view switches at once, unless `earth.setView(mode, { essential: 
 ## Setup
 
 ```tsx
-import { Earth, EarthControls } from 'react-three-earth/react'
+import { Earth, EarthControls } from '@earthkit/globe/react'
 ```
 
 The view lives on the vanilla `Earth` (`earth.setView`, `earth.view`), so it works the same without React.
@@ -53,7 +53,7 @@ The view lives on the vanilla `Earth` (`earth.setView`, `earth.view`), so it wor
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { Earth, EarthControls } from 'react-three-earth/react'
+import { Earth, EarthControls } from '@earthkit/globe/react'
 import { useState } from 'react'
 
 export function Map() {
@@ -78,7 +78,7 @@ transition in reverse from where it is.
 ### Vanilla
 
 ```ts
-import { Earth, EarthViewControls } from 'react-three-earth'
+import { Earth, EarthViewControls } from '@earthkit/globe'
 
 const earth = new Earth({ view: '3d' })
 const controls = new EarthViewControls(earth)
@@ -92,7 +92,7 @@ earth.setView('2d', { durationSeconds: 2.4 }) // a slower unroll
 ### Read the state
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 function describe(earth: Earth) {
   const { mode, morph } = earth.inspect().view // morph: 0 globe, 1 flat map

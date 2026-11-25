@@ -9,7 +9,7 @@ import {
   type PluginContext,
   type PluginFrame,
   type PointerInteractionEvent,
-} from 'react-three-earth'
+} from '@earthkit/globe'
 import { EventDispatcher, Matrix4 } from 'three'
 
 import { createFeatureId, FeatureStore, type FeatureStoreChange } from './FeatureStore.js'
@@ -99,7 +99,7 @@ const INVALIDATE_PADDING_FRACTION = 0.1
 const INVALIDATE_PADDING_DEGREES = 0.5
 
 /**
- * Headless drawing on the globe and the flat map, as a react-three-earth plugin: points, line strings, polygons and
+ * Headless drawing on the globe and the flat map, as an earthkit plugin: points, line strings, polygons and
  * solid meshes (multipolygons of faces with altitudes), output as GeoJSON. It draws the features (draped on the terrain, styled by `style`) and the handles of the feature in
  * progress, and nothing else: no buttons, no CSS. Build your toolbar from `getState()`, `subscribe` and the actions.
  *

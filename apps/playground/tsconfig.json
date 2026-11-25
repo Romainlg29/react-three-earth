@@ -5,11 +5,13 @@
     "allowImportingTsExtensions": true,
     "noEmit": true,
     "paths": {
-      "react-three-earth": ["../../packages/react-three-earth/src/index.ts"],
-      "react-three-earth/react": ["../../packages/react-three-earth/src/react/index.tsx"],
-      "react-three-earth/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"],
-      "react-three-earth-draw": ["../../packages/draw/src/index.ts"],
-      "react-three-earth-draw/react": ["../../packages/draw/src/react/index.ts"]
+      "@earthkit/globe": ["../../packages/react-three-earth/src/index.ts"],
+      "@earthkit/globe/react": ["../../packages/react-three-earth/src/react/index.tsx"],
+      "@earthkit/globe/plugin-worker": ["../../packages/react-three-earth/src/plugins/pluginWorker.ts"],
+      "@earthkit/draw": ["../../packages/draw/src/index.ts"],
+      "@earthkit/draw/react": ["../../packages/draw/src/react/index.ts"],
+      "@earthkit/measure": ["../../packages/measure/src/index.ts"],
+      "@earthkit/measure/react": ["../../packages/measure/src/react/index.ts"]
     }
   },
   "include": ["src", "fixtures", "vite.config.ts"]

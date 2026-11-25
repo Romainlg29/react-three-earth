@@ -2,13 +2,13 @@
 name: coordinates-and-units
 description: >
   Use when placing markers, meshes, models or the camera at a longitude, latitude and height on a
-  react-three-earth globe, converting geographic coordinates to scene positions, orienting objects to the
+  earthkit globe, converting geographic coordinates to scene positions, orienting objects to the
   local ground, or wondering why objects jitter or collapse at planet scale. Also covers the library's
   naming rules for units.
 metadata:
   purpose: 'Explains the ECEF scene frame, the geographic helpers, local east-north-up orientation, centimetre precision, and the units-in-names convention.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/camera.ts'
@@ -26,7 +26,7 @@ sea level; the geoid differs by up to about 100 m.
 ## Setup
 
 ```ts
-import { setCameraView, toCartesian } from 'react-three-earth'
+import { setCameraView, toCartesian } from '@earthkit/globe'
 ```
 
 Both helpers are in the root entry (vanilla), and work the same from React.
@@ -36,8 +36,8 @@ Both helpers are in the root entry (vanilla), and work the same from React.
 ### Place an object at a longitude, latitude and height
 
 ```tsx
-import { toCartesian } from 'react-three-earth'
-import { Earth } from 'react-three-earth/react'
+import { toCartesian } from '@earthkit/globe'
+import { Earth } from '@earthkit/globe/react'
 import { useMemo } from 'react'
 
 const summit = { longitudeDegrees: 138.7274, latitudeDegrees: 35.3606, heightMeters: 3776 }
@@ -87,7 +87,7 @@ take named degrees to avoid that mistake.
 ### Point the camera at a place
 
 ```ts
-import { setCameraView } from 'react-three-earth'
+import { setCameraView } from '@earthkit/globe'
 import { PerspectiveCamera } from 'three'
 
 const camera = new PerspectiveCamera(60, 16 / 9, 1, 1e8)

@@ -1,4 +1,4 @@
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 import type { FeatureStore } from '../FeatureStore.js'
 import type { HeightSampler, OverlayContent } from '../render/LiveOverlay.js'

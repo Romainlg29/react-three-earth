@@ -2,8 +2,8 @@
  * The playground's styled map controls, built on the library's headless hooks: an example of what an app writes.
  * The library draws no buttons and ships no CSS; the look lives in `mapControls.css`.
  */
-import type { ViewMode } from 'react-three-earth'
-import { AttributionControl, Controls, Marker, useFullscreenControl, useMarker, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from 'react-three-earth/react'
+import type { ViewMode } from '@earthkit/globe'
+import { AttributionControl, Controls, Marker, useFullscreenControl, useMarker, useGeolocateControl, useNavigationControl, useScaleControl, useViewControl } from '@earthkit/globe/react'
 
 import { useLayoutEffect } from 'react'
 

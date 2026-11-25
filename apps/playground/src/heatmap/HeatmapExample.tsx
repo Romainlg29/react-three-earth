@@ -1,5 +1,5 @@
 import type { Feature, FeatureCollection } from 'geojson'
-import { GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+import { GeoJsonSource, StyleLayer } from '@earthkit/globe/react'
 
 /** A z8 tile column edge (227 / 256 of the way round), so an edge of every finer tile and region too: the quake cloud straddles it. */
 export const HEATMAP_TILE_EDGE_LONGITUDE = (227 / 256) * 360 - 180

@@ -1,7 +1,7 @@
 ---
 name: draw-features
 description: >
-  Use when an app lets users draw on a react-three-earth map, like maplibre-gl-draw or terra-draw: place points, draw
+  Use when an app lets users draw on an earthkit map, like maplibre-gl-draw or terra-draw: place points, draw
   lines and polygons by tapping, get the result as GeoJSON, load saved features back, style them, or build a drawing
   toolbar (headless: the app renders the buttons from useDrawState). Also when drawing must work with touch on
   iPhone Safari, on the globe and on the flat 2D map, or when writing a custom drawing mode. Also for circles,
@@ -11,10 +11,10 @@ description: >
   selecting features, a Blender-style gizmo (arrows, planes, arcs, scale cubes, tools, local axes) to move, raise,
   tilt and scale them, G / R / S keys, dragging, adding and deleting vertices, undo (edit mode: edit-shapes).
 metadata:
-  purpose: 'Documents react-three-earth-draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
+  purpose: 'Documents @earthkit/draw: the Draw plugin (modes, actions, features, events, style), useDrawState and useDrawEvent, custom DrawMode subclasses, and the PointerInteractions core it uses to take presses from the camera controls.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth-draw'
+  library: '@earthkit/draw'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/Draw.ts'
@@ -34,16 +34,16 @@ sources:
   - 'Romainlg29/react-three-earth:apps/playground/src/examples/DrawExample.tsx'
   - 'Romainlg29/react-three-earth:apps/playground/src/examples/ShapesExample.tsx'
 requires:
-  - react-three-earth#getting-started
+  - '@earthkit/globe#getting-started'
 ---
 
 # Draw features
 
-Read `react-three-earth#getting-started` first. `react-three-earth-draw` is a react-three-earth plugin for drawing points, line strings and polygons on the map, kept as
+Read `@earthkit/globe#getting-started` first. `@earthkit/draw` is an earthkit plugin for drawing points, line strings and polygons on the map, kept as
 GeoJSON. It is headless, like the map controls: it draws the features and the handles of the feature in progress on the
 map, and nothing else. No buttons, no CSS. The app builds its toolbar from the state.
 
-| maplibre-gl-draw / terra-draw | react-three-earth-draw |
+| maplibre-gl-draw / terra-draw | @earthkit/draw |
 | --- | --- |
 | `new MapboxDraw()`, `map.addControl(draw)` | `new Draw()`, `earth.addPlugin(draw)` or `<Earth plugins={[draw]}>` |
 | `draw.changeMode('draw_polygon')` | `draw.setMode('polygon')` (`'static'`, `'select'`, `'point'`, `'linestring'`, `'polygon'`, `'circle'`, `'rectangle'`, `'sphere'`) |
@@ -61,9 +61,9 @@ never redraws terrain textures per pointer move.
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { Earth, EarthControls, QuantizedMeshSource, Terrain } from 'react-three-earth/react'
-import { Draw } from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+import { Earth, EarthControls, QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
+import { Draw } from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 import { useMemo } from 'react'
 
 function Toolbar({ draw }: { draw: Draw }) {
@@ -105,8 +105,8 @@ export function App() {
 The toolbar can live outside the canvas: `useDrawState` only needs the `Draw`. Vanilla:
 
 ```ts
-import { Earth } from 'react-three-earth'
-import { Draw } from 'react-three-earth-draw'
+import { Earth } from '@earthkit/globe'
+import { Draw } from '@earthkit/draw'
 
 declare const earth: Earth
 declare const polygonButton: HTMLButtonElement
@@ -138,7 +138,7 @@ draw.subscribe(state => (finishButton.disabled = !state.canFinish))
 
 ```ts
 import type { FeatureCollection } from 'geojson'
-import { Draw } from 'react-three-earth-draw'
+import { Draw } from '@earthkit/draw'
 
 declare const saved: FeatureCollection<GeoJSON.Point | GeoJSON.LineString | GeoJSON.Polygon | GeoJSON.MultiPolygon>
 declare function save(collection: unknown): void
@@ -161,7 +161,7 @@ changes, so it can be compared by identity.
 ### Styling
 
 ```ts
-import { Draw } from 'react-three-earth-draw'
+import { Draw } from '@earthkit/draw'
 
 const draw = new Draw({
   style: (feature, { drawing }) => ({
@@ -189,7 +189,7 @@ To make shapes in code, use the builders. Lengths are metres on the ground, and 
 They return plain GeoJSON: nothing in `properties` describes the shape.
 
 Solids are **meshes of faces**, as in Blender. A mesh is a `MultiPolygon` whose every position has a third coordinate,
-its altitude in metres above the WGS84 ellipsoid (like every height in react-three-earth), with a face steeper than 60°
+its altitude in metres above the WGS84 ellipsoid (like every height in earthkit), with a face steeper than 60°
 or closed (`isMeshGeometry`; flat polygons lifted over relief stay flat polygons). Each polygon is one planar
 face (a box has six: top, bottom, four walls), its exterior ring **counter-clockwise seen from outside** the solid, so
 its normal points outwards (the top of a prism is counter-clockwise from above, as GeoJSON wants; its bottom
@@ -197,7 +197,7 @@ clockwise). Faces share vertices by equal coordinates. No property holds a heigh
 scaling or raising a solid writes new vertex positions.
 
 ```ts
-import { createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, Draw } from 'react-three-earth-draw'
+import { createCircle, createEllipse, createRectangle, createRegularPolygon, createSphere, Draw } from '@earthkit/draw'
 
 const draw = new Draw()
 draw.addFeatures([
@@ -216,7 +216,7 @@ bottom follows the ground under each vertex. With `heightMeters`, the top is lev
 vertex. The geometry helpers build meshes from your own outlines, and read them back:
 
 ```ts
-import { indexMesh, isClosedMesh, isMeshFeature, meshTop, prismMesh, sphereMesh, wallMesh, type DrawFeature } from 'react-three-earth-draw'
+import { indexMesh, isClosedMesh, isMeshFeature, meshTop, prismMesh, sphereMesh, wallMesh, type DrawFeature } from '@earthkit/draw'
 
 const box = prismMesh([[[6.6, 46.45], [6.61, 46.45], [6.61, 46.46], [6.6, 46.46]]], 420, 30) // MultiPolygon, 6 faces
 const fence = wallMesh([[6.6, 46.45], [6.62, 46.45]], 400, 2) // open: a quad per segment, 2 m tall
@@ -237,7 +237,7 @@ they meet at less than 30° (a cylinder's wall, a sphere) and outlined in `lineC
 at any time. Their base is the terrain under each vertex as it was when drawn:
 
 ```ts
-import { CircleMode, Draw, LineStringMode, PolygonMode, RectangleMode, SphereMode, StaticMode } from 'react-three-earth-draw'
+import { CircleMode, Draw, LineStringMode, PolygonMode, RectangleMode, SphereMode, StaticMode } from '@earthkit/draw'
 
 const circle = new CircleMode({ heightMeters: 600 }) // cylinders
 const polygon = new PolygonMode({ heightMeters: 600 }) // prisms; LineStringMode makes walls
@@ -271,7 +271,7 @@ Enter confirms, Escape or a right click cancels (`select.startTransform('move')`
 
 Tap the selected feature again, or double tap a line, polygon or solid, for **edit mode** (`state.editingVertices`):
 its vertices, edges or faces instead of the gizmo, to pick and drag; a picked face pushes, pulls and extrudes. A tap
-on the empty map (or Escape) goes back to the gizmo. `react-three-earth-draw#edit-shapes` covers it. Picking vertices
+on the empty map (or Escape) goes back to the gizmo. `@earthkit/draw#edit-shapes` covers it. Picking vertices
 of a line or polygon, drag a vertex handle (one at an altitude moves level, keeping it), tap or drag a faded midpoint
 to insert one, tap a vertex then Delete or `draw.deleteSelected()` to remove it (a line keeps 2, a ring 3).
 
@@ -283,8 +283,8 @@ Points have no gizmo and no vertices: they move whole. For all features:
 - Changes made elsewhere (`addFeatures`, `clear`, another tool) clear the undo history, drop a picked vertex, and cancel a drag on that feature.
 
 ```tsx
-import { Draw } from 'react-three-earth-draw'
-import { useDrawEvent, useDrawState } from 'react-three-earth-draw/react'
+import { Draw } from '@earthkit/draw'
+import { useDrawEvent, useDrawState } from '@earthkit/draw/react'
 
 function EditBar({ draw }: { draw: Draw }) {
   const { mode, selectedIds, canUndo, editingVertices } = useDrawState(draw)
@@ -310,8 +310,8 @@ Options turn parts off: `editVertices: false` keeps the gizmo (`select.setEditin
 button), `moveFeatures: false` leaves the body to the camera, `move`, `rotate` and `scale` remove handle groups:
 
 ```tsx
-import { Draw, featureCenter, offsetFeature, rotateFeature, rotateFeatureAroundAxis, scaleFeatureAlongAxis, SelectMode, StaticMode } from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+import { Draw, featureCenter, offsetFeature, rotateFeature, rotateFeatureAroundAxis, scaleFeatureAlongAxis, SelectMode, StaticMode } from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 
 const select = new SelectMode({ snapping: true, rotate: true, scale: false })
 const draw = new Draw({ modes: [new StaticMode(), select], keyboard: true })
@@ -355,7 +355,7 @@ altitude, and `select.gizmoHandles()` where each gizmo handle is on the screen (
   `canUndo`, `editingVertices`, `elementMode`, `canExtrude`, `gizmoTool`, `gizmoSpace`), re-rendering on change;
   `useDrawState(draw, state => state.mode)` only when that part changes.
 - `useDrawEvent(draw, 'create', ({ features }) => …)`: an event listener for the component's lifetime.
-- Install with `<Earth plugins={[draw]}>` (a stable array) or `usePlugin(draw)` from `react-three-earth/react` inside
+- Install with `<Earth plugins={[draw]}>` (a stable array) or `usePlugin(draw)` from `@earthkit/globe/react` inside
   `<Earth>`.
 
 ### A custom mode
@@ -364,7 +364,7 @@ Subclass `DrawMode` (or extend `PathMode`, `PolygonMode`…; everything is `prot
 built-in ones you keep:
 
 ```ts
-import { Draw, DrawMode, PointMode, StaticMode, type DrawPointerEvent } from 'react-three-earth-draw'
+import { Draw, DrawMode, PointMode, StaticMode, type DrawPointerEvent } from '@earthkit/draw'
 
 /** Places a point and goes back to static after each tap. */
 class OnePointMode extends DrawMode {
@@ -393,7 +393,7 @@ The draw plugin uses `earth.interactions` (`PointerInteractions`), which any plu
 `context.addPointerInteraction`:
 
 ```ts
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 
 export const dragLogger: EarthPlugin = {
   name: 'drag-logger',

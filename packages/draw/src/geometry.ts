@@ -1,6 +1,6 @@
 import earcut from 'earcut'
 import type { Position } from 'geojson'
-import type { GeographicBounds } from 'react-three-earth'
+import type { GeographicBounds } from '@earthkit/globe'
 
 import type { DrawFeature, DrawGeometry, LongitudeLatitude } from './types.js'
 

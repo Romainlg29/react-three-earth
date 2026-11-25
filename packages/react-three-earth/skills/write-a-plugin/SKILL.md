@@ -1,7 +1,7 @@
 ---
 name: write-a-plugin
 description: >
-  Use when extending react-three-earth from a package or an app without forking it: writing an EarthPlugin,
+  Use when extending @earthkit/globe from a package or an app without forking it: writing an EarthPlugin,
   installing plugins with earth.addPlugin or <Earth plugins>, custom MapLibre style layer types drawn by a plugin
   (registerStyleLayerType: a shader over built-in fills, lines or circles, or a worker module with its own
   tessellation, glows, offscreen layers), screen effects composited with the atmosphere (registerRenderPass:
@@ -14,7 +14,7 @@ metadata:
   purpose: 'Documents the plugin API (EarthPlugin, PluginContext, addPlugin / removePlugin, <Earth plugins>, usePlugin), custom style layer types (registerStyleLayerType, worker modules), render passes (registerRenderPass, EarthRenderPipeline), draped layers (registerDrapedLayer), pointer interactions (addPointerInteraction, holdDoubleClickZoom), GeographicAnchor and the scene helpers (createLocalCameraPositionNode, depthFromViewZ, createFlatMapEmissionNode), with the sdf-shapes, sdf-glow, striped-fill, vignette and selection-glow example plugins.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/plugin.ts'
@@ -62,7 +62,7 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 | A new layer `type` with its own tessellation | `registerStyleLayerType({ type, worker: { moduleUrl, exportName }, … })` |
 | A screen effect (bloom, vignette, grading) | `context.registerRenderPass({ name, stage, build })` |
 | A layer you draw yourself, draped over the imagery | `context.registerDrapedLayer({ id, bounds, draw })` → `handle.invalidate(bounds)` |
-| Dragging on the map without panning it (see `react-three-earth-draw#draw-features`) | `context.addPointerInteraction({ pointerDown, pointerMove, pointerUp })` |
+| Dragging on the map without panning it (see `@earthkit/draw#draw-features`) | `context.addPointerInteraction({ pointerDown, pointerMove, pointerUp })` |
 | A 3D object at a place, also on the flat map | `earth.createGeographicAnchor(position)` + `context.addObject(anchor)` (disposed with the plugin) |
 | A raymarched or depth-writing surface | `createLocalCameraPositionNode()`, `depthFromViewZ(viewZ)` |
 | Keep colour on the flat map | `createFlatMapEmissionNode(colorNode, earth.view)` |
@@ -72,8 +72,8 @@ is undone when it is removed, so `earth.removePlugin(plugin)` leaves the earth a
 ## Setup
 
 ```tsx
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
-import { Earth } from 'react-three-earth/react'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
+import { Earth } from '@earthkit/globe/react'
 
 const helloPlugin: EarthPlugin = {
   name: 'hello',
@@ -102,7 +102,7 @@ removes every plugin, last installed first.
 
 ```ts
 import { BoxGeometry, Mesh, MeshStandardMaterial } from 'three'
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 
 export function spinningBox(): EarthPlugin {
   let inspectedTurns = 0
@@ -150,7 +150,7 @@ it is drawn on the copy of the world nearest the camera.
 
 ```ts
 import { Mesh, MeshStandardMaterial, SphereGeometry } from 'three'
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export function addBall(earth: Earth) {
   const anchor = earth.createGeographicAnchor({ longitudeDegrees: 2.3522, latitudeDegrees: 48.8566, heightMeters: 500 }, { headingDegrees: 30 })
@@ -180,7 +180,7 @@ hazes it like everything else. Three rules keep it exact and cheap at planet sca
    share one material per distance function with per-object uniforms (`uniform(…).onObjectUpdate`).
 
 ```ts
-import { createLocalCameraPositionNode, depthFromViewZ } from 'react-three-earth'
+import { createLocalCameraPositionNode, depthFromViewZ } from '@earthkit/globe'
 import { BackSide } from 'three'
 import { Break, Discard, float, Fn, If, Loop, modelViewMatrix, positionLocal, positionView, vec4 } from 'three/tsl'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
@@ -238,7 +238,7 @@ property becomes a vertex attribute (at most 6); `geometryInput` feeds the tesse
 `line-offset`, `line-cap`, `line-join`, `circle-radius`, in pixels).
 
 ```ts
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { fract, mix, step, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 
@@ -273,7 +273,7 @@ sets blending, depth and sides, and clips the material to its tile; set `colorNo
 
 **Geometry tier**: when the geometry itself is new (per-segment quads, splats), ship a worker module. It is
 loaded into the vector tile worker with `import()`, so it must be self-contained (no bare imports; type-only
-imports from `react-three-earth/plugin-worker` are fine). It gets the library's helpers through `host`, and
+imports from `@earthkit/globe/plugin-worker` are fine). It gets the library's helpers through `host`, and
 returns typed arrays that are transferred, not copied. `position` (2 floats, tile units 0 to 4096, y down) is
 required; an attribute named after a paint property is what `paint.color(name)` / `paint.number(name)` reads;
 other names must be shader identifiers, read with `attribute(name)`.
@@ -281,7 +281,7 @@ other names must be shader identifiers, read with `attribute(name)`.
 ```ts no-check
 // glowWorker.js, served as a file (Vite: new URL('./glowWorker.js', import.meta.url), and list the plugin in
 // optimizeDeps.exclude when it ships in node_modules). A strict CSP needs its origin in worker-src/script-src.
-/** @type {import('react-three-earth/plugin-worker').WorkerLayerTypeFactory} */
+/** @type {import('@earthkit/globe/plugin-worker').WorkerLayerTypeFactory} */
 export const glow = host => ({
   createTileBuilder({ layer, zoom, unitsPerPixel }) {
     const positions = [], indices = []
@@ -327,7 +327,7 @@ output in three stages:
 | `display` | tone-mapped, in the output colour space | vignette, grading; the built-in FXAA runs last here |
 
 ```ts
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { bloom } from 'three/addons/tsl/display/BloomNode.js'
 import { screenUV, smoothstep, uniform, vec4 } from 'three/tsl'
 
@@ -379,7 +379,7 @@ earlier ones), through the imagery compositor's queue and per-frame budget. It i
 `handle.invalidate(bounds)`.
 
 ```ts
-import { PLUGIN_API_VERSION, type DrapedLayerHandle, type EarthPlugin, type GeographicBounds, type GeographicPosition } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type DrapedLayerHandle, type EarthPlugin, type GeographicBounds, type GeographicPosition } from '@earthkit/globe'
 import { Mesh, NoBlending, PlaneGeometry, Scene } from 'three'
 import { smoothstep, uv, vec3, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'

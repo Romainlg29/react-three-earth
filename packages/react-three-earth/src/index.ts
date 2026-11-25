@@ -211,6 +211,7 @@ export {
   type GeographicPosition,
 } from './core/camera.js'
 export { EarthCamera, type MapView, type MapViewChange } from './core/EarthCamera.js'
+export { type CameraLimits } from './core/cameraLimits.js'
 export {
   createFlightPath,
   cubicBezier,

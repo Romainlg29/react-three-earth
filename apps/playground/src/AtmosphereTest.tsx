@@ -1,4 +1,4 @@
-import { Atmosphere, AtmosphereParameters } from 'react-three-earth'
+import { Atmosphere, AtmosphereParameters } from '@earthkit/globe'
 import { useEffect } from 'react'
 import { DataUtils, HalfFloatType, PerspectiveCamera, Scene, type Texture } from 'three'
 import { WebGPURenderer, type RenderTarget } from 'three/webgpu'

@@ -1,14 +1,14 @@
 ---
 name: customize-terrain-shading
 description: >
-  Use when changing how the ground of a react-three-earth globe looks: the terrain tile material,
+  Use when changing how the ground of an earthkit globe looks: the terrain tile material,
   roughness, base colour under the imagery, a stylised globe with no imagery, colouring by elevation, slope
   or aspect (terrainElevationMeters, terrainSlopeDegrees, terrainAspectDegrees), emissive overlays,
   wireframe debugging, or writing TSL node code for terrain tiles with the createMaterial option.
 metadata:
   purpose: 'Explains the createMaterial factory, the terrain surface nodes (elevation, slope, aspect), which node material slots are free and which the imagery owns, and how to keep custom terrain shading fast.'
   type: sub-skill
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/TileMaterialReplacementPlugin.ts'
@@ -32,7 +32,7 @@ Read `terrain-and-imagery-sources` first. Every terrain tile mesh gets a materia
 ### Supply your own material
 
 ```tsx
-import { QuantizedMeshSource, Terrain } from 'react-three-earth/react'
+import { QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 
 // Module level: a stable function, so <Terrain> is not rebuilt on every render
@@ -67,7 +67,7 @@ Set them on the material's `colorNode` in `createMaterial`: with no imagery the 
 imagery layers blend over it.
 
 ```ts
-import { terrainAspectRadians, terrainElevationMeters, terrainSlopeDegrees } from 'react-three-earth'
+import { terrainAspectRadians, terrainElevationMeters, terrainSlopeDegrees } from '@earthkit/globe'
 import { color, cos, float, mix, smoothstep } from 'three/tsl'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 
@@ -106,7 +106,7 @@ Free slots on `MeshStandardNodeMaterial` include `emissiveNode`, `roughnessNode`
 `opacityNode`: add effects there that light should not dim.
 
 ```ts
-import { terrainSlopeDegrees } from 'react-three-earth'
+import { terrainSlopeDegrees } from '@earthkit/globe'
 import { mix, smoothstep, vec3 } from 'three/tsl'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 

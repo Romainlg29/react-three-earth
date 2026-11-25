@@ -7,6 +7,7 @@ import { fixtureTiles } from './fixtures/vitePlugin.ts'
 
 const library = (path: string) => fileURLToPath(new URL(`../../packages/react-three-earth/src/${path}`, import.meta.url))
 const drawLibrary = (path: string) => fileURLToPath(new URL(`../../packages/draw/src/${path}`, import.meta.url))
+const measureLibrary = (path: string) => fileURLToPath(new URL(`../../packages/measure/src/${path}`, import.meta.url))
 
 export default defineConfig({
   // GitHub Pages serves the playground under /<repository>/ (see .github/workflows/playground-pages.yml).
@@ -18,10 +19,12 @@ export default defineConfig({
   resolve: {
     // Work on the library source directly, no rebuild needed
     alias: [
-      { find: /^react-three-earth\/react$/, replacement: library('react/index.tsx') },
-      { find: /^react-three-earth$/, replacement: library('index.ts') },
-      { find: /^react-three-earth-draw\/react$/, replacement: drawLibrary('react/index.ts') },
-      { find: /^react-three-earth-draw$/, replacement: drawLibrary('index.ts') },
+      { find: /^@earthkit\/globe\/react$/, replacement: library('react/index.tsx') },
+      { find: /^@earthkit\/globe$/, replacement: library('index.ts') },
+      { find: /^@earthkit\/draw\/react$/, replacement: drawLibrary('react/index.ts') },
+      { find: /^@earthkit\/draw$/, replacement: drawLibrary('index.ts') },
+      { find: /^@earthkit\/measure\/react$/, replacement: measureLibrary('react/index.ts') },
+      { find: /^@earthkit\/measure$/, replacement: measureLibrary('index.ts') },
     ],
   },
   // The library is aliased to its source, so Vite would only discover these on first load, re-bundle and
@@ -31,9 +34,10 @@ export default defineConfig({
       'three',
       'three/tsl',
       'three/webgpu',
-      'react-three-earth > 3d-tiles-renderer',
-      'react-three-earth-draw > earcut',
-      'react-three-earth > 3d-tiles-renderer/three/plugins',
+      '@earthkit/globe > 3d-tiles-renderer',
+      '@earthkit/draw > earcut',
+      '@earthkit/measure > geographiclib-geodesic',
+      '@earthkit/globe > 3d-tiles-renderer/three/plugins',
       '@react-three/fiber',
       '@react-three/fiber/extension',
       '@react-three/tsl',

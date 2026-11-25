@@ -1,4 +1,4 @@
-import type { CameraView, Earth } from 'react-three-earth'
+import type { CameraView, Earth } from '@earthkit/globe'
 
 import { useFixtures } from './data'
 
