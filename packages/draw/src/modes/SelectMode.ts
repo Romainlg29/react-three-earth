@@ -1245,7 +1245,7 @@ export class SelectMode extends DrawMode {
 
   // ---- Edit mode ----
 
-  /** Whether `extrude()` can act: in edit mode, with one face of a mesh or polygon picked on its stored version. */
+  /** Whether `extrude()` can act: in edit mode, with faces, edges or a line's elements picked on its stored version. */
   get canExtrude(): boolean {
     const picked = this.picked
     if (!this.vertexEditing || picked === null || this.context?.store.get(picked.feature.id) !== picked.feature) return false
@@ -1265,7 +1265,7 @@ export class SelectMode extends DrawMode {
     const elements = this.elementsOf(feature)
     if (elements === null || picked.length === 0 || !picked.every(element => elementFits(elements, element))) return null
     // A line has no face to keep its other segments: the whole of it becomes a wall.
-    if (feature.geometry.type === 'LineString') return elements.edges.length > 0 ? { kind: 'wall' } : null
+    if (feature.geometry.type === 'LineString') return elements.edges.some(([a, b]) => !samePlace(elements.positions[a]!, elements.positions[b]!)) ? { kind: 'wall' } : null
     // The picked edges, as indices into `edges`: picked ones, and those between two picked vertices.
     const pickedVertices = new Set(picked.flatMap(element => (element.kind === 'vertex' ? [element.index] : [])))
     const edgeKeys = new Set(picked.flatMap(element => (element.kind === 'edge' ? [edgeKey(element.from, element.to)] : [])))
@@ -1276,8 +1276,8 @@ export class SelectMode extends DrawMode {
     elements.faceEdges.forEach((edges, faceIndex) => {
       if (edges.length > 0 && edges.every(edge => pickedEdges.has(edge))) faces.add(faceIndex)
     })
-    const facesEdges = new Set([...faces].flatMap(faceIndex => elements.faceEdges[faceIndex] ?? []))
-    if (faces.size > 0 && edgeIndices.every(edge => facesEdges.has(edge))) {
+    // Faces win: picked edges outside them (a stray edge) stay as they are.
+    if (faces.size > 0) {
       if (elements.mesh === null) return { kind: 'prism' }
       const region = [...faces]
       // Faces pointing every way (a whole box) have no direction to go together.
@@ -1294,7 +1294,9 @@ export class SelectMode extends DrawMode {
       }
       return { kind: 'faces', faces: region }
     }
-    return edgeIndices.length > 0 ? { kind: 'edges', edges: edgeIndices.map(index => elements.edges[index]!) } : null
+    // An edge of no length (a vertex placed twice) would make a face of no area.
+    const edges = edgeIndices.map(index => elements.edges[index]!).filter(([a, b]) => !samePlace(elements.positions[a]!, elements.positions[b]!))
+    return edges.length > 0 ? { kind: 'edges', edges } : null
   }
 
   /** How many elements are picked in edit mode (`selectAllElements` picks them all). */
@@ -1464,29 +1466,37 @@ export class SelectMode extends DrawMode {
   protected wallOf(feature: DrawFeature, heightMeters: number): { mesh: IndexedMesh; top: Array<[number, number]> } | null {
     const elements = this.elementsOf(feature)
     if (elements === null || feature.geometry.type !== 'LineString') return null
-    const lowest = lowestAltitude(feature.geometry)
-    const ground = this.groundOf(feature, lowest ?? this.groundFallbackMeters)
-    const bottom = elements.positions.map((position, index): Position => [position[0]!, position[1]!, elements.heights[index] ?? lowest ?? ground(position[0]!, position[1]!)])
+    // As a prism stands: at a vertex's altitude, or on the terrain under it.
+    const ground = this.groundOf(feature, lowestAltitude(feature.geometry) ?? this.groundFallbackMeters)
+    // A vertex placed again where one already is (a line closing on its start) is that vertex: the wall stays joined.
+    const bottom: Position[] = []
+    const indexOf = new Map<string, number>()
+    const line = elements.positions.map((position, index) => {
+      const base: Position = [position[0]!, position[1]!, elements.heights[index] ?? ground(position[0]!, position[1]!)]
+      const key = base.join()
+      let at = indexOf.get(key)
+      if (at === undefined) indexOf.set(key, (at = bottom.push(base) - 1))
+      return at
+    })
     const count = bottom.length
     const vertices = [...bottom, ...bottom.map((position): Position => [position[0]!, position[1]!, position[2]! + heightMeters])]
     const faces: number[][][] = []
     const top: Array<[number, number]> = []
-    for (let index = 0; index + 1 < count; index++) {
-      const a = bottom[index]!
-      const b = bottom[index + 1]!
-      // A segment of no length (a vertex placed twice) makes no face.
-      if (a[0] === b[0] && a[1] === b[1]) continue
-      faces.push([[index, index + 1, count + index + 1, count + index]])
-      top.push([count + index, count + index + 1])
+    for (let index = 0; index + 1 < line.length; index++) {
+      const a = line[index]!
+      const b = line[index + 1]!
+      // A segment of no length (a vertex placed twice in a row) makes no face.
+      if (a === b) continue
+      faces.push([[a, b, count + b, count + a]])
+      top.push([count + a, count + b])
     }
     return faces.length === 0 ? null : { mesh: { vertices, faces }, top }
   }
 
   /** A polygon as a mesh of its one face, at its altitudes or on the terrain, its vertices in `featureVertices` order. */
   protected meshOfPolygon(feature: DrawFeature, elements: FeatureElements): IndexedMesh {
-    const lowest = lowestAltitude(feature.geometry)
-    const ground = this.groundOf(feature, lowest ?? this.groundFallbackMeters)
-    return { vertices: elements.positions.map((position, index): Position => [position[0]!, position[1]!, elements.heights[index] ?? lowest ?? ground(position[0]!, position[1]!)]), faces: elements.faces }
+    const ground = this.groundOf(feature, lowestAltitude(feature.geometry) ?? this.groundFallbackMeters)
+    return { vertices: elements.positions.map((position, index): Position => [position[0]!, position[1]!, elements.heights[index] ?? ground(position[0]!, position[1]!)]), faces: elements.faces }
   }
 
   /** `extrude()`'s distance: a picked face's half arrow, else half the move gizmo's arrow over what is picked. */
@@ -2730,6 +2740,10 @@ function angleBetween(fromX: number, fromY: number, toX: number, toY: number): n
 }
 
 /** One key for an edge either way round. */
+function samePlace(a: Position, b: Position): boolean {
+  return a[0] === b[0] && a[1] === b[1] && (a[2] ?? null) === (b[2] ?? null)
+}
+
 function edgeKey(a: number, b: number): string {
   return a < b ? `${a}-${b}` : `${b}-${a}`
 }

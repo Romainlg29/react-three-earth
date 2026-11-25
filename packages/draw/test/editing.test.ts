@@ -823,4 +823,22 @@ describe('select mode, edit mode', () => {
     expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(12)
     expect(mode.pickedElementCount).toBe(2)
   })
+
+  it('keeps a wall joined where its line comes back to a vertex, and stands vertices without an altitude on the terrain', () => {
+    const loop: DrawFeature<LineString> = { type: 'Feature', id: 'loop', properties: {}, geometry: { type: 'LineString', coordinates: [[0.2, 0.2], [0.8, 0.2, 500], [0.8, 0.8], [0.2, 0.2]] } }
+    const { context, store } = slanted([loop])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['loop'])
+    mode.setEditingVertices(true)
+    mode.selectAllElements()
+    expect(mode.extrude(100)).toBe(true)
+    const wall = (store.get('loop')!.geometry as MultiPolygon).coordinates
+    expect(wall).toHaveLength(3)
+    // Three corners, each once at the bottom and once on top.
+    expect(mode.selectAllElements()).toBe(true)
+    expect(mode.pickedElementCount).toBe(6)
+    expect([...new Set(wall.flat(2).filter(position => position[0] === 0.8 && position[1] === 0.8).map(position => position[2]))].sort((a, b) => a! - b!)).toEqual([0, 100])
+  })
 })
+

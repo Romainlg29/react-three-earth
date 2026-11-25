@@ -134,6 +134,11 @@ describe('mesh element editing', () => {
     expect(meshVolume(extruded)).toBeGreaterThan(meshVolume(mesh))
     // One face is extrudeMeshFace; faces pointing every way cannot go together.
     expect(extrudeMeshFaces(mesh, [0], 15)).toEqual(extrudeMeshFace(mesh, 0, 15))
+    // Vertices inside the region move in place: four faces around a shared corner leave none unused.
+    const corner = mesh.faces.flatMap((_, index) => meshFaceVertices(mesh, index)).find((vertex, _, all) => all.filter(each => each === vertex).length === 3)!
+    const around = mesh.faces.flatMap((_, index) => (meshFaceVertices(mesh, index).includes(corner) ? [index] : []))
+    const cornered = extrudeMeshFaces(mesh, around, 5)
+    expect(new Set(cornered.faces.flat(2)).size).toBe(cornered.vertices.length)
     const bottom = mesh.faces.findIndex((_, index) => meshFaceNormal(mesh, index)[2] < -0.99)
     expect(() => extrudeMeshFaces(mesh, [0, bottom], 5)).toThrow(/cancel out/)
   })

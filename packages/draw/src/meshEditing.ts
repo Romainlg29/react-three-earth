@@ -313,8 +313,8 @@ export function extrudeMeshFace(mesh: IndexedMesh, faceIndex: number, distanceMe
  * The mesh with several faces extruded together `distanceMeters` along their mean outward normal (each face's weighted
  * by its area; negative: into the solid), as Blender's extrude region: the faces move out on new vertices as one piece,
  * and a four-sided wall joins each edge of the region's outline (an edge only one of them uses) to where it was, wound
- * to face outwards. Edges between two of the faces get no wall. The faces keep their indices; the walls come after the
- * last face, and the new vertices after the last vertex. One face is `extrudeMeshFace`.
+ * to face outwards. Edges between two of the faces get no wall, and vertices inside the region move in place. The faces
+ * keep their indices; the walls come after the last face, and the outline's new vertices after the last vertex. One face is `extrudeMeshFace`.
  */
 export function extrudeMeshFaces(mesh: IndexedMesh, faceIndices: readonly number[], distanceMeters: number): IndexedMesh {
   if (!Number.isFinite(distanceMeters) || distanceMeters === 0) {
@@ -336,15 +336,27 @@ export function extrudeMeshFaces(mesh: IndexedMesh, faceIndices: readonly number
   const length = Math.hypot(sum[0], sum[1], sum[2])
   if (!(length > totalArea * PARALLEL_NORMALS_SHARE)) throw new Error('extrudeMeshFaces: the faces point every way (their normals cancel out); extrude fewer of them, or one at a time.')
   const offset: LocalPoint = [(sum[0] / length) * distanceMeters, (sum[1] / length) * distanceMeters, (sum[2] / length) * distanceMeters]
+  // The region's directed edges: an edge whose reverse is in the region too lies between two of its faces.
+  const directed = new Set<string>()
+  for (const faceIndex of region) for (const ring of mesh.faces[faceIndex]!) ring.forEach((a, index) => directed.add(`${a}>${ring[(index + 1) % ring.length]}`))
+  // Vertices on the outline are copied (the walls join them to the copies); those inside the region (a sphere cap's
+  // pole) move in place, as in Blender, so none is left unused.
+  const outline = new Set<number>()
+  for (const key of directed) {
+    const [a, b] = key.split('>')
+    if (!directed.has(`${b}>${a}`)) outline.add(Number(a)).add(Number(b))
+  }
   const vertices = mesh.vertices.slice()
   const copies = new Map<number, number>()
   for (const index of indices) {
     const local = toLocal(frame, mesh.vertices[index]!)
-    copies.set(index, vertices.push(frame.toGeographic(local[0] + offset[0], local[1] + offset[1], local[2] + offset[2])) - 1)
+    const moved = frame.toGeographic(local[0] + offset[0], local[1] + offset[1], local[2] + offset[2])
+    if (outline.has(index)) copies.set(index, vertices.push(moved) - 1)
+    else {
+      vertices[index] = moved
+      copies.set(index, index)
+    }
   }
-  // The region's directed edges: an edge whose reverse is in the region too lies between two of its faces.
-  const directed = new Set<string>()
-  for (const faceIndex of region) for (const ring of mesh.faces[faceIndex]!) ring.forEach((a, index) => directed.add(`${a}>${ring[(index + 1) % ring.length]}`))
   const faces = mesh.faces.slice()
   for (const faceIndex of region) faces[faceIndex] = mesh.faces[faceIndex]!.map(ring => ring.map(index => copies.get(index)!))
   for (const faceIndex of region) {

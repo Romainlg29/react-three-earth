@@ -144,7 +144,7 @@ console.log(select.pushPullHandle())
   together as one region, along their mean normal (no walls between them). The faces keep their indices and stay
   picked; one picked face shows its arrow to push it further. A negative distance extrudes into the solid (a dent).
   Faces pointing every way (a whole box) cannot go together: `canExtrude` is false.
-- **Edges** of a mesh or polygon each grow a new face straight up (down for a negative distance on a mesh), wound to
+- **Edges** of a mesh or polygon each grow a new face straight up (down for a negative distance), wound to
   continue the face beside them, and the new top edges stay picked with the move gizmo over them. In vertex mode the
   edges between two picked vertices extrude.
 - **A line** becomes a **wall**, one vertical face per segment, standing at its altitudes or on the terrain: pick any
@@ -152,6 +152,7 @@ console.log(select.pushPullHandle())
   The wall is a mesh of faces like any solid, and its top edges stay picked: E again stacks another storey, the up
   arrow of the move gizmo raises it.
 - As in Blender, every edge (or vertex) of a face picked picks the face: A then E on a polygon pulls up a prism.
+  When faces are picked, they extrude and picked edges outside them stay as they are.
 
 Without a distance it goes half the arrow's length, about 40 px on the screen. Walls and prisms only grow up: a
 negative distance returns false. One `update`, one undo step; false when nothing can be extruded (`state.canExtrude`).
