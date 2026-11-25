@@ -25,6 +25,12 @@ describe('evaluateTerrainExpression', () => {
     expect(evaluateTerrainExpression(['interpolate', ['linear'], ['elevation'], 0, 0, 100, 10], { elevation: 500 })).toBe(10)
     // MapLibre's exponential factor: (2^25 - 1) / (2^100 - 1) is nearly 0
     expect(evaluateTerrainExpression(['interpolate', ['exponential', 2], ['elevation'], 0, 0, 100, 10], { elevation: 25 })).toBeCloseTo(0, 6)
+    // A base meant for zoom levels, over metres: 1.5^1000 overflows the naive formula
+    const wide: TerrainExpression = ['interpolate', ['exponential', 1.5], ['elevation'], 0, 0, 1000, 10]
+    expect(evaluateTerrainExpression(wide, { elevation: 999 })).toBeCloseTo(10 / 1.5, 6)
+    expect(evaluateTerrainExpression(wide, { elevation: 2000 })).toBe(10)
+    expect(evaluateTerrainExpression(wide, { elevation: 500 })).toBeCloseTo(0, 6)
+    expect(evaluateTerrainExpression(['interpolate', ['exponential', 0.5], ['elevation'], 0, 0, 10, 10], { elevation: 1 })).toBeCloseTo((10 * (0.5 - 1)) / (0.5 ** 10 - 1), 6)
     expect(hex(evaluateTerrainExpression(['interpolate', ['linear'], ['slope'], 0, '#000000', 90, '#ffffff'], { slope: 45 }))).toMatch(/^#(7f7f7f|808080)$/)
   })
 
@@ -44,6 +50,8 @@ describe('parseTerrainExpression', () => {
     expect(() => parseTerrainExpression(['step', ['elevation'], '#000', 2000, '#fff', 1000, '#888'])).toThrow(/must increase: 1000 follows 2000 \(at \[5\]\)/)
     expect(() => parseTerrainExpression(['case', ['>', ['slope'], 20], '#ccc', 3])).toThrow(/outputs of "case" must all be colors/)
     expect(() => parseTerrainExpression('#zzzzzz')).toThrow(/not a colour/)
+    expect(() => new TerrainStyle({ color: 'alpin' })).toThrow(/or a preset name \(alpine/)
+    expect(() => new TerrainStyle({ color: 'constructor' })).toThrow(/not a colour/)
     expect(() => parseTerrainExpression(['elevation'])).toThrow(/must give a color, but it gives a number/)
     expect(() => parseTerrainExpression(['interpolate', ['cubic-bezier', 0, 0, 1, 1], ['slope'], 0, '#000', 1, '#fff'])).toThrow(/cubic-bezier is not supported/)
     expect(() => parseTerrainExpression(['case', ['slope'], '#000', '#fff'])).toThrow(/condition of "case" must be boolean/)

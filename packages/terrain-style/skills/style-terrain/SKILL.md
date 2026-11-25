@@ -92,6 +92,25 @@ export function useMyTerrainStyle() {
 `step` gives hard bands, `interpolate` gradients: `['interpolate', ['linear'], ['slope'], 25, grass, 35, '#8a8580']`
 fades grass into rock between 25° and 35°.
 
+### Shaded north faces with aspect
+
+`['aspect']` is the downhill direction in degrees. Steep ground facing north (within 45° of it) in a cooler colour:
+
+```ts
+import type { TerrainExpression } from '@earthkit/terrain-style'
+
+const grass: TerrainExpression = ['interpolate', ['linear'], ['elevation'], 0, '#4f7f45', 2000, '#c4ad7e']
+
+export const shadedNorthFaces: TerrainExpression = [
+  'case',
+  ['all', ['>=', ['slope'], 20], ['any', ['<', ['aspect'], 45], ['>', ['aspect'], 315]]], '#7d8c78',
+  grass,
+]
+```
+
+For a gradual shade, interpolate on `['cos', ['/', ['*', ['aspect'], 3.14159], 180]]`: 1 facing north, -1 facing
+south.
+
 ### A legend from the same expression
 
 `evaluateTerrainExpression` computes on the CPU exactly what the shader draws, as sRGB channels from 0 to 1:

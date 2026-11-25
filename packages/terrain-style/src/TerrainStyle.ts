@@ -32,7 +32,7 @@ export class TerrainStyle {
 
   constructor({ color, roughness = 1 }: TerrainStyleOptions) {
     if (!Number.isFinite(roughness) || roughness < 0 || roughness > 1) throw new Error(`TerrainStyle: roughness must be between 0 and 1, got ${roughness}.`)
-    const expression = typeof color === 'string' && color in TERRAIN_STYLE_PRESETS ? TERRAIN_STYLE_PRESETS[color as TerrainStylePreset] : color
+    const expression = typeof color === 'string' && Object.hasOwn(TERRAIN_STYLE_PRESETS, color) ? TERRAIN_STYLE_PRESETS[color as TerrainStylePreset] : color
     this.expression = parseTerrainExpression(expression, 'color')
     this.colorNode = compileTerrainColor(this.expression)
     this.roughness = roughness

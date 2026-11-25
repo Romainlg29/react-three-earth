@@ -64,12 +64,19 @@ const scratchColor = new Color()
 
 function parseColor(text: string, path: string): TerrainColor {
   // three's parser warns and leaves the colour unchanged on an unknown string: detect that with two starting values.
+  // A bare word must be a CSS colour name, not an inherited property of three's name table ("constructor").
+  const isName = /^[a-z]+$/i.test(text)
   const warn = console.warn
   console.warn = () => {}
   try {
     const first = scratchColor.setRGB(0, 0, 0).setStyle(text, 'srgb').getHex()
     const second = scratchColor.setRGB(1, 1, 1).setStyle(text, 'srgb').getHex()
-    if (first !== second) throw new TerrainExpressionError(`"${text}" is not a colour: use a CSS colour such as "#4f7f45", "rgb(79, 127, 69)" or "white"`, path)
+    if (first !== second || (isName && !Object.hasOwn(Color.NAMES, text.toLowerCase()))) {
+      throw new TerrainExpressionError(
+        `"${text}" is not a colour: use a CSS colour such as "#4f7f45", "rgb(79, 127, 69)" or "white"${path === '' ? ', or a preset name (alpine, atlas, desert, monochrome, slope-classes)' : ''}`,
+        path,
+      )
+    }
   } finally {
     console.warn = warn
   }
@@ -227,6 +234,12 @@ export function interpolationFactor(x: number, low: number, high: number, expone
   const progress = x - low
   if (difference === 0) return 0
   if (exponentialBase === 1) return Math.min(Math.max(progress / difference, 0), 1)
+  if (exponentialBase > 1) {
+    // (b^progress - 1) / (b^difference - 1), divided through by b^difference: b^difference overflows over metres
+    // (1.5^1000), its inverse only underflows to 0.
+    const inverse = exponentialBase ** -difference
+    return Math.min(Math.max((exponentialBase ** (x - high) - inverse) / (1 - inverse), 0), 1)
+  }
   return Math.min(Math.max((exponentialBase ** progress - 1) / (exponentialBase ** difference - 1), 0), 1)
 }
 
@@ -335,11 +348,11 @@ function evaluateNode(node: TerrainExpressionNode, inputs: TerrainInputValues): 
  * tooltips ("what colour is 2500 m at 35°?") and tests. Colours come back as sRGB channels from 0 to 1.
  */
 export function evaluateTerrainExpression(expression: TerrainExpression | TerrainExpressionNode, inputs: Partial<TerrainInputValues>): number | boolean | TerrainColor {
-  const node = isParsed(expression) ? expression : parseAt(expression, '')
+  const node = isParsedTerrainExpression(expression) ? expression : parseAt(expression, '')
   const values: TerrainInputValues = { elevation: 0, slope: 0, 'slope-percent': Math.tan(((inputs.slope ?? 0) * Math.PI) / 180) * 100, aspect: 0, ...inputs }
   return evaluateNode(node, values)
 }
 
-function isParsed(expression: TerrainExpression | TerrainExpressionNode): expression is TerrainExpressionNode {
+export function isParsedTerrainExpression(expression: TerrainExpression | TerrainExpressionNode): expression is TerrainExpressionNode {
   return typeof expression === 'object' && expression !== null && !Array.isArray(expression) && 'kind' in expression
 }

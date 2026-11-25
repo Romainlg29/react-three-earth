@@ -2,7 +2,7 @@ import { terrainAspectDegrees, terrainElevationMeters, terrainSlopeDegrees, terr
 import { abs, clamp, cos, float, max, min, mix, pow, select, sin, sqrt, sRGBTransferEOTF, vec3 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
-import { parseTerrainExpression, type TerrainExpression, type TerrainExpressionNode, type TerrainInput } from './expression.js'
+import { isParsedTerrainExpression, parseTerrainExpression, type TerrainExpression, type TerrainExpressionNode, type TerrainInput } from './expression.js'
 
 // TSL's typed nodes do not narrow through a recursive walk over any expression: the walk is untyped, and the two
 // exported functions type their result.
@@ -18,6 +18,11 @@ const INPUT_NODES: Record<TerrainInput, Node> = {
 function interpolationFactorNode(x: AnyNode, low: number, high: number, exponentialBase: number): AnyNode {
   const difference = high - low
   if (exponentialBase === 1) return clamp(x.sub(low).div(difference), 0, 1) as unknown as AnyNode
+  if (exponentialBase > 1) {
+    // As `interpolationFactor`: divided through by b^difference, which would overflow a float literal.
+    const inverse = exponentialBase ** -difference
+    return clamp(pow(float(exponentialBase), x.sub(high)).sub(inverse).div(1 - inverse), 0, 1) as unknown as AnyNode
+  }
   return clamp(pow(float(exponentialBase), x.sub(low)).sub(1).div(exponentialBase ** difference - 1), 0, 1) as unknown as AnyNode
 }
 
@@ -114,12 +119,14 @@ function toNode(node: TerrainExpressionNode): AnyNode {
  * expression. Compile once and share the node between every tile's material, so the shader compiles once.
  */
 export function compileTerrainColor(expression: TerrainExpression | TerrainExpressionNode): Node<'vec3'> {
-  const parsed = typeof expression === 'object' && expression !== null && !Array.isArray(expression) ? (expression as TerrainExpressionNode) : parseTerrainExpression(expression as TerrainExpression, 'color')
+  const parsed = isParsedTerrainExpression(expression) ? expression : parseTerrainExpression(expression, 'color')
   if (parsed.type !== 'color') throw new Error(`TerrainStyle: the colour expression gives a ${parsed.type}; give colours as outputs, for example "#4f7f45".`)
   return sRGBTransferEOTF(toNode(parsed)) as unknown as Node<'vec3'>
 }
 
 /** Compiles a number expression into a TSL float node (for a material's `roughnessNode`, an opacity, a height). */
-export function compileTerrainNumber(expression: TerrainExpression): Node<'float'> {
-  return toNode(parseTerrainExpression(expression, 'number')) as unknown as Node<'float'>
+export function compileTerrainNumber(expression: TerrainExpression | TerrainExpressionNode): Node<'float'> {
+  const parsed = isParsedTerrainExpression(expression) ? expression : parseTerrainExpression(expression, 'number')
+  if (parsed.type !== 'number') throw new Error(`TerrainStyle: the number expression gives a ${parsed.type}; give numbers as outputs.`)
+  return toNode(parsed) as unknown as Node<'float'>
 }
