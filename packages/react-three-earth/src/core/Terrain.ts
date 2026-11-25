@@ -100,6 +100,11 @@ export class Terrain implements AttributionProvider {
     this.flatMap = new FlatMapPlugin()
     this.tiles.registerPlugin(this.flatMap)
 
+    // A tile whose plugins were still processing it when the shadings changed was not listed as loaded then: catch it up.
+    ;(this.tiles as unknown as { addEventListener(type: 'load-model', listener: (event: { scene: Object3D }) => void): void }).addEventListener(
+      'load-model',
+      ({ scene }) => recomposeScene(scene),
+    )
     ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('tile-visibility-change', () => {
       this.visibleTilesVersionValue++
     })
@@ -173,12 +178,7 @@ export class Terrain implements AttributionProvider {
     this.unsubscribeShadings = null
     const apply = (): void => {
       this.shadings.setDefinitions(registry?.ordered() ?? [])
-      this.tiles.forEachLoadedModel((scene: Object3D) => {
-        scene.traverse(object => {
-          const { material } = object as { material?: Material | Material[] }
-          if (material !== undefined && !Array.isArray(material)) recomposeTerrainMaterial(material)
-        })
-      })
+      this.tiles.forEachLoadedModel((scene: Object3D) => recomposeScene(scene))
       ;(this.tiles as unknown as { dispatchEvent(event: { type: string }): void }).dispatchEvent({ type: 'needs-render' })
     }
     if (registry !== null) this.unsubscribeShadings = registry.subscribe(apply)
@@ -380,6 +380,14 @@ export class Terrain implements AttributionProvider {
     this.unsubscribeShadings = null
     this.tiles.dispose()
   }
+}
+
+/** Rebuilds the terrain materials of a tile's meshes for the terrain's current shadings (cached: cheap when unchanged). */
+function recomposeScene(scene: Object3D): void {
+  scene.traverse(object => {
+    const { material } = object as { material?: Material | Material[] }
+    if (material !== undefined && !Array.isArray(material)) recomposeTerrainMaterial(material)
+  })
 }
 
 function extrusionsOf(overlay: unknown): Extrusions | null {

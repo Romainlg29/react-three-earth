@@ -25,6 +25,29 @@ const SLOT_PROPERTIES = {
 
 type SlotNodes = Record<TerrainMaterialSlot, Node | null>
 
+/**
+ * Built slots keyed by each base node in turn (`NO_NODE` for none), then by the blend's key. Weak in the nodes: a
+ * factory that builds its nodes per tile (an anti-pattern, but a common one) must not keep every one alive.
+ */
+type ComposedCache = WeakMap<object, unknown>
+const NO_NODE = {}
+
+function cachedSlots(cache: ComposedCache, bases: SlotNodes, overlayKey: string, build: () => SlotNodes): SlotNodes {
+  const level = chainLevel(cache, bases, true)!
+  // The last level holds the blends by key, under one object.
+  let byOverlay = level.get(NO_NODE) as Map<string, SlotNodes> | undefined
+  if (byOverlay === undefined) {
+    byOverlay = new Map()
+    level.set(NO_NODE, byOverlay)
+  }
+  let nodes = byOverlay.get(overlayKey)
+  if (nodes === undefined) {
+    nodes = build()
+    byOverlay.set(overlayKey, nodes)
+  }
+  return nodes
+}
+
 let nextSetId = 0
 
 /** The shadings one terrain applies, shared by its tile materials. */
@@ -33,8 +56,8 @@ export class TerrainShadingSet {
   readonly id = nextSetId++
   protected definitionsValue: readonly TerrainShadingDefinition[] = []
   protected versionValue = 0
-  /** Built slots by key: tiles with the same layers share nodes, and so shaders. */
-  readonly composed = new Map<string, SlotNodes>()
+  /** Built slots by bases and blend: tiles with the same layers share nodes, and so shaders. Weak in the bases. */
+  composed: ComposedCache = new WeakMap()
 
   get definitions(): readonly TerrainShadingDefinition[] {
     return this.definitionsValue
@@ -48,7 +71,7 @@ export class TerrainShadingSet {
   setDefinitions(definitions: readonly TerrainShadingDefinition[]): void {
     this.definitionsValue = [...definitions]
     this.versionValue++
-    this.composed.clear()
+    this.composed = new WeakMap()
   }
 }
 
@@ -71,9 +94,25 @@ type TerrainMaterial = NodeMaterial & { [STATE]?: TerrainMaterialState }
  * not the built nodes (which would blend the imagery, or run the shadings, twice). Its shadings come from its terrain's
  * plugins (`attachTerrainShadings`): an imagery blend without shadings is shared by every terrain.
  */
-const origins = new WeakMap<Node, SlotNodes>()
-/** Built slots of materials outside any set (no terrain shadings), by key. */
-const composedWithoutSet = new Map<string, SlotNodes>()
+const origins: ComposedCache = new WeakMap()
+
+/** The level of a weak chain over `nodes`, one level per slot: built slots or bases, weak in every node. */
+function chainLevel(root: ComposedCache, nodes: SlotNodes, create: boolean): WeakMap<object, unknown> | undefined {
+  let level: WeakMap<object, unknown> = root
+  for (const slot of SLOTS) {
+    const key = nodes[slot] ?? NO_NODE
+    let next = level.get(key) as WeakMap<object, unknown> | undefined
+    if (next === undefined) {
+      if (!create) return undefined
+      next = new WeakMap()
+      level.set(key, next)
+    }
+    level = next
+  }
+  return level
+}
+/** Built slots of materials outside any set (no terrain shadings). */
+const composedWithoutSet: ComposedCache = new WeakMap()
 
 function isNodeMaterial(material: Material): material is NodeMaterial {
   return (material as { isNodeMaterial?: boolean }).isNodeMaterial === true
@@ -88,8 +127,10 @@ function ensureState(material: TerrainMaterial): TerrainMaterialState {
   if (existing !== undefined) return existing
 
   const color = slotNode(material, 'color')
-  const origin = color === null ? undefined : origins.get(color)
-  const bases = origin === undefined ? (Object.fromEntries(SLOTS.map(slot => [slot, slotNode(material, slot)])) as SlotNodes) : { ...origin }
+  // By every slot: without shadings, one imagery blend is shared by materials whose other slots differ.
+  const current = Object.fromEntries(SLOTS.map(slot => [slot, slotNode(material, slot)])) as SlotNodes
+  const origin = color === null ? undefined : (chainLevel(origins, current, false)?.get(NO_NODE) as SlotNodes | undefined)
+  const bases = origin === undefined ? current : { ...origin }
   const state: TerrainMaterialState = { bases, overlay: null, overlayKey: 'none', shadings: null, key: '' }
   material[STATE] = state
 
@@ -147,13 +188,11 @@ function compose(material: TerrainMaterial, state: TerrainMaterialState): void {
   const { bases, shadings } = state
   const basesKey = SLOTS.map(slot => bases[slot]?.id ?? '-').join(',')
   const cacheKey = `${basesKey}:${state.overlayKey}`
-  const cache = shadings?.composed ?? composedWithoutSet
-  let nodes = cache.get(cacheKey)
-  if (nodes === undefined) {
-    nodes = buildSlots(state)
-    cache.set(cacheKey, nodes)
-    if (nodes.color !== null && nodes.color !== bases.color) origins.set(nodes.color, { ...bases })
-  }
+  const nodes = cachedSlots(shadings?.composed ?? composedWithoutSet, bases, state.overlayKey, () => {
+    const built = buildSlots(state)
+    if (built.color !== null && built.color !== bases.color) chainLevel(origins, built, true)!.set(NO_NODE, { ...bases })
+    return built
+  })
 
   state.key = `${cacheKey}:shadings${shadings === null ? '-' : `${shadings.id}.${shadings.version}`}`
   let changed = false

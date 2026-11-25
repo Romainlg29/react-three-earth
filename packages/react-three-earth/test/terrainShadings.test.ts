@@ -181,6 +181,26 @@ describe('terrain material slots', () => {
     expect(clone.colorNode).toBe(material.colorNode)
   })
 
+  it('match a clone to its own bases when materials with different slots share one imagery blend', () => {
+    const base = color('#88aa66')
+    const [withNormal, without] = [vec3(0, 1, 0), null].map(normal => {
+      const material = new MeshStandardNodeMaterial()
+      material.colorNode = base
+      wrapOverlaysNodeMaterial(material)
+      setTerrainMaterialBase(material, 'normal', normal)
+      layerCount(material, 1)
+      return material
+    })
+    expect(withNormal!.colorNode).toBe(without!.colorNode)
+    for (const material of [withNormal!, without!]) {
+      const clone = material.clone()
+      wrapOverlaysNodeMaterial(clone)
+      layerCount(clone, 1)
+      expect(getTerrainMaterialBase(clone, 'normal')).toBe(getTerrainMaterialBase(material, 'normal'))
+      expect(getTerrainMaterialBase(clone, 'color')).toBe(base)
+    }
+  })
+
   it('give the shadings the flat map normal as their input normal', () => {
     let normal: Node | null = null
     const set = setOf({ name: 'read', shade: inputs => ((normal = inputs.normal), { normal: vec3(0, 0, 1) as unknown as Node<'vec3'> }) })
@@ -250,6 +270,16 @@ describe('Terrain with shadings', () => {
     remove()
     expect(material.roughnessNode).toBeNull()
 
+    // A tile its plugins were still processing when the shadings changed catches up when it loads.
+    const late = new Group()
+    const lateMesh = new Mesh(new BufferGeometry(), new MeshStandardMaterial())
+    late.add(lateMesh)
+    replacement.processTileModel(late, {} as never)
+    earth.terrainShadings.register({ name: 'late', shade: () => ({ metalness: float(0.3) as unknown as Node<'float'> }) })
+    const lateMaterial = lateMesh.material as unknown as MeshStandardNodeMaterial
+    expect(lateMaterial.metalnessNode).toBeNull()
+    ;(terrain.tiles as unknown as { dispatchEvent(event: object): void }).dispatchEvent({ type: 'load-model', scene: late, tile: {} })
+    expect(lateMaterial.metalnessNode).not.toBeNull()
     // A terrain taken off the earth stops following its registry.
     earth.setTerrain(null)
     earth.terrainShadings.register(glossy)

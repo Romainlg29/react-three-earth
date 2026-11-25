@@ -126,8 +126,9 @@ export const createSlopeMaterial = () => {
 
 The library owns `positionNode` and `normalNode` (the globe-to-map morph and exaggeration; a factory's own
 `normalNode` is kept but no longer turns with the morph) and, with `fade` on
-(the default), `outputNode` (tile cross-fades). It takes over `colorNode` once the tile is set up, keeping the
-factory's node under the imagery.
+(the default), `outputNode` (tile cross-fades). Once the tile is set up it owns the shading slots too (`colorNode`,
+`roughnessNode`, `metalnessNode`, `normalNode`, `emissiveNode`), keeping the factory's nodes under the imagery and the
+plugins' terrain shadings.
 
 ### Debug tile boundaries
 
@@ -178,9 +179,9 @@ For a glossy sea, set `material.roughnessNode = mix(float(1), float(0.05), terra
 the water then reflects the sky (Fresnel included) and the sun's highlight, while the land stays matte. Glossy pixels
 cost two more 3D texture samples each.
 
-The factory's slots sit under the imagery: with `<Imagery>` on, the satellite sea covers this colour. To shade over the
-imagery (a sea that stays glossy under satellite tiles, snow on peaks), register a terrain shading from a plugin
-(next section).
+Only the colour sits under the imagery: with `<Imagery>` on, the satellite sea covers it, while the factory's roughness
+still applies. To change the colour over the imagery (a tinted sea, snow on peaks), register a terrain shading from a
+plugin (next section).
 
 ### Shade over the imagery from a plugin
 
@@ -219,14 +220,16 @@ export function glossySea() {
 - Registering or removing a shading rebuilds every loaded tile's shader (no reload); register once at install.
 - Read the terrain nodes (`terrainWaterMask`, `terrainElevationMeters`, `terrainSlopeDegrees`) for where to shade.
 - A shading that throws is logged and skipped; the terrain draws without it.
+- On the fully unrolled flat map the terrain shows its colour unlit, so only a shading's `color` shows there.
 - `earth.inspect().terrainShadings` lists them in the order they run; vanilla: `earth.terrainShadings.register(definition)`.
 
 ## Common Mistakes
 
-### HIGH: Changing `colorNode` after the tile is loaded
+### HIGH: Changing slot nodes after the tile is loaded
 
-The factory's `colorNode` is read once, when the tile is set up for imagery, and the imagery blend replaces
-it from then on. Setting `material.colorNode` on a loaded tile's material is silently dropped. Build the
+The factory's `colorNode`, `roughnessNode`, `metalnessNode`, `normalNode` and `emissiveNode` are read once, when the
+tile is set up, and rebuilt from those with the imagery and terrain shadings whenever a layer or plugin changes.
+Setting one on a loaded tile's material is dropped at the next rebuild. Build the
 colour in the factory; for colours that change at runtime, read a `uniform` from the nodes and change its
 `value`.
 
