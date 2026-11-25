@@ -179,6 +179,7 @@ Options: `fillColor`, `fillOpacity`, `lineColor`, `lineOpacity`, `lineWidthPixel
 `pointOutlineColor`, `pointOutlineWidthPixels`, `solidOpacity` (3D solids, default 0.85; their edges use `lineColor`),
 and `vertex*` for the handles. Colours are CSS colours without alpha; opacities are separate.
 See-through solids are drawn after the atmosphere (`TRANSLUCENT_LAYER`, hazed at their own distance) when the pipeline runs that pass (`<Atmosphere>` does).
+A face turned from the sun gets skylight alone, so through haze it looks blue-grey, as a real building's shaded side: expected.
 
 ### Shapes and 3D solids
 
