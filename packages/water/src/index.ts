@@ -17,9 +17,13 @@ export { createButterflies, foamKept, WaveComputeField } from './waves/WaveCompu
 export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 export {
   createRings,
+  lookAhead,
   WATER_INDEX_OF_REFRACTION,
   WAVE_MESH_LEVELS,
+  WAVE_MESH_LOOK_AHEAD_HEIGHTS,
+  WAVE_MESH_LOOK_AHEAD_SHARE,
   WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS,
+  WAVE_MESH_MINIMUM_CELL_METERS,
   WAVE_MESH_RESOLUTION,
   WaveMesh,
   type WaveMeshOptions,

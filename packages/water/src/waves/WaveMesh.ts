@@ -1,5 +1,5 @@
 import type { Terrain } from '@earthkit/globe'
-import { BufferAttribute, BufferGeometry, Mesh, Vector2, type Object3D } from 'three'
+import { BufferAttribute, BufferGeometry, Mesh, Vector2, Vector3, type Object3D } from 'three'
 import { abs, ceil, clamp, exp2, float, floor, fract, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
 import { MeshPhysicalNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
@@ -9,7 +9,16 @@ import type { WaveSurface, WaveSurfaceNodes } from './WaveSurface.js'
 /** Cells from the centre to the edge of each ring of the mesh (a ring is twice this across). */
 export const WAVE_MESH_RESOLUTION = 48
 /** Rings of the mesh, each twice the cell size of the one inside it. */
-export const WAVE_MESH_LEVELS = 8
+export const WAVE_MESH_LEVELS = 10
+/** The finest cell the mesh lays, metres: right at the water, the short chop becomes geometry. */
+export const WAVE_MESH_MINIMUM_CELL_METERS = 2 ** -6
+/**
+ * How far ahead of the camera the rings centre, as a share of where the view's centre meets the sea: the fine rings
+ * then lie in view rather than under and behind the camera.
+ */
+export const WAVE_MESH_LOOK_AHEAD_SHARE = 0.5
+/** The farthest the rings centre ahead of the camera, in camera heights: the sea at the bottom of the view stays fine. */
+export const WAVE_MESH_LOOK_AHEAD_HEIGHTS = 4
 /**
  * Above this height over the sea the mesh is not drawn, metres: its displacement no longer shows, and the terrain's
  * waves (normals only) are enough.
@@ -64,12 +73,14 @@ export interface WaveMeshOptions {
 }
 
 /**
- * The sea's surface near the camera as geometry, moved by the waves: rings of cells around the camera, each twice the
+ * The sea's surface near the camera as geometry, moved by the waves: rings of cells around a point ahead of the camera
+ * along its view (`lookAhead`, so the detail lies where it looks rather than under and behind it), each twice the
  * size of the one inside it (geometry clipmaps, Losasso & Hoppe 2004, as ocean renderers such as Crest lay them), so the
  * detail per pixel is about even from the camera's feet to the mesh's edge. Each ring snaps to its own cells as the
  * camera moves, so its vertices sample the waves at fixed places and never swim; the outer part of each ring morphs its
  * odd vertices onto the next ring's grid, so rings meet without cracks or pops. The innermost cell scales with the
- * camera's height (a power of two, from 6 cm). Vertices move by the GPU's displacement (height and the choppy waves'
+ * camera's height (about a 96th of it, a power of two, from `WAVE_MESH_MINIMUM_CELL_METERS`, 1.6 cm, so right at the
+ * water the short chop becomes geometry). Vertices move by the GPU's displacement (height and the choppy waves'
  * pull towards the crests); the fragments shade from the slopes, sampled per pixel. The outer ring flattens to the plane,
  * where the terrain's sea takes over (`coverage`), with the Earth's curvature applied, so the two meet seamlessly.
  *
@@ -81,6 +92,11 @@ export class WaveMesh {
   readonly levels: number
   /** The innermost ring's cell size, metres. */
   protected readonly cellSize = uniform(1)
+  /**
+   * Where the rings centre on the wave plane, metres east and north of its anchor: ahead of the camera along its view
+   * (`WAVE_MESH_LOOK_AHEAD_SHARE`), so the detail lies where it looks. Each ring still snaps to its own cells.
+   */
+  readonly centre = uniform(new Vector2())
   /** 1 while drawn: the terrain's sea under it gives way (`coverage`). */
   readonly active = uniform(0)
   protected readonly curvature = uniform(0)
@@ -127,13 +143,14 @@ export class WaveMesh {
     this.mesh.visible = shown
     this.active.value = shown ? 1 : 0
     if (!shown) return
-    // Finer near the sea, a power of two so the rings keep their places between changes.
-    this.cellSize.value = 2 ** Math.min(0, Math.max(-4, Math.floor(Math.log2(Math.max(height, 0.5) / 24))))
+    // Finer near the sea (about a 96th of the height), a power of two so the rings keep their places between changes.
+    this.cellSize.value = 2 ** Math.min(0, Math.max(Math.log2(WAVE_MESH_MINIMUM_CELL_METERS), Math.floor(Math.log2(height / 96))))
+    lookAhead(surface.cameraPlane.value, surface.cameraForward, height, this.centre.value)
     if (source !== undefined) {
       // Over the outer ring, which snaps to twice its cells.
       const outer = this.cellSize.value * 2 ** (this.levels - 1)
-      const camera = surface.cameraPlane.value
-      scratchCentre.set(Math.floor(camera.x / (2 * outer)) * 2 * outer, Math.floor(camera.y / (2 * outer)) * 2 * outer)
+      const centre = this.centre.value
+      scratchCentre.set(Math.floor(centre.x / (2 * outer)) * 2 * outer, Math.floor(centre.y / (2 * outer)) * 2 * outer)
       this.ground.update(source.renderer, source.terrain, source.earth, scratchCentre, this.resolution * outer)
     }
     if (this.laidAnchorVersion !== surface.anchorVersion) {
@@ -165,7 +182,7 @@ export class WaveMesh {
    */
   coverage(plane: Node<'vec2'>, insetCells = 3): Node<'float'> {
     const reach = this.cellSize.mul(2 ** (this.levels - 1) * (this.resolution - insetCells))
-    const offset = abs(plane.sub(this.surface.cameraPlane))
+    const offset = abs(plane.sub(this.centre))
     return float(1).sub(smoothstep(reach, reach.add(1e-3), max(offset.x, offset.y))).mul(this.active) as unknown as Node<'float'>
   }
 
@@ -177,7 +194,7 @@ export class WaveMesh {
    */
   sampleSurface(plane: Node<'vec2'>): { displacement: Node<'vec3'>; slope: Node<'vec2'>; heightAboveSeaMeters: Node<'float'>; water: Node<'float'> } {
     const { resolution, levels } = this
-    const offset = abs(plane.sub(this.surface.cameraPlane))
+    const offset = abs(plane.sub(this.centre))
     const distance = max(offset.x, offset.y)
     // The innermost ring that reaches the point draws it (each ring is `resolution` of its cells from centre to edge).
     const level = clamp(ceil(log2(distance.div(this.cellSize.mul(resolution)).max(1e-6))), 0, levels - 1)
@@ -219,7 +236,7 @@ export class WaveMesh {
 
   protected buildNodes(material: MeshPhysicalNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading): void {
     const { surface, resolution } = this
-    const camera = surface.cameraPlane
+    const camera = this.centre
     const local = positionGeometry.xy
     const level = positionGeometry.z
     const cell = this.cellSize.mul(exp2(level))
@@ -270,6 +287,22 @@ export class WaveMesh {
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
   }
+}
+
+/**
+ * Where the rings centre, into `target`: ahead of the camera on the plane along its view, by `WAVE_MESH_LOOK_AHEAD_SHARE`
+ * of the distance to where the view's centre meets the sea, at most `WAVE_MESH_LOOK_AHEAD_HEIGHTS` camera heights. Under
+ * the camera when it looks straight down (or up). `forward` is the view's direction in the plane's frame (x east, y
+ * north, z up).
+ */
+export function lookAhead(camera: Vector2, forward: Vector3, heightMeters: number, target: Vector2): Vector2 {
+  target.copy(camera)
+  const along = Math.hypot(forward.x, forward.y)
+  if (along < 1e-6 || !(heightMeters > 0)) return target
+  // Where the view's centre meets the sea; the horizon when it looks level or up.
+  const meetsSea = forward.z < 0 ? (heightMeters * along) / -forward.z : Infinity
+  const ahead = Math.min(meetsSea * WAVE_MESH_LOOK_AHEAD_SHARE, heightMeters * WAVE_MESH_LOOK_AHEAD_HEIGHTS)
+  return target.set(camera.x + (forward.x / along) * ahead, camera.y + (forward.y / along) * ahead)
 }
 
 /**
