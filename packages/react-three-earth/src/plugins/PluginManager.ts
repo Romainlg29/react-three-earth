@@ -1,4 +1,5 @@
 import type { Camera, Object3D } from 'three'
+import type { WebGPURenderer } from 'three/webgpu'
 
 import { GeographicAnchor } from '../core/GeographicAnchor.js'
 import type { PointerInteraction } from '../core/PointerInteractions.js'
@@ -320,9 +321,9 @@ export class PluginManager {
   }
 
   /** Runs every plugin's `onUpdate` callbacks. Returns true if one asked for another frame. */
-  update(camera: Camera, deltaSeconds: number): boolean {
+  update(camera: Camera, deltaSeconds: number, renderer: WebGPURenderer): boolean {
     if (this.installations.size === 0) return false
-    const frame: PluginFrame = { earth: this.earth, camera, deltaSeconds, morph: this.earth.view.morph }
+    const frame: PluginFrame = { earth: this.earth, camera, deltaSeconds, morph: this.earth.view.morph, renderer }
     let needsFrame = false
     for (const installation of [...this.installations.values()]) if (installation.runUpdates(frame)) needsFrame = true
     return needsFrame

@@ -12,4 +12,6 @@ export {
   type SeaStateOptions,
 } from './waves/spectrum.js'
 export { WAVE_CASCADE_LENGTHS_METERS, WAVE_GRID_SIZE, WaveField, type WaveCascade, type WaveFieldOptions } from './waves/WaveField.js'
+export { inverseStandardNormal, WAVE_CHOPPINESS } from './waves/foam.js'
+export { createButterflies, WaveComputeField } from './waves/WaveComputeField.js'
 export { WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'

@@ -1,4 +1,4 @@
-import { DataTexture, DataUtils, HalfFloatType, LinearFilter, RepeatWrapping, RGFormat } from 'three'
+import { DataArrayTexture, DataUtils, HalfFloatType, LinearFilter, RepeatWrapping, RGFormat } from 'three'
 
 import { createFourierPlan, inverseTransform2D, type FourierPlan } from './fft.js'
 import { angularFrequency, seaStateConstants, wavenumberSpectrum, type SeaStateOptions } from './spectrum.js'
@@ -18,8 +18,11 @@ export interface WaveCascade {
   readonly minimumWavenumber: number
   /** rad/m, exclusive: the next cascade takes over. A quarter of the grid's Nyquist, so its waves stay well sampled. */
   readonly maximumWavenumber: number
-  /** The slopes east (red) and north (green), dimensionless, rows from the south, texel (0, 0) at the tile's corner. */
-  readonly texture: DataTexture
+  /**
+   * Its layer of `WaveField.texture`: the slopes east and north, interleaved, dimensionless, rows from the south, texel
+   * (0, 0) at the tile's corner, as half floats.
+   */
+  readonly slopes: Uint16Array
   /** The variance of the slope its waves add (east plus north), from the spectrum: the gloss it takes over from roughness. */
   meanSquareSlope: number
 }
@@ -53,6 +56,13 @@ function createRandom(seed: number): () => number {
 export class WaveField {
   readonly cascades: WaveCascade[]
   readonly gridSize: number
+  /**
+   * The slopes east (red) and north (green) of every cascade, one layer each, repeating. Written by `update` (the
+   * CPU path); `WaveComputeField` writes its own on the GPU.
+   */
+  readonly texture: DataArrayTexture
+  /** Counts `setSeaState` calls, so a GPU copy of the spectrum knows when to upload it again. */
+  seaStateVersion = 0
   protected readonly plan: FourierPlan
   /** Per cascade: two unit Gaussian numbers per wavenumber, drawn once so a new sea state keeps the same waves. */
   protected readonly gaussians: Float64Array[]
@@ -68,30 +78,32 @@ export class WaveField {
   /** Per cascade: the wavenumber of each column (east) and row (north), rad/m. */
   protected readonly wavenumbersX: Float64Array[]
   protected readonly wavenumbersY: Float64Array[]
-  protected readonly halves: Uint16Array[]
 
   constructor({ lengthsMeters = WAVE_CASCADE_LENGTHS_METERS, gridSize = WAVE_GRID_SIZE, seed = 1 }: WaveFieldOptions = {}) {
     this.gridSize = gridSize
     this.plan = createFourierPlan(gridSize)
     const cells = gridSize * gridSize
     const random = createRandom(seed)
+    const halves = new Uint16Array(cells * 2 * lengthsMeters.length)
+    const texture = new DataArrayTexture(halves, gridSize, gridSize, lengthsMeters.length)
+    texture.format = RGFormat
+    texture.type = HalfFloatType
+    texture.wrapS = RepeatWrapping
+    texture.wrapT = RepeatWrapping
+    texture.minFilter = LinearFilter
+    texture.magFilter = LinearFilter
+    texture.generateMipmaps = false
+    texture.flipY = false
+    texture.needsUpdate = true
+    this.texture = texture
     let minimumWavenumber = 0
-    this.cascades = lengthsMeters.map(lengthMeters => {
+    this.cascades = lengthsMeters.map((lengthMeters, index) => {
       const maximumWavenumber = (gridSize / 4) * ((2 * Math.PI) / lengthMeters)
-      const halves = new Uint16Array(cells * 2)
-      const texture = new DataTexture(halves, gridSize, gridSize, RGFormat, HalfFloatType)
-      texture.wrapS = RepeatWrapping
-      texture.wrapT = RepeatWrapping
-      texture.minFilter = LinearFilter
-      texture.magFilter = LinearFilter
-      texture.generateMipmaps = false
-      texture.flipY = false
-      texture.needsUpdate = true
-      const cascade: WaveCascade = { lengthMeters, minimumWavenumber, maximumWavenumber, texture, meanSquareSlope: 0 }
+      const slopes = halves.subarray(index * cells * 2, (index + 1) * cells * 2)
+      const cascade: WaveCascade = { lengthMeters, minimumWavenumber, maximumWavenumber, slopes, meanSquareSlope: 0 }
       minimumWavenumber = maximumWavenumber
       return cascade
     })
-    this.halves = this.cascades.map(cascade => cascade.texture.image.data as Uint16Array)
     this.gaussians = this.cascades.map(() => {
       const values = new Float64Array(cells * 2)
       for (let index = 0; index < cells; index++) {
@@ -155,6 +167,39 @@ export class WaveField {
       this.nonzeroRows[cascadeIndex] = rows
       cascade.meanSquareSlope = meanSquareSlope
     })
+    this.seaStateVersion++
+  }
+
+  /**
+   * Writes the spectrum in the GPU's layout, cascade after cascade, rows of `gridSize` cells: per cell, `spectrum` gets
+   * h0(k) and conj(h0(-k)) (four floats) and `waves` kx, ky, ω(k) and 1/|k| (0 at k = 0).
+   */
+  writeSpectrum(spectrum: Float32Array, waves: Float32Array): void {
+    const size = this.gridSize
+    const cells = size * size
+    this.cascades.forEach((_, cascadeIndex) => {
+      const amplitudes = this.amplitudes[cascadeIndex]!
+      const frequencies = this.frequencies[cascadeIndex]!
+      const wavenumbersX = this.wavenumbersX[cascadeIndex]!
+      const wavenumbersY = this.wavenumbersY[cascadeIndex]!
+      for (let index = 0; index < cells; index++) {
+        const row = (index / size) | 0
+        const column = index - row * size
+        const mirror = ((size - row) % size) * size + ((size - column) % size)
+        const offset = (cascadeIndex * cells + index) * 4
+        spectrum[offset] = amplitudes[index * 2]!
+        spectrum[offset + 1] = amplitudes[index * 2 + 1]!
+        spectrum[offset + 2] = amplitudes[mirror * 2]!
+        spectrum[offset + 3] = -amplitudes[mirror * 2 + 1]!
+        const kx = wavenumbersX[column]!
+        const ky = wavenumbersY[row]!
+        const wavenumber = Math.hypot(kx, ky)
+        waves[offset] = kx
+        waves[offset + 1] = ky
+        waves[offset + 2] = frequencies[index]!
+        waves[offset + 3] = wavenumber > 0 ? 1 / wavenumber : 0
+      }
+    })
   }
 
   /** Advances the sea to `timeSeconds` and writes each cascade's slopes into its texture. */
@@ -191,13 +236,13 @@ export class WaveField {
       }
       // The band leaves about half the rows empty: their transforms are skipped.
       inverseTransform2D(work, this.plan, this.nonzeroRows[cascadeIndex])
-      const halves = this.halves[cascadeIndex]!
-      for (let index = 0; index < size * size * 2; index++) halves[index] = DataUtils.toHalfFloat(work[index]!)
-      cascade.texture.needsUpdate = true
+      const slopes = cascade.slopes
+      for (let index = 0; index < size * size * 2; index++) slopes[index] = DataUtils.toHalfFloat(work[index]!)
     })
+    this.texture.needsUpdate = true
   }
 
   dispose(): void {
-    for (const cascade of this.cascades) cascade.texture.dispose()
+    this.texture.dispose()
   }
 }

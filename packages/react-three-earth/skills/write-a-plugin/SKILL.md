@@ -136,8 +136,8 @@ export function spinningBox(): EarthPlugin {
   Calls after removal throw.
 - `install` may be `async`: until it settles the plugin is `ready: false` and the earth does not fire `idle`. A
   rejection removes the plugin and fires the earth's `pluginerror` event.
-- `onUpdate` time is measured per plugin (`earth.inspect().plugins[name].updateMilliseconds`). Over 1 ms on
-  average, the plugin gets one console warning.
+- `onUpdate` gets `camera`, `deltaSeconds`, `morph` and the `renderer` (for compute passes). Its time is measured per
+  plugin (`earth.inspect().plugins[name].updateMilliseconds`): over 1 ms on average, one console warning.
 - `addPlugin` throws, stating the fix, when the plugin targets another `PLUGIN_API_VERSION` or another plugin
   with the same name is installed. Adding the same object twice does nothing.
 

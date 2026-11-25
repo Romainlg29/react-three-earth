@@ -1,4 +1,5 @@
 import type { Camera, Object3D } from 'three'
+import type { WebGPURenderer } from 'three/webgpu'
 
 import type { Earth } from '../core/Earth.js'
 import type { EarthEventMap, EarthEventType } from '../core/events.js'
@@ -56,6 +57,8 @@ export interface PluginFrame {
   readonly deltaSeconds: number
   /** 0 on the globe, 1 on the flat map (`earth.view.morph`). */
   readonly morph: number
+  /** The renderer drawing this frame: for GPU work of the plugin's own (compute passes). */
+  readonly renderer: WebGPURenderer
 }
 
 /**

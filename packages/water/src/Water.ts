@@ -138,7 +138,7 @@ export class Water implements EarthPlugin {
   protected readonly fixedRoughnessWeight = uniform(0)
   /** The surface's whole slope variance from the wind (Cox & Munk): drawn waves carry part of it, roughness the rest. */
   protected readonly meanSquareSlope = uniform(0)
-  /** The waves, simulated on the CPU and laid under the camera. */
+  /** The waves, simulated on the GPU under WebGPU (with foam on the breaking crests), else on the CPU, and laid under the camera. */
   readonly waveSurface = new WaveSurface()
 
   constructor({ name = 'water', ...settings }: WaterOptions = {}) {
@@ -171,6 +171,7 @@ export class Water implements EarthPlugin {
     this.albedo.value.setRGB(...state.albedo)
     this.roughness.value = state.roughness
     this.whitecaps.value = state.whitecapCoverage
+    this.waveSurface.setWhitecapCoverage(state.whitecapCoverage)
     this.imageryOpacity.value = state.imageryOpacity
     const preset = WATER_PRESETS[state.preset]
     const fixedColor = settings.color === undefined ? preset.color : settings.color
@@ -194,9 +195,9 @@ export class Water implements EarthPlugin {
     this.earth = earth
     context.registerTerrainShading(this.createShading())
     // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
-    context.onUpdate(({ deltaSeconds, camera, morph }) => {
+    context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
       if (!this.stateValue.waves || morph >= 1) return false
-      return this.waveSurface.update(deltaSeconds, camera, earth)
+      return this.waveSurface.update(deltaSeconds, camera, earth, renderer)
     })
     context.onDispose(() => {
       if (this.earth === earth) this.earth = null
@@ -212,9 +213,9 @@ export class Water implements EarthPlugin {
    * roughness, roughened by the whitecaps. Near the camera the waves carry the slopes and the surface sharpens; far off
    * no wave is drawn and the roughness is the wind's whole. A fixed roughness stays as given.
    */
-  protected waterRoughness(resolvedMeanSquareSlope: Node<'float'>): Node<'float'> {
+  protected waterRoughness(resolvedMeanSquareSlope: Node<'float'>, foam: Node<'float'>): Node<'float'> {
     const residual = pow(max(this.meanSquareSlope.sub(resolvedMeanSquareSlope), 1e-4), 0.25)
-    const withFoam = residual.add(float(1).sub(residual).mul(this.whitecaps))
+    const withFoam = residual.add(float(1).sub(residual).mul(foam))
     return mix(withFoam, this.roughness, this.fixedRoughnessWeight) as unknown as Node<'float'>
   }
 
@@ -235,13 +236,15 @@ export class Water implements EarthPlugin {
         const depth = max(this.seaLevelMeters.sub(terrainElevationMeters), 0)
         const seafloorShare = exp(this.diffuseAttenuation.mul(depth).mul(-2)).mul(this.depthWeight)
         const body = mix(this.albedo, this.seafloorAlbedo, seafloorShare)
-        const surface = mix(body, vec3(FOAM_ALBEDO), this.whitecaps)
+        // Off the sea (and on the flat map) the foam is the whitecap share, as without waves.
+        const foam = mix(this.whitecaps, waves.foam, onSea)
+        const surface = mix(body, vec3(FOAM_ALBEDO), foam)
         const onGlobe = mix(surface, ground, this.imageryOpacity)
         const onFlatMap = mix(ground, this.flatMapColor, this.flatMapColorWeight)
         const sea = mix(onGlobe, onFlatMap, terrainFlatMorph)
         return {
           color: vec4(mix(ground, sea, terrainWaterMask), inputs.color.a) as unknown as Node<'vec4'>,
-          roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea)), terrainWaterMask) as unknown as Node<'float'>,
+          roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea), foam as unknown as Node<'float'>), terrainWaterMask) as unknown as Node<'float'>,
           metalness: mix(inputs.metalness, float(0), terrainWaterMask) as unknown as Node<'float'>,
           // The waves tilt the surface: their slopes, east and north, taken off the ground's normal.
           normal: inputs.normal
