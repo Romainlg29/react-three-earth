@@ -16,8 +16,11 @@ export interface TerrainSurface {
   indices: Uint16Array | Uint32Array
   /** The mesh's origin, ECEF metres, in double precision. */
   center: [number, number, number]
+  /** Of the surface as drawn (after `floorHeightMeters`). */
   minimumHeightMeters: number
   maximumHeightMeters: number
+  /** The true heights, metres, one per vertex, when `floorHeightMeters` lifted some: skirts take their top's. */
+  elevations?: Float32Array
 }
 
 /** Which edges of a grid get a skirt: a wall hanging below the edge that hides cracks against coarser neighbours. */
@@ -37,6 +40,8 @@ export interface SurfaceGrid {
   heights: ArrayLike<number>
   skirtLengthMeters: number
   skirtEdges: SkirtEdges
+  /** Heights below it are drawn at it (a flat sea over bathymetry); `elevations` keeps the true ones. Default: none. */
+  floorHeightMeters?: number | null
 }
 
 /** Geodetic radians and metres to ECEF metres on WGS84, written at `offset` in `target`. */
@@ -53,7 +58,7 @@ export function geodeticToEcef(longitude: number, latitude: number, heightMeters
  * Builds a grid surface: one vertex per longitude and latitude, two triangles per cell (counter-clockwise seen from
  * above), skirts on the chosen edges and smooth normals from the neighbouring vertices.
  */
-export function buildSurface({ longitudes, latitudes, heights, skirtLengthMeters, skirtEdges }: SurfaceGrid): TerrainSurface {
+export function buildSurface({ longitudes, latitudes, heights, skirtLengthMeters, skirtEdges, floorHeightMeters = null }: SurfaceGrid): TerrainSurface {
   const columns = longitudes.length
   const rows = latitudes.length
   const gridCount = columns * rows
@@ -63,12 +68,15 @@ export function buildSurface({ longitudes, latitudes, heights, skirtLengthMeters
 
   const ecef = new Float64Array(vertexCount * 3)
   const uvs = new Float32Array(vertexCount * 2)
+  const elevations = floorHeightMeters === null ? undefined : new Float32Array(vertexCount)
   let minimumHeightMeters = Infinity
   let maximumHeightMeters = -Infinity
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       const vertex = row * columns + column
-      const height = heights[vertex]!
+      const trueHeight = heights[vertex]!
+      const height = floorHeightMeters === null ? trueHeight : Math.max(trueHeight, floorHeightMeters)
+      if (elevations !== undefined) elevations[vertex] = trueHeight
       geodeticToEcef(longitudes[column]!, latitudes[row]!, height, ecef, vertex * 3)
       uvs[vertex * 2] = columns > 1 ? column / (columns - 1) : 0
       uvs[vertex * 2 + 1] = rows > 1 ? row / (rows - 1) : 0
@@ -145,6 +153,7 @@ export function buildSurface({ longitudes, latitudes, heights, skirtLengthMeters
       normals[skirt * 3] = nx
       normals[skirt * 3 + 1] = ny
       normals[skirt * 3 + 2] = nz
+      if (elevations !== undefined) elevations[skirt] = elevations[source]!
       uvs[skirt * 2] = uvs[source * 2]!
       uvs[skirt * 2 + 1] = uvs[source * 2 + 1]!
       if (k + 1 < top.length) {
@@ -179,7 +188,7 @@ export function buildSurface({ longitudes, latitudes, heights, skirtLengthMeters
   const positions = new Float32Array(vertexCount * 3)
   for (let index = 0; index < vertexCount * 3; index++) positions[index] = ecef[index]! - center[index % 3]!
   const indices = vertexCount > 65535 ? Uint32Array.from(triangles) : Uint16Array.from(triangles)
-  return { positions, normals, uvs, indices, center, minimumHeightMeters, maximumHeightMeters }
+  return { positions, normals, uvs, indices, center, minimumHeightMeters, maximumHeightMeters, ...(elevations !== undefined ? { elevations } : {}) }
 }
 
 /** The grid vertices along an edge, walked so that the walk direction crossed with up points out of the grid. */
@@ -255,10 +264,12 @@ export interface DemTileRequest {
   /** Grid cells along each side. */
   segments: number
   skirtLengthMeters: number
+  /** See `SurfaceGrid.floorHeightMeters`. */
+  floorHeightMeters?: number | null
 }
 
 /** A terrain tile from an elevation raster: a grid uniform in Web Mercator, skirts on every edge. */
-export function buildDemTileSurface(raster: ElevationRaster, { x, y, z, subview, segments, skirtLengthMeters }: DemTileRequest): TerrainSurface {
+export function buildDemTileSurface(raster: ElevationRaster, { x, y, z, subview, segments, skirtLengthMeters, floorHeightMeters = null }: DemTileRequest): TerrainSurface {
   const count = 2 ** z
   const size = segments + 1
   const longitudes = new Float64Array(size)
@@ -280,7 +291,7 @@ export function buildDemTileSurface(raster: ElevationRaster, { x, y, z, subview,
   // Neighbours sample their own edge pixels, so a shared edge can differ by about a pixel's step: the skirt reaches
   // at least three times the steepest half-pixel step across this tile's edges.
   const skirt = Math.max(skirtLengthMeters, 3 * edgePixelStepMeters(raster, subview, segments))
-  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters: skirt, skirtEdges: { west: true, south: true, east: true, north: true } })
+  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters: skirt, skirtEdges: { west: true, south: true, east: true, north: true }, floorHeightMeters })
 }
 
 /** The largest height change from a subview's edges to half a pixel inwards (the first pixel centre on), metres. */
@@ -312,13 +323,15 @@ export interface PolarCapRequest {
   segments: number
   /** The skirt along the cap's edge, where it meets the Web Mercator tiles. */
   skirtLengthMeters: number
+  /** See `SurfaceGrid.floorHeightMeters`. */
+  floorHeightMeters?: number | null
 }
 
 /**
  * A polar cap from a zoom 0 raster (the whole Web Mercator square): its edge follows the raster's top or bottom row,
  * and it rises or falls evenly to the pole at the mean of that row.
  */
-export function buildPolarCapSurface(raster: ElevationRaster, { north, rings, segments, skirtLengthMeters }: PolarCapRequest): TerrainSurface {
+export function buildPolarCapSurface(raster: ElevationRaster, { north, rings, segments, skirtLengthMeters, floorHeightMeters = null }: PolarCapRequest): TerrainSurface {
   const columns = segments + 1
   const rows = rings + 1
   const longitudes = new Float64Array(columns)
@@ -342,7 +355,7 @@ export function buildPolarCapSurface(raster: ElevationRaster, { north, rings, se
     latitudes[row] = edgeLatitude + (poleLatitude - edgeLatitude) * towardsPole
     for (let column = 0; column < columns; column++) heights[row * columns + column] = edgeHeights[column]! + (poleHeight - edgeHeights[column]!) * towardsPole
   }
-  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters, skirtEdges: { west: false, east: false, south: north, north: !north } })
+  return buildSurface({ longitudes, latitudes, heights, skirtLengthMeters, skirtEdges: { west: false, east: false, south: north, north: !north }, floorHeightMeters })
 }
 
 /**

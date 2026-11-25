@@ -18,11 +18,12 @@ import { TerrainExample } from './examples/TerrainExample'
 import { WorldLabelsExample } from './examples/WorldLabelsExample'
 import { MapDemo } from './MapDemo'
 import { PrecisionTest } from './PrecisionTest'
+import { WaterTest } from './WaterTest'
 
 const params = new URLSearchParams(location.search)
 const test = params.get('test')
 
-const scenes = { precision: PrecisionTest, afterburner: AfterburnerDemo, atmosphere: AtmosphereTest }
+const scenes = { precision: PrecisionTest, afterburner: AfterburnerDemo, atmosphere: AtmosphereTest, water: WaterTest }
 // `?example=<name>`: the gallery's focused examples (src/examples/), on live data or `?fixtures`.
 const examples = { city: CityExample, labels: WorldLabelsExample, geojson: PeaksExample, heatmap: HeatmapExample, terrain: TerrainExample, overlay: OverlayExample, embedded: EmbeddedExample, night: NightCityExample, draw: DrawExample, shapes: ShapesExample, measure: MeasureExample, geocoder: GeocoderExample, compare: CompareExample }
 const Scene = examples[params.get('example') as keyof typeof examples] ?? scenes[test as keyof typeof scenes] ?? MapDemo

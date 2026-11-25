@@ -9,6 +9,13 @@ import type { Node } from 'three/webgpu'
  */
 export const TERRAIN_SURFACE_ATTRIBUTE = 'terrainSurface'
 
+/**
+ * Name of an optional vertex attribute holding each vertex's true elevation, metres, where the drawn ground differs (a
+ * seafloor drawn at sea level, `RasterDemSource.flattenBelowSeaLevel`). `FlatMapPlugin` reads it into
+ * `TERRAIN_SURFACE_ATTRIBUTE` instead of the drawn height.
+ */
+export const TERRAIN_ELEVATION_ATTRIBUTE = 'terrainElevation'
+
 const surface = attribute(TERRAIN_SURFACE_ATTRIBUTE, 'vec3')
 
 /** The tile's elevation at the fragment, in metres above the WGS84 ellipsoid, as loaded (the terrain's exaggeration does not scale it). */

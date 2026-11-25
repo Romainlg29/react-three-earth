@@ -125,6 +125,12 @@ const expectations = {
     ['imagery drapes on the terrain (over 50 % checker pixels)', r.greenShare > 0.5],
     ['the terrain credit shows', r.attributions?.[0] === 'Synthetic test elevation'],
   ]])),
+  ...Object.fromEntries(['quantized-mesh', 'quantized-mesh webgl2', 'raster-dem', '2d'].map(name => [`water mask, ${name}`, r => [
+    ['the view holds sea and land (30 to 70 % water away from the coast)', r.waterShare > 0.3 && r.waterShare < 0.7 && r.compared > 300],
+    ['the mask matches the fixture\'s sea away from the coast (over 95 %; flipped within tiles: under 80 %)', r.agreement > 0.95],
+    ...(name === 'raster-dem' ? [['the seafloor is drawn at sea level: over sea more than 1000 m deep, heights read within 100 m of 0 (the chords of 35 km mesh cells sag up to about 60 m below the ellipsoid)', r.seaHeights?.count > 10 && r.seaHeights.maximumMeters < 100]] : []),
+    ...(name === '2d' ? [['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1]] : []),
+  ]])),
   'raster-dem terrain, north pole': r => [['no hole at the pole (no black at the centre)', r.centreBlackShare === 0]],
   'raster-dem terrain, 2d': r => [
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],

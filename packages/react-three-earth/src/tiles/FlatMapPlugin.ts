@@ -15,7 +15,7 @@ import {
   WEB_MERCATOR_HALF_EXTENT_METERS,
   type GeodeticRadians,
 } from '../view/webMercator.js'
-import { TERRAIN_SURFACE_ATTRIBUTE, writeTerrainSurface } from './terrainSurface.js'
+import { TERRAIN_ELEVATION_ATTRIBUTE, TERRAIN_SURFACE_ATTRIBUTE, writeTerrainSurface } from './terrainSurface.js'
 
 /** Name of the vertex attribute holding each vertex's flat-map position, relative to the mesh's flat centre. */
 export const FLAT_POSITION_ATTRIBUTE = 'positionFlat'
@@ -405,6 +405,7 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
   // Directions from the tile set's frame back into the mesh's (the inverse of its linear part).
   const earthToMesh = new Matrix3().setFromMatrix4(meshToEarth).invert().elements
   const normal = geometry.getAttribute('normal')
+  const trueElevation = geometry.getAttribute(TERRAIN_ELEVATION_ATTRIBUTE)
   const surface = new Float32Array(count * 3)
   for (let index = 0; index < count; index++) {
     const x = position.getX(index)
@@ -432,7 +433,7 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
       index,
       geodetic.longitude,
       geodetic.latitude,
-      geodetic.heightMeters,
+      trueElevation === undefined ? geodetic.heightMeters : trueElevation.getX(index),
       earthToMesh[0]! * normalX + earthToMesh[1]! * normalY + earthToMesh[2]! * normalZ,
       earthToMesh[3]! * normalX + earthToMesh[4]! * normalY + earthToMesh[5]! * normalZ,
       earthToMesh[6]! * normalX + earthToMesh[7]! * normalY + earthToMesh[8]! * normalZ,

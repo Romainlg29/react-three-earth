@@ -1,4 +1,4 @@
-import { terrainAspectDegrees, terrainElevationMeters, terrainSlopeDegrees, terrainSlopePercent } from '@earthkit/globe'
+import { terrainAspectDegrees, terrainElevationMeters, terrainSlopeDegrees, terrainSlopePercent, terrainWaterMask } from '@earthkit/globe'
 import { abs, clamp, cos, float, max, min, mix, pow, select, sin, sqrt, sRGBTransferEOTF, vec3 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
@@ -13,6 +13,7 @@ const INPUT_NODES: Record<TerrainInput, Node> = {
   slope: terrainSlopeDegrees,
   'slope-percent': terrainSlopePercent,
   aspect: terrainAspectDegrees,
+  water: terrainWaterMask,
 }
 
 function interpolationFactorNode(x: AnyNode, low: number, high: number, exponentialBase: number): AnyNode {

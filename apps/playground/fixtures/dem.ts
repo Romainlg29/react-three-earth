@@ -1,5 +1,5 @@
 import { encodePng } from './png.ts'
-import { fixtureHeightMeters } from './quantizedMesh.ts'
+import { fixtureHeightMeters, fixtureWaterHeightMeters } from './quantizedMesh.ts'
 
 /**
  * The fixture terrain's heights with round hills every 0.1° (about 11 km) on top: the terrain alone is too smooth for
@@ -16,10 +16,10 @@ export function demHeightMeters(longitudeDegrees: number, latitudeDegrees: numbe
 
 /**
  * A Terrarium-encoded elevation tile (256 pixels, Web Mercator XYZ) of `demHeightMeters` (`fixtureHeightMeters`, the
- * quantized-mesh terrain's, without `hills`), sampled at pixel centres: `height + 32768 = R × 256 + G + B / 256`.
+ * quantized-mesh terrain's, without `hills`; `fixtureWaterHeightMeters` with `water`), sampled at pixel centres: `height + 32768 = R × 256 + G + B / 256`.
  */
-export function terrariumTile(z: number, x: number, y: number, { hills = true }: { hills?: boolean } = {}): Uint8Array {
-  const height = hills ? demHeightMeters : fixtureHeightMeters
+export function terrariumTile(z: number, x: number, y: number, { hills = true, water = false }: { hills?: boolean; water?: boolean } = {}): Uint8Array {
+  const height = water ? fixtureWaterHeightMeters : hills ? demHeightMeters : fixtureHeightMeters
   const size = 256
   return encodePng(size, size, (px, py) => {
     const longitude = ((x + (px + 0.5) / size) / 2 ** z) * 360 - 180

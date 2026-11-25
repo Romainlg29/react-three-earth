@@ -13,8 +13,9 @@ export type TerrainExpression = number | string | boolean | readonly TerrainExpr
  * - `['slope']`: degrees, 0 flat to 90 vertical. `['slope-percent']`: the grade, 100 at 45°.
  * - `['aspect']`: the compass direction the ground faces downhill, in degrees clockwise from north (0 to 360); 0 on
  *   flat ground.
+ * - `['water']`: 1 on sea and lakes, 0 on land, between along coasts (`terrainWaterMask`: from the terrain source).
  */
-export const TERRAIN_INPUTS = ['elevation', 'slope', 'slope-percent', 'aspect'] as const
+export const TERRAIN_INPUTS = ['elevation', 'slope', 'slope-percent', 'aspect', 'water'] as const
 export type TerrainInput = (typeof TERRAIN_INPUTS)[number]
 
 /** Values of the inputs, for `evaluateTerrainExpression`. */
@@ -349,7 +350,7 @@ function evaluateNode(node: TerrainExpressionNode, inputs: TerrainInputValues): 
  */
 export function evaluateTerrainExpression(expression: TerrainExpression | TerrainExpressionNode, inputs: Partial<TerrainInputValues>): number | boolean | TerrainColor {
   const node = isParsedTerrainExpression(expression) ? expression : parseAt(expression, '')
-  const values: TerrainInputValues = { elevation: 0, slope: 0, 'slope-percent': Math.tan(((inputs.slope ?? 0) * Math.PI) / 180) * 100, aspect: 0, ...inputs }
+  const values: TerrainInputValues = { elevation: 0, slope: 0, 'slope-percent': Math.tan(((inputs.slope ?? 0) * Math.PI) / 180) * 100, aspect: 0, water: 0, ...inputs }
   return evaluateNode(node, values)
 }
 

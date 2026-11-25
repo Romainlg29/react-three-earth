@@ -122,6 +122,29 @@ describe('terrain surfaces from elevation rasters', () => {
     expect(Math.min(...triangleUps(surface, 81))).toBeGreaterThan(0)
   })
 
+  it('draws ground below the floor at the floor and keeps the true heights for shading', () => {
+    // West half 2000 m deep, east half 300 m high.
+    const raster = rasterOf(256, u => (u < 0.5 ? -2000 : 300))
+    const request = { x: 3, y: 2, z: 3, subview: [0, 0, 1, 1] as const, segments: 8, skirtLengthMeters: 20 }
+    const relief = buildDemTileSurface(raster, request)
+    expect(relief.elevations).toBeUndefined()
+    expect(relief.minimumHeightMeters).toBeCloseTo(-2000, 0)
+
+    const flat = buildDemTileSurface(raster, { ...request, floorHeightMeters: 0 })
+    const grid = vertices(flat).slice(0, 81)
+    expect(Math.min(...grid.map(vertex => vertex.heightMeters))).toBeCloseTo(0, 0)
+    expect(Math.max(...grid.map(vertex => vertex.heightMeters))).toBeCloseTo(300, 0)
+    expect(flat.minimumHeightMeters).toBe(0)
+    // One true height per vertex, skirts included: the seafloor's depth, the land's height.
+    expect(flat.elevations).toHaveLength(flat.positions.length / 3)
+    expect(Math.min(...flat.elevations!)).toBeCloseTo(-2000, 0)
+    expect(flat.elevations![80]).toBeCloseTo(300, 0)
+    // Skirts take their top's true height.
+    expect(flat.elevations![81]).toBe(flat.elevations![0])
+    // The flattened sea faces straight up.
+    expect(Math.min(...triangleUps(flat, 81))).toBeGreaterThan(0)
+  })
+
   it('gives a tile deeper than the data the heights of its ancestor at the same places', () => {
     const raster = rasterOf(256, (u, v) => 3000 * Math.sin(7 * u) * Math.cos(5 * v))
     const parent = buildDemTileSurface(raster, { x: 4, y: 6, z: 4, subview: [0, 0, 1, 1], segments: 64, skirtLengthMeters: 0 })
@@ -185,6 +208,14 @@ describe('RasterDemSource', () => {
     expect(new RasterDemSource({ url: 'https://example.com/{z}/{x}/{y}.png', encoding: 'terrarium' }).factors).toEqual(demUnpackFactors({ encoding: 'terrarium' }))
     // MapLibre's default encoding.
     expect(new RasterDemSource({ url: 'https://example.com/{z}/{x}/{y}.png' }).factors).toEqual(demUnpackFactors({ encoding: 'mapbox' }))
+  })
+
+  it('checks its sea level and adds the water mask plugin', () => {
+    const url = 'https://example.com/{z}/{x}/{y}.png'
+    expect(() => new RasterDemSource({ url, seaLevelMeters: Number.NaN })).toThrow(/seaLevelMeters/)
+    expect(() => new RasterDemSource({ url, seaLevelMeters: null, flattenBelowSeaLevel: true })).toThrow(/needs a sea level/)
+    const plugins = new RasterDemSource({ url, flattenBelowSeaLevel: true }).createPlugins()
+    expect(plugins.map(plugin => (plugin as { name: string }).name)).toEqual(['RASTER_DEM_TERRAIN_PLUGIN', 'TERRAIN_WATER_MASK_PLUGIN'])
   })
 })
 

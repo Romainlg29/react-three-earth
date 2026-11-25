@@ -7,7 +7,7 @@ import { terrariumTile } from './dem.ts'
 import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureReliefStyle, fixtureScriptStyle, fixtureSprite, fixtureStyle, vectorTile } from './vectorTiles.ts'
 
 /**
- * Serves synthetic terrain at /fixtures/terrain/, imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
+ * Serves synthetic terrain at /fixtures/terrain/ (with a sea and its water mask at /fixtures/terrain-water/), imagery at /fixtures/imagery/{z}/{x}/{y}.png, and a vector
  * map style at /fixtures/style.json (tiles at /fixtures/vector/{z}/{x}/{y}.pbf), so the playground runs with
  * no network.
  *
@@ -21,7 +21,8 @@ import { fixtureBuildingStyle, fixtureLabelStyle, fixturePatternStyle, fixtureRe
  *
  * `/fixtures/style-relief.json` adds a raster layer of the imagery, colour relief and hillshade from Terrarium
  * elevation tiles at /fixtures/dem/{z}/{x}/{y}.png (`?only=hillshade`: the hillshade alone, on mid-grey). The DEM tiles
- * with `?plain` hold the quantized-mesh terrain's heights alone, for terrain from raster-dem.
+ * with `?plain` hold the quantized-mesh terrain's heights alone, for terrain from raster-dem; with `?water`, the water
+ * fixture's, sea included.
  *
  * `/fixtures/style.json?live` reads /fixtures/vector-live/ instead, whose lakes take the colour set with
  * `/fixtures/vector-live/water-color?value=%23e0457b` (empty: the style's blue), for the invalidate check.
@@ -33,16 +34,16 @@ export function fixtureTiles(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const url = req.url?.split('?')[0] ?? ''
-        if (url === '/fixtures/terrain/layer.json') {
+        if (url === '/fixtures/terrain/layer.json' || url === '/fixtures/terrain-water/layer.json') {
           res.setHeader('Content-Type', 'application/json')
-          res.end(JSON.stringify(layerJson()))
+          res.end(JSON.stringify(layerJson({ water: url.startsWith('/fixtures/terrain-water/') })))
           return
         }
-        const terrain = /^\/fixtures\/terrain\/(\d+)\/(\d+)\/(\d+)\.terrain$/.exec(url)
+        const terrain = /^\/fixtures\/terrain(-water)?\/(\d+)\/(\d+)\/(\d+)\.terrain$/.exec(url)
         if (terrain) {
-          const [, z, x, y] = terrain.map(Number)
+          const [z, x, y] = terrain.slice(2).map(Number)
           res.setHeader('Content-Type', 'application/vnd.quantized-mesh')
-          res.end(Buffer.from(encodeQuantizedMeshTile(z ?? 0, x ?? 0, y ?? 0)))
+          res.end(Buffer.from(encodeQuantizedMeshTile(z ?? 0, x ?? 0, y ?? 0, { water: terrain[1] !== undefined })))
           return
         }
         const imagery = /^\/fixtures\/imagery\/(\d+)\/(\d+)\/(\d+)\.png$/.exec(url)
@@ -82,8 +83,8 @@ export function fixtureTiles(): Plugin {
         if (dem) {
           const [, z, x, y] = dem.map(Number)
           res.setHeader('Content-Type', 'image/png')
-          const plain = new URLSearchParams(req.url?.split('?')[1] ?? '').has('plain')
-          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0, { hills: !plain })))
+          const query = new URLSearchParams(req.url?.split('?')[1] ?? '')
+          res.end(Buffer.from(terrariumTile(z ?? 0, x ?? 0, y ?? 0, { hills: !query.has('plain'), water: query.has('water') })))
           return
         }
         if (url === '/fixtures/style-patterns.json') {

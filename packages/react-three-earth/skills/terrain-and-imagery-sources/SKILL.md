@@ -103,6 +103,10 @@ export function Ground() {
   falls back to the main thread with a warning). Tile selection, fades,
   imagery, labels, the flat map and `queryTerrainElevation` work as with quantized-mesh.
 - Web Mercator stops at about ±85.05°: caps built from the zoom 0 tile close the globe at the poles.
+- Sea: heights at or below `seaLevelMeters` (default 0; `null` for none) are water in `terrainWaterMask`
+  (`customize-terrain-shading`). Terrarium holds bathymetry, so by default the seafloor's relief is drawn under the
+  imagery's sea; `flattenBelowSeaLevel` draws it at sea level instead (height queries, markers and the camera meet the
+  sea's surface) while `terrainElevationMeters` keeps the true depth.
 - Heights are used as ellipsoidal heights: these tiles hold heights above sea level, so the ground sits up to about
   100 m off true WGS84 heights. It only shows next to other geo-referenced 3D content. Quantized-mesh with an
   `ellipsoid` endpoint is the exact option.

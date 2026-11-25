@@ -9,7 +9,7 @@ import { TERRAIN_STYLE_PRESETS, type TerrainStylePreset } from './presets.js'
 export interface TerrainStyleOptions {
   /**
    * The ground's colour: a preset name (`'alpine'`, `'atlas'`, `'desert'`, `'monochrome'`, `'slope-classes'`) or a
-   * colour expression over `['elevation']`, `['slope']`, `['slope-percent']` and `['aspect']`.
+   * colour expression over `['elevation']`, `['slope']`, `['slope-percent']`, `['aspect']` and `['water']`.
    */
   color: TerrainStylePreset | TerrainExpression
   /** The material's roughness, 0 to 1. Default: 1 (matte ground). */
