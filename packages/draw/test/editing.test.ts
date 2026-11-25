@@ -737,5 +737,28 @@ describe('select mode, edit mode', () => {
     expect(Math.min(...latitudes)).toBeCloseTo(0.3, 2)
     expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(6)
   })
+
+  it('leaves the vertices and midpoints under a picked vertex\'s gizmo to their own presses, and keeps the pick on a tap on it', () => {
+    const { context, store } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    tapAt(mode, at(50, -20))
+    // The east arrow runs over the next vertex (80 px) and the midpoint before it (65 px).
+    expect(mode.gizmoHandles().find(handle => handle.handle === 'move-x')!.x).toBeGreaterThan(80)
+    const up = mode.gizmoHandles().find(handle => handle.handle === 'move-z')!
+    tapAt(mode, at(up.x, up.y)) // a tap on the gizmo, no drag: still picked
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 1 }] })
+    tapAt(mode, at(80, -20)) // the next vertex: picked, nothing moved
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 2 }] })
+    expect(store.get('road')).toEqual(road())
+    tapAt(mode, at(50, -20))
+    tapAt(mode, at(65, -20)) // the midpoint: a vertex inserted there
+    expect((store.get('road')!.geometry as LineString).coordinates).toHaveLength(5)
+    // Alt+Q on an AZERTY keyboard (the key Alt+A is on QWERTY) is not Alt+A.
+    expect(mode.keyDown({ key: 'q', code: 'KeyA', altKey: true } as KeyboardEvent)).toBe(false)
+    expect(mode.pickedElementCount).toBe(1)
+  })
 })
 

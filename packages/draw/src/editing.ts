@@ -128,7 +128,7 @@ export function moveVertices(feature: DrawFeature, paths: readonly VertexPath[],
  * a line's or polygon's picked vertices. A vertex at an altitude moves exactly in the frame; one on the terrain moves
  * across it. With an `up` other than 0, every position of the feature gets an altitude first, the terrain's height under
  * it (`groundHeightMeters`) where it had none, so raising one vertex of a draped polygon tilts it rather than lifting it
- * whole. Multipolygons are returned unchanged (`moveMeshVertices` moves a mesh's).
+ * whole (with any altitude already, those without one stand at the lowest, as drawn). Multipolygons are returned unchanged (`moveMeshVertices` moves a mesh's).
  */
 export function offsetVertices(feature: DrawFeature, paths: readonly VertexPath[], offset: readonly [number, number, number], frame: LocalFrame, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
   if (!offset.every(Number.isFinite)) throw new Error(`offsetVertices: the offset is ${offset.join(', ')}; give finite metres east, north and up.`)
@@ -136,7 +136,9 @@ export function offsetVertices(feature: DrawFeature, paths: readonly VertexPath[
   if (paths.length === 0 || (east === 0 && north === 0 && up === 0)) return feature
   const ground: GroundHeight = typeof groundHeightMeters === 'number' ? () => groundHeightMeters : groundHeightMeters
   let rings = openRings(feature).map(ring => [...ring])
-  if (up !== 0) rings = rings.map(ring => ring.map(position => (hasAltitude(position) ? position : [position[0]!, position[1]!, ground(position[0]!, position[1]!)])))
+  // Positions without an altitude stand at the lowest one when the feature has any (as drawn), else on the terrain.
+  const lowest = lowestAltitude(feature.geometry)
+  if (up !== 0) rings = rings.map(ring => ring.map(position => (hasAltitude(position) ? position : [position[0]!, position[1]!, lowest ?? ground(position[0]!, position[1]!)])))
   // Positions on the terrain move at the frame's own height (its origin's).
   const frameHeight = frame.toGeographic(0, 0, 0)[2]
   let changed = false

@@ -398,7 +398,7 @@ export class SelectMode extends DrawMode {
   /** The last gizmo of each feature version, valid while the view (`viewVersion`), the space and its height stay. */
   protected readonly gizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; heightMeters: number; basis: GizmoBasis }>()
   /** The last gizmo of the picked elements of each feature version, valid while the view, the space and what is picked stay. */
-  protected readonly elementGizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; picked: readonly PickedElement[]; basis: GizmoBasis }>()
+  protected readonly elementGizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; picked: readonly PickedElement[]; heightMeters: number; basis: GizmoBasis }>()
   /** The pieces of each gizmo, for a tool. */
   protected readonly partsCache = new WeakMap<GizmoBasis, { tool: GizmoTool; parts: GizmoPart[] }>()
 
@@ -663,9 +663,9 @@ export class SelectMode extends DrawMode {
       return true
     }
     // Shift in edit mode adds to what is picked (or takes away): the press goes to the element, past the gizmo. A
-    // picked face's push and pull arrow wins over the gizmo's handles it crosses.
+    // picked face's push and pull arrow, and a vertex, edge or handle not picked, win over the gizmo's handles on them.
     const additive = this.vertexEditing && isAdditive(event)
-    const gizmo = additive || this.arrowAt(event) !== null ? null : this.gizmoHandleAt(event)
+    const gizmo = additive || this.gizmoCovered(event) ? null : this.gizmoHandleAt(event)
     const update = gizmo === null ? null : this.gizmoUpdate(gizmo, event)
     if (gizmo !== null && update !== null) {
       this.drag = { kind: 'transform', base: gizmo.basis.feature, feature: gizmo.basis.feature, handle: gizmo.part.handle, update }
@@ -796,9 +796,10 @@ export class SelectMode extends DrawMode {
       }
     } else if (drag.kind === 'transform') {
       if (!this.dragging) {
-        // A tap on a handle over the feature is a tap on the feature (a second tap edits its vertices); elsewhere, nothing.
-        if (this.featureAt(event) !== null) this.click(event)
-        else context.changed()
+        // A tap on a handle over the feature is a tap on the feature (a second tap edits its vertices); elsewhere, and
+        // on the gizmo of picked elements (which a tap must not drop), nothing.
+        if (drag.base === this.picked?.feature || this.featureAt(event) === null) context.changed()
+        else this.click(event)
         return
       }
     } else if (!this.dragging) {
@@ -833,7 +834,7 @@ export class SelectMode extends DrawMode {
       context.setCursor(null)
       return
     }
-    const gizmo = this.arrowAt(event) !== null ? null : this.gizmoHandleAt(event)
+    const gizmo = this.gizmoCovered(event) ? null : this.gizmoHandleAt(event)
     const hovered = gizmo?.part.handle ?? null
     if (hovered !== this.hoveredHandle) {
       this.hoveredHandle = hovered
@@ -842,7 +843,7 @@ export class SelectMode extends DrawMode {
     // Edit mode: the arrow, else the element under the mouse, highlighted.
     const edited = this.elementEditedFeature()
     const arrow = edited !== null && this.arrowAt(event) !== null
-    const element = edited === null || arrow || this.showsVertexHandles(edited) ? null : this.elementAt(event, edited)
+    const element = edited === null || arrow || gizmo !== null || this.showsVertexHandles(edited) ? null : this.elementAt(event, edited)
     if (arrow !== this.hoveredArrow || !sameElement(element, this.hoveredElement)) {
       this.hoveredArrow = arrow
       this.hoveredElement = element
@@ -855,7 +856,8 @@ export class SelectMode extends DrawMode {
   override keyDown(event: KeyboardEvent): boolean {
     // Edit mode, as in Blender: A picks every element, Alt+A none (on a Mac, Option+A types å: the key's code tells).
     if (this.vertexEditing && this.keyboardTransform === null && event.ctrlKey !== true && event.metaKey !== true) {
-      if (event.altKey === true && (event.key.toLowerCase() === 'a' || event.code === 'KeyA')) {
+      // The key's code only where Alt typed no letter (Option+A on a Mac): Alt+Q on an AZERTY keyboard is not Alt+A.
+      if (event.altKey === true && (event.key.toLowerCase() === 'a' || (!/^[a-z]$/i.test(event.key) && event.code === 'KeyA'))) {
         this.clearElementSelection()
         return true
       }
@@ -1251,7 +1253,7 @@ export class SelectMode extends DrawMode {
     const context = this.context
     const feature = this.elementEditedFeature()
     const elements = feature === null ? null : this.elementsOf(feature)
-    if (context === null || feature === null || elements === null || this.drag !== null) return false
+    if (context === null || feature === null || elements === null || this.drag !== null || this.keyboardTransform !== null) return false
     const all: PickedElement[] =
       this.element === 'vertex'
         ? elements.positions.map((_, index) => ({ kind: 'vertex', index }))
@@ -1266,7 +1268,7 @@ export class SelectMode extends DrawMode {
 
   /** Drops what is picked in edit mode, as Alt+A does with the `keyboard` option. Returns false when nothing was picked. */
   clearElementSelection(): boolean {
-    if (this.picked === null || this.drag !== null) return false
+    if (this.picked === null || this.drag !== null || this.keyboardTransform !== null) return false
     this.picked = null
     this.context?.changed()
     return true
@@ -1586,6 +1588,28 @@ export class SelectMode extends DrawMode {
     if (element.kind === 'vertex') return [element.index]
     if (element.kind === 'edge') return [element.from, element.to]
     return [...new Set((elements.faces[element.index] ?? []).flat())]
+  }
+
+  /**
+   * Whether, in edit mode, something under a press wins over the gizmo's handles there: a picked face's push and pull
+   * arrow, or a vertex, edge or handle (a midpoint too) that is not picked, so the gizmo of one vertex never hides its
+   * neighbours. What is picked never does: pressing it moves it, as the gizmo's ring.
+   */
+  protected gizmoCovered(event: DrawPointerEvent): boolean {
+    const feature = this.elementEditedFeature()
+    if (feature === null || this.picked?.feature !== feature) return false
+    if (this.arrowAt(event) !== null) return true
+    const picked = this.picked.elements
+    if (this.showsVertexHandles(feature)) {
+      const handle = this.handleAt(event)
+      if (handle === null) return false
+      if (handle.kind === 'midpoint') return true
+      const index = this.vertexIndex(feature, handle.path)
+      return !picked.some(element => element.kind === 'vertex' && element.index === index)
+    }
+    if (this.element === 'face') return false
+    const element = this.elementAt(event, feature)
+    return element !== null && !picked.some(each => sameElement(each, element))
   }
 
   /** In edit mode, the drag a press starts: the picked face's arrow, else an element (not a line's or polygon's vertex handles). */
@@ -2022,9 +2046,6 @@ export class SelectMode extends DrawMode {
     if (context === null || !this.move || picked === null || picked.feature.id !== feature.id || !this.editsElements(feature)) return null
     const elements = this.elementsOf(feature)
     if (elements === null) return null
-    const view = context.viewVersion?.()
-    const cached = this.elementGizmoCache.get(feature)
-    if (view !== undefined && cached !== undefined && cached.view === view && cached.space === this.space && cached.picked === picked.elements) return cached.basis
     const indices = this.pickedVertices(elements, picked.elements)
     if (indices.length === 0) return null
     // A line or polygon on the terrain has its gizmo on it; one with altitudes stands its vertices without one at the lowest.
@@ -2041,7 +2062,11 @@ export class SelectMode extends DrawMode {
       height += (elements.heights[index] ?? lowest ?? 0) / indices.length
     }
     const center: LongitudeLatitude = [longitude, latitude]
+    // On the terrain, the height under it as known now: the gizmo follows it as finer tiles load.
     const heightMeters = onTerrain ? context.heights.heightAt(longitude, latitude, this.groundFallbackMeters) : height
+    const view = context.viewVersion?.()
+    const cached = this.elementGizmoCache.get(feature)
+    if (view !== undefined && cached !== undefined && cached.view === view && cached.space === this.space && cached.picked === picked.elements && cached.heightMeters === heightMeters) return cached.basis
     const basis = this.basisAt(feature, center, heightMeters, heightMeters, onTerrain)
     if (basis === null) return null
     const { frame } = basis
@@ -2054,7 +2079,7 @@ export class SelectMode extends DrawMode {
     // One picked face: its push and pull arrow stands for the axis along its normal.
     const arrow = this.arrowOf(feature)
     if (arrow !== null) basis.hiddenAxes = [0, 1, 2].filter(index => Math.abs(dot(basis.axes[index]!, arrow.normal)) > PARALLEL_AXIS_COSINE)
-    if (view !== undefined) this.elementGizmoCache.set(feature, { view, space: this.space, picked: picked.elements, basis })
+    if (view !== undefined) this.elementGizmoCache.set(feature, { view, space: this.space, picked: picked.elements, heightMeters, basis })
     return basis
   }
 

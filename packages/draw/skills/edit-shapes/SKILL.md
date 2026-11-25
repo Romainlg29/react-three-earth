@@ -110,6 +110,8 @@ Start in faces with `new SelectMode({ elementMode: 'face' })`; `editVertices: fa
 - Raising a vertex of a line or polygon that lies on the terrain gives every position an altitude, the terrain's
   height under it, so the shape tilts up to the raised vertex instead of floating (`offsetVertices` in code). A move
   under a metre up or down on the terrain is ignored, as in object mode.
+- A vertex, edge, vertex handle or midpoint that is not picked wins presses over the gizmo's handles lying on it, so
+  the gizmo of one vertex never hides its neighbours; a tap on the gizmo keeps what is picked.
 - With one face picked, its push and pull arrow replaces the gizmo's arrow along the face's normal (the up arrow on
   a roof), and wins presses where they cross.
 - `select.gizmoHandles()` lists where the edit-mode gizmo's handles are on the screen, for tests and tutorials.
