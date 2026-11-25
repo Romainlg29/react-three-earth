@@ -1,5 +1,5 @@
 import { Vector2, Vector3 } from 'three'
-import { Fn, instancedArray, instanceIndex, vec4 } from 'three/tsl'
+import { float, Fn, instancedArray, instanceIndex, vec4 } from 'three/tsl'
 import type { ComputeNode, Node, StorageBufferNode, WebGPURenderer } from 'three/webgpu'
 
 import type { WaveMesh } from './WaveMesh.js'
@@ -23,8 +23,10 @@ export interface WaveProbePoint {
 export interface WaveProbeSample {
   /** The surface's height above the WGS84 ellipsoid, metres: sea level plus the wave. */
   heightMeters: number
-  /** The wave's height above sea level, metres. */
+  /** The surface's height above sea level, metres: the wave's, plus a lake's level where it lies off sea level. */
   waveHeightMeters: number
+  /** False where the terrain draws land at the point (or off screen, where no tile is drawn): no waves then, and the height is the nearest water's level. */
+  onWater: boolean
   /** The surface's normal in the point's own east-north-up frame (x east, y north, z up), as a `GeographicAnchor`'s. */
   normal: Vector3
   /** Whether the sample comes from the waves: false until the first reading after `setPoints` lands. */
@@ -60,7 +62,7 @@ export class WaveProbe {
   protected readonly earthCentered: Vector3[] = []
   /** Per probe: its point on the wave plane, metres east and north of the anchor. */
   protected readonly targets: StorageBufferNode<'vec2'>
-  /** Per probe: wave height, slope east, slope north, then 1 once written. */
+  /** Per probe: height above sea level, slope east, slope north, then 1 once written over water, 2 over land. */
   protected readonly readings: StorageBufferNode<'vec4'>
   protected readonly kernel: ComputeNode
   protected pending = false
@@ -84,8 +86,9 @@ export class WaveProbe {
       for (let round = 0; round < WAVE_PROBE_ITERATIONS; round++) {
         origin = target.sub(mesh.sampleSurface(origin).displacement.xy).toVar() as unknown as Node<'vec2'>
       }
-      const { displacement, slope } = mesh.sampleSurface(origin)
-      this.readings.element(instanceIndex).assign(vec4(displacement.z, slope.x, slope.y, 1))
+      const { heightAboveSeaMeters, slope, water } = mesh.sampleSurface(origin)
+      // 1 once written over water, 2 over land.
+      this.readings.element(instanceIndex).assign(vec4(heightAboveSeaMeters, slope.x, slope.y, water.lessThan(0.5).select(float(2), float(1))))
     })().compute(capacity)
   }
 
@@ -103,7 +106,7 @@ export class WaveProbe {
       const position = earthCenteredFromGeographic(longitudeDegrees, latitudeDegrees, 0, new Vector3())
       this.earthCentered.push(position)
       this.frames.push(eastNorthAt(position))
-      this.samples.push({ heightMeters: this.surface.seaLevelMeters, waveHeightMeters: 0, normal: new Vector3(0, 0, 1), ready: false })
+      this.samples.push({ heightMeters: this.surface.seaLevelMeters, waveHeightMeters: 0, onWater: true, normal: new Vector3(0, 0, 1), ready: false })
     }
     this.pointsVersion++
   }
@@ -145,7 +148,8 @@ export class WaveProbe {
   protected read(readings: Float32Array): void {
     const seaLevel = this.surface.seaLevelMeters
     this.samples.forEach((sample, index) => {
-      if (readings[index * 4 + 3] !== 1) return
+      const written = readings[index * 4 + 3]
+      if (written !== 1 && written !== 2) return
       const height = readings[index * 4]!
       const normal = scratchNormal.set(-readings[index * 4 + 1]!, -readings[index * 4 + 2]!, 1).normalize()
       // From the plane's frame (at the anchor) to the point's own: a turn of at most a few tenths of a degree.
@@ -153,6 +157,7 @@ export class WaveProbe {
       const { east, north, up } = this.frames[index]!
       sample.normal.set(normal.dot(east), normal.dot(north), normal.dot(up)).normalize()
       sample.waveHeightMeters = height
+      sample.onWater = written === 1
       sample.heightMeters = seaLevel + height
       sample.ready = true
     })
@@ -173,6 +178,7 @@ export class WaveProbe {
 function setFlat(sample: WaveProbeSample, seaLevelMeters: number): void {
   sample.heightMeters = seaLevelMeters
   sample.waveHeightMeters = 0
+  sample.onWater = true
   sample.normal.set(0, 0, 1)
   sample.ready = true
 }

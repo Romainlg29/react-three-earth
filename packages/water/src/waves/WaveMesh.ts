@@ -1,7 +1,9 @@
-import { BufferAttribute, BufferGeometry, Mesh } from 'three'
+import type { Terrain } from '@earthkit/globe'
+import { BufferAttribute, BufferGeometry, Mesh, Vector2, type Object3D } from 'three'
 import { abs, ceil, clamp, exp2, float, floor, fract, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
-import { MeshStandardNodeMaterial, type Node } from 'three/webgpu'
+import { MeshStandardNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
+import { WaveDepthCache, type WaveGround } from './WaveDepthCache.js'
 import type { WaveSurface, WaveSurfaceNodes } from './WaveSurface.js'
 
 /** Cells from the centre to the edge of each ring of the mesh (a ring is twice this across). */
@@ -19,6 +21,23 @@ export interface WaveMeshShading {
   color: Node<'vec3'>
   roughness: Node<'float'>
 }
+
+/** The ground under a fragment of the mesh, for its shading. */
+export interface WaveMeshGround {
+  /** How far the seafloor lies below sea level, metres (0 where unknown). */
+  depthMeters: Node<'float'>
+}
+
+/** What the mesh needs of the earth to read the ground under it: without it, it lies at sea level over everything. */
+export interface WaveMeshGroundSource {
+  renderer: WebGPURenderer | undefined
+  terrain: Terrain | null
+  /** The object whose frame is ECEF. */
+  earth: Object3D
+}
+
+/** Waves break where they stand taller than this share of the water's depth (McCowan): the mesh calms them there. */
+export const WAVE_BREAKING_DEPTH_RATIO = 0.78
 
 export interface WaveMeshOptions {
   /** Cells from the centre to the edge of each ring. Default: `WAVE_MESH_RESOLUTION`. */
@@ -48,10 +67,16 @@ export class WaveMesh {
   /** 1 while drawn: the terrain's sea under it gives way (`coverage`). */
   readonly active = uniform(0)
   protected readonly curvature = uniform(0)
+  /** 1 when the terrain's elevation holds the seafloor's depth (`Water.depthFromElevation`): the shallows calm the waves. */
+  readonly depthWeight = uniform(0)
+  /** The sea state's significant wave height, metres: the shallows calm the waves below `WAVE_BREAKING_DEPTH_RATIO` of it. */
+  readonly significantWaveHeightMeters = uniform(1)
+  /** The ground under the mesh, drawn from above: where the water is, its level and depth. */
+  readonly ground: WaveDepthCache
   protected readonly surface: WaveSurface
   protected laidAnchorVersion = -1
 
-  constructor(surface: WaveSurface, shade: (waves: WaveSurfaceNodes) => WaveMeshShading, { resolution = WAVE_MESH_RESOLUTION, levels = WAVE_MESH_LEVELS }: WaveMeshOptions = {}) {
+  constructor(surface: WaveSurface, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround) => WaveMeshShading, { resolution = WAVE_MESH_RESOLUTION, levels = WAVE_MESH_LEVELS }: WaveMeshOptions = {}) {
     if (!Number.isInteger(resolution) || resolution < 24 || resolution % 4 !== 0) {
       throw new Error(`WaveMesh: resolution must be a multiple of 4 of at least 24 (cells from the centre to a ring's edge), got ${resolution}.`)
     }
@@ -59,6 +84,8 @@ export class WaveMesh {
     this.surface = surface
     this.resolution = resolution
     this.levels = levels
+    // The outer ring: `2 resolution` of its cells across.
+    this.ground = new WaveDepthCache(surface, 2 * resolution)
     const material = new MeshStandardNodeMaterial({ metalness: 0 })
     material.name = 'WaveMesh'
     this.buildNodes(material, shade)
@@ -72,23 +99,45 @@ export class WaveMesh {
 
   /**
    * Lays the mesh under the camera and shows it while it can: on the GPU path, below
-   * `WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS`, and when `visible` (waves on, the globe rather than the flat map).
+   * `WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS` over the water (or the ground) under the camera, and when `visible` (waves
+   * on, the globe rather than the flat map). With `source`, it draws the ground under it again when it moved.
    */
-  update(visible: boolean): void {
+  update(visible: boolean, source?: WaveMeshGroundSource): void {
     const { surface } = this
-    const height = surface.cameraHeightAboveSeaMeters
+    const height = this.cameraHeightAboveSurface(source?.terrain ?? null)
     const shown = visible && surface.compute !== null && height < WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS
     this.mesh.visible = shown
     this.active.value = shown ? 1 : 0
     if (!shown) return
     // Finer near the sea, a power of two so the rings keep their places between changes.
     this.cellSize.value = 2 ** Math.min(0, Math.max(-4, Math.floor(Math.log2(Math.max(height, 0.5) / 24))))
+    if (source !== undefined) {
+      // Over the outer ring, which snaps to twice its cells.
+      const outer = this.cellSize.value * 2 ** (this.levels - 1)
+      const camera = surface.cameraPlane.value
+      scratchCentre.set(Math.floor(camera.x / (2 * outer)) * 2 * outer, Math.floor(camera.y / (2 * outer)) * 2 * outer)
+      this.ground.update(source.renderer, source.terrain, source.earth, scratchCentre, this.resolution * outer)
+    }
     if (this.laidAnchorVersion !== surface.anchorVersion) {
       this.mesh.matrix.copy(surface.planeFrame)
       this.mesh.matrixWorldNeedsUpdate = true
       this.curvature.value = 1 / (2 * surface.curvatureRadiusMeters)
       this.laidAnchorVersion = surface.anchorVersion
     }
+  }
+
+  /**
+   * The camera's height over what it looks down on: sea level, or the terrain as drawn under it where a tile covers it
+   * and it lies higher (a sea on the geoid above the ellipsoid). Below sea level the camera is over a depression (the
+   * Dead Sea): the drawn ground then, as a seafloor the terrain draws under its water can only lie below a camera above
+   * sea level.
+   */
+  protected cameraHeightAboveSurface(terrain: Terrain | null): number {
+    const { surface } = this
+    const ground = terrain?.sampleElevation(surface.cameraLongitudeRadians, surface.cameraLatitudeRadians) ?? null
+    if (ground === null) return surface.cameraHeightAboveSeaMeters
+    const seaLevel = surface.cameraHeightMeters - surface.cameraHeightAboveSeaMeters
+    return surface.cameraHeightMeters - (surface.cameraHeightAboveSeaMeters < 0 ? ground : Math.max(ground, seaLevel))
   }
 
   /**
@@ -105,9 +154,10 @@ export class WaveMesh {
   /**
    * The surface as the mesh draws it at a point of the plane (before the waves move it), outside the mesh's own shaders:
    * the ring that draws there, its vertices' spacing and fades, so what a probe reads is what is on screen. Zero while
-   * the mesh is hidden (the terrain's sea is flat). `displacement` is east, north and up, metres; `slope` east and north.
+   * the mesh is hidden (the terrain's sea is flat). `displacement` is east, north and up, metres; `slope` east and north;
+   * `heightAboveSeaMeters` the surface's height over sea level at the point (a lake's level included); `water` 1 over water.
    */
-  sampleSurface(plane: Node<'vec2'>): { displacement: Node<'vec3'>; slope: Node<'vec2'> } {
+  sampleSurface(plane: Node<'vec2'>): { displacement: Node<'vec3'>; slope: Node<'vec2'>; heightAboveSeaMeters: Node<'float'>; water: Node<'float'> } {
     const { resolution, levels } = this
     const offset = abs(plane.sub(this.surface.cameraPlane))
     const distance = max(offset.x, offset.y)
@@ -116,15 +166,40 @@ export class WaveMesh {
     const cell = this.cellSize.mul(exp2(level))
     const cells = distance.div(cell)
     const morph = morphAt(cells, resolution)
-    const amplitude = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1)).mul(this.active)
+    const ground = this.groundAt(plane)
+    const amplitude = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1))
+      .mul(this.active)
+      .mul(ground.calm)
     const spacing = cell.mul(morph.add(1)) as unknown as Node<'float'>
+    const displacement = this.surface.sampleDisplacement(plane, spacing).mul(amplitude)
+    const displacementHeight = displacement.z
     return {
-      displacement: this.surface.sampleDisplacement(plane, spacing).mul(amplitude) as unknown as Node<'vec3'>,
+      displacement: displacement as unknown as Node<'vec3'>,
       slope: this.surface.sampleSlope(plane, spacing).mul(amplitude) as unknown as Node<'vec2'>,
+      // The water's level over the plane, put back over the ellipsoid's curve: over sea level at the point.
+      heightAboveSeaMeters: ground.surfaceMeters.add(plane.dot(plane).mul(this.curvature)).mul(this.active).add(displacementHeight) as unknown as Node<'float'>,
+      water: ground.water,
     }
   }
 
-  protected buildNodes(material: MeshStandardNodeMaterial, shade: (waves: WaveSurfaceNodes) => WaveMeshShading): void {
+  /**
+   * The ground at a point of the plane: the water's level over the plane (sea level, the Earth's curvature applied, where
+   * the cache knows nothing), whether it is water, its depth, and how much the waves keep there: calmed where they would
+   * break in the shallows (when the depth is known) and flat over the last metres of the shore.
+   */
+  protected groundAt(plane: Node<'vec2'>): WaveGround & { calm: Node<'float'> } {
+    const bend = plane.dot(plane).mul(this.curvature).negate() as unknown as Node<'float'>
+    const ground = this.ground.sample(plane, bend)
+    const breaking = ground.depthMeters.mul(WAVE_BREAKING_DEPTH_RATIO).div(max(this.significantWaveHeightMeters, 0.05)).clamp(0, 1)
+    // Elevation models fill the sea with sea level where they hold no depth (as for the seafloor's colour): no depth there,
+    // and none for water above sea level (a lake), whose depth the elevation does not give. Leave the waves as they are.
+    const depthKnown = smoothstep(0.05, 0.5, ground.depthMeters)
+    const shallows = float(1).add(breaking.sub(1).mul(this.depthWeight.mul(ground.known).mul(depthKnown)))
+    const shore = smoothstep(0.5, 1, ground.water)
+    return { ...ground, calm: shallows.mul(shore) as unknown as Node<'float'> }
+  }
+
+  protected buildNodes(material: MeshStandardNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround) => WaveMeshShading): void {
     const { surface, resolution } = this
     const camera = surface.cameraPlane
     const local = positionGeometry.xy
@@ -141,24 +216,35 @@ export class WaveMesh {
     // The outer ring flattens to the plane before its edge, where the terrain's sea takes over.
     const outer = level.greaterThan(this.levels - 1.5)
     const amplitude = select(outer, float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1))
-    const displacement = surface.sampleDisplacement(plane as unknown as Node<'vec2'>, cell.mul(morph.add(1)) as unknown as Node<'float'>).mul(amplitude)
-    const bend = plane.dot(plane).mul(this.curvature)
-    material.positionNode = vec3(plane.add(displacement.xy), displacement.z.sub(bend))
+    const ground = this.groundAt(plane as unknown as Node<'vec2'>)
+    const displacement = surface.sampleDisplacement(plane as unknown as Node<'vec2'>, cell.mul(morph.add(1)) as unknown as Node<'float'>).mul(amplitude.mul(ground.calm))
+    // On the water's own level: sea level with the Earth's curvature, or what the terrain draws (a lake, a geoid).
+    const moved = plane.add(displacement.xy)
+    material.positionNode = vec3(moved, displacement.z.add(ground.surfaceMeters))
 
     // Fragments: the waves sampled per pixel where this point of the plane lay before it moved.
     const fragmentPlane = varying(plane, 'wavePlane') as unknown as Node<'vec2'>
+    const drawnPlane = varying(moved, 'waveDrawnPlane') as unknown as Node<'vec2'>
+    const depthMeters = varying(ground.depthMeters, 'waveDepth') as unknown as Node<'float'>
     const waves = surface.sampleWaves(fragmentPlane)
-    const { color, roughness } = shade(waves)
+    const { color, roughness } = shade(waves, { depthMeters })
     material.colorNode = color
     material.roughnessNode = roughness
     // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
     const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize()
     material.normalNode = transformNormalToView(normal)
-    // Beyond the terrain's edge of the mesh (`coverage`), the terrain draws the sea.
-    material.maskNode = this.coverage(fragmentPlane).greaterThan(0.5)
+    // Only over water, where it lies after the waves moved it (the terrain's sea gives way by the same map); beyond the
+    // terrain's edge of the mesh (`coverage`), the terrain draws the sea.
+    material.maskNode = this.coverage(drawnPlane).greaterThan(0.5).and(this.coversWater(drawnPlane))
+  }
+
+  /** Whether the terrain draws water at a point of the plane, by the ground map: the mesh draws there, the terrain gives way. */
+  coversWater(plane: Node<'vec2'>): Node<'bool'> {
+    return this.ground.sample(plane, float(0) as unknown as Node<'float'>).water.greaterThanEqual(0.5) as unknown as Node<'bool'>
   }
 
   dispose(): void {
+    this.ground.dispose()
     this.mesh.geometry.dispose()
     this.mesh.material.dispose()
   }
@@ -210,3 +296,5 @@ export function createRings(resolution: number, levels: number): BufferGeometry 
   geometry.setIndex(new BufferAttribute(positions.length / 3 > 65535 ? new Uint32Array(indices) : new Uint16Array(indices), 1))
   return geometry
 }
+
+const scratchCentre = new Vector2()

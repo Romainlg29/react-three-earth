@@ -135,7 +135,7 @@ export {
 export { holdContainerPosition, releaseContainerPosition } from './core/containerPosition.js'
 export { PerformanceMonitor, type PerformanceSample } from './core/PerformanceMonitor.js'
 export { prefersWebGLBackend } from './core/renderer.js'
-export { Terrain, type TerrainOptions } from './core/Terrain.js'
+export { Terrain, TERRAIN_LAYER, type TerrainOptions } from './core/Terrain.js'
 export { Imagery, type ImageryOptions } from './core/Imagery.js'
 export { screenClipPlane, type ScreenClip, type ScreenClipSide } from './core/screenClip.js'
 export {

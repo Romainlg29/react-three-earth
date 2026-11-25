@@ -82,6 +82,10 @@ export class WaveSurface {
   seaLevelMeters = 0
   /** The camera's height above sea level, metres, from the last `update`. */
   cameraHeightAboveSeaMeters = Infinity
+  /** The camera's height above the WGS84 ellipsoid and its geodetic position, as of the last `update`. */
+  cameraHeightMeters = Infinity
+  cameraLatitudeRadians = 0
+  cameraLongitudeRadians = 0
   /**
    * The wave plane's frame in ECEF (the earth's frame) at sea level under the anchor: x east, y north, z up, metres. A mesh
    * of the waves placed in it lies on the plane; `curvatureRadiusMeters` bends it down with the Earth.
@@ -180,8 +184,11 @@ export class WaveSurface {
     this.timeSecondsValue += deltaSeconds
     const cameraWorld = scratchCamera.setFromMatrixPosition(camera.matrixWorld)
     const cameraEarth = scratchCameraEarth.copy(cameraWorld).applyMatrix4(scratchMatrix.copy(earth.matrixWorld).invert())
-    const height = geodeticLatitudeAndHeight(cameraEarth).height
+    const { latitude, height } = geodeticLatitudeAndHeight(cameraEarth)
     this.cameraHeightAboveSeaMeters = height - this.seaLevelMeters
+    this.cameraHeightMeters = height
+    this.cameraLatitudeRadians = latitude
+    this.cameraLongitudeRadians = Math.atan2(cameraEarth.y, cameraEarth.x)
     if (height > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
     if (renderer !== undefined && isWebGPUBackend(renderer)) {
       this.computeField ??= this.startCompute()

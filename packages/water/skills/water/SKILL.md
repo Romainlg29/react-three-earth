@@ -22,6 +22,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/water/src/waves/foam.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveMesh.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveProbe.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveDepthCache.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/react/index.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
@@ -137,15 +138,21 @@ takes over, seamlessly, Earth's curvature included. It costs one draw of about 1
 
 - `waveMesh: false` keeps the normals-only sea. The mesh hides above 1.5 km, on the flat map and on WebGL2 (no GPU
   displacement there).
-- Under the mesh the terrain's sea is discarded where it is water at or below sea level (+1 m), so the coast stays the
-  terrain's. The mesh itself knows nothing of the ground: it lies at `seaLevelMeters` across its whole square, so land
-  below sea level (polders, Death Valley) and lakes below it (the Dead Sea, the Caspian) are covered within its reach,
-  and on a low coast the crests of a rough sea can show through beaches and quays. Set `waveMesh: false` over such places.
-- The mesh lies at `seaLevelMeters` above the WGS84 ellipsoid. A terrain whose sea sits on the geoid instead (tens of
-  metres off, as most quantized-mesh services) hides the mesh or lets it float: set `seaLevelMeters` to the source's sea
-  height there, or turn the mesh off.
-- The mesh shows no seafloor (`depthFromElevation`) and no imagery (`imageryOpacity`): with either, the colour steps at
-  the mesh's edge, and in shallow water near the camera the sea is opaque.
+- The mesh reads the ground under it from a map of the terrain drawn from above (a depth cache, as Crest's): whether
+  the terrain is water at each point, the height it draws there, and its elevation. So it draws only over water, at the
+  water's own level: the height of its nearest shore, found by a jump flood on the GPU. A lake below sea level (the Dead
+  Sea), a sea on the geoid, a terrain that draws the seafloor under its water mask, polders and land below sea level all
+  come out right, and the terrain's sea gives way under the mesh by the same map, with no gap. Where no shore is in
+  reach (open sea, the middle of a large lake), the level is `seaLevelMeters`. The map covers the mesh (768 texels a
+  side, half floats, about 15 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
+  its outer cells) or tiles change (at most four times a second): a draw of the tiles with a trivial shader and a dozen
+  compute dispatches.
+- The waves flatten over the last texels of the shore. With `depthFromElevation`, they also calm where they would
+  break in the shallows (taller than 0.78 of the depth, `WAVE_BREAKING_DEPTH_RATIO`) and the seafloor shows through the
+  mesh as on the terrain.
+- The map is as sharp as its texels: 16 m from 25 m up, 1 m at the water. Where no tile is drawn (off screen), the mesh
+  falls back to sea level.
+- The mesh shows no imagery (`imageryOpacity`): with it, the colour steps at the mesh's edge.
 
 ### Seed and wave time
 
@@ -177,8 +184,9 @@ export function useFloat(water: WaterImpl | null, anchor: GeographicAnchor, long
 }
 ```
 
-Vanilla: `const probe = water.createProbe({ capacity: 4 })`, then `probe.setPoints(points)` and read `probe.samples`
-every frame; `probe.dispose()` stops it. Without the mesh (WebGL2, high camera, `waveMesh: false`) the sea is drawn flat
+Over a lake below sea level a sample's `heightMeters` is the lake's surface; where the terrain draws land, `onWater` is
+false and the sample holds the ground's level. Vanilla: `const probe = water.createProbe({ capacity: 4 })`, then
+`probe.setPoints(points)` and read `probe.samples` every frame; `probe.dispose()` stops it. Without the mesh (WebGL2, high camera, `waveMesh: false`) the sea is drawn flat
 and the samples say so: sea level, normal straight up. Up to `capacity` points (default 16) cost one small dispatch.
 
 `water.state` (and `earth.inspect().plugins.water`) gives the resolved values: `albedo` (linear RGB), `roughness`,
