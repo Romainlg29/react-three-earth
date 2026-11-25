@@ -15,9 +15,9 @@ import {
 } from '../src/waves/spectrum.js'
 import { inverseStandardNormal, WAVE_CHOPPINESS } from '../src/waves/foam.js'
 import { createButterflies } from '../src/waves/WaveComputeField.js'
-import { WAVE_REPEAT_PERIOD_SECONDS, WaveField } from '../src/waves/WaveField.js'
+import { WAVE_CASCADE_LENGTHS_METERS, WAVE_REPEAT_PERIOD_SECONDS, WaveField } from '../src/waves/WaveField.js'
 import { whitecapCoverage } from '../src/optics.js'
-import { eastNorthAt, WaveSurface } from '../src/waves/WaveSurface.js'
+import { eastNorthAt, WAVE_COMPUTE_GRID_SIZE, WaveSurface } from '../src/waves/WaveSurface.js'
 
 const openOcean: SeaStateOptions = { windSpeedMetersPerSecond: 10, windDirectionDegrees: 270, fetchKilometers: 300, temperatureCelsius: 15, salinityPartsPerThousand: 35 }
 
@@ -359,7 +359,11 @@ describe('WaveComputeField', () => {
     ] as const) {
       expect([before.wrapS, before.wrapT, before.minFilter, before.magFilter, before.type]).toEqual([after.wrapS, after.wrapT, after.minFilter, after.magFilter, after.type])
     }
+    // The GPU simulates finer tiles: the fades follow its texels.
+    const texelSizes = (surface as unknown as { texelSizes: { value: number }[] }).texelSizes
+    expect(texelSizes[0]!.value).toBeCloseTo(WAVE_CASCADE_LENGTHS_METERS[0] / WAVE_COMPUTE_GRID_SIZE, 9)
     surface.update(0.016, camera, earth, webgl)
+    expect(texelSizes[0]!.value).toBeCloseTo(WAVE_CASCADE_LENGTHS_METERS[0] / surface.field.gridSize, 9)
     expect(surface.compute).toBeNull()
     expect(samplers.surfaceSampler.value).toBe(surface.field.texture)
     expect(samplers.foldSampler.value).toBe(cpuFold)

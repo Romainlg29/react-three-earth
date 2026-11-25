@@ -9,7 +9,7 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, exp, float, max, mix, pow, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
@@ -234,7 +234,10 @@ export class Water implements EarthPlugin {
         const onSea = terrainWaterMask.mul(float(1).sub(terrainFlatMorph))
         // Shallow water: the seafloor's light, dimmed going down and coming back up (Maritorena et al. 1994).
         const depth = max(this.seaLevelMeters.sub(terrainElevationMeters), 0)
-        const seafloorShare = exp(this.diffuseAttenuation.mul(depth).mul(-2)).mul(this.depthWeight)
+        // Elevation models fill the sea with sea level where they hold no depth (Terrarium's land data near coasts, in
+        // rectangles): no depth there is no seafloor, not a sandbar. Real shallows, half a metre down, still show.
+        const knownDepth = smoothstep(0.05, 0.5, depth)
+        const seafloorShare = exp(this.diffuseAttenuation.mul(depth).mul(-2)).mul(this.depthWeight).mul(knownDepth)
         const body = mix(this.albedo, this.seafloorAlbedo, seafloorShare)
         // Off the sea (and on the flat map) the foam is the whitecap share, as without waves.
         const foam = mix(this.whitecaps, waves.foam, onSea)
