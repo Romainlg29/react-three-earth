@@ -15,6 +15,7 @@ metadata:
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/EarthCamera.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/cameraAnimation.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/cameraLimits.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/viewHash.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/events.ts'
@@ -160,6 +161,40 @@ export function App() {
 `initialView` is read once, at mount. The hash is MapLibre's `#zoom/latitude/longitude/bearing/pitch`, with
 MapLibre's pitch (0 looks down), so links work in both.
 
+### Limit zoom, tilt and area
+
+```tsx
+import { Canvas } from '@react-three/fiber'
+import { Earth, EarthControls } from 'react-three-earth/react'
+
+export function AlpsMap() {
+  return (
+    <Canvas camera={{ fov: 60, near: 1, far: 1e8 }}>
+      <Earth
+        initialView={{ longitudeDegrees: 7.5, latitudeDegrees: 46.3, zoom: 8 }}
+        cameraLimits={{
+          minimumZoom: 6,
+          maximumZoom: 16,
+          maximumTiltDegrees: 60,
+          maximumBounds: { westDegrees: 5, southDegrees: 43.5, eastDegrees: 16.5, northDegrees: 48.5 },
+        }}
+      >
+        <EarthControls />
+      </Earth>
+    </Canvas>
+  )
+}
+```
+
+MapLibre's `minZoom`, `maxZoom`, `minPitch`, `maxPitch` and `maxBounds`, on the globe and the flat map. Tilt counts
+from looking straight down (0) to the horizon (90), the way MapLibre's pitch does. `maximumBounds` holds the centre of
+the screen inside the box (west greater than east crosses the antimeridian); the screen's edges may show beyond it.
+Fields left out are unlimited. The prop is compared by value. In vanilla, pass `cameraLimits` to `new Earth` or call
+`earth.camera.setLimits(limits)` (it replaces the previous limits; `{}` removes them), and read them with
+`getLimits()`. Every move keeps to them: a wheel or pinch stops at a zoom limit, a rotating drag at a tilt limit,
+`jumpTo` and the animations end inside (a `flyTo` flies lower rather than past `minimumZoom`), and `earth.update`
+moves a camera your own code placed back inside before the frame draws.
+
 ### Zoom
 
 `zoom` is MapLibre's: the world is `512 × 2^zoom` pixels wide, continuous, measured at the centre of the
@@ -266,6 +301,11 @@ gives the position on Earth.
 `getView().zoom` changes with latitude on the globe at a fixed altitude, but the `zoom` events follow the
 ground scale, so a pan fires none. Read `getView().zoom` on `moveend` for the number.
 
+### MEDIUM: Expecting `maximumBounds` to hide what lies beyond
+
+Only the centre of the screen is held inside the box, so zoomed out the screen's edges show the world around it. Pair
+it with a `minimumZoom` at which the box fills the screen.
+
 ### MEDIUM: Setting state on every `move`
 
 `move` fires every frame of a drag. Update React state on `moveend`, or throttle.
@@ -277,3 +317,4 @@ ground scale, so a pan fires none. Read `getView().zoom` on `moveend` for the nu
 - A `moveend` listener fires once after each drag, `jumpTo` or animation.
 - `await earth.camera.flyTo(view)` resolves true and `getView()` matches `view`.
 - A `click` listener logs `event.geographic` for a click, and nothing for a drag.
+- With `cameraLimits`, wheeling past `maximumZoom` stops there and `getView().zoom` reads it back.
