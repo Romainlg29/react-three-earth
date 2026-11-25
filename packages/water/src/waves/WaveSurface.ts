@@ -67,6 +67,10 @@ export class WaveSurface {
   protected readonly whitecapCoverage = uniform(0)
   /** Φ⁻¹ of the share breaking now (`WAVE_BREAKING_SHARE` of `whitecapCoverage`): how far below its mean the Jacobian falls on a breaking crest. */
   protected readonly whitecapScore = uniform(-8)
+  /** The slope variance of the ripples finer than the smallest cascade: what the close-up detail draws. */
+  protected readonly unresolvedMeanSquareSlope = uniform(0)
+  /** The sea surface's whole slope variance (`setSurfaceMeanSquareSlope`), cascades and finer ripples together. */
+  protected surfaceMeanSquareSlope = 0
   /** 1 once the GPU computes the displacement's derivatives, so the foam follows the breaking crests. */
   protected readonly foamFromWaves = uniform(0)
   /** Sample the slopes (and on the GPU the displacement's derivatives): their values swap to the GPU's textures. */
@@ -136,6 +140,15 @@ export class WaveSurface {
     if (this.computeField !== null) this.computeField.breakingScore.value = this.whitecapScore.value
   }
 
+  /**
+   * Sets the sea surface's whole slope variance (Cox & Munk's, from the wind): what the cascades do not draw, ripples
+   * finer than the smallest, is drawn near the camera as detail (`WAVE_DETAIL_SCALES`), and stands as roughness beyond.
+   */
+  setSurfaceMeanSquareSlope(meanSquareSlope: number): void {
+    this.surfaceMeanSquareSlope = meanSquareSlope
+    this.useField(this.computeSpectrum ?? this.field)
+  }
+
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
   get compute(): WaveComputeField | null {
     return this.computeField
@@ -175,10 +188,13 @@ export class WaveSurface {
 
   /** Points the uniforms at the simulation drawn now: its texel sizes and slope variances. */
   protected useField(field: WaveField): void {
+    let drawn = 0
     field.cascades.forEach((cascade, index) => {
       this.meanSquareSlopes[index]!.value = cascade.meanSquareSlope
       this.texelSizes[index]!.value = cascade.lengthMeters / field.gridSize
+      drawn += cascade.meanSquareSlope
     })
+    this.unresolvedMeanSquareSlope.value = Math.max(this.surfaceMeanSquareSlope - drawn, 0)
   }
 
   /**
@@ -321,6 +337,7 @@ export class WaveSurface {
     const threshold = float(1).add(spread.mul(this.whitecapScore))
     const edge = spread.mul(0.25).add(1e-4)
     const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
+    const { slope: detailSlope, meanSquareSlope: detailMeanSquareSlope } = this.sampleDetail(plane, footprint)
     // Crests breaking now, and the foam left where they broke, fading.
     const density = max(breaking, (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
@@ -328,12 +345,40 @@ export class WaveSurface {
     const foam = mix(this.whitecapCoverage, foamPattern(plane, footprint, density as Node<'float'>), drawnShare)
     return {
       plane,
-      slope: slope as Node<'vec2'>,
-      resolvedMeanSquareSlope: resolved as Node<'float'>,
+      slope: (slope as Node<'vec2'>).add(detailSlope) as unknown as Node<'vec2'>,
+      resolvedMeanSquareSlope: (resolved as Node<'float'>).add(detailMeanSquareSlope) as unknown as Node<'float'>,
       east: this.east as unknown as Node<'vec3'>,
       north: this.north as unknown as Node<'vec3'>,
       foam: foam as unknown as Node<'float'>,
     }
+  }
+
+  /**
+   * The ripples finer than the smallest cascade, near the camera: its texture read again shrunk by each of
+   * `WAVE_DETAIL_SCALES` and turned, scaled so that together they carry the slope variance the cascades leave out. Each
+   * fades as a cascade does, by its own texels; the variance drawn comes back with them, for the roughness to give up.
+   */
+  protected sampleDetail(plane: Node<'vec2'>, footprint: Node<'float'>): { slope: Node<'vec2'>; meanSquareSlope: Node<'float'> } {
+    const last = this.field.cascades.length - 1
+    const lengthMeters = this.field.cascades[last]!.lengthMeters
+    const share = this.unresolvedMeanSquareSlope.div(WAVE_DETAIL_SCALES.length)
+    const gain = sqrt(share.div(max(this.meanSquareSlopes[last]!, 1e-8)))
+    let slope: Node = vec2(0)
+    let drawn: Node = float(0)
+    WAVE_DETAIL_SCALES.forEach((scale, index) => {
+      const angle = WAVE_DETAIL_ANGLES_RADIANS[index]!
+      const cosine = Math.cos(angle)
+      const sine = Math.sin(angle)
+      const turned = vec2(plane.x.mul(cosine).sub(plane.y.mul(sine)), plane.x.mul(sine).add(plane.y.mul(cosine)))
+      const texelMeters = this.texelSizes[last]!.div(scale)
+      const fade = float(1).sub(smoothstep(texelMeters.mul(0.75), texelMeters.mul(2), footprint)).mul(this.weight)
+      const sampled = this.surfaceSampler.sample(turned.mul(scale / lengthMeters)).depth(int(last)).xy
+      // The slope found in the turned frame, turned back.
+      const back = vec2(sampled.x.mul(cosine).add(sampled.y.mul(sine)), sampled.y.mul(cosine).sub(sampled.x.mul(sine)))
+      slope = (slope as Node<'vec2'>).add(back.mul(gain.mul(fade)))
+      drawn = (drawn as Node<'float'>).add(share.mul(fade.mul(fade)))
+    })
+    return { slope: slope as Node<'vec2'>, meanSquareSlope: drawn as Node<'float'> }
   }
 
   /**
@@ -401,6 +446,14 @@ export class WaveSurface {
     this.emptyFold.dispose()
   }
 }
+
+/**
+ * How much smaller than the smallest cascade the close-up ripples are drawn: two scales that never line up, so the
+ * detail does not repeat visibly. With 256 texels on the GPU, the finest texel is a few millimetres.
+ */
+export const WAVE_DETAIL_SCALES = [3.7, 6.3] as const
+/** The detail layers' turns from the wind, radians: their own directions, as capillary ripples have. */
+const WAVE_DETAIL_ANGLES_RADIANS = [0.9, 2.3] as const
 
 /** The size of the foam's bubbly cells, metres. */
 const FOAM_CELL_METERS = 0.6
