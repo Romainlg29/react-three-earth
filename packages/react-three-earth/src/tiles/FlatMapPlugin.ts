@@ -110,6 +110,12 @@ const exaggeratedFlatPosition = flatPosition.add(vec3(0, 0, flatPosition.z.add(f
 const morphedPosition = morphPosition(exaggeratedGlobePosition as unknown as Node<'vec3'>, exaggeratedFlatPosition as unknown as Node<'vec3'>)
 /** 0 where a mesh set up with `enableFlatMorph` is still on the globe, 1 where it lies on the flat map. */
 export const flatMorphFactor = localMorph
+/**
+ * 0 where the terrain is on the globe, 1 where it lies unrolled on the flat map, between the two while the unroll front
+ * passes, per vertex. The flat map shows the terrain's colour unlit, so a terrain shading (`registerTerrainShading`)
+ * can fade to a colour meant to be seen flat: `mix(globeColor, mapColor, terrainFlatMorph)`.
+ */
+export const terrainFlatMorph: Node<'float'> = localMorph as unknown as Node<'float'>
 /** Takes a direction of the mesh's own (globe) frame into its flat frame: the identity on the globe. */
 export const globeToFlatMatrix = globeToFlatUniform
 /** `ViewMorph.flatMapLuminance` for the mesh being drawn. */

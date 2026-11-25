@@ -11,6 +11,7 @@ const geocoderLibrary = (path: string) => fileURLToPath(new URL(`../../packages/
 const measureLibrary = (path: string) => fileURLToPath(new URL(`../../packages/measure/src/${path}`, import.meta.url))
 const compareLibrary = (path: string) => fileURLToPath(new URL(`../../packages/compare/src/${path}`, import.meta.url))
 const terrainStyleLibrary = (path: string) => fileURLToPath(new URL(`../../packages/terrain-style/src/${path}`, import.meta.url))
+const waterLibrary = (path: string) => fileURLToPath(new URL(`../../packages/water/src/${path}`, import.meta.url))
 
 export default defineConfig({
   // GitHub Pages serves the playground under /<repository>/ (see .github/workflows/playground-pages.yml).
@@ -34,6 +35,8 @@ export default defineConfig({
       { find: /^@earthkit\/compare$/, replacement: compareLibrary('index.ts') },
       { find: /^@earthkit\/terrain-style\/react$/, replacement: terrainStyleLibrary('react/index.ts') },
       { find: /^@earthkit\/terrain-style$/, replacement: terrainStyleLibrary('index.ts') },
+      { find: /^@earthkit\/water\/react$/, replacement: waterLibrary('react/index.tsx') },
+      { find: /^@earthkit\/water$/, replacement: waterLibrary('index.ts') },
     ],
   },
   // The library is aliased to its source, so Vite would only discover these on first load, re-bundle and

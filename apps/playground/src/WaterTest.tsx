@@ -3,9 +3,13 @@
 // elevation, seafloor drawn at sea level); otherwise from quantized-mesh tiles (water from their `watermask` extension).
 // `?camera=` as in the map demo; `?view=2d` lays it on the flat map. `?shade=glossy` lights it under the atmosphere instead
 // (`?date=`), the water a smooth dark sea that reflects the sky, the land matte; `?shade=matte` makes the sea matte too.
+// `?shade=water` lights it under the atmosphere with `<Water>` from `@earthkit/water` on the land's material
+// (`?preset=` a water preset, `?wind=` its wind in m/s).
 import { Canvas, useThree } from '@react-three/fiber'
 import { setCameraView, terrainWaterMask, type Earth as EarthImpl, type ViewMode } from '@earthkit/globe'
 import { Atmosphere, Earth, QuantizedMeshSource, RasterDemSource, Terrain, useEarth } from '@earthkit/globe/react'
+import { Water } from '@earthkit/water/react'
+import type { WaterPreset } from '@earthkit/water'
 import { useLayoutEffect } from 'react'
 import { color, float, mix } from 'three/tsl'
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu'
@@ -23,11 +27,15 @@ const requestedDate = new Date(params.get('date') ?? '2026-06-21T10:00:00Z')
 
 const waterColor = mix(color('#ff0000'), color('#0000ff'), terrainWaterMask)
 const litColor = mix(color('#5d7f4a'), color('#08243d'), terrainWaterMask)
-const litRoughness = mix(float(1), float(shade === 'glossy' ? 0.05 : 1), terrainWaterMask)
+const litRoughness = shade === 'water' ? float(1) : mix(float(1), float(shade === 'glossy' ? 0.05 : 1), terrainWaterMask)
+const litLand = color('#5d7f4a')
+const waterPreset = (params.get('preset') ?? 'breeze') as WaterPreset
+const windParameter = Number.parseFloat(params.get('wind') ?? '')
+const windSpeedMetersPerSecond = Number.isFinite(windParameter) ? windParameter : undefined
 const createMaterial = () => {
   if (shade !== null) {
     const material = new MeshStandardNodeMaterial({ metalness: 0 })
-    material.colorNode = litColor
+    material.colorNode = shade === 'water' ? litLand : litColor
     material.roughnessNode = litRoughness
     return material
   }
@@ -58,6 +66,7 @@ export function WaterTest() {
       <Earth view={view} date={requestedDate}>
         <InitialView />
         {shade !== null ? <Atmosphere /> : null}
+        {shade === 'water' ? <Water preset={waterPreset} windSpeedMetersPerSecond={windSpeedMetersPerSecond} /> : null}
         <Terrain createMaterial={createMaterial}>
           {fromElevation ? (
             <RasterDemSource url={`${import.meta.env.BASE_URL}fixtures/dem/{z}/{x}/{y}.png?water`} encoding="terrarium" maximumZoom={12} flattenBelowSeaLevel />

@@ -17,7 +17,9 @@
       "@earthkit/compare": ["../../packages/compare/src/index.ts"],
       "@earthkit/compare/react": ["../../packages/compare/src/react/index.ts"],
       "@earthkit/terrain-style": ["../../packages/terrain-style/src/index.ts"],
-      "@earthkit/terrain-style/react": ["../../packages/terrain-style/src/react/index.ts"]
+      "@earthkit/terrain-style/react": ["../../packages/terrain-style/src/react/index.ts"],
+      "@earthkit/water": ["../../packages/water/src/index.ts"],
+      "@earthkit/water/react": ["../../packages/water/src/react/index.tsx"]
     }
   },
   "include": ["src", "fixtures", "vite.config.ts"]
