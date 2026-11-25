@@ -2367,6 +2367,41 @@ async function waterMask(name, query) {
 }
 
 /**
+ * Sky reflection (`?test=water&shade=…`): the atmosphere's light reflects the sky in glossy materials. Over the water
+ * fixture's open sea, looking north 1 km up on a June morning, a smooth sea (roughness 0.05) against a matte one: just
+ * below the horizon the smooth sea mirrors the bright horizon sky (Fresnel), and below the camera it shows the blue sky
+ * overhead where the matte sea shows the haze.
+ */
+async function skyReflection(name, query) {
+  const measure = async shade => {
+    const { page, errors } = await open(`/?fixtures&test=water&shade=${shade}&camera=-60,-7.5,0,8000,0,-8&date=2026-06-21T13:00:00Z${query}`)
+    await page.waitForFunction(() => {
+      const inspection = window.earth?.inspect()
+      const t = inspection?.terrain
+      return inspection?.atmosphere?.ready && t && t.tilesLoaded > 4 && t.tilesDownloading === 0 && t.tilesParsing === 0
+    }, null, { timeout: 300_000, polling: 500 })
+    await page.waitForTimeout(3000) // tiles fade in
+    const png = await page.screenshot()
+    writeFileSync(new URL(`sky-reflection-${name.replace(/[^a-z0-9]+/g, '-')}-${shade}.png`, OUT), png)
+    const stats = await analyse(page, png, `
+      const average = (top, bottom) => {
+        const sum = [0, 0, 0]
+        let count = 0
+        for (let y = top; y < bottom; y += 2) for (let x = 300; x < 500; x += 10) { const i = (y * width + x) * 4; for (let c = 0; c < 3; c++) sum[c] += px[i + c]; count++ }
+        return sum.map(value => Math.round(value / count))
+      }
+      const [r1, g1, b1] = average(250, 270), [r2, g2, b2] = average(560, 595)
+      return { horizonLuminance: Math.round(0.2126 * r1 + 0.7152 * g1 + 0.0722 * b1), belowBlueness: b2 - r2 }
+    `)
+    await page.close()
+    return { ...stats, errors }
+  }
+  const glossy = await measure('glossy')
+  const matte = await measure('matte')
+  results.push({ check: `sky reflection, ${name}`, glossy, matte, errors: [...glossy.errors, ...matte.errors] })
+}
+
+/**
  * A style's root properties (`?terrain=style`): with an empty `<Terrain>`, the earth builds terrain from the style's
  * `terrain` (DEM fixture, exaggeration 1.5) and the camera starts at its `center`, `zoom`, `bearing` and `pitch`.
  */
@@ -2957,6 +2992,8 @@ const CHECKS = [
   ['water/quantized-mesh-webgl2', () => waterMask('quantized-mesh webgl2', '&webgl')],
   ['water/raster-dem', () => waterMask('raster-dem', '&terrain=dem')],
   ['water/2d', () => waterMask('2d', '&view=2d')],
+  ['water/sky-reflection', () => skyReflection('webgpu', '')],
+  ['water/sky-reflection-webgl2', () => skyReflection('webgl2', '&webgl')],
   ['exaggeration/raster-dem', () => terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')],
   ['exaggeration/quantized-mesh', () => terrainExaggeration('quantized-mesh', '&exaggeration=2')],
   ['exaggeration/2d', () => terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')],

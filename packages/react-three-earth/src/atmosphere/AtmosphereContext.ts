@@ -240,6 +240,25 @@ export class AtmosphereContext {
     }
   }
 
+  /**
+   * The sky's light arriving at an ECEF point from a world direction (scaled luminance, without the sun's disc): what a
+   * mirror there reflects. Rays towards the ground carry the light scattered by the air before it, not the ground's.
+   * Until the lookup textures are ready: the fallback skylight, spread evenly over the sky.
+   *
+   * @param camera From `createCameraNodes`: its rotation into the model's frame turns the direction. That rotation is the
+   *   camera's, not the point's: they differ by under 0.2° (the ellipsoid's normal against the radial direction), which
+   *   only shows at grazing angles far from the camera.
+   * @param positionKilometers ECEF position in kilometres (see `getSunAndSkyIlluminance`).
+   * @param worldDirection Unit direction from the point towards the sky, world (ECEF) axes.
+   */
+  getSkyRadiance(camera: AtmosphereCameraNodes, positionKilometers: Node<'vec3'>, worldDirection: Node<'vec3'>): Node<'vec3'> {
+    const position = this.toAtmosphereFrame(positionKilometers)
+    const { directionRotation } = camera
+    const sky = this.model.getSkyRadiance(this.textures, position, directionRotation.mul(worldDirection), directionRotation.mul(this.sunDirection))
+    const unattenuated = this.model.solarIrradianceWattsPerSquareMeterNanometer.mul(this.sunLuminanceFactor)
+    return select(this.texturesReady.greaterThan(0.5), sky.radiance.mul(this.skyLuminanceFactor), unattenuated.mul(FALLBACK_SKY_SHARE / Math.PI))
+  }
+
   /** Factor from sky radiance to scaled luminance. */
   get skyLuminanceFactor(): Node<'vec3'> {
     const value = this.parameters.skyRadianceToLuminanceLumensPerWatt

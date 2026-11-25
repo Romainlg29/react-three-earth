@@ -172,6 +172,10 @@ export function BlueSea() {
 
 `@earthkit/terrain-style` reads it as `['water']`.
 
+For a glossy sea, set `material.roughnessNode = mix(float(1), float(0.05), terrainWaterMask)`: under `<Atmosphere>`
+the water then reflects the sky (Fresnel included) and the sun's highlight, while the land stays matte. Glossy pixels
+cost two more 3D texture samples each.
+
 ## Common Mistakes
 
 ### HIGH: Changing `colorNode` after the tile is loaded
