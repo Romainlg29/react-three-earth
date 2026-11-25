@@ -17,6 +17,7 @@
     "react-dom": "19.3.1",
     "@earthkit/globe": "workspace:*",
     "@earthkit/draw": "workspace:*",
+    "@earthkit/geocoder": "workspace:*",
     "@earthkit/measure": "workspace:*",
     "three": "0.187.0"
   },

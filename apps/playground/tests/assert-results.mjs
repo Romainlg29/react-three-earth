@@ -462,6 +462,13 @@ expectations['gallery example, night'] = r => [
   ['the sdf-glow plugin lights the major roads, in the colour the buttons pick', r.glow.before.amber > 0.01 && r.glow.after.cyan > 0.01 && r.glow.after.amber < r.glow.before.amber / 4],
   ['the neon symbol effect draws the place names with their magenta outline', r.labels.length > 0 && r.glow.before.magenta > 0.0005],
 ]
+expectations['gallery example, geocoder'] = r => [
+  ['typing a word searches once, after the pause, and lists the fixture places', JSON.stringify(r.geocoder.searches) === '["fixture"]' && r.geocoder.options.length === 3 && r.geocoder.options[0].startsWith('Fixture Peak') && r.geocoder.expanded === 'true'],
+  ['the down arrow picks the first result, announced with aria-activedescendant', r.geocoder.activeDescendant !== null && r.geocoder.activeDescendant === r.geocoder.activeOptionId],
+  ['Enter selects it: the name fills the box, the list closes, the camera flies to the point at zoom 16', r.geocoder.query === 'Fixture Peak' && r.geocoder.listHidden && Math.abs(r.geocoder.view.longitudeDegrees + 90) < 0.01 && Math.abs(r.geocoder.view.latitudeDegrees) < 0.01 && Math.abs(r.geocoder.view.zoom - 16) < 0.5],
+  ['a marker named after the place drops on it', r.geocoder.marker?.label === 'Fixture Peak' && r.geocoder.marker.visibility !== 'hidden'],
+  ['a click on the map reverse geocodes it: the peak nearby', r.geocoder.reverse === 'Here: Fixture Peak, Synthetic range'],
+]
 expectations['gallery example, embedded'] = r => [
   ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],
 ]

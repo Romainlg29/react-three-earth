@@ -189,3 +189,52 @@
   overflow: hidden;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
 }
+
+/* `?example=geocoder`: the search box, built on `useGeocoder`'s combobox props. */
+.example-search {
+  position: relative;
+  margin-top: 10px;
+}
+
+.example-search-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #b4bdcc;
+}
+
+.example-search input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #34405a;
+  border-radius: 8px;
+  background: #1b2333;
+  color: inherit;
+  font: inherit;
+}
+
+.example-search-results {
+  margin: 4px 0 0;
+  padding: 4px;
+  list-style: none;
+  border: 1px solid #34405a;
+  border-radius: 8px;
+  background: #141a26;
+}
+
+.example-search-results li {
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.example-search-results li[aria-selected='true'] {
+  background: #24365e;
+}
+
+.example-search-results li span {
+  display: block;
+  color: #b4bdcc;
+  font-size: 0.9em;
+}
