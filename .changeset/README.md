@@ -7,7 +7,7 @@ need none.
 Releasing (see `.github/workflows/release.yml`):
 
 1. On every push to `master`, the Release workflow opens or updates a "Version packages" pull request that applies
-   the pending changesets: new versions, changelogs, lockfile.
+   the pending changesets: new versions and changelogs.
 2. Merge that pull request when you want to release.
 3. Run the Release workflow by hand (Actions → Release → Run workflow) on `master`. With no changeset left pending, it
    builds and publishes every package whose version is not on npm yet, then tags it. It needs the `NPM_TOKEN`

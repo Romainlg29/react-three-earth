@@ -1,7 +1,7 @@
 ---
 name: map-controls
 description: >
-  Use when an app needs buttons and widgets over the @earthkit/globe map, like MapLibre's controls: zoom
+  Use when an app needs buttons and widgets over the earthkit map, like MapLibre's controls: zoom
   in and out, a compass that resets north, a scale bar, a "find my location" button, fullscreen, or a
   2D / 3D toggle, built headless with hooks (useNavigationControl, useScaleControl…) and styled by the app, translated
   labels, or making them work on iPhone Safari. Also when the map must work with a keyboard or a screen reader (arrow

@@ -24,7 +24,8 @@
   "files": [
     "dist",
     "skills",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": {

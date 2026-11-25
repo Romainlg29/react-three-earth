@@ -195,7 +195,7 @@ npx @tanstack/intent@latest load @earthkit/globe#getting-started
 | `write-a-plugin` | extending the library with plugins: `<Earth plugins>`, objects that follow the 2D morph, raymarched SDF shapes, custom style layer types, render passes, draped layers |
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
 
-Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.
+Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 
 ## Develop
 

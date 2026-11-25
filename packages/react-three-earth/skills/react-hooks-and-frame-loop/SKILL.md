@@ -1,7 +1,7 @@
 ---
 name: react-hooks-and-frame-loop
 description: >
-  Use when React UI or per-frame code needs the @earthkit/globe globe: reading tile counts or other
+  Use when React UI or per-frame code needs the earthkit globe: reading tile counts or other
   Earth state into components (HUD, loading indicator), running code every frame after tiles update,
   getting the vanilla Earth object inside R3F, ordering frame callbacks, or using frameloop="demand"
   to save battery.

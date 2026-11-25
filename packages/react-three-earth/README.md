@@ -193,7 +193,7 @@ The drawing package, `@earthkit/draw`, ships its own skills:
 | `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
 | `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
 
-Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.
+Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 
 ## License
 
