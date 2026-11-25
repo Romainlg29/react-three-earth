@@ -1,0 +1,82 @@
+{
+  "name": "@earthkit/measure",
+  "version": "0.0.0",
+  "description": "Headless measuring for @earthkit/globe: geodesic distances, areas and elevation profiles on the globe and the flat map",
+  "keywords": [
+    "earthkit",
+    "three",
+    "react-three-fiber",
+    "webgpu",
+    "map",
+    "measure",
+    "distance",
+    "area",
+    "elevation-profile",
+    "geodesic",
+    "tanstack-intent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Romainlg29/react-three-earth.git",
+    "directory": "packages/measure"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:changed": "vitest run --changed origin/master --passWithNoTests",
+    "validate:skills": "intent validate skills"
+  },
+  "dependencies": {
+    "@types/geojson": "^7946.0.16",
+    "geographiclib-geodesic": "2.2.0"
+  },
+  "devDependencies": {
+    "@earthkit/draw": "workspace:*",
+    "@earthkit/globe": "workspace:*",
+    "@react-three/fiber": "10.0.0-alpha.6",
+    "@tanstack/intent": "0.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "react": "~19.3.1",
+    "three": "0.187.0",
+    "tsdown": "^0.23.7",
+    "typescript": "~6.0.2",
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "@earthkit/draw": "0.x",
+    "@earthkit/globe": "0.x",
+    "react": ">=19.0 <19.4",
+    "three": ">=0.187.0 <0.188.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}

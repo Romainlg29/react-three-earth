@@ -17,6 +17,10 @@ instead.
 - `packages/draw`: `@earthkit/draw`, headless drawing and editing as a plugin, built only on the library's
   public API (`src/modes` for the tools, `src/render` for the draped features and the live overlay). Ships its own
   skills in `packages/draw/skills/`.
+- `packages/geocoder`: `@earthkit/geocoder`, headless place search as a plugin on the public API (`src/providers` for
+  the services and the in-memory GeoJSON index, `src/react` for the combobox hook). Ships its own skill.
+- `packages/measure`: `@earthkit/measure`, headless measuring (geodesic distances and areas, elevation profiles) as a
+  plugin on `@earthkit/draw` and the public API. Ships its skill in `packages/measure/skills/`.
 - `apps/playground`: Vite app on the library source. `?fixtures` serves synthetic tiles, `?test=precision`
   is the centimetre test, `?atmosphere=0` turns the atmosphere off, `?markers` adds markers and popups, `?strict`
   renders under React's StrictMode, `?example=<name>` opens a gallery example (`src/examples/`, live data or `?fixtures`). `tests/run.mjs` drives it in Chromium.
