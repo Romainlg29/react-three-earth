@@ -107,6 +107,8 @@ const layerUV = Array.from({ length: MAX_LAYER_COUNT }, (_, index) =>
 // Weak: a factory that builds its colour node per tile must not keep every one alive.
 const colorNodeCache = new WeakMap<object, Map<number, Node>>()
 const MATERIAL_COLOR_KEY = {}
+/** The blends this module made: a cloned tile material carries one, which must not become the next blend's base. */
+const overlayColorNodes = new WeakSet<Node>()
 
 function getColorNode(layerCount: number, baseColorNode: Node | null): Node {
   const key = baseColorNode ?? MATERIAL_COLOR_KEY
@@ -165,6 +167,7 @@ function getColorNode(layerCount: number, baseColorNode: Node | null): Node {
   })()
 
   byLayerCount.set(layerCount, colorNode)
+  overlayColorNodes.add(colorNode)
   return colorNode
 }
 
@@ -185,7 +188,9 @@ export function wrapOverlaysNodeMaterial(
 
   let layerCount = 0
   // The colour node the material's factory set, kept under the layers. Read once: the overlay owns `colorNode` from here.
-  const baseColorNode = material.colorNode ?? null
+  // A material cloned from a wrapped one (imagery tile splitting) already holds a blend: its base is the plain colour.
+  const factoryColorNode = material.colorNode ?? null
+  const baseColorNode = factoryColorNode !== null && overlayColorNodes.has(factoryColorNode) ? null : factoryColorNode
 
   // The colour node of each layer count is a parameterless `Fn`, so three's node cache key does not tell them
   // apart: without the count in the program key, a layer added after the first compile (an imagery layer or a

@@ -280,5 +280,10 @@ describe('terrain materials wrapped for overlays and fades', () => {
     wrapOverlaysNodeMaterial(sibling)
     ;(sibling.defines as Record<string, number>).LAYER_COUNT = 1
     expect(sibling.colorNode).toBe(tinted.colorNode)
+    // A clone of a wrapped material (imagery tile splitting) does not blend the layers twice.
+    const clone = plain.clone()
+    wrapOverlaysNodeMaterial(clone)
+    ;(clone.defines as Record<string, number>).LAYER_COUNT = 1
+    expect(clone.colorNode).toBe(plain.colorNode)
   })
 })

@@ -92,13 +92,18 @@ bands are a `step` instead of a `smoothstep`: `select(terrainSlopeDegrees.greate
 - Values are smooth per vertex, from the source's normals, and interpolated across each triangle: a coarse tile
   far away shows broad strokes, the detail sharpens as tiles refine.
 - Elevation is ellipsoidal, not above sea level: the geoid differs by up to about 100 m.
+- Skirts (the strips hanging under tile edges to hide cracks) read their lowered height, so an elevation band
+  can show a thin seam of the colour below it where tiles of different detail meet.
+- Reading these nodes adds one vertex attribute to the tile shader. WebGPU guarantees only 8 vertex buffers, and
+  three gives each attribute (every imagery layer's included) its own: with several imagery layers on WebGPU, ask
+  the adapter for a higher `maxVertexBuffers` through the renderer's `requiredLimits`.
 - The style layer `color-relief` (`satellite-and-relief-styles`) colours by elevation from a `raster-dem`
   source as a draped layer instead; use it when a map style already holds the elevation tiles.
 
 ### Shade by slope with emissive light
 
-Free slots on `MeshStandardNodeMaterial` include `emissiveNode`, `roughnessNode`, `metalnessNode`,
-`normalNode` and `opacityNode`: add effects there that light should not dim.
+Free slots on `MeshStandardNodeMaterial` include `emissiveNode`, `roughnessNode`, `metalnessNode` and
+`opacityNode`: add effects there that light should not dim.
 
 ```ts
 import { terrainSlopeDegrees } from 'react-three-earth'
@@ -114,7 +119,8 @@ export const createSlopeMaterial = () => {
 }
 ```
 
-The library owns `positionNode` and `normalNode` (the globe-to-map morph and exaggeration) and, with `fade` on
+The library owns `positionNode` and `normalNode` (the globe-to-map morph and exaggeration; a factory's own
+`normalNode` is kept but no longer turns with the morph) and, with `fade` on
 (the default), `outputNode` (tile cross-fades). It takes over `colorNode` once the tile is set up, keeping the
 factory's node under the imagery.
 
@@ -155,7 +161,8 @@ classic materials ignore, so imagery disappears. Return a `NodeMaterial` from `t
 ### MEDIUM: New TSL nodes per call
 
 Building the node graph inside the factory makes every tile compile its own shader on first sight,
-which stutters while panning. Build nodes once, assign them per material.
+which stutters while panning. Build nodes once, assign them per material. This holds for `colorNode` too:
+the imagery blend is cached per base node, so a new node per tile means a new shader per tile.
 
 ### MEDIUM: Moving vertices with `positionNode`
 
