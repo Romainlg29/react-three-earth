@@ -131,6 +131,10 @@ const expectations = {
     ...(name === 'raster-dem' ? [['the seafloor is drawn at sea level: over sea more than 1000 m deep, heights read within 100 m of 0 (the chords of 35 km mesh cells sag up to about 60 m below the ellipsoid)', r.seaHeights?.count > 10 && r.seaHeights.maximumMeters < 100]] : []),
     ...(name === '2d' ? [['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1]] : []),
   ]])),
+  ...Object.fromEntries(['webgpu', 'webgl2'].map(name => [`sky reflection, ${name}`, r => [
+    ['below the horizon, the smooth sea mirrors the brighter horizon sky (10 levels over the matte sea; measured 204 against 185)', r.glossy?.horizonLuminance > r.matte?.horizonLuminance + 10],
+    ['below the camera, the smooth sea shows the blue sky overhead (blue minus red 15 over the matte sea; measured 70 against 40)', r.glossy?.belowBlueness > r.matte?.belowBlueness + 15],
+  ]])),
   'raster-dem terrain, north pole': r => [['no hole at the pole (no black at the centre)', r.centreBlackShare === 0]],
   'raster-dem terrain, 2d': r => [
     ['view settled on the map', r.view?.mode === '2d' && r.view?.morph === 1],

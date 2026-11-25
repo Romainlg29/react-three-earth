@@ -18,6 +18,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AtmosphereParameters.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/ephemeris.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AerialPerspectiveNode.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/atmosphere/AtmosphereLight.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/TranslucentPass.ts'
   - 'Romainlg29/react-three-earth:docs/spike/SPIKE.md'
 requires:
@@ -30,7 +31,10 @@ Read `getting-started` first. The atmosphere is the library's own port of Brunet
 atmospheric scattering (2017). It provides three things:
 
 - a sun light (a `DirectionalLight`) that lights stock `MeshStandardNodeMaterial`s with attenuated
-  sunlight plus sky irradiance as ambient,
+  sunlight, sky irradiance as ambient, and the sky's reflection: below roughness 0.6 a surface mirrors the sky along
+  its reflected direction (a smooth sea turns blue overhead, pale towards the horizon, orange at sunset), fading to the
+  even sky above. A draw whose roughness is 0.6 or more everywhere (the default terrain, roughness 1) skips that
+  lookup; where glossy and matte pixels meet (a coast), the GPU pays for it on both,
 - a post-processing node that draws the sky and sun and hazes distant geometry (aerial perspective),
 - a solar ephemeris: the sun's direction is computed from `<Earth date>`.
 
@@ -173,6 +177,12 @@ every sky ray points the wrong way and the sky shows the ground colour.
 
 With `<Atmosphere>` removed, nothing lights the terrain and it renders black. Add `<ambientLight>` and
 `<directionalLight>` in that case.
+
+### MEDIUM: `scene.environment` set under `<Atmosphere>`
+
+The atmosphere's light already gives physically based materials the sky's reflection. An environment map adds its own
+on top, so glossy surfaces reflect twice. Leave `scene.environment` unset, or set `envMapIntensity` to 0 on materials that
+should reflect only the sky.
 
 ### MEDIUM: No `reversedDepthBuffer`
 
