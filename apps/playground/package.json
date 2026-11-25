@@ -18,6 +18,7 @@
     "@earthkit/globe": "workspace:*",
     "@earthkit/draw": "workspace:*",
     "@earthkit/geocoder": "workspace:*",
+    "@earthkit/measure": "workspace:*",
     "three": "0.187.0"
   },
   "devDependencies": {
