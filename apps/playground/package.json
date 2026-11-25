@@ -20,6 +20,7 @@
     "@earthkit/geocoder": "workspace:*",
     "@earthkit/measure": "workspace:*",
     "@earthkit/compare": "workspace:*",
+    "@earthkit/terrain-style": "workspace:*",
     "three": "0.187.0"
   },
   "devDependencies": {
