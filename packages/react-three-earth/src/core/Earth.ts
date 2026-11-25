@@ -9,6 +9,7 @@ import type { CameraLimits } from './cameraLimits.js'
 import { EarthCamera, type MapView, type MapViewChange } from './EarthCamera.js'
 import { CameraMotionDetector, EarthEventTracker, type EarthEventMap, type EarthPointerEvent, type ViewSample } from './events.js'
 import type { Imagery } from './Imagery.js'
+import { screenClipKeeps } from './screenClip.js'
 import { screenToMercatorQuery, type RenderedFeature, type RenderedFeatureQueryOptions, type ScreenQueryGeometry } from './featureQuery.js'
 import { LayerEvents } from './LayerEvents.js'
 import { RasterDemSource, type MapStyleSource } from './sources.js'
@@ -734,6 +735,7 @@ export class Earth extends Group<EarthEventMap> {
         const source = imagery.sources[index] as MapStyleSource
         styles.push(source)
         if (imagery.opacity <= 0) continue // not drawn
+        if (!this.screenBoxOverlapsClip(imagery, screenBox)) continue // clipped away there (`screenClip`)
         const answer = overlay.queryRenderedFeatures(mercator, options, screenBox).then(features => features.map(feature => Object.assign(feature, { mapStyleSource: source })))
         // A source disposed meanwhile (its layer unmounted, a style swap) answers nothing rather than failing the rest.
         queries.push(answer.catch((error: unknown) => {
@@ -744,6 +746,14 @@ export class Earth extends Group<EarthEventMap> {
     }
     this.warnUnknownQueryLayers(options.layers, styles)
     return (await Promise.all(queries)).flat()
+  }
+
+  /** Whether any corner of the query box (CSS pixels) is in the part of the canvas the layer keeps: a half-plane holds a box's part iff it holds a corner. */
+  protected screenBoxOverlapsClip(imagery: Imagery, [left, top, right, bottom]: readonly [number, number, number, number]): boolean {
+    const clip = imagery.screenClip
+    const { x: width, y: height } = this.viewportSize
+    if (clip === null || width <= 0 || height <= 0) return true
+    return [left, right].some(x => [top, bottom].some(y => screenClipKeeps(clip, x / width, y / height)))
   }
 
   /** Warns once per id that no loaded style has, as MapLibre reports layers it cannot query. */

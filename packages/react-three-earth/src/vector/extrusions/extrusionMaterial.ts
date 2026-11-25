@@ -1,7 +1,8 @@
-import { BufferAttribute, BufferGeometry, LessEqualDepth, Mesh, type Object3D } from 'three'
+import { BufferAttribute, BufferGeometry, LessEqualDepth, Mesh, Vector3, type Object3D } from 'three'
 import { attribute, clamp, cosh, dot, float, max, mix, mat3, normalGeometry, output, positionGeometry, sRGBTransferEOTF, transformNormalToView, uniform, vec3, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial, MeshStandardNodeMaterial, type Node } from 'three/webgpu'
 
+import { prepareScreenClipMask, screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
 import { flatMapLuminanceNode, flatMorphFactor, globeToFlatMatrix, morphPosition } from '../../tiles/FlatMapPlugin.js'
 import { WEB_MERCATOR_RADIUS_METERS } from '../../view/webMercator.js'
 import type { ExtrusionMesh } from '../worker/types.js'
@@ -69,7 +70,10 @@ export interface ExtrusionMaterials {
   depth: MeshBasicNodeMaterial
 }
 
-export function createExtrusionMaterials(): ExtrusionMaterials {
+/** `clipPlane`: the part of the canvas the buildings keep (the imagery layer's `screenClip`, from `screenClipPlane`). */
+export function createExtrusionMaterials(clipPlane: { readonly value: Vector3 } = { value: screenClipPlane(null) }): ExtrusionMaterials {
+  // Discarded, not faded: a clipped building must not hide what is behind it in the depth buffer either.
+  const kept = screenClipFactor(uniform(new Vector3()).onRenderUpdate((_, self) => void self.value.copy(clipPlane.value)) as unknown as Node<'vec3'>).greaterThan(0.5)
   const create = (transparent: boolean) => {
     const material = new MeshStandardNodeMaterial({ roughness: 1, metalness: 0, transparent })
     material.name = transparent ? 'ExtrusionTranslucent' : 'ExtrusionOpaque'
@@ -82,11 +86,13 @@ export function createExtrusionMaterials(): ExtrusionMaterials {
       material.depthFunc = LessEqualDepth
     }
     material.outputNode = vec4(mix(output.rgb, flatColor, flatMorphFactor), output.a)
+    prepareScreenClipMask(material, kept)
     return material
   }
   const depth = new MeshBasicNodeMaterial({ colorWrite: false })
   depth.name = 'ExtrusionDepth'
   depth.positionNode = extrusionPosition
+  prepareScreenClipMask(depth, kept)
   return { opaque: create(false), translucent: create(true), depth }
 }
 

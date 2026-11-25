@@ -1,4 +1,7 @@
+import type { Vector3 } from 'three'
+
 import { collectAttributions, type AttributionProvider } from './attribution.js'
+import { screenClipPlane, validateScreenClip, type ScreenClip } from './screenClip.js'
 import type { ImagerySource } from './sources.js'
 
 export interface ImageryOptions {
@@ -6,10 +9,14 @@ export interface ImageryOptions {
   sources: ImagerySource[]
   /** 0 to 1. Default: 1. */
   opacity?: number
+  /** Keeps the layer to one part of the canvas (see `ScreenClip`). Default: null, the whole canvas. */
+  screenClip?: ScreenClip | null
 }
 
 interface OverlayLike {
   opacity: number
+  /** Read by the terrain shader, and by a map style's labels and buildings, every frame. */
+  screenClipPlane?: Vector3
   dispose?(): void
 }
 
@@ -19,11 +26,32 @@ export class Imagery implements AttributionProvider {
   /** The 3DTilesRenderer overlays, one per source. */
   readonly overlays: readonly OverlayLike[]
   protected _opacity: number
+  protected _screenClip: ScreenClip | null = null
+  /** `screenClip` as a half-plane, shared by every overlay of the layer. */
+  protected readonly screenClipPlane = screenClipPlane(null)
 
-  constructor({ sources, opacity = 1 }: ImageryOptions) {
+  constructor({ sources, opacity = 1, screenClip = null }: ImageryOptions) {
     this.sources = sources
     this._opacity = opacity
     this.overlays = sources.map(source => source.createOverlay({ opacity }) as OverlayLike)
+    for (const overlay of this.overlays) overlay.screenClipPlane = this.screenClipPlane
+    this.screenClip = screenClip
+  }
+
+  get screenClip(): ScreenClip | null {
+    return this._screenClip
+  }
+
+  /**
+   * Keeps the layer to one side of a line across the canvas: its imagery, and a map style's labels and 3D buildings.
+   * Null shows it everywhere. Takes effect on the next frame, with no shader rebuild, so it can change every frame
+   * (a swipe slider). The value is copied: assign a new object to change it. Ask for a frame
+   * (`earth.requestFrame()`) when rendering on demand.
+   */
+  set screenClip(value: ScreenClip | null) {
+    validateScreenClip(value, 'Imagery')
+    this._screenClip = value === null ? null : { side: value.side, positionFraction: value.positionFraction }
+    screenClipPlane(value, this.screenClipPlane)
   }
 
   get opacity(): number {

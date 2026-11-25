@@ -2645,6 +2645,81 @@ async function gestures() {
   results.push({ ...result, errors: [...desktop.errors, ...wheel.errors] })
 }
 
+/**
+ * `Imagery.screenClip`: every imagery layer is clipped to one side of the middle of the canvas. The kept half must
+ * look as before (imagery, labels and buildings), the other half must change (they are gone: bare terrain).
+ */
+async function screenClip(name, query, side) {
+  const { page, errors } = await open(`/?fixtures&stats=0&atmosphere=0${query}`)
+  const settled = async () => {
+    await page.waitForFunction(() => {
+      const inspection = window.earth?.inspect()
+      const t = inspection?.terrain
+      return t && t.tilesLoaded > 20 && t.tilesDownloading === 0 && t.tilesParsing === 0 && t.imageryCompositionsPending === 0 && inspection.idle
+    }, null, { timeout: 240_000, polling: 500 })
+    await page.waitForTimeout(2500) // tile and label fades
+  }
+  await settled()
+  const before = await page.screenshot()
+  // Protected state, read for the check only: the earth's imagery layers.
+  await page.evaluate(side => {
+    for (const imagery of window.earth.imagery) imagery.screenClip = { side, positionFraction: 0.5 }
+    window.earth.requestFrame()
+  }, side)
+  await settled()
+  const after = await page.screenshot()
+  writeFileSync(new URL(`screen-clip-${name.replaceAll(/[^a-z0-9]+/gi, '-')}.png`, OUT), after)
+  const halves = await page.evaluate(async ({ before, after, side }) => {
+    const pixels = async data => {
+      const image = new Image()
+      image.src = `data:image/png;base64,${data}`
+      await image.decode()
+      const canvas = document.createElement('canvas')
+      canvas.width = image.width
+      canvas.height = image.height
+      const context = canvas.getContext('2d')
+      context.drawImage(image, 0, 0)
+      return context.getImageData(0, 0, image.width, image.height)
+    }
+    const a = await pixels(before)
+    const b = await pixels(after)
+    const { width, height } = a
+    // Share of pixels that changed visibly, in the kept half and in the clipped half, a few pixels away from the line.
+    const counts = { kept: [0, 0], clipped: [0, 0] }
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const along = side === 'left' || side === 'right' ? x / width : y / height
+        if (Math.abs(along - 0.5) < 0.02) continue
+        const firstHalf = along < 0.5
+        const kept = (side === 'left' || side === 'top') === firstHalf
+        const i = (y * width + x) * 4
+        const changed = Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]) > 30
+        const count = kept ? counts.kept : counts.clipped
+        count[0] += changed ? 1 : 0
+        count[1]++
+      }
+    }
+    // What is left in the clipped half must be bare terrain: no label or building standing out of its mean colour.
+    const mean = [0, 0, 0]
+    const clippedPixels = []
+    // Below the black space over the horizon, clear of the map controls (top right) and the attribution (bottom right).
+    for (let y = 80; y < height - 24; y++) {
+      for (let x = 0; x < width - 60; x++) {
+        const along = side === 'left' || side === 'right' ? x / width : y / height
+        if (Math.abs(along - 0.5) < 0.02 || ((side === 'left' || side === 'top') === along < 0.5)) continue
+        const i = (y * width + x) * 4
+        clippedPixels.push(i)
+        for (let channel = 0; channel < 3; channel++) mean[channel] += b.data[i + channel]
+      }
+    }
+    for (let channel = 0; channel < 3; channel++) mean[channel] /= clippedPixels.length
+    const standingOut = clippedPixels.filter(i => Math.abs(b.data[i] - mean[0]) + Math.abs(b.data[i + 1] - mean[1]) + Math.abs(b.data[i + 2] - mean[2]) > 60).length
+    return { keptChangedShare: +(counts.kept[0] / counts.kept[1]).toFixed(4), clippedChangedShare: +(counts.clipped[0] / counts.clipped[1]).toFixed(4), clippedStandingOutShare: +(standingOut / clippedPixels.length).toFixed(4) }
+  }, { before: before.toString('base64'), after: after.toString('base64'), side })
+  await page.close()
+  results.push({ check: `screen clip, ${name}`, ...halves, errors })
+}
+
 // Every check, in suite order: `area/variant` (or the area alone), and what it runs. Ids name checks on the command
 // line (`run.mjs labels/webgl2`) and in the coverage records; renaming one makes it run once more.
 const HEATMAP_2D_VIEW = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
@@ -2822,6 +2897,9 @@ const CHECKS = [
   ['exaggeration/raster-dem', () => terrainExaggeration('raster-dem', '&terrain=dem&exaggeration=2')],
   ['exaggeration/quantized-mesh', () => terrainExaggeration('quantized-mesh', '&exaggeration=2')],
   ['exaggeration/2d', () => terrainExaggeration('2d', '&terrain=dem&exaggeration=2&view=2d')],
+  ['screen-clip/buildings', () => screenClip('buildings', `&map=buildings${BUILDINGS_PITCHED}`, 'left')],
+  ['screen-clip/labels', () => screenClip('labels', '&map=labels&camera=138.74,35.36,0,40000,0,-90', 'right')],
+  ['screen-clip/webgl2', () => screenClip('webgl2', `&map=buildings&webgl${BUILDINGS_PITCHED}`, 'top')],
   ['draw/drawing-globe-mouse', () => drawing('globe, mouse')],
   ['draw/drawing-globe-touch', () => drawing('globe, touch', { touch: true })],
   ['draw/drawing-flat-touch', () => drawing('flat map, touch', { touch: true, flat: true })],
