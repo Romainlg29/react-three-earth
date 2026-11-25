@@ -193,6 +193,12 @@ The drawing package, `@earthkit/draw`, ships its own skills:
 | `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
 | `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
 
+The comparison package, `@earthkit/compare`, ships its own:
+
+| Skill | Use when |
+| --- | --- |
+| `compare-maps` | two imagery layers or map styles on either side of a swipe slider (before and after, streets and satellite) |
+
 Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 
 ## License

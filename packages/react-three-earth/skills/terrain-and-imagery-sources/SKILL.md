@@ -261,7 +261,7 @@ from the left or top edge. Layers clipped to opposite sides of the same line mak
 camera and every unclipped layer are shared. It is per pixel in the shaders, so changing it costs nothing (no reload,
 no shader rebuild, no extra draw). For a line that moves every frame, set `imagery.screenClip = { … }` on the layer a callback
 `ref` receives (`<Imagery ref={layer => …}>`; a source change builds a new layer, which starts with the prop's clip)
-and call `earth.requestFrame()`, instead of re-rendering. `queryRenderedFeatures` and layer events skip a layer where
+and call `earth.requestFrame()`, instead of re-rendering. A swipe slider with dragging and keyboard is `@earthkit/compare`. `queryRenderedFeatures` and layer events skip a layer where
 it is clipped away.
 
 Vanilla: `new Imagery({ sources, screenClip: { side: 'left', positionFraction: 0.5 } })`, or

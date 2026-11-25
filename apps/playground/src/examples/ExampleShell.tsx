@@ -56,6 +56,8 @@ export interface ExampleShellProps {
   onEarth?: (earth: EarthImpl) => void
   /** Shows the card with the title and panel. Default: true. */
   showCard?: boolean
+  /** DOM over the canvas, in its box (a slider's handle). */
+  overlay?: ReactNode
   /** The DOM around the canvas, for an example that embeds the map in a page. Default: the whole window. */
   className?: string
 }
@@ -65,7 +67,7 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas' }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
@@ -79,6 +81,7 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
           <MapControls />
         </Earth>
       </Canvas>
+      {overlay}
       {showCard ? (
         <section className="example-card" aria-label={title} data-collapsed={collapsed}>
           <header>

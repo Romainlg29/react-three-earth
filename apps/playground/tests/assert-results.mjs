@@ -480,6 +480,14 @@ expectations['gallery example, geocoder'] = r => [
   ['Enter selects it: the name fills the box, the list closes, the camera flies to the point at zoom 16', r.geocoder.query === 'Fixture Peak' && r.geocoder.listHidden && Math.abs(r.geocoder.view.longitudeDegrees + 90) < 0.01 && Math.abs(r.geocoder.view.latitudeDegrees) < 0.01 && Math.abs(r.geocoder.view.zoom - 16) < 0.5],
   ['a marker named after the place drops on it', r.geocoder.marker?.label === 'Fixture Peak' && r.geocoder.marker.visibility !== 'hidden'],
   ['a click on the map reverse geocodes it: the peak nearby', r.geocoder.reverse === 'Here: Fixture Peak, Synthetic range'],
+// `@earthkit/compare`: the street map before the line, the green fixture imagery after it, one camera.
+expectations['gallery example, compare'] = r => [
+  ['the street map shows before the line, the imagery after', r.compare.initial[0] < 0.05 && r.compare.initial[1] > 0.3],
+  ['dragging the handle moves the line to three quarters', Math.abs(r.compare.dragged.valueNow - 75) < 3],
+  ['the band the line crossed shows the street map, the rest the imagery', r.compare.dragged.bands[0] < 0.05 && r.compare.dragged.bands[1] > 0.3],
+  ['dragging the handle does not pan the map', Math.abs(r.compare.dragged.camera + 90) < 0.001],
+  ['Home puts the line at the left edge: imagery everywhere', r.compare.keyboard.valueNow === 0 && r.compare.keyboard.bands[0] > 0.3],
+  ['top and bottom: the street map above, the imagery below', r.compare.horizontal.orientation === 'vertical' && r.compare.horizontal.bands[0] < 0.05 && r.compare.horizontal.bands[1] > 0.3],
 ]
 expectations['gallery example, embedded'] = r => [
   ['a plain wheel over the map scrolls the page, not the map', r.wheel.after.scroll > r.wheel.before.scroll && Math.abs(r.wheel.after.distance - r.wheel.before.distance) < r.wheel.before.distance * 0.01],

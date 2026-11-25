@@ -1,0 +1,75 @@
+{
+  "name": "@earthkit/compare",
+  "version": "0.0.0",
+  "description": "Headless swipe comparison for @earthkit/globe: two imagery layers or map styles side by side on one globe, with a slider",
+  "keywords": [
+    "earthkit",
+    "three",
+    "react-three-fiber",
+    "webgpu",
+    "map",
+    "compare",
+    "swipe",
+    "before-after",
+    "tanstack-intent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Romainlg29/react-three-earth.git",
+    "directory": "packages/compare"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:changed": "vitest run --changed origin/master --passWithNoTests",
+    "validate:skills": "intent validate skills"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "happy-dom": "^20.0.0",
+    "react": "~19.3.1",
+    "@earthkit/globe": "workspace:*",
+    "three": "0.187.0",
+    "tsdown": "^0.23.7",
+    "typescript": "~6.0.2",
+    "vitest": "^5.1.1",
+    "@tanstack/intent": "0.5.6",
+    "@react-three/fiber": "10.0.0-alpha.6",
+    "@types/react-dom": "^19.3.0"
+  },
+  "peerDependencies": {
+    "react": ">=19.0 <19.4",
+    "@earthkit/globe": "0.x",
+    "three": ">=0.187.0 <0.188.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}
