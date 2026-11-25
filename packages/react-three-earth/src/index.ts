@@ -165,6 +165,16 @@ export * from './view/webMercator.js'
 export { EarthTilesRenderer } from './tiles/EarthTilesRenderer.js'
 export { FlatMapPlugin, FLAT_POSITION_ATTRIBUTE } from './tiles/FlatMapPlugin.js'
 export {
+  TERRAIN_SURFACE_ATTRIBUTE,
+  terrainAspectDegrees,
+  terrainAspectRadians,
+  terrainElevationMeters,
+  terrainNormalEastNorthUp,
+  terrainSlopeDegrees,
+  terrainSlopePercent,
+  terrainSlopeRadians,
+} from './tiles/terrainSurface.js'
+export {
   ImageSource,
   MapStyleSource,
   QuantizedMeshSource,

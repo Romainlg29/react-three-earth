@@ -15,6 +15,7 @@ import {
   WEB_MERCATOR_HALF_EXTENT_METERS,
   type GeodeticRadians,
 } from '../view/webMercator.js'
+import { TERRAIN_SURFACE_ATTRIBUTE, writeTerrainSurface } from './terrainSurface.js'
 
 /** Name of the vertex attribute holding each vertex's flat-map position, relative to the mesh's flat centre. */
 export const FLAT_POSITION_ATTRIBUTE = 'positionFlat'
@@ -389,7 +390,8 @@ export function toInstancedGeometry(geometry: BufferGeometry): InstancedBufferGe
 /**
  * Writes `positionFlat`: each vertex in Web Mercator metres (height scaled by the local scale factor),
  * relative to the centre of the mesh's flat bounding box, and `heightOffset`: each vertex's height along the
- * ellipsoid normal, in the mesh's frame. Returns the flat centre.
+ * ellipsoid normal, in the mesh's frame, and `terrainSurface` (see `TERRAIN_SURFACE_ATTRIBUTE`): each vertex's
+ * elevation and its normal in east-north-up. Returns the flat centre.
  */
 export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matrix4, referenceLongitude: number | null): [number, number, number] {
   const position = geometry.getAttribute('position')
@@ -402,6 +404,8 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
   const heightOffsets = new Float32Array(count * 3)
   // Directions from the tile set's frame back into the mesh's (the inverse of its linear part).
   const earthToMesh = new Matrix3().setFromMatrix4(meshToEarth).invert().elements
+  const normal = geometry.getAttribute('normal')
+  const surface = new Float32Array(count * 3)
   for (let index = 0; index < count; index++) {
     const x = position.getX(index)
     const y = position.getY(index)
@@ -419,6 +423,20 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
     heightOffsets[index * 3] = earthToMesh[0]! * upX + earthToMesh[3]! * upY + earthToMesh[6]! * upZ
     heightOffsets[index * 3 + 1] = earthToMesh[1]! * upX + earthToMesh[4]! * upY + earthToMesh[7]! * upZ
     heightOffsets[index * 3 + 2] = earthToMesh[2]! * upX + earthToMesh[5]! * upY + earthToMesh[8]! * upZ
+    // Normals into the tile set's frame by the transpose of `earthToMesh` (the normal matrix).
+    const normalX = normal === undefined ? 0 : normal.getX(index)
+    const normalY = normal === undefined ? 0 : normal.getY(index)
+    const normalZ = normal === undefined ? 0 : normal.getZ(index)
+    writeTerrainSurface(
+      surface,
+      index,
+      geodetic.longitude,
+      geodetic.latitude,
+      geodetic.heightMeters,
+      earthToMesh[0]! * normalX + earthToMesh[1]! * normalY + earthToMesh[2]! * normalZ,
+      earthToMesh[3]! * normalX + earthToMesh[4]! * normalY + earthToMesh[5]! * normalZ,
+      earthToMesh[6]! * normalX + earthToMesh[7]! * normalY + earthToMesh[8]! * normalZ,
+    )
     reference ??= geodetic.longitude
     const longitude = unwrapLongitude(geodetic.longitude, reference)
     const values = [longitudeToMercatorX(longitude), latitudeToMercatorY(geodetic.latitude), geodetic.heightMeters * mercatorScaleFactor(geodetic.latitude)]
@@ -434,5 +452,6 @@ export function computeFlatPositions(geometry: BufferGeometry, meshToEarth: Matr
   for (let index = 0; index < count * 3; index++) relative[index] = flat[index]! - center[index % 3]!
   geometry.setAttribute(FLAT_POSITION_ATTRIBUTE, new BufferAttribute(relative, 3))
   geometry.setAttribute(HEIGHT_OFFSET_ATTRIBUTE, new BufferAttribute(heightOffsets, 3))
+  geometry.setAttribute(TERRAIN_SURFACE_ATTRIBUTE, new BufferAttribute(surface, 3))
   return center
 }
