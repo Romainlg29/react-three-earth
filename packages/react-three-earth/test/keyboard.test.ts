@@ -87,6 +87,8 @@ function createFakeEarth() {
       return Promise.resolve(true)
     },
     stop: () => {},
+    getLimits: () => ({}),
+    viewportHeightPixels: 600,
   }
   const earth = { camera, view: { transitioning: false }, requestFrame: vi.fn(), interactions: new PointerInteractions(camera as unknown as EarthCamera) }
   return {
