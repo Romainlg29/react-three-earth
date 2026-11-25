@@ -1,8 +1,9 @@
-import { BufferAttribute, BufferGeometry, DataTexture, DoubleSide, FloatType, Mesh, NearestFilter, NoColorSpace, NormalBlending, RGBAFormat, Vector2 } from 'three'
+import { BufferAttribute, BufferGeometry, DataTexture, DoubleSide, FloatType, Mesh, NearestFilter, NoColorSpace, NormalBlending, RGBAFormat, Vector2, Vector3 } from 'three'
 import { attribute, cos, float, Fn, fwidth, int, ivec2, max, select, sin, smoothstep, texture, textureLoad, uniform, varying, vec2, vec4 } from 'three/tsl'
 import { sRGBTransferEOTF } from 'three/tsl'
 import { MeshBasicNodeMaterial, type Node } from 'three/webgpu'
 
+import { prepareScreenClipMask, screenClipFactor, screenClipPlane } from '../../core/screenClip.js'
 import type { SymbolEffectDefinition, SymbolEffectInputs } from '../../plugins/symbolEffects.js'
 import type { GlyphAtlasTexture, ImageAtlasTexture } from '../VectorTileMeshes.js'
 import { GLYPH_EDGE } from '../worker/glyphs.js'
@@ -163,10 +164,10 @@ function shadeWithEffect(effect: SymbolEffectDefinition, inputs: SymbolEffectInp
  * angle (from the glyph state texture), so the CPU never touches vertices after a tile loads. SDF text
  * with a halo, as the draped text. Drawn in the scene pass without depth test, over the terrain, so the atmosphere
  * hazes it like the ground behind it. `luminance` scales colours as the flat map's imagery (`ViewMorph.flatMapLuminance`)
- * so labels keep their style colours under the exposure; `opacity` is the imagery layer's. With `effect`, its
+ * so labels keep their style colours under the exposure; `opacity` and `clipPlane` (its `screenClip`) are the imagery layer's. With `effect`, its
  * `shade` turns the distance into colour for text and SDF icons instead of the fill over its halo.
  */
-export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: ImageAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }, effect: SymbolEffectDefinition | null = null): MeshBasicNodeMaterial {
+export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: ImageAtlasTexture, state: SymbolStateTexture, glyphState: SymbolStateTexture, viewportPixels: { value: Vector2 }, luminance: { value: number }, opacity: { readonly value: number } = { value: 1 }, effect: SymbolEffectDefinition | null = null, clipPlane: { readonly value: Vector3 } = { value: screenClipPlane(null) }): MeshBasicNodeMaterial {
   const material = new MeshBasicNodeMaterial({ transparent: true, blending: NormalBlending, depthTest: false, depthWrite: false, side: DoubleSide })
   material.name = effect === null ? 'MapStyleSymbols' : `MapStyleSymbols:${effect.name}`
   const viewport = uniform(viewportPixels.value).onRenderUpdate(() => viewportPixels.value) as unknown as Node<'vec2'>
@@ -174,6 +175,8 @@ export function createSymbolMaterial(atlas: GlyphAtlasTexture, imageAtlas: Image
   const glyphSlotBase = uniform(0).onObjectUpdate(({ object }) => (object?.userData as SymbolMeshUserData | undefined)?.symbolGlyphSlotBase ?? 0) as unknown as Node<'float'>
   const brightness = uniform(1).onRenderUpdate(() => luminance.value) as unknown as Node<'float'>
   const layerOpacity = uniform(1).onRenderUpdate(() => opacity.value) as unknown as Node<'float'>
+  // The imagery layer's `screenClip`: labels outside the part of the canvas it keeps are cut off at the line.
+  prepareScreenClipMask(material, screenClipFactor(uniform(new Vector3()).onRenderUpdate((_, self) => void self.value.copy(clipPlane.value)) as unknown as Node<'vec3'>).greaterThan(0.5))
 
   // Two texels a label: its anchor, scale and opacity, then its text's shift from the anchor (variable anchors) and
   // its icon's scale relative to the label's.

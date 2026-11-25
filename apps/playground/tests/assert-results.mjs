@@ -429,6 +429,15 @@ const pitchedBuildings = r => [
   ['the translucent glass tower draws', r.blueShare > 0.003],
 ]
 for (const name of ['pitched', 'webgl2', 'strict mode']) expectations[`3d buildings, ${name}`] = pitchedBuildings
+// `Imagery.screenClip`: the kept half is unchanged, the clipped half loses its imagery, labels and buildings. `top` on
+// WebGL2 proves the screen's v runs downwards on both backends.
+for (const name of ['buildings', 'labels', 'webgl2']) {
+  expectations[`screen clip, ${name}`] = r => [
+    ['the kept half looks as before (under 1 % of its pixels changed)', r.keptChangedShare < 0.01],
+    ['the clipped half lost the layer (over 30 % of its pixels changed)', r.clippedChangedShare > 0.3],
+    ['no label or building is left in the clipped half (under 1 % of its pixels stand out)', r.clippedStandingOutShare < 0.01],
+  ]
+}
 expectations['3d buildings, atmosphere on'] = r => [...standing(r), ['lit and hazed walls and roofs draw', r.redShare > 0.03]]
 expectations['3d buildings, top-down'] = r => [
   ...standing(r),
@@ -505,7 +514,7 @@ for (const name of ['globe, mouse', 'globe, touch', 'flat map, touch']) {
     ['a tap selects the polygon, with its gizmo', r.selected === 1 && r.gizmoFirst],
     ['a second tap on it shows its vertex handles', r.editingVertices],
     ['a drag on a vertex handle moves that vertex only', r.vertexMoved],
-    ['a tap on a midpoint inserts a vertex', r.verticesAfterInsert === 5],
+    ['a tap on a midpoint inserts a vertex, which is picked', r.verticesAfterInsert === 5 && r.pickedAfterInsert === 1],
     ['a drag inside the selection moves it whole, and the camera stays', r.movedWhole && r.cameraHeldDuringMove],
     ['each edit fires one update', r.updates === 3],
     ['a picked vertex is deleted, and undo brings it back', r.deleted && r.verticesAfterDelete === 4 && r.verticesAfterUndo === 5],

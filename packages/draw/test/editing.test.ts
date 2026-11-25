@@ -1,9 +1,10 @@
 import type { LineString, MultiPolygon, Point, Polygon, Position } from 'geojson'
 import { describe, expect, it, vi } from 'vitest'
 
-import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, removeVertex, translateFeature } from '../src/editing.js'
+import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, offsetVertices, removeVertex, translateFeature } from '../src/editing.js'
 import { FeatureStore } from '../src/FeatureStore.js'
 import { distanceMeters } from '../src/geometry.js'
+import { LocalFrame } from '../src/localFrame.js'
 import { indexMesh, meshFromIndexed, prismMesh } from '../src/mesh.js'
 import { moveMeshVertices } from '../src/meshEditing.js'
 import type { DrawModeContext } from '../src/modes/DrawMode.js'
@@ -79,6 +80,26 @@ describe('editing helpers', () => {
     expect(hitFeature(box, at(105, 50))).toBeCloseTo(5) // near its right edges
     expect(hitFeature(box, at(150, 50))).toBeNull()
     expect(hitFeature(box, at(50, 120))).toBeNull() // below its foot
+  })
+
+  it('offsets picked vertices in a frame: across the terrain, or up giving every position an altitude', () => {
+    const frame = new LocalFrame(0.5, 0.5, 0)
+    const ground = (longitude: number) => longitude * 1000
+    // East 1 km across the terrain: still draped, the others untouched.
+    const east = offsetVertices(square(), [{ ring: 0, index: 1 }], [1000, 0, 0], frame, ground)
+    const ring = (east.geometry as Polygon).coordinates[0]!
+    expect(ring[1]).toHaveLength(2)
+    expect(distanceMeters([1, 0], ring[1] as [number, number])).toBeCloseTo(1000, -1)
+    expect(ring[0]).toEqual([0, 0])
+    // Up 50 m: the picked corner stands 50 m over the terrain, the others on it, the ring still closed.
+    const raised = (offsetVertices(square(), [{ ring: 0, index: 2 }], [0, 0, 50], frame, ground).geometry as Polygon).coordinates[0]!
+    expect(raised.map(position => position[2])).toEqual([0, 1000, expect.closeTo(1050, 1), 0, 0])
+    expect(raised[2]![0]).toBeCloseTo(1, 5) // straight up in the frame, 78 km away: within half a metre
+    // A vertex at an altitude moves exactly; no offset changes nothing.
+    const lifted = (offsetVertices(line(), [{ ring: 0, index: 0 }], [0, 0, -40], frame).geometry as LineString).coordinates
+    expect(lifted[0]![2]).toBeCloseTo(60, 1)
+    expect(lifted[1]).toEqual([1, 0, 300])
+    expect(offsetVertices(square(), [{ ring: 0, index: 0 }], [0, 0, 0], frame)).toEqual(square())
   })
 
   it('moves vertices over the antimeridian without wrapping them to the other side', () => {
@@ -192,7 +213,7 @@ describe('select mode', () => {
     expect(mode.status().canUndo).toBe(false)
     // The pick was on the old version, so it is gone: Delete removes nothing, never another vertex (nor the feature
     // in edit mode).
-    expect(mode.inspect()).toMatchObject({ selectedVertex: null })
+    expect(mode.inspect()).toMatchObject({ picked: null, pickedElements: [] })
     expect(mode.deleteSelection()).toBe(false)
     expect((store.get('square')!.geometry as Polygon).coordinates[0]).toHaveLength(5)
     mode.pointerDown(pointer(100, 100))
@@ -614,4 +635,210 @@ describe('select mode, edit mode', () => {
     expect(Math.max(...altitudes(prism))).toBeCloseTo(500, 6)
     expect(mode.inspect()).toMatchObject({ picked: { kind: 'face', index: 0 }, elementMode: 'face' })
   })
+
+  /** Seen from the south-east and above: up goes up and right on the screen, so it never lies on north. */
+  function slanted(features: DrawFeature[]) {
+    const created = createContext(features)
+    created.context.project = ([longitude, latitude]) => ({ x: longitude * 100, y: -latitude * 100 })
+    created.context.projectAtHeight = ([longitude, latitude], heightMeters) => ({ x: longitude * 100 + heightMeters / 2000, y: -latitude * 100 - heightMeters / 1000 })
+    return created
+  }
+  const shift = (x: number, y: number): DrawPointerEvent => ({ ...at(x, y), originalEvent: { shiftKey: true } as MouseEvent })
+  const tapAt = (mode: SelectMode, event: DrawPointerEvent) => {
+    mode.pointerDown(event)
+    mode.pointerUp(event)
+  }
+  const road = (): DrawFeature<LineString> => ({ type: 'Feature', id: 'road', properties: {}, geometry: { type: 'LineString', coordinates: [[0.2, 0.2], [0.5, 0.2], [0.8, 0.2], [0.8, 0.5]] } })
+
+  it('picks several vertices with Shift, all with A, none with Alt+A, and deletes the picked ones', () => {
+    const { context, store, events } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    tapAt(mode, at(20, -20))
+    tapAt(mode, shift(50, -20))
+    expect(mode.status().pickedElementCount).toBe(2)
+    tapAt(mode, shift(20, -20)) // again: taken away
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 1 }] })
+    tapAt(mode, at(80, -20)) // without Shift: that one alone
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 2 }] })
+    expect(mode.keyDown({ key: 'a' } as KeyboardEvent)).toBe(true)
+    expect(mode.pickedElementCount).toBe(4)
+    expect(mode.keyDown({ key: 'å', code: 'KeyA', altKey: true } as KeyboardEvent)).toBe(true)
+    expect(mode.pickedElementCount).toBe(0)
+    tapAt(mode, at(20, -20))
+    tapAt(mode, shift(80, -50))
+    expect(mode.deleteSelection()).toBe(true)
+    expect((store.get('road')!.geometry as LineString).coordinates).toEqual([[0.5, 0.2], [0.8, 0.2]])
+    expect(events).toEqual(['update road'])
+    mode.undo()
+    expect(store.get('road')).toEqual(road())
+  })
+
+  it('moves one picked vertex of a draped line straight up with the gizmo, the line getting altitudes', () => {
+    const { context, store, events } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    expect(mode.gizmoHandles()).toEqual([]) // nothing picked: no gizmo in edit mode
+    tapAt(mode, at(50, -20))
+    const handles = mode.gizmoHandles()
+    // Move handles only, over the picked vertex.
+    expect(handles.every(handle => handle.handle.startsWith('move-'))).toBe(true)
+    const up = handles.find(handle => handle.handle === 'move-z')!
+    const free = handles.find(handle => handle.handle === 'move-free')!
+    expect(free.x).toBeCloseTo(50, 3)
+    expect(free.y).toBeCloseTo(-20, 3)
+    // 20 px further along the up arrow (as drawn: up and right) is about 20 km up.
+    const along = { x: up.x - free.x, y: up.y - free.y }
+    const length = Math.hypot(along.x, along.y)
+    drag(mode, up, { x: up.x + (along.x / length) * 20, y: up.y + (along.y / length) * 20 })
+    expect(events).toEqual(['update road'])
+    const coordinates = (store.get('road')!.geometry as LineString).coordinates
+    expect(coordinates[1]![0]).toBeCloseTo(0.5, 6)
+    expect(coordinates[1]![1]).toBeCloseTo(0.2, 6)
+    expect(coordinates[1]![2]).toBeGreaterThan(15_000)
+    expect(coordinates.filter((_, index) => index !== 1).map(position => position[2])).toEqual([0, 0, 0])
+    // Still picked, its gizmo up there with it.
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 1 }] })
+    expect(mode.gizmoHandles().find(handle => handle.handle === 'move-free')!.y).toBeLessThan(-30)
+    // G moves it from the keyboard; turning and scaling picked elements does not start.
+    expect(mode.startTransform('rotate')).toBe(false)
+    expect(mode.startTransform('move')).toBe(true)
+  })
+
+  it('moves every picked vertex of a mesh together: A, then the gizmo east, or a drag on one of them', () => {
+    const { context, store, events } = slanted([box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    expect(mode.selectAllElements()).toBe(true)
+    expect(mode.pickedElementCount).toBe(8)
+    const handles = mode.gizmoHandles()
+    const east = handles.find(handle => handle.handle === 'move-x')!
+    const free = handles.find(handle => handle.handle === 'move-free')!
+    // 10 px east is 0.1°.
+    drag(mode, east, { x: east.x + 10, y: east.y })
+    expect(events).toEqual(['update box'])
+    const longitudes = (store.get('box')!.geometry as MultiPolygon).coordinates.flat(2).map(position => position[0]!)
+    expect(Math.min(...longitudes)).toBeCloseTo(0.3, 2)
+    expect(Math.max(...longitudes)).toBeCloseTo(0.9, 2)
+    // Moved in the gizmo's frame: a box 60 km wide keeps its altitudes within the Earth's curvature over 10 km.
+    expect(Math.abs(Math.max(...altitudes(store.get('box')!)) - 30_000)).toBeLessThan(100)
+    expect(free.x).toBeGreaterThan(0)
+    // A drag on a picked vertex takes the others along.
+    expect(mode.pickedElementCount).toBe(8)
+    drag(mode, { x: 30 + 7.5, y: -20 - 15 }, { x: 30 + 7.5, y: -20 - 25 }) // the top's south-west corner, 30 km up
+    expect(events).toEqual(['update box', 'update box'])
+    const latitudes = (store.get('box')!.geometry as MultiPolygon).coordinates.flat(2).map(position => position[1]!)
+    expect(Math.min(...latitudes)).toBeCloseTo(0.3, 2)
+    expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(6)
+  })
+
+  it('leaves the vertices and midpoints under a picked vertex\'s gizmo to their own presses, and keeps the pick on a tap on it', () => {
+    const { context, store } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    tapAt(mode, at(50, -20))
+    // The east arrow runs over the next vertex (80 px) and the midpoint before it (65 px).
+    expect(mode.gizmoHandles().find(handle => handle.handle === 'move-x')!.x).toBeGreaterThan(80)
+    const up = mode.gizmoHandles().find(handle => handle.handle === 'move-z')!
+    tapAt(mode, at(up.x, up.y)) // a tap on the gizmo, no drag: still picked
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 1 }] })
+    tapAt(mode, at(80, -20)) // the next vertex: picked, nothing moved
+    expect(mode.inspect()).toMatchObject({ pickedElements: [{ kind: 'vertex', index: 2 }] })
+    expect(store.get('road')).toEqual(road())
+    tapAt(mode, at(50, -20))
+    tapAt(mode, at(65, -20)) // the midpoint: a vertex inserted there
+    expect((store.get('road')!.geometry as LineString).coordinates).toHaveLength(5)
+    // Alt+Q on an AZERTY keyboard (the key Alt+A is on QWERTY) is not Alt+A.
+    expect(mode.keyDown({ key: 'q', code: 'KeyA', altKey: true } as KeyboardEvent)).toBe(false)
+    expect(mode.pickedElementCount).toBe(1)
+  })
+
+  it('extrudes a line into a wall with A then E, its top edges picked, and those up again into a taller wall', () => {
+    const { context, store, events } = slanted([road()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['road'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    expect(mode.canExtrude).toBe(false) // nothing picked
+    expect(mode.keyDown({ key: 'a' } as KeyboardEvent)).toBe(true)
+    expect(mode.canExtrude).toBe(true)
+    expect(mode.keyDown({ key: 'e' } as KeyboardEvent)).toBe(true)
+    expect(events).toEqual(['update road'])
+    const wall = store.get('road')!
+    expect(wall.geometry.type).toBe('MultiPolygon')
+    expect((wall.geometry as MultiPolygon).coordinates).toHaveLength(3)
+    const height = Math.max(...altitudes(wall))
+    expect(height).toBeGreaterThan(1000) // half the gizmo's arrow
+    expect(Math.min(...altitudes(wall))).toBe(0)
+    // The top edges stay picked, with the move gizmo over them; E again grows the wall up from them.
+    expect(mode.pickedElementCount).toBe(3)
+    expect(mode.gizmoHandles().some(handle => handle.handle === 'move-z')).toBe(true)
+    expect(mode.extrude(height)).toBe(true)
+    const taller = store.get('road')!
+    expect((taller.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(Math.max(...altitudes(taller))).toBeCloseTo(2 * height, 0)
+    expect(mode.extrude(-10)).toBe(true) // a mesh's edges extrude down too
+    mode.undo()
+    mode.undo()
+    expect(store.get('road')).toBe(wall)
+    mode.undo()
+    expect(store.get('road')).toEqual(road())
+  })
+
+  it('pulls a polygon whose every edge is picked into a prism, and extrudes two faces of a box as one region', () => {
+    const { context, store } = slanted([{ ...square(), geometry: { type: 'Polygon', coordinates: [[[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8], [0.2, 0.2]]] } }, box()])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['square'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('edge')
+    mode.selectAllElements()
+    expect(mode.extrude(-5)).toBe(false) // a prism only grows up
+    expect(mode.extrude(500)).toBe(true)
+    const prism = store.get('square')!
+    expect((prism.geometry as MultiPolygon).coordinates).toHaveLength(6)
+    expect(Math.max(...altitudes(prism))).toBeCloseTo(500, 6)
+    expect(mode.pickedElementCount).toBe(4) // the top's edges
+    // A box: every vertex picked is every face, pointing every way: nothing to extrude.
+    mode.setSelection(['box'])
+    mode.setEditingVertices(true)
+    mode.setElementMode('vertex')
+    mode.selectAllElements()
+    expect(mode.canExtrude).toBe(false)
+    // Its top and its south wall, as one region: six walls around their outline.
+    mode.setElementMode('face')
+    tapAt(mode, at(50 + 15, -50 - 30)) // the top's middle, 30 km up
+    tapAt(mode, shift(50 + 7.5, -20 - 15)) // the south wall's middle
+    expect(mode.pickedElementCount).toBe(2)
+    expect(mode.extrude(1000)).toBe(true)
+    expect((store.get('box')!.geometry as MultiPolygon).coordinates).toHaveLength(12)
+    expect(mode.pickedElementCount).toBe(2)
+  })
+
+  it('keeps a wall joined where its line comes back to a vertex, and stands vertices without an altitude on the terrain', () => {
+    const loop: DrawFeature<LineString> = { type: 'Feature', id: 'loop', properties: {}, geometry: { type: 'LineString', coordinates: [[0.2, 0.2], [0.8, 0.2, 500], [0.8, 0.8], [0.2, 0.2]] } }
+    const { context, store } = slanted([loop])
+    const mode = new SelectMode()
+    mode.enter(context)
+    mode.setSelection(['loop'])
+    mode.setEditingVertices(true)
+    mode.selectAllElements()
+    expect(mode.extrude(100)).toBe(true)
+    const wall = (store.get('loop')!.geometry as MultiPolygon).coordinates
+    expect(wall).toHaveLength(3)
+    // Three corners, each once at the bottom and once on top.
+    expect(mode.selectAllElements()).toBe(true)
+    expect(mode.pickedElementCount).toBe(6)
+    expect([...new Set(wall.flat(2).filter(position => position[0] === 0.8 && position[1] === 0.8).map(position => position[2]))].sort((a, b) => a! - b!)).toEqual([0, 100])
+  })
 })
+
