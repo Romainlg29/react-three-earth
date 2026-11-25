@@ -186,10 +186,14 @@ plugin (next section).
 ### Shade over the imagery from a plugin
 
 A terrain shading changes how every terrain tile is shaded, above the imagery: its `shade` reads the slots
-(`color` with alpha, `roughness`, `metalness`, `normal` in view space, `emissive`) and returns those it changes. The
+(`color` with alpha, `roughness`, `metalness`, `normal` in view space, `emissive`, `mask`) and returns those it changes. The
 terrain's own material (`createMaterial`, `@earthkit/terrain-style`) is the start, the imagery and draped layers blend
 over its colour, then the shadings run in turn (lower `order` first, then registration order), each reading what the
 last left. So a plugin's sea composes with any terrain style and any imagery.
+
+`mask` (a boolean node, `NodeMaterial.maskNode`) discards the fragments where it is false, so geometry of the plugin's
+own can stand in for the ground there (`@earthkit/water`'s displaced sea mesh near the camera). Combine with the input,
+never replace it: `mask: inputs.mask.and(myMesh.covers(point).not())`.
 
 ```ts
 import { PLUGIN_API_VERSION, terrainWaterMask, type EarthPlugin } from '@earthkit/globe'

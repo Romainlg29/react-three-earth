@@ -193,7 +193,7 @@ function simulateGpu(field: WaveField, timeSeconds: number): { surface: Float64A
   const waves = new Float32Array(count * 4)
   field.writeSpectrum(spectrum, waves)
   let surface = new Float64Array(count * 4)
-  let fold = new Float64Array(count * 2)
+  let fold = new Float64Array(count * 4)
   for (let index = 0; index < count; index++) {
     const [ar, ai, br, bi] = spectrum.subarray(index * 4, index * 4 + 4)
     const [kx, ky, omega, inverse] = waves.subarray(index * 4, index * 4 + 4)
@@ -209,7 +209,9 @@ function simulateGpu(field: WaveField, timeSeconds: number): { surface: Float64A
     const yy = ky! * ky! * inverse!
     const xy = kx! * ky! * inverse!
     surface.set([-ky! * hr - kx! * hi, kx! * hr - ky! * hi, xx * hr - yy * hi, xx * hi + yy * hr], index * 4)
-    fold.set([xy * hr - hi, xy * hi + hr], index * 2)
+    const dr = (kx! * hi + ky! * hr) * inverse!
+    const di = (ky! * hi - kx! * hr) * inverse!
+    fold.set([xy * hr - hi, xy * hi + hr, dr, di], index * 4)
   }
   const butterflies = createButterflies(size)
   const stages = Math.log2(size)
@@ -226,8 +228,8 @@ function simulateGpu(field: WaveField, timeSeconds: number): { surface: Float64A
         const at = (position: number): number => cascade * cells + (horizontal ? row * size + position : position * size + column)
         const a = at(first!)
         const b = at(second!)
-        for (let lane = 0; lane < 3; lane++) {
-          const [source, target, stride, laneOffset] = lane < 2 ? [surface, nextSurface, 4, lane * 2] : [fold, nextFold, 2, 0]
+        for (let lane = 0; lane < 4; lane++) {
+          const [source, target, stride, laneOffset] = lane < 2 ? [surface, nextSurface, 4, lane * 2] : [fold, nextFold, 4, (lane - 2) * 2]
           const br = source[b * stride + laneOffset]!
           const bi = source[b * stride + laneOffset + 1]!
           target[index * stride + laneOffset] = source[a * stride + laneOffset]! + wr! * br - wi! * bi
@@ -321,7 +323,7 @@ describe('WaveComputeField', () => {
           const index = cascadeIndex * cells + row * field.gridSize + column
           xx += surface[index * 4 + 2]!
           yy += surface[index * 4 + 3]!
-          xy += fold[index * 2]!
+          xy += fold[index * 4]!
         })
         const jacobian = (1 - WAVE_CHOPPINESS * xx) * (1 - WAVE_CHOPPINESS * yy) - WAVE_CHOPPINESS ** 2 * xy * xy
         if (jacobian < threshold) folded++
@@ -379,6 +381,24 @@ describe('WaveComputeField', () => {
     field.update(5 + WAVE_REPEAT_PERIOD_SECONDS)
     expect(field.cascades[1]!.slopes).toEqual(first)
     expect(first).not.toEqual(before)
+  })
+
+  it('transforms the height and the displacement, which carries its variance east and north', () => {
+    const field = new WaveField({ seed: 5 })
+    field.setSeaState(openOcean)
+    const { fold } = simulateGpu(field, 2)
+    const cells = field.gridSize ** 2
+    const cascade = 0
+    let height = 0
+    let displacement = 0
+    for (let cell = 0; cell < cells; cell++) {
+      const index = (cascade * cells + cell) * 4
+      height += fold[index + 1]! ** 2
+      displacement += fold[index + 2]! ** 2 + fold[index + 3]! ** 2
+    }
+    // |kx/k|² + |ky/k|² = 1: D east and north hold the height's variance between them, wave by wave.
+    expect(displacement / height).toBeCloseTo(1, 6)
+    expect(height / cells).toBeGreaterThan(0)
   })
 
   it('scores the normal distribution', () => {

@@ -20,6 +20,8 @@ sources:
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveSurface.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveComputeField.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/waves/foam.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveMesh.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveProbe.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/react/index.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
@@ -113,7 +115,8 @@ it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: th
   `waves: false` stops them (and their cost). Nothing is simulated from high above.
 - The plane the waves lie on follows the camera, laid again after 20 km: the pattern shifts once then, unseen from
   the heights such a move takes.
-- They are normals only: the surface does not move up and down, so the horizon stays straight and nothing floats.
+- Under WebGPU, below 1.5 km over the sea, a displaced mesh draws the sea near the camera (`waveMesh`, default true):
+  see below. Elsewhere the waves are normals only: the horizon stays straight.
 - Where the waves fade out with distance, their foam gives way to the whitecap share spread evenly, so a windy sea
   keeps its pallor however far.
 - `depthFromElevation`: the seafloor (`seafloorColor`, default sand) shows through shallow water, fading with depth by
@@ -122,6 +125,61 @@ it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: th
   Depth is measured from `seaLevelMeters` (default 0): set it to the source's `seaLevelMeters` when you change that.
   Where the elevation sits exactly at sea level (Terrarium's land data fills the sea near coasts with 0 m, in
   rectangles) there is no depth to show: no seafloor, not a sandbar.
+
+### The sea mesh near the camera
+
+Under WebGPU the waves also move geometry: rings of cells around the camera, each twice the size of the one inside it
+(geometry clipmaps, as Crest lays them), so detail per pixel stays even from the camera's feet out to the mesh's edge. The
+innermost cell shrinks with the camera's height, down to 6 cm at the water (the mesh then reaches about 360 m; from 25 m
+up, with 1 m cells, about 6 km). Vertices take the waves' height and the choppy
+waves' pull towards the crests; the fragments shade per pixel, with the foam. The outer ring flattens and the terrain's sea
+takes over, seamlessly, Earth's curvature included. It costs one draw of about 120 000 triangles.
+
+- `waveMesh: false` keeps the normals-only sea. The mesh hides above 1.5 km, on the flat map and on WebGL2 (no GPU
+  displacement there).
+- Under the mesh the terrain's sea is discarded where it is water at or below sea level (+1 m), so the coast stays the
+  terrain's. The mesh itself knows nothing of the ground: it lies at `seaLevelMeters` across its whole square, so land
+  below sea level (polders, Death Valley) and lakes below it (the Dead Sea, the Caspian) are covered within its reach,
+  and on a low coast the crests of a rough sea can show through beaches and quays. Set `waveMesh: false` over such places.
+- The mesh lies at `seaLevelMeters` above the WGS84 ellipsoid. A terrain whose sea sits on the geoid instead (tens of
+  metres off, as most quantized-mesh services) hides the mesh or lets it float: set `seaLevelMeters` to the source's sea
+  height there, or turn the mesh off.
+- The mesh shows no seafloor (`depthFromElevation`) and no imagery (`imageryOpacity`): with either, the colour steps at
+  the mesh's edge, and in shallow water near the camera the sea is opaque.
+
+### Seed and wave time
+
+`waveSeed` (an integer, default 1) seeds the waves' random phases. The same seed, sea state and wave time draw the same
+sea on every WebGPU client, so they agree on where the crests are (and where a probed boat floats): set
+`water.waveSurface.timeSeconds` on each from a shared clock before the frame (it then advances by the frame's time; the
+waves repeat every hour, `WAVE_REPEAT_PERIOD_SECONDS`). WebGL2 clients simulate a coarser grid, so their sea differs.
+
+### Float a boat: wave probes
+
+A probe samples the sea's height and normal at a few points, on the GPU, exactly as the mesh draws it (the choppy
+waves' sideways pull included), and reads them back a frame or two late. Probe a hull at three or four points (bow and
+both sides of the stern) and fit a plane for its height, pitch and roll:
+
+```tsx
+import type { Water as WaterImpl } from '@earthkit/water'
+import { useWaveProbe } from '@earthkit/water/react'
+import { useFrame } from '@react-three/fiber'
+import type { GeographicAnchor } from '@earthkit/globe'
+
+export function useFloat(water: WaterImpl | null, anchor: GeographicAnchor, longitudeDegrees: number, latitudeDegrees: number) {
+  const probe = useWaveProbe(water, [{ longitudeDegrees, latitudeDegrees }])
+  useFrame(() => {
+    const sample = probe?.samples[0]
+    if (sample === undefined || !sample.ready) return
+    // heightMeters is above the ellipsoid; normal is east-north-up, as the anchor's frame.
+    anchor.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters: sample.heightMeters })
+  })
+}
+```
+
+Vanilla: `const probe = water.createProbe({ capacity: 4 })`, then `probe.setPoints(points)` and read `probe.samples`
+every frame; `probe.dispose()` stops it. Without the mesh (WebGL2, high camera, `waveMesh: false`) the sea is drawn flat
+and the samples say so: sea level, normal straight up. Up to `capacity` points (default 16) cost one small dispatch.
 
 `water.state` (and `earth.inspect().plugins.water`) gives the resolved values: `albedo` (linear RGB), `roughness`,
 `whitecapCoverage`, `diffuseAttenuationPerMeter`.

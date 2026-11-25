@@ -9,6 +9,8 @@ the terrain is water, over the imagery and any terrain style:
   as the wind rises, and whitecaps pale a gale;
 - near the camera, waves from a JONSWAP spectrum (wind speed, direction and fetch), simulated by FFT in compute shaders
   under WebGPU (on the CPU under WebGL2), with foam on the crests that break;
+- under WebGPU, a displaced sea mesh around the camera (finest at its feet), seeded (`waveSeed`), and wave probes that
+  read its height and normal back, to float a boat (`water.createProbe()`, `useWaveProbe`);
 - on the flat map, the sea takes a map colour.
 
 ```sh
@@ -33,7 +35,7 @@ function App() {
 ```
 
 - Presets: `map` (flat light blue, as street maps), `calm`, `breeze` (default), `open-ocean`, `storm`, `coastal`.
-- Settings: `windSpeedMetersPerSecond`, `windDirectionDegrees`, `fetchKilometers`, `temperatureCelsius`, `waves`,
+- Settings: `windSpeedMetersPerSecond`, `windDirectionDegrees`, `fetchKilometers`, `temperatureCelsius`, `waves`, `waveMesh`, `waveSeed`,
   `chlorophyllMilligramsPerCubicMeter`, `salinityPartsPerThousand`,
   `depthFromElevation`, `imageryOpacity`, `flatMapColor`, and `color` / `roughness` for a stylised sea. Changing them
   updates uniforms only.

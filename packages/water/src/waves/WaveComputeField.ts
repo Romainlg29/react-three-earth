@@ -1,5 +1,5 @@
 import { HalfFloatType, LinearFilter, RepeatWrapping } from 'three'
-import { cos, float, fract, Fn, instancedArray, instanceIndex, int, ivec2, sin, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
+import { cos, fract, Fn, instancedArray, instanceIndex, int, ivec2, sin, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
 import { StorageArrayTexture, type ComputeNode, type Node, type StorageBufferNode, type WebGPURenderer } from 'three/webgpu'
 
 import { createFourierPlan } from './fft.js'
@@ -17,7 +17,10 @@ import { WAVE_REPEAT_PERIOD_SECONDS, type WaveField } from './WaveField.js'
 export class WaveComputeField {
   /** Per cascade (one layer each): slopes east and north, then ∂Dx/∂x and ∂Dy/∂y of the displacement per unit choppiness. */
   readonly surfaceTexture: StorageArrayTexture
-  /** Per cascade: ∂Dx/∂y (= ∂Dy/∂x) of the displacement per unit choppiness, then the height in metres. */
+  /**
+   * Per cascade: ∂Dx/∂y (= ∂Dy/∂x) of the displacement per unit choppiness, the height in metres, then the displacement D
+   * itself east and north, metres per unit choppiness (the surface moves by -λ D).
+   */
   readonly foldTexture: StorageArrayTexture
   protected readonly field: WaveField
   /** The time as a share of `WAVE_REPEAT_PERIOD_SECONDS`, reduced in 64-bit on the CPU. */
@@ -40,9 +43,9 @@ export class WaveComputeField {
 
     this.spectrum = instancedArray(count, 'vec4')
     this.waves = instancedArray(count, 'vec4')
-    // Two lanes of complex values in each: [slopes, ∂Dx/∂x + i ∂Dy/∂y] and [∂Dx/∂y + i height]; ping and pong.
+    // Two lanes of complex values in each: [slopes, ∂Dx/∂x + i ∂Dy/∂y] and [∂Dx/∂y + i height, Dx + i Dy]; ping and pong.
     const surface = [instancedArray(count, 'vec4'), instancedArray(count, 'vec4')]
-    const fold = [instancedArray(count, 'vec2'), instancedArray(count, 'vec2')]
+    const fold = [instancedArray(count, 'vec4'), instancedArray(count, 'vec4')]
     const stages = Math.log2(size)
     const butterflies = instancedArray(createButterflies(size), 'vec4')
 
@@ -77,7 +80,12 @@ export class WaveComputeField {
           xx.mul(heightImaginary).add(yy.mul(heightReal)),
         ),
       )
-      fold[0]!.element(index).assign(vec2(xy.mul(heightReal).sub(heightImaginary), xy.mul(heightImaginary).add(heightReal)))
+      // D itself: -i kx/|k| h east plus i times -i ky/|k| h north, packed as one complex value.
+      const displacementReal = kx.mul(heightImaginary).add(ky.mul(heightReal)).mul(wave.w)
+      const displacementImaginary = ky.mul(heightImaginary).sub(kx.mul(heightReal)).mul(wave.w)
+      fold[0]!.element(index).assign(
+        vec4(xy.mul(heightReal).sub(heightImaginary), xy.mul(heightImaginary).add(heightReal), displacementReal, displacementImaginary),
+      )
     })().compute(count)
 
     const multiply = (twiddle: Node<'vec4'>, value: Node<'vec2'>): Node<'vec2'> =>
@@ -103,8 +111,11 @@ export class WaveComputeField {
             const low = multiply(twiddle, b.xy as unknown as Node<'vec2'>)
             const high = multiply(twiddle, b.zw as unknown as Node<'vec2'>)
             surface[to]!.element(index).assign(vec4(a.xy.add(low), a.zw.add(high)))
-            const foldB = multiply(twiddle, fold[from]!.element(secondIndex) as unknown as Node<'vec2'>)
-            fold[to]!.element(index).assign(fold[from]!.element(firstIndex).add(foldB))
+            const foldA = fold[from]!.element(firstIndex)
+            const foldB = fold[from]!.element(secondIndex)
+            const foldLow = multiply(twiddle, foldB.xy as unknown as Node<'vec2'>)
+            const foldHigh = multiply(twiddle, foldB.zw as unknown as Node<'vec2'>)
+            fold[to]!.element(index).assign(vec4(foldA.xy.add(foldLow), foldA.zw.add(foldHigh)))
           })().compute(count),
         )
         source = to
@@ -117,7 +128,7 @@ export class WaveComputeField {
       const value = surface[final]!.element(index)
       const folded = fold[final]!.element(index)
       storageTexture(this.surfaceTexture, texel, value).depth(cascade).toStack()
-      storageTexture(this.foldTexture, texel, vec4(folded, float(0), float(1))).depth(cascade).toStack()
+      storageTexture(this.foldTexture, texel, folded).depth(cascade).toStack()
     })().compute(count)
 
     this.kernels = [advance, ...transforms, resolve]
