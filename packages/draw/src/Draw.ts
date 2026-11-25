@@ -70,7 +70,7 @@ export interface DrawState extends DrawModeStatus {
   editingVertices: boolean
   /** The elements edit mode picks: `'vertex'` (the default), `'edge'` or `'face'`. See `setElementMode`. */
   elementMode: ElementMode
-  /** `extrude()` would act: in edit mode, a face of a mesh or polygon is picked. */
+  /** `extrude()` would act: in edit mode, faces, edges or a line's elements are picked. */
   canExtrude: boolean
   /** Elements picked in edit mode (Shift+tap adds one, `selectAllElements` picks them all); 0 outside it. */
   pickedElementCount: number
@@ -263,10 +263,11 @@ export class Draw extends EventDispatcher<DrawEventMap> implements EarthPlugin {
   }
 
   /**
-   * Extrudes the picked face of the selected mesh along its normal (a polygon's face becomes a prism), as E does with
-   * `keyboard`: one `update`, one undo step, the new face picked with its push and pull arrow. Without `distanceMeters`,
-   * half the arrow's length (about 40 px on the screen). Returns false when no face is picked (`state.canExtrude`), and
-   * for a negative distance on a polygon's face (a mesh's face extrudes inwards).
+   * Extrudes what is picked in edit mode, as E does with `keyboard`: a mesh's faces along their mean normal as one
+   * region (a polygon's face becomes a prism), edges straight up into new faces, and a line, whatever is picked of it,
+   * into a wall. One `update`, one undo step; what it made stays picked. Without `distanceMeters`, half the arrow's
+   * length (about 40 px on the screen). Returns false when nothing can be extruded (`state.canExtrude`), and for a
+   * negative distance on a line or a polygon's face (a mesh's faces extrude inwards, its edges down).
    */
   extrude(distanceMeters?: number): boolean {
     return this.mode instanceof SelectMode ? this.mode.extrude(distanceMeters) : false

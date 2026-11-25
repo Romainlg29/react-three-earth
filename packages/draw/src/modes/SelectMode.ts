@@ -4,7 +4,7 @@ import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex
 import { distanceToSegment, hasAltitude, lowestAltitude, storedLines, storedPositions, unwrapLongitudeNear } from '../geometry.js'
 import { LocalFrame, type LocalPoint } from '../localFrame.js'
 import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshSharpEdges, prismMesh, type IndexedMesh } from '../mesh.js'
-import { extrudeMeshFace, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from '../meshEditing.js'
+import { extrudeMeshEdges, extrudeMeshFaces, meshElementFrame, PARALLEL_NORMALS_SHARE, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from '../meshEditing.js'
 import type { OverlayContent } from '../render/LiveOverlay.js'
 import { isSolidFeature } from '../render/SolidFeatures.js'
 import { altitudeRangeOf, featureAxes, featureCenter, offsetFeature, rotateFeatureAroundAxis, scaleFeature, scaleFeatureAlongAxis, WORLD_AXES } from '../transform.js'
@@ -72,6 +72,16 @@ export interface FeatureElements {
   /** The stored version a drag moved these elements from, with the same faces: its screen pixels are reused. */
   origin?: { feature: DrawFeature; elements: FeatureElements }
 }
+
+/**
+ * What `extrude()` does with what is picked: a line becomes a wall; a polygon's face (picked, or every edge or vertex of
+ * it) a prism; a mesh's faces extrude as one region; edges (picked, or between two picked vertices) grow a face each, up.
+ */
+type Extrusion =
+  | { kind: 'wall' }
+  | { kind: 'prism' }
+  | { kind: 'faces'; faces: number[] }
+  | { kind: 'edges'; edges: Array<[number, number]> }
 
 /** A transform the keyboard starts (G, R, S) or `startTransform`. */
 export type TransformKind = 'move' | 'rotate' | 'scale'
@@ -399,6 +409,8 @@ export class SelectMode extends DrawMode {
   protected readonly gizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; heightMeters: number; basis: GizmoBasis }>()
   /** The last gizmo of the picked elements of each feature version, valid while the view, the space and what is picked stay. */
   protected readonly elementGizmoCache = new WeakMap<DrawFeature, { view: number; space: GizmoSpace; picked: readonly PickedElement[]; heightMeters: number; basis: GizmoBasis }>()
+  /** What `extrude()` would do with each pick, on the feature version it was computed for. */
+  protected readonly extrusionCache = new WeakMap<readonly PickedElement[], { feature: DrawFeature; extrusion: Extrusion | null }>()
   /** The pieces of each gizmo, for a tool. */
   protected readonly partsCache = new WeakMap<GizmoBasis, { tool: GizmoTool; parts: GizmoPart[] }>()
 
@@ -1233,10 +1245,58 @@ export class SelectMode extends DrawMode {
 
   // ---- Edit mode ----
 
-  /** Whether `extrude()` can act: in edit mode, with one face of a mesh or polygon picked on its stored version. */
+  /** Whether `extrude()` can act: in edit mode, with faces, edges or a line's elements picked on its stored version. */
   get canExtrude(): boolean {
     const picked = this.picked
-    return this.vertexEditing && picked !== null && picked.elements.length === 1 && picked.elements[0]!.kind === 'face' && this.context?.store.get(picked.feature.id) === picked.feature
+    if (!this.vertexEditing || picked === null || this.context?.store.get(picked.feature.id) !== picked.feature) return false
+    return this.extrusionOf(picked.feature, picked.elements) !== null
+  }
+
+  /** What `extrude()` would do with the picked elements of a feature version (kept per pick), or null for nothing. */
+  protected extrusionOf(feature: DrawFeature, picked: readonly PickedElement[]): Extrusion | null {
+    const cached = this.extrusionCache.get(picked)
+    if (cached !== undefined && cached.feature === feature) return cached.extrusion
+    const extrusion = this.findExtrusion(feature, picked)
+    this.extrusionCache.set(picked, { feature, extrusion })
+    return extrusion
+  }
+
+  protected findExtrusion(feature: DrawFeature, picked: readonly PickedElement[]): Extrusion | null {
+    const elements = this.elementsOf(feature)
+    if (elements === null || picked.length === 0 || !picked.every(element => elementFits(elements, element))) return null
+    // A line has no face to keep its other segments: the whole of it becomes a wall.
+    if (feature.geometry.type === 'LineString') return elements.edges.some(([a, b]) => !samePlace(elements.positions[a]!, elements.positions[b]!)) ? { kind: 'wall' } : null
+    // The picked edges, as indices into `edges`: picked ones, and those between two picked vertices.
+    const pickedVertices = new Set(picked.flatMap(element => (element.kind === 'vertex' ? [element.index] : [])))
+    const edgeKeys = new Set(picked.flatMap(element => (element.kind === 'edge' ? [edgeKey(element.from, element.to)] : [])))
+    const edgeIndices = elements.edges.flatMap(([a, b], index) => (edgeKeys.has(edgeKey(a, b)) || (pickedVertices.has(a) && pickedVertices.has(b)) ? [index] : []))
+    const pickedEdges = new Set(edgeIndices)
+    // As in Blender, a face whose every edge is picked is picked too.
+    const faces = new Set(picked.flatMap(element => (element.kind === 'face' ? [element.index] : [])))
+    elements.faceEdges.forEach((edges, faceIndex) => {
+      if (edges.length > 0 && edges.every(edge => pickedEdges.has(edge))) faces.add(faceIndex)
+    })
+    // Faces win: picked edges outside them (a stray edge) stay as they are.
+    if (faces.size > 0) {
+      if (elements.mesh === null) return { kind: 'prism' }
+      const region = [...faces]
+      // Faces pointing every way (a whole box) have no direction to go together.
+      if (region.length > 1) {
+        const frame = meshElementFrame(elements.mesh, this.pickedVertices(elements, region.map(index => ({ kind: 'face', index }))))
+        const sum = [0, 0, 0]
+        for (const faceIndex of region) {
+          const normal = meshFaceNormal(elements.mesh, faceIndex, frame)
+          const area = meshFaceArea(elements.mesh, faceIndex)
+          for (let axis = 0; axis < 3; axis++) sum[axis]! += normal[axis]! * area
+        }
+        const area = region.reduce((total, faceIndex) => total + meshFaceArea(elements.mesh!, faceIndex), 0)
+        if (!(Math.hypot(sum[0]!, sum[1]!, sum[2]!) > area * PARALLEL_NORMALS_SHARE)) return null
+      }
+      return { kind: 'faces', faces: region }
+    }
+    // An edge of no length (a vertex placed twice) would make a face of no area.
+    const edges = edgeIndices.map(index => elements.edges[index]!).filter(([a, b]) => !samePlace(elements.positions[a]!, elements.positions[b]!))
+    return edges.length > 0 ? { kind: 'edges', edges } : null
   }
 
   /** How many elements are picked in edit mode (`selectAllElements` picks them all). */
@@ -1337,11 +1397,18 @@ export class SelectMode extends DrawMode {
   }
 
   /**
-   * Extrudes the picked face along its outward normal (`extrudeMeshFace`), as E does with the `keyboard` option: new
-   * walls join it to where it was, and it stays picked, its arrow ready to push it further. A picked polygon becomes a
-   * prism (`prismMesh`) that tall, its top picked. Without `distanceMeters`, half the arrow's length (about 40 px on
-   * the screen). One `update`, one undo step. Returns false when no face is picked (`canExtrude`), and for a negative
-   * distance on a polygon (a prism only grows up; a mesh's face extrudes inwards).
+   * Extrudes what is picked, as E does with the `keyboard` option, as Blender's extrude:
+   *
+   * - faces of a mesh go out along their mean outward normal as one region (`extrudeMeshFaces`), new walls joining
+   *   their outline to where it was; a polygon's face becomes a prism (`prismMesh`) that tall;
+   * - edges of a mesh or polygon (or those between two picked vertices) each grow a face straight up
+   *   (`extrudeMeshEdges`); a line, whatever is picked of it, becomes a wall (one face per segment) that tall;
+   * - as in Blender, every edge (or vertex) of a face picked picks the face.
+   *
+   * What it made stays picked (the moved faces, the new top edges or vertices), with the move gizmo over it to carry
+   * it further. Without `distanceMeters`, half the arrow's length (about 40 px on the screen). One `update`, one undo
+   * step. Returns false when nothing can be extruded (`canExtrude`), and for a negative distance on a line or a
+   * polygon's face (walls and prisms only grow up; a mesh's faces extrude inwards, its edges down).
    */
   extrude(distanceMeters?: number): boolean {
     const context = this.context
@@ -1349,20 +1416,97 @@ export class SelectMode extends DrawMode {
       throw new Error(`SelectMode.extrude: distanceMeters is ${distanceMeters}; give a finite number of metres other than 0, or leave it out for half the arrow's length.`)
     }
     if (context === null || !this.canExtrude || this.drag !== null) return false
-    const feature = this.picked!.feature
-    const element = this.picked!.elements[0]!
-    if (element.kind !== 'face') return false
-    const distance = distanceMeters ?? this.defaultExtrudeMeters(feature, element.index)
+    const { feature, elements: picked } = this.picked!
+    const extrusion = this.extrusionOf(feature, picked)
     const elements = this.elementsOf(feature)
+    if (extrusion === null || elements === null) return false
+    const distance = distanceMeters ?? this.defaultExtrusionMeters(feature, picked)
     let edited: DrawFeature
-    if (elements?.mesh != null) edited = this.withMesh(feature, extrudeMeshFace(elements.mesh, element.index, distance))
-    else if (feature.geometry.type === 'Polygon' && distance > 0) edited = this.prismOf(feature, distance)
-    else return false
+    let made: { vertices: number[]; edges: Array<[number, number]>; faces: number[] }
+    if (extrusion.kind === 'wall' || extrusion.kind === 'prism') {
+      if (distance < 0) return false
+      if (extrusion.kind === 'wall') {
+        const wall = this.wallOf(feature, distance)
+        if (wall === null) return false
+        edited = this.withMesh(feature, wall.mesh)
+        made = { vertices: [...new Set(wall.top.flat())], edges: wall.top, faces: [] }
+      } else {
+        edited = this.prismOf(feature, distance)
+        // A prism has its top first.
+        made = this.faceElementsOf(edited, [0])
+      }
+    } else if (extrusion.kind === 'faces') {
+      edited = this.withMesh(feature, extrudeMeshFaces(elements.mesh!, extrusion.faces, distance))
+      made = this.faceElementsOf(edited, extrusion.faces)
+    } else {
+      const mesh = elements.mesh ?? this.meshOfPolygon(feature, elements)
+      const extruded = extrudeMeshEdges(mesh, extrusion.edges, [0, 0, distance])
+      edited = this.withMesh(feature, extruded.mesh)
+      made = { vertices: [...new Set(extruded.edges.flat())], edges: extruded.edges, faces: [] }
+    }
     this.commit([feature], () => context.update([edited]))
-    // A polygon's prism has its top first.
-    this.picked = { feature: edited, elements: [{ kind: 'face', index: elements?.mesh != null ? element.index : 0 }] }
+    const kept = this.element === 'vertex' ? made.vertices.map(index => ({ kind: 'vertex', index }) as const) : this.element === 'edge' ? made.edges.map(([from, to]) => ({ kind: 'edge', from: Math.min(from, to), to: Math.max(from, to) }) as const) : made.faces.map(index => ({ kind: 'face', index }) as const)
+    this.picked = kept.length === 0 ? null : { feature: edited, elements: kept }
     context.changed()
     return true
+  }
+
+  /** The vertices, edges and faces of some faces of a feature version, to pick them after an edit. */
+  protected faceElementsOf(feature: DrawFeature, faces: readonly number[]): { vertices: number[]; edges: Array<[number, number]>; faces: number[] } {
+    const elements = this.elementsOf(feature)
+    if (elements === null) return { vertices: [], edges: [], faces: [] }
+    const edges = [...new Set(faces.flatMap(face => elements.faceEdges[face] ?? []))].map(index => elements.edges[index]!)
+    return { vertices: this.pickedVertices(elements, faces.map(index => ({ kind: 'face', index }))), edges, faces: [...faces] }
+  }
+
+  /**
+   * A line as a wall `heightMeters` tall (one face per segment, as `wallMesh`), standing at its altitudes or on the
+   * terrain under it, with its vertices first in their order then their copies on top; and the wall's top edges.
+   */
+  protected wallOf(feature: DrawFeature, heightMeters: number): { mesh: IndexedMesh; top: Array<[number, number]> } | null {
+    const elements = this.elementsOf(feature)
+    if (elements === null || feature.geometry.type !== 'LineString') return null
+    // As a prism stands: at a vertex's altitude, or on the terrain under it.
+    const ground = this.groundOf(feature, lowestAltitude(feature.geometry) ?? this.groundFallbackMeters)
+    // A vertex placed again where one already is (a line closing on its start) is that vertex: the wall stays joined.
+    const bottom: Position[] = []
+    const indexOf = new Map<string, number>()
+    const line = elements.positions.map((position, index) => {
+      const base: Position = [position[0]!, position[1]!, elements.heights[index] ?? ground(position[0]!, position[1]!)]
+      const key = base.join()
+      let at = indexOf.get(key)
+      if (at === undefined) indexOf.set(key, (at = bottom.push(base) - 1))
+      return at
+    })
+    const count = bottom.length
+    const vertices = [...bottom, ...bottom.map((position): Position => [position[0]!, position[1]!, position[2]! + heightMeters])]
+    const faces: number[][][] = []
+    const top: Array<[number, number]> = []
+    for (let index = 0; index + 1 < line.length; index++) {
+      const a = line[index]!
+      const b = line[index + 1]!
+      // A segment of no length (a vertex placed twice in a row) makes no face.
+      if (a === b) continue
+      faces.push([[a, b, count + b, count + a]])
+      top.push([count + a, count + b])
+    }
+    return faces.length === 0 ? null : { mesh: { vertices, faces }, top }
+  }
+
+  /** A polygon as a mesh of its one face, at its altitudes or on the terrain, its vertices in `featureVertices` order. */
+  protected meshOfPolygon(feature: DrawFeature, elements: FeatureElements): IndexedMesh {
+    const ground = this.groundOf(feature, lowestAltitude(feature.geometry) ?? this.groundFallbackMeters)
+    return { vertices: elements.positions.map((position, index): Position => [position[0]!, position[1]!, elements.heights[index] ?? ground(position[0]!, position[1]!)]), faces: elements.faces }
+  }
+
+  /** `extrude()`'s distance: a picked face's half arrow, else half the move gizmo's arrow over what is picked. */
+  protected defaultExtrusionMeters(feature: DrawFeature, picked: readonly PickedElement[]): number {
+    if (picked.length === 1 && picked[0]!.kind === 'face') return this.defaultExtrudeMeters(feature, picked[0]!.index)
+    const basis = this.elementGizmoBasis(feature)
+    if (basis !== null) return basis.sizeMeters * EXTRUDE_ARROW_SHARE
+    const { center, range } = this.geometryOf(feature)
+    const height = range?.minimumMeters ?? this.context!.heights.heightAt(center[0], center[1], this.groundFallbackMeters)
+    return (this.basisAt(feature, center, height, height, range === null)?.sizeMeters ?? 2) * EXTRUDE_ARROW_SHARE
   }
 
   /** Half the arrow's length at a face, or a quarter of the face's side when it cannot be measured on the screen. */
@@ -2593,6 +2737,15 @@ export class SelectMode extends DrawMode {
 /** The signed angle in radians from one screen vector to another, between -π and π (clockwise positive, y down). */
 function angleBetween(fromX: number, fromY: number, toX: number, toY: number): number {
   return Math.atan2(fromX * toY - fromY * toX, fromX * toX + fromY * toY)
+}
+
+/** One key for an edge either way round. */
+function samePlace(a: Position, b: Position): boolean {
+  return a[0] === b[0] && a[1] === b[1] && (a[2] ?? null) === (b[2] ?? null)
+}
+
+function edgeKey(a: number, b: number): string {
+  return a < b ? `${a}-${b}` : `${b}-${a}`
 }
 
 /** Whether a press adds to what is picked (Shift), as in Blender. */

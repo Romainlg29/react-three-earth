@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 import { moveVertices } from '../src/editing.js'
 import { LocalFrame } from '../src/localFrame.js'
-import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshVolume, prismMesh, type IndexedMesh } from '../src/mesh.js'
-import { extrudeMeshFace, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from '../src/meshEditing.js'
+import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshVolume, prismMesh, wallMesh, type IndexedMesh } from '../src/mesh.js'
+import { extrudeMeshEdges, extrudeMeshFace, extrudeMeshFaces, meshElementFrame, meshFaceArea, meshFaceNormal, meshFaceTriangles, meshFaceVertices, moveMeshVertices, pushMeshFace } from '../src/meshEditing.js'
 import type { DrawFeature } from '../src/types.js'
 
 /** A box 100 m east, 50 m north and 30 m tall standing at 400 m, its south-west corner at 6.6° E, 46.45° N. */
@@ -121,6 +121,46 @@ describe('mesh element editing', () => {
     expect(isClosedMesh(dent)).toBe(true)
     expect(meshVolume(dent) / meshVolume(mesh)).toBeCloseTo(20 / 30, 3)
     expect(() => extrudeMeshFace(mesh, 0, 0)).toThrow(/other than 0/)
+  })
+
+  it('extrudes faces together as one region: walls only around their outline, the solid closed', () => {
+    const mesh = box()
+    const wall = mesh.faces.findIndex((_, index) => Math.abs(meshFaceNormal(mesh, index)[2]) < 0.01 && meshFaceVertices(mesh, index).some(vertex => meshFaceVertices(mesh, 0).includes(vertex)))
+    const extruded = extrudeMeshFaces(mesh, [0, wall], 10)
+    // The top and a wall share one edge: six outline edges, six new walls; their vertices copied once.
+    expect(extruded.faces).toHaveLength(6 + 6)
+    expect(extruded.vertices).toHaveLength(8 + 6)
+    expect(isClosedMesh(extruded) && planar(extruded)).toBe(true)
+    expect(meshVolume(extruded)).toBeGreaterThan(meshVolume(mesh))
+    // One face is extrudeMeshFace; faces pointing every way cannot go together.
+    expect(extrudeMeshFaces(mesh, [0], 15)).toEqual(extrudeMeshFace(mesh, 0, 15))
+    // Vertices inside the region move in place: four faces around a shared corner leave none unused.
+    const corner = mesh.faces.flatMap((_, index) => meshFaceVertices(mesh, index)).find((vertex, _, all) => all.filter(each => each === vertex).length === 3)!
+    const around = mesh.faces.flatMap((_, index) => (meshFaceVertices(mesh, index).includes(corner) ? [index] : []))
+    const cornered = extrudeMeshFaces(mesh, around, 5)
+    expect(new Set(cornered.faces.flat(2)).size).toBe(cornered.vertices.length)
+    const bottom = mesh.faces.findIndex((_, index) => meshFaceNormal(mesh, index)[2] < -0.99)
+    expect(() => extrudeMeshFaces(mesh, [0, bottom], 5)).toThrow(/cancel out/)
+  })
+
+  it('extrudes edges into new faces: a wall\'s top edges up continue the wall', () => {
+    const frame = new LocalFrame(6.6, 46.45, 0)
+    const at = (east: number) => frame.toGeographic(east, 0, 0).slice(0, 2)
+    const wall = indexMesh(wallMesh([at(0), at(100), at(200)], 400, 10))
+    const top = wall.faces.map(face => face[0]!.filter(index => wall.vertices[index]![2]! > 405))
+    const edges = top.map(([a, b]) => [a!, b!] as [number, number])
+    const { mesh, edges: copied } = extrudeMeshEdges(wall, edges, [0, 0, 5])
+    expect(mesh.faces).toHaveLength(4)
+    expect(mesh.vertices).toHaveLength(6 + 3)
+    expect(copied.flat().every(index => index >= 6 && Math.abs(mesh.vertices[index]![2]! - 415) < 0.01)).toBe(true)
+    expect(planar(mesh)).toBe(true)
+    // Wound as the wall below: the same outward normal.
+    for (const face of [0, 1]) {
+      const below = meshFaceNormal(mesh, face)
+      const above = meshFaceNormal(mesh, face + 2)
+      expect(below[0] * above[0] + below[1] * above[1] + below[2] * above[2]).toBeCloseTo(1, 3)
+    }
+    expect(() => extrudeMeshEdges(wall, edges, [0, 0, 0])).toThrow(/not all 0/)
   })
 
   it('moves several vertices of a line or polygon by one step, keeping altitudes', () => {
