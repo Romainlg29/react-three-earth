@@ -1,5 +1,5 @@
-import type { Earth as EarthImpl } from 'react-three-earth'
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import type { Earth as EarthImpl } from '@earthkit/globe'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 import { useMemo, useState } from 'react'
 
 import { vectorSchema } from './data'

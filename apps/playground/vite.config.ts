@@ -18,10 +18,10 @@ export default defineConfig({
   resolve: {
     // Work on the library source directly, no rebuild needed
     alias: [
-      { find: /^react-three-earth\/react$/, replacement: library('react/index.tsx') },
-      { find: /^react-three-earth$/, replacement: library('index.ts') },
-      { find: /^react-three-earth-draw\/react$/, replacement: drawLibrary('react/index.ts') },
-      { find: /^react-three-earth-draw$/, replacement: drawLibrary('index.ts') },
+      { find: /^@earthkit\/globe\/react$/, replacement: library('react/index.tsx') },
+      { find: /^@earthkit\/globe$/, replacement: library('index.ts') },
+      { find: /^@earthkit\/draw\/react$/, replacement: drawLibrary('react/index.ts') },
+      { find: /^@earthkit\/draw$/, replacement: drawLibrary('index.ts') },
     ],
   },
   // The library is aliased to its source, so Vite would only discover these on first load, re-bundle and
@@ -31,9 +31,9 @@ export default defineConfig({
       'three',
       'three/tsl',
       'three/webgpu',
-      'react-three-earth > 3d-tiles-renderer',
-      'react-three-earth-draw > earcut',
-      'react-three-earth > 3d-tiles-renderer/three/plugins',
+      '@earthkit/globe > 3d-tiles-renderer',
+      '@earthkit/draw > earcut',
+      '@earthkit/globe > 3d-tiles-renderer/three/plugins',
       '@react-three/fiber',
       '@react-three/fiber/extension',
       '@react-three/tsl',

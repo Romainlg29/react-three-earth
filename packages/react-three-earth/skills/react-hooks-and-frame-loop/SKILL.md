@@ -1,7 +1,7 @@
 ---
 name: react-hooks-and-frame-loop
 description: >
-  Use when React UI or per-frame code needs the react-three-earth globe: reading tile counts or other
+  Use when React UI or per-frame code needs the @earthkit/globe globe: reading tile counts or other
   Earth state into components (HUD, loading indicator), running code every frame after tiles update,
   getting the vanilla Earth object inside R3F, ordering frame callbacks, or using frameloop="demand"
   to save battery.
@@ -9,7 +9,7 @@ metadata:
   purpose: 'Documents useEarth, useEarthFrame and useEarthState, the R3F v10 scheduler ids the library registers, and on-demand rendering.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/hooks.ts'
@@ -31,7 +31,7 @@ Read `getting-started` first. All hooks must be called inside `<Earth>`, which s
 ### Get the vanilla Earth
 
 ```tsx
-import { useEarth } from 'react-three-earth/react'
+import { useEarth } from '@earthkit/globe/react'
 
 export function LogOnce() {
   const earth = useEarth() // the vanilla Earth (a three.js Group); reading it never re-renders
@@ -55,7 +55,7 @@ outside `<Canvas>` and pass values out through a callback or a store:
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { Earth, useEarthState } from 'react-three-earth/react'
+import { Earth, useEarthState } from '@earthkit/globe/react'
 import { useEffect, useState } from 'react'
 
 function ReportTiles({ onChange }: { onChange: (tiles: number) => void }) {
@@ -82,7 +82,7 @@ export function App() {
 ### Run code every frame, after tiles update
 
 ```tsx
-import { useEarthFrame } from 'react-three-earth/react'
+import { useEarthFrame } from '@earthkit/globe/react'
 import { useRef } from 'react'
 import type { Mesh } from 'three'
 

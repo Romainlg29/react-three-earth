@@ -1,4 +1,4 @@
-import { isOccludedByEllipsoid, type Earth } from 'react-three-earth'
+import { isOccludedByEllipsoid, type Earth } from '@earthkit/globe'
 import { Group, Vector3, type Camera } from 'three'
 
 import { distanceMeters, geometryLines, geometryPolygons, unwrapLongitudeNear, triangulatePolygon, fromMercator } from '../geometry.js'

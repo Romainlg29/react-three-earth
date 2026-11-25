@@ -1,9 +1,9 @@
 {
-  "name": "react-three-earth-draw",
+  "name": "@earthkit/draw",
   "version": "0.0.0",
-  "description": "Headless drawing and editing for react-three-earth: points, lines, polygons and shapes on the globe and the flat map, as GeoJSON",
+  "description": "Headless drawing and editing for @earthkit/globe: points, lines, polygons and shapes on the globe and the flat map, as GeoJSON",
   "keywords": [
-    "react-three-earth",
+    "earthkit",
     "three",
     "react-three-fiber",
     "webgpu",
@@ -37,6 +37,9 @@
     },
     "./package.json": "./package.json"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
@@ -53,7 +56,7 @@
     "@types/three": "^0.187.0",
     "happy-dom": "^20.0.0",
     "react": "~19.3.1",
-    "react-three-earth": "workspace:*",
+    "@earthkit/globe": "workspace:*",
     "three": "0.187.0",
     "tsdown": "^0.23.7",
     "typescript": "~6.0.2",
@@ -64,7 +67,7 @@
   },
   "peerDependencies": {
     "react": ">=19.0 <19.4",
-    "react-three-earth": "workspace:*",
+    "@earthkit/globe": "0.x",
     "three": ">=0.187.0 <0.188.0"
   },
   "peerDependenciesMeta": {

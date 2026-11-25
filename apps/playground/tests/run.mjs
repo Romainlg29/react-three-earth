@@ -1591,7 +1591,7 @@ async function galleryExample(name, query = '', interact = null) {
 }
 
 /**
- * The drawing plugin (`?example=draw`, react-three-earth-draw): a polygon, a line and a point drawn by tapping, with a
+ * The drawing plugin (`?example=draw`, @earthkit/draw): a polygon, a line and a point drawn by tapping, with a
  * mouse or a finger, on the globe or the flat map. Finished features drape on the terrain (green fill, red line and
  * point); the feature in progress shows in the overlay; one-finger drags between taps still pan.
  */

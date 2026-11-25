@@ -46,7 +46,7 @@ export function groundMetersPerPixelToZoom(metersPerPixel: number, latitudeDegre
  */
 export function focalLengthPixels(camera: Camera, viewportHeightPixels: number): number {
   if (!(camera as PerspectiveCamera).isPerspectiveCamera) {
-    throw new Error('react-three-earth: zoom needs a PerspectiveCamera (the <Canvas> default); orthographic cameras are not supported yet.')
+    throw new Error('@earthkit/globe: zoom needs a PerspectiveCamera (the <Canvas> default); orthographic cameras are not supported yet.')
   }
   const fieldOfViewRadians = ((camera as PerspectiveCamera).getEffectiveFOV() * Math.PI) / 180
   return viewportHeightPixels / 2 / Math.tan(fieldOfViewRadians / 2)

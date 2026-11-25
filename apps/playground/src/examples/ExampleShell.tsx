@@ -1,5 +1,5 @@
 import { Canvas, useThree } from '@react-three/fiber'
-import { setCameraView, type CameraView, type Earth as EarthImpl, type EarthPlugin } from 'react-three-earth'
+import { setCameraView, type CameraView, type Earth as EarthImpl, type EarthPlugin } from '@earthkit/globe'
 import {
   Atmosphere,
   Earth,
@@ -7,7 +7,7 @@ import {
   QuantizedMeshSource,
   Terrain,
   useEarth,
-} from 'react-three-earth/react'
+} from '@earthkit/globe/react'
 import { useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react'
 
 import { MapControls } from '../controls/MapControls'

@@ -1,5 +1,5 @@
-import type { Earth as EarthImpl } from 'react-three-earth'
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import type { Earth as EarthImpl } from '@earthkit/globe'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 import {
   CircleMode,
   createCircle,
@@ -16,8 +16,8 @@ import {
   StaticMode,
   wallMesh,
   type GroundHeight,
-} from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+} from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { rasterBasemapStyle } from './data'
@@ -134,7 +134,7 @@ function ShapesToolbar({ draw, setSolidHeight }: { draw: Draw; setSolidHeight: (
 }
 
 /**
- * `?example=shapes`: circles, rectangles, spheres, polygons and walls with `react-three-earth-draw`. A tap places the
+ * `?example=shapes`: circles, rectangles, spheres, polygons and walls with `@earthkit/draw`. A tap places the
  * center or a corner, a second tap sets the size. With a height, shapes become meshes (cylinders, boxes, prisms, walls)
  * standing on the terrain: GeoJSON multipolygons of faces whose positions carry their altitude.
  */

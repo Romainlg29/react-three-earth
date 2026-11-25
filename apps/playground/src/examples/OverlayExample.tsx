@@ -1,5 +1,5 @@
-import type { GeoreferencedCorners } from 'react-three-earth'
-import { ImageSource, Imagery, RasterTileSource } from 'react-three-earth/react'
+import type { GeoreferencedCorners } from '@earthkit/globe'
+import { ImageSource, Imagery, RasterTileSource } from '@earthkit/globe/react'
 import { useEffect, useState } from 'react'
 
 import { rasterAttribution, rasterTilesUrl, useFixtures } from './data'

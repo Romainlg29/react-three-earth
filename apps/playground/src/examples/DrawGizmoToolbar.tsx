@@ -1,5 +1,5 @@
-import type { Draw, ElementMode, GizmoSpace, GizmoTool } from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+import type { Draw, ElementMode, GizmoSpace, GizmoTool } from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 
 const TOOLS: ReadonlyArray<{ tool: GizmoTool; label: string }> = [
   { tool: 'all', label: 'All' },

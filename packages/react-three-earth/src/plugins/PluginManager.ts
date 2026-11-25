@@ -257,8 +257,8 @@ export class PluginManager {
     }
     if (plugin.apiVersion !== PLUGIN_API_VERSION) {
       throw new Error(
-        `Plugin "${name}" targets plugin API ${String(plugin.apiVersion)}, this react-three-earth implements ${PLUGIN_API_VERSION}: ` +
-          `upgrade react-three-earth, or install a version of "${name}" built for plugin API ${PLUGIN_API_VERSION}.`,
+        `Plugin "${name}" targets plugin API ${String(plugin.apiVersion)}, this @earthkit/globe implements ${PLUGIN_API_VERSION}: ` +
+          `upgrade @earthkit/globe, or install a version of "${name}" built for plugin API ${PLUGIN_API_VERSION}.`,
       )
     }
     const existing = this.installations.get(name)

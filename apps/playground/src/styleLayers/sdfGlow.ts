@@ -2,7 +2,7 @@
 // points, exact at any region resolution. The worker module (sdfGlowWorker.js) emits one quad per segment; the
 // material computes the distance to the segment (the capsule SDF). Quads draw into an offscreen target with
 // maximum blending, so joins and overlaps never double up, and the target is composited once per region.
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { attribute, clamp, dot, float, length, max, smoothstep, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 

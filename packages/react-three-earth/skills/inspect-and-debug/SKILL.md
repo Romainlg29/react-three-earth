@@ -1,13 +1,13 @@
 ---
 name: inspect-and-debug
 description: >
-  Use when a react-three-earth globe is blank, black, missing tiles or sky, looks wrong, or is slow or
+  Use when an earthkit globe is blank, black, missing tiles or sky, looks wrong, or is slow or
   uses too much memory: reading earth.inspect(), diagnosing common setup errors, tuning tile detail,
   memory and imagery budgets for phones, and checking a map in an automated browser test.
 metadata:
   purpose: 'Gives a symptom-to-cause table, the inspect() JSON fields, the performance knobs, and a headed-Chromium WebGPU test recipe.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Earth.ts'
@@ -28,7 +28,7 @@ cheap enough to poll, so read it instead of guessing from screenshots.
 ### Read the state
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export function report(earth: Earth) {
   const { terrain, atmosphere, imageryLayers } = earth.inspect()
