@@ -102,7 +102,7 @@ The physical presets draw waves near the camera (`waves`, default true but for `
 wind's speed, `windDirectionDegrees` (where it blows from, default 270, a westerly) and `fetchKilometers` (open water it
 has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
 (`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
-simulated by FFT and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
+simulated by FFT (64 texels a side on the CPU, 256 on the GPU, whose tiles then repeat far less) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
 roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
 Under WebGPU the simulation runs in compute shaders (a few dispatches a frame, no CPU cost) and also draws foam on the
 crests that break (where the choppy waves' Jacobian folds), covering the whitecap share (`whitecapCoverage`). On WebGL2
@@ -120,6 +120,8 @@ it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: th
   the water's own attenuation (blue reaches farthest). Needs a source holding the seafloor: Terrarium through
   `RasterDemSource` with `flattenBelowSeaLevel`. Leave it off for quantized mesh, whose sea heights are not depths.
   Depth is measured from `seaLevelMeters` (default 0): set it to the source's `seaLevelMeters` when you change that.
+  Where the elevation sits exactly at sea level (Terrarium's land data fills the sea near coasts with 0 m, in
+  rectangles) there is no depth to show: no seafloor, not a sandbar.
 
 `water.state` (and `earth.inspect().plugins.water`) gives the resolved values: `albedo` (linear RGB), `roughness`,
 `whitecapCoverage`, `diffuseAttenuationPerMeter`.

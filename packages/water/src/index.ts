@@ -14,4 +14,4 @@ export {
 export { WAVE_CASCADE_LENGTHS_METERS, WAVE_GRID_SIZE, WAVE_REPEAT_PERIOD_SECONDS, WaveField, type WaveCascade, type WaveFieldOptions } from './waves/WaveField.js'
 export { inverseStandardNormal, WAVE_CHOPPINESS } from './waves/foam.js'
 export { createButterflies, WaveComputeField } from './waves/WaveComputeField.js'
-export { WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
+export { WAVE_COMPUTE_GRID_SIZE, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
