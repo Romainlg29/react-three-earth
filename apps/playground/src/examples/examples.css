@@ -309,3 +309,129 @@
 .compare-handle:focus-visible .compare-grip {
   box-shadow: 0 0 0 3px #5b8def, 0 1px 6px rgba(0, 0, 0, 0.45);
 }
+
+/* `?example=showcase`: collapsible sections, layer checkboxes, the file list and the drop hint. */
+.showcase-section {
+  margin-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.showcase-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 28px;
+  line-height: 28px;
+}
+
+.showcase-checks {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.showcase-checks label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+}
+
+.showcase-checks label:has(input:disabled) {
+  opacity: 0.5;
+}
+
+.showcase-files {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.showcase-files li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.showcase-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.showcase-file-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.showcase-file-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.showcase-file-name small {
+  color: #9aa4b5;
+}
+
+.showcase-files button {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #34405a;
+  border-radius: 8px;
+  background: #1b2333;
+  color: inherit;
+  font: 16px/1 system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.showcase-files button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.showcase-errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #ffa8a8;
+}
+
+.showcase-drop {
+  position: fixed;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed rgba(109, 156, 255, 0.9);
+  border-radius: 18px;
+  background: rgba(14, 18, 28, 0.45);
+  color: #ffffff;
+  font: 600 20px/1.4 system-ui, -apple-system, sans-serif;
+  pointer-events: none;
+}
+
+.showcase-properties {
+  margin-top: 4px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.showcase-properties th {
+  padding: 1px 8px 1px 0;
+  text-align: left;
+  font-weight: 500;
+  color: #5a6478;
+}
+
+.showcase-properties td {
+  padding: 1px 0;
+  overflow-wrap: anywhere;
+}

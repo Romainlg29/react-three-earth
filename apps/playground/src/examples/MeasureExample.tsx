@@ -20,7 +20,7 @@ function describe(measurement: Measurement, unitSystem: UnitSystem): string {
 }
 
 /** A label on the map at each measurement, the one being drawn included. Plain markers: the measure draws no text. */
-function MeasurementLabels({ measure, unitSystem }: { measure: Measure; unitSystem: UnitSystem }) {
+export function MeasurementLabels({ measure, unitSystem }: { measure: Measure; unitSystem: UnitSystem }) {
   const { measurements, live } = useMeasureState(measure)
   const shown = live === null ? measurements : [...measurements, live]
   return (
@@ -74,7 +74,7 @@ function ProfileChart({ profile, unitSystem }: { profile: ElevationProfile; unit
 }
 
 /** The toolbar, the readout and the profile: plain elements on the measure's state. The plugin ships none of this. */
-function MeasurePanel({ measure, unitSystem, setUnitSystem }: { measure: Measure; unitSystem: UnitSystem; setUnitSystem: (system: UnitSystem) => void }) {
+export function MeasurePanel({ measure, unitSystem, setUnitSystem }: { measure: Measure; unitSystem: UnitSystem; setUnitSystem: (system: UnitSystem) => void }) {
   const state = useMeasureState(measure)
   // The profile follows the selected line, else the last one drawn (not the one being drawn: it would sample the
   // terrain on every pointer move).
