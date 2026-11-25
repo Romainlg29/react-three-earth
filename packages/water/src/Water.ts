@@ -9,12 +9,12 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, dot, exp, float, max, mix, normalize, pow, saturate, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, ceil, dot, exp, exp2, float, floor, fwidth, hash, log2, max, min, mix, normalize, pow, saturate, smoothstep, sqrt, step, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
-import { WaveMesh, type WaveMeshGround, type WaveMeshShading, type WaveMeshView } from './waves/WaveMesh.js'
+import { WATER_INDEX_OF_REFRACTION, WaveMesh, type WaveMeshGround, type WaveMeshShading, type WaveMeshView } from './waves/WaveMesh.js'
 import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
 import { earthCenteredFromGeographic, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 import { WATER_PRESETS, type WaterPreset } from './presets.js'
@@ -156,6 +156,8 @@ export class Water implements EarthPlugin {
   protected readonly crestColor = uniform(new Color())
   /** Towards the sun, in the wave plane's frame (x east, y north, z up). */
   protected readonly sunInPlane = uniform(new Vector3(0, 0, 1))
+  /** The waves' clock for the glitter's flashes, seconds, wrapped every `GLITTER_PERIOD_SECONDS`. */
+  protected readonly glitterTime = uniform(0)
   /** The sunlight reaching the sea under the camera, through the atmosphere, in the scene's units; 0 without one. */
   protected readonly sunIlluminance = uniform(new Vector3())
   /** 1 when `roughness` is fixed: the drawn waves then do not change it. */
@@ -217,6 +219,7 @@ export class Water implements EarthPlugin {
     const fixedRoughness = settings.roughness === undefined ? preset.roughness : settings.roughness
     this.fixedRoughnessWeight.value = fixedRoughness === null ? 0 : 1
     this.meanSquareSlope.value = surfaceMeanSquareSlope(state.windSpeedMetersPerSecond)
+    this.waveSurface.setSurfaceMeanSquareSlope(this.meanSquareSlope.value)
     this.waveSurface.weight.value = state.waves ? 1 : 0
     this.waveMesh.depthWeight.value = state.depthFromElevation ? 1 : 0
     this.waveMesh.significantWaveHeightMeters.value = state.significantWaveHeightMeters
@@ -235,6 +238,7 @@ export class Water implements EarthPlugin {
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
       this.followSun(earth)
       const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
+      this.glitterTime.value = this.waveSurface.timeSeconds % GLITTER_PERIOD_SECONDS
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
       this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0, { renderer, terrain: earth.terrain, earth })
       for (const probe of this.probes) probe.update(renderer)
@@ -312,10 +316,49 @@ export class Water implements EarthPlugin {
     return throughCrests.add(towardsCamera).mul(this.sunIlluminance as unknown as Node<'vec3'>).mul(daylight).mul(float(1).sub(foam)) as unknown as Node<'vec3'>
   }
 
+  /**
+   * The sun's glint off the ripples too fine to draw, as glitter: the few facets among them that catch the sun flash.
+   * A share of cells on the plane, each about a pixel, light up in turn with a multiple of the highlight the roughness
+   * spreads there (three's GGX, as the material draws it). It only adds light, about `GLITTER_SHARE × GLITTER_GAIN` of
+   * the fine ripples' highlight on average: dimming the cells between would need the material's own highlight, which
+   * its specular anti-aliasing widens.
+   */
+  protected sunGlitter(waves: WaveSurfaceNodes, view: WaveMeshView, foam: Node<'float'>): Node<'vec3'> {
+    const sun = this.sunInPlane
+    const { normal, toCamera } = view
+    // The facets' slope variance left over: GGX's alpha² as the material's roughness gives it (roughness⁴).
+    const alphaSquared = max(this.meanSquareSlope.sub(waves.resolvedMeanSquareSlope), 1e-4)
+    const halfway = normalize(sun.add(toCamera))
+    const facingHalfway = saturate(dot(normal, halfway))
+    const facingCamera = max(dot(normal, toCamera), 0.05)
+    const facingSun = saturate(dot(normal, sun))
+    const spread = facingHalfway.mul(facingHalfway).mul(alphaSquared.sub(1)).add(1)
+    const distribution = alphaSquared.div(spread.mul(spread).mul(Math.PI))
+    // Smith's height-correlated visibility, as three's.
+    const towardsSun = facingCamera.mul(sqrt(alphaSquared.add(float(1).sub(alphaSquared).mul(facingSun.mul(facingSun)))))
+    const towardsCamera = facingSun.mul(sqrt(alphaSquared.add(float(1).sub(alphaSquared).mul(facingCamera.mul(facingCamera)))))
+    const visibility = float(0.5).div(max(towardsSun.add(towardsCamera), 1e-6))
+    const fresnel = float(1).sub(saturate(dot(toCamera, halfway))).pow(5).mul(1 - WATER_REFLECTANCE_STRAIGHT_ON).add(WATER_REFLECTANCE_STRAIGHT_ON)
+    // Bounded: a half-float target overflows past 65504, and one infinite pixel blackens the bloom and exposure.
+    const highlight = min(fresnel.mul(distribution).mul(visibility).mul(facingSun), GLITTER_MAXIMUM_HIGHLIGHT)
+    // Cells about a pixel wide (the footprint's geometric mean), by powers of two, from a centimetre.
+    const plane = waves.plane
+    const footprint = max(sqrt(fwidth(plane.x).mul(fwidth(plane.y))), GLITTER_CELL_METERS)
+    const level = ceil(log2(footprint.div(GLITTER_CELL_METERS)))
+    const cell = floor(plane.div(exp2(level).mul(GLITTER_CELL_METERS))).add(GLITTER_CELL_OFFSET)
+    const first = hash(cell.x)
+    const second = hash(cell.y.add(floor(first.mul(16777216))))
+    const flash = floor(this.glitterTime.mul(GLITTER_FLASHES_PER_SECOND).add(second.mul(64)))
+    const chance = hash(floor(second.mul(1048576)).add(flash).add(level.mul(977)))
+    const flashing = step(chance, GLITTER_SHARE)
+    const daylight = saturate(sun.z.mul(4))
+    return (this.sunIlluminance as unknown as Node<'vec3'>).mul(highlight.mul(flashing).mul(GLITTER_GAIN).mul(daylight).mul(float(1).sub(foam))) as unknown as Node<'vec3'>
+  }
+
   /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain, and the light scattered through its crests. */
   protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
-      emissive: this.scatteredSunlight(view, waves.foam),
+      emissive: this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>,
       color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
     }
@@ -468,5 +511,20 @@ export function resolveState(settings: WaterSettings): WaterState {
 const SCATTER_THROUGH_CRESTS = 0.6
 /** How much scattered light every face turned to the camera sends (Atlas's k2). */
 const SCATTER_TOWARDS_CAMERA = 0.3
+/** Water's reflectance looking straight down: ((n - 1) / (n + 1))². */
+const WATER_REFLECTANCE_STRAIGHT_ON = ((WATER_INDEX_OF_REFRACTION - 1) / (WATER_INDEX_OF_REFRACTION + 1)) ** 2
+/** The glitter's smallest cells, metres. */
+const GLITTER_CELL_METERS = 0.01
+/** Keeps the cells' indices positive (the plane spans ±20 km), and exact in 32-bit floats. */
+const GLITTER_CELL_OFFSET = 4_000_000
+/** The share of cells flashing at once. */
+const GLITTER_SHARE = 0.08
+/** How much brighter than the fine ripples' smooth highlight a flashing cell is, on top of it. */
+const GLITTER_GAIN = 2
+/** The most a fine ripples' highlight counts for a flash, per unit of sunlight. */
+const GLITTER_MAXIMUM_HIGHLIGHT = 16
+/** How often a cell draws again whether it flashes. */
+const GLITTER_FLASHES_PER_SECOND = 6
+const GLITTER_PERIOD_SECONDS = 1000
 const scratchPosition = new Vector3()
 const scratchIlluminance = { sun: new Vector3(), sky: new Vector3(), skyAvailable: false }

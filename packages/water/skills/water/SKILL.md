@@ -109,7 +109,10 @@ wind's speed, `windDirectionDegrees` (where it blows from, default 270, a wester
 has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
 (`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
 simulated by FFT (64 texels a side on the CPU, 256 on the GPU, whose tiles then repeat far less) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
-roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
+roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance. The
+ripples finer than the smallest tile (the rest of Cox & Munk's slopes) are drawn as detail within a few metres of the
+camera (`WAVE_DETAIL_SCALES`), and on the GPU's wave mesh the sun's glint off them glitters: cells about a pixel wide
+flash in turn along the glint, instead of one smooth, milky highlight.
 Under WebGPU the simulation runs in compute shaders (a few dispatches a frame, no CPU cost) and also draws foam on the
 crests that break (where the choppy waves' Jacobian folds). The foam lasts: crests breaking now
 (`WAVE_BREAKING_SHARE` of the whitecap share) leave patches that fade over `WAVE_FOAM_LIFETIME_SECONDS` (4 s) into a web

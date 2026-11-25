@@ -419,6 +419,23 @@ describe('WaveComputeField', () => {
     surface.dispose()
   })
 
+  it('leaves the ripples finer than the cascades to the close-up detail, never a negative share', () => {
+    const surface = new WaveSurface()
+    surface.setSeaState({ windSpeedMetersPerSecond: 10, windDirectionDegrees: 270, fetchKilometers: 300, temperatureCelsius: 15, salinityPartsPerThousand: 35 })
+    const unresolved = (surface as unknown as { unresolvedMeanSquareSlope: { value: number } }).unresolvedMeanSquareSlope
+    const drawn = surface.field.cascades.reduce((sum, cascade) => sum + cascade.meanSquareSlope, 0)
+    expect(unresolved.value).toBe(0)
+    surface.setSurfaceMeanSquareSlope(drawn + 0.02)
+    expect(unresolved.value).toBeCloseTo(0.02, 9)
+    // A calmer sea state keeps the whole slope variance in step.
+    surface.setSeaState({ windSpeedMetersPerSecond: 5, windDirectionDegrees: 270, fetchKilometers: 300, temperatureCelsius: 15, salinityPartsPerThousand: 35 })
+    const calmer = surface.field.cascades.reduce((sum, cascade) => sum + cascade.meanSquareSlope, 0)
+    expect(unresolved.value).toBeCloseTo(drawn + 0.02 - calmer, 9)
+    surface.setSurfaceMeanSquareSlope(drawn / 10)
+    expect(unresolved.value).toBe(0)
+    surface.dispose()
+  })
+
   it('scores the normal distribution', () => {
     expect(inverseStandardNormal(0.5)).toBeCloseTo(0, 9)
     expect(inverseStandardNormal(0.975)).toBeCloseTo(1.959964, 5)
