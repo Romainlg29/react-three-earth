@@ -23,7 +23,7 @@ const FIXTURE_PLACES: FeatureCollection = {
   ],
 }
 
-function createProviders(): GeocoderProvider[] {
+export function createProviders(): GeocoderProvider[] {
   if (useFixtures) return [new GeoJSONProvider({ features: FIXTURE_PLACES, description: 'region' })]
   return [
     // The app's own places first, searched in memory…
@@ -34,7 +34,7 @@ function createProviders(): GeocoderProvider[] {
 }
 
 /** The search box: an input and a list, from `useGeocoder`'s combobox props. The library ships none of this, nor any CSS. */
-function SearchBox({ geocoder }: { geocoder: Geocoder }) {
+export function SearchBox({ geocoder }: { geocoder: Geocoder }) {
   const { inputProps, listboxProps, getOptionProps, results, status, query, resultsQuery } = useGeocoder(geocoder)
   const empty = status === 'success' && results.length === 0 && resultsQuery === query
   return (
