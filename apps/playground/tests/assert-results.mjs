@@ -1,9 +1,18 @@
 // Fails (exit 1) when the browser checks in test-results/results.json fall outside their expected ranges.
 // Run after tests/run.mjs. Thresholds leave margin over the values measured on SwiftShader (docs/spike/SPIKE.md).
-import { readFileSync } from 'node:fs'
+// The checks that pass keep their coverage record, so the next run skips them until a line they ran changes;
+// `--save-baseline` also writes those records to the committed tests/check-coverage.json.gz.
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
+import { CoverageRecorder, mergeLines } from './coverage.mjs'
+import { BASELINE, LOCAL, PENDING, checkRecord, readRecord, readRecords, writeRecord } from './selection.mjs'
+
+// Started first, so the coverage of this script's top level is complete
+const recorder = await new CoverageRecorder({ scripts: [fileURLToPath(import.meta.url)] }).start()
 
 const results = JSON.parse(readFileSync(new URL('../test-results/results.json', import.meta.url), 'utf8'))
-// A run of some areas (run.mjs labels, run.mjs --changed) skips the other checks: only a full run reports them missing.
+// A run of some checks (the default, or named ones) skips the others: only a full run reports them missing.
 let selection = { every: true }
 try {
   selection = JSON.parse(readFileSync(new URL('../test-results/selection.json', import.meta.url), 'utf8'))
@@ -531,6 +540,8 @@ for (const name of ['globe, mouse', 'globe, touch']) {
 
 let failures = 0
 let skipped = 0
+/** result name → whether every assertion passed, and the lines of this script its assertions ran. */
+const outcomes = new Map()
 for (const [check, assertions] of Object.entries(expectations)) {
   const result = results.find(r => r.check === check)
   if (result === undefined && !selection.every) {
@@ -542,15 +553,51 @@ for (const [check, assertions] of Object.entries(expectations)) {
     failures++
     continue
   }
+  await recorder.beginCheck()
   const all = [...assertions(result), ['no console errors', result.errors.length === 0]]
+  let passed = true
   for (const [description, passes] of all) {
     console.log(`${passes ? '✓' : '✗'} ${check}: ${description}`)
     if (!passes) failures++
+    passed &&= Boolean(passes)
   }
   if (result.errors.length > 0) console.error(result.errors.join('\n'))
+  outcomes.set(check, { passed, lines: await recorder.endCheck() })
 }
 
-if (skipped > 0) console.log(`\n${skipped} check(s) outside ${selection.areas.join(', ') || 'the selected areas'} skipped: run the full suite before merging.`)
+if (skipped > 0) console.log(`\n${skipped} result(s) outside the ${selection.checks?.length ?? 0} check(s) that ran skipped: no line they ran has changed since they last passed.`)
+
+// Keep the coverage of the checks that passed, with the lines of this script their assertions ran. Mark those that
+// failed, so that they run again whatever the baseline says.
+if (existsSync(PENDING)) {
+  const pending = readRecord(PENDING)
+  const local = readRecord(LOCAL)
+  local.fingerprints = { ...local.fingerprints, ...pending.fingerprints }
+  const names = Object.values(pending.checks).flatMap(record => record.results)
+  for (const name of new Set(names.filter((name, index) => names.indexOf(name) !== index))) {
+    console.error(`✗ ${name}: pushed more than once, so its results cannot be told apart: give each check its own result name`)
+    failures++
+  }
+  for (const [id, record] of Object.entries(pending.checks)) {
+    const asserted = record.results.filter(name => name in expectations).map(name => outcomes.get(name))
+    if (asserted.some(outcome => outcome === undefined || !outcome.passed) || record.results.some(name => names.indexOf(name) !== names.lastIndexOf(name))) {
+      local.checks[id] = { failed: true }
+      continue
+    }
+    if (asserted.length === 0) console.log(`${id}: no expectation names its results, so only a crash fails it`)
+    const lines = new Map()
+    for (const outcome of asserted) mergeLines(lines, outcome.lines)
+    const assertion = checkRecord([], lines, {}, local.fingerprints)
+    local.checks[id] = { ...record, files: { ...record.files, ...assertion.files } }
+    if (assertion.alwaysRun !== undefined) local.checks[id].alwaysRun ??= assertion.alwaysRun
+  }
+  writeRecord(LOCAL, local)
+}
+if (process.argv.includes('--save-baseline')) {
+  const records = readRecords({ passingOnly: true })
+  writeRecord(BASELINE, records)
+  console.log(`Saved the coverage of ${Object.keys(records.checks).length} check(s) to ${BASELINE}: commit it so other clones skip unchanged checks too.`)
+}
 
 if (failures > 0) {
   console.error(`\n${failures} browser check assertion(s) failed.`)

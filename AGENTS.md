@@ -44,18 +44,36 @@ run them yourself when you change rendering.
 
 ```sh
 pnpm typecheck
-pnpm test
+pnpm test        # about 10 s; `pnpm test:changed` runs only the unit tests the branch's changes reach
 pnpm -r --if-present validate:skills
 pnpm build
 pnpm dev &   # then:
-xvfb-run -a node apps/playground/tests/run.mjs --changed && node apps/playground/tests/assert-results.mjs
+xvfb-run -a node apps/playground/tests/run.mjs && node apps/playground/tests/assert-results.mjs
 ```
 
-The full browser suite takes 10 to 15 minutes. While you work, run only the areas your change reaches:
-`run.mjs --changed` picks them from the files changed since `origin/master` (rules in `tests/areas.mjs`;
-shared code such as `Earth.ts` or the tiles renderer runs every area, docs and skills run none), and
-`run.mjs labels buildings` runs named areas. Run the full suite (`run.mjs` with no argument) once, just before
-merging. `assert-results.mjs` skips the checks a partial run left out and says how many.
+`run.mjs` runs only the browser checks a change can reach, and nothing when no change reaches any. Each check
+(`labels/webgl2`, `draw/editing-globe-touch`, … 100 of them) records the source lines it ran when it last passed: in
+the page, in its workers, in `run.mjs` and in its assertions in `assert-results.mjs`. A check runs again only when one
+of those lines changed (or the code around an inserted line ran), when a file coverage cannot see changed (fixtures,
+`vite.config.ts`, `public/`, the lockfile), or when it failed last time. Comments, blank lines and types never run
+anything. So a fix round reruns the one check you are fixing, not the area, and never a check that already passed
+on the same code.
+
+- `run.mjs --list` prints what would run and why, without a browser or dev server. Use it before a run.
+- `run.mjs labels/webgl2` runs one check, `run.mjs labels buildings` named areas, whatever changed.
+- `run.mjs --all` runs every check (10 to 15 minutes): to refresh the baseline, never for a fix round.
+- Always run `assert-results.mjs` after `run.mjs`: it keeps the record of the checks that passed (in
+  `apps/playground/test-results/`) and drops those that failed, so the next run skips exactly the passing ones.
+- `tests/check-coverage.json.gz` is the committed starting point for fresh clones. After an `--all` run that passes,
+  `assert-results.mjs --save-baseline` refreshes it; commit it only then, in its own commit.
+
+What the selection cannot see, so a periodic `--all` run covers it: a page's popups or its own navigations
+(`location.href`), a statement added at the top level of a file that had no runtime code, and Node-side state
+one check leaves for the next. A check whose worker was terminated without a stand-in, or whose files were edited
+during the run, keeps no record and always runs until it passes cleanly.
+
+Do not rerun checks that passed when nothing they ran changed, and do not run whole areas or `--all` to be safe:
+the selection is the safety. Name a check only when you need it to run regardless (for example a flaky result).
 
 Outside the dev sandbox, install Playwright once with `npm i -g playwright@1.63.0 && npx playwright@1.63.0 install chromium`
 and run the checks with `NODE_PATH="$(npm root -g)"` in front. The browser checks need a headed Chromium (headless drops the WebGPU device);
