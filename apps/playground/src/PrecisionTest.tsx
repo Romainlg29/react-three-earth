@@ -2,7 +2,7 @@
 // At ECEF magnitudes (about 6.4e6 m), a 32-bit float only resolves about 0.5 m, so without
 // camera-relative 64-bit matrices the cubes collapse onto each other or jitter.
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { setCameraView, toCartesian } from 'react-three-earth'
+import { setCameraView, toCartesian } from '@earthkit/globe'
 import { useLayoutEffect, useMemo, useRef } from 'react'
 import { Color, Mesh, Vector3 } from 'three'
 import type { WebGPURenderer } from 'three/webgpu'

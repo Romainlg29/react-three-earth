@@ -1,6 +1,6 @@
 // An example plugin for render passes: a vignette in the `display` stage (tone-mapped colour, before FXAA)
 // and a soft glow of bright pixels in the `radiance` stage (linear HDR, after the atmosphere).
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { max, screenUV, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 

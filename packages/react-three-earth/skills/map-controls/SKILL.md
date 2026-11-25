@@ -1,7 +1,7 @@
 ---
 name: map-controls
 description: >
-  Use when an app needs buttons and widgets over the react-three-earth map, like MapLibre's controls: zoom
+  Use when an app needs buttons and widgets over the earthkit map, like MapLibre's controls: zoom
   in and out, a compass that resets north, a scale bar, a "find my location" button, fullscreen, or a
   2D / 3D toggle, built headless with hooks (useNavigationControl, useScaleControl…) and styled by the app, translated
   labels, or making them work on iPhone Safari. Also when the map must work with a keyboard or a screen reader (arrow
@@ -11,7 +11,7 @@ metadata:
   purpose: 'Documents the headless controls: <Controls>, useNavigationControl, useScaleControl, useGeolocateControl, useFullscreenControl, useViewControl and their vanilla classes (state, actions, button props, events, locale, accessibility); <EarthControls> keyboard, label, double-click zoom, box zoom and cooperative gestures.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/controls/Controls.ts'
@@ -39,7 +39,7 @@ actions and accessible props, and draws nothing; the app renders its own buttons
 an unstyled `<div>` over the map for that HTML. `<AttributionControl>` and `useAttributionControl` (see `getting-started`) work the same
 way for the credits.
 
-| MapLibre | react-three-earth (React) | Vanilla |
+| MapLibre | @earthkit/globe (React) | Vanilla |
 | --- | --- | --- |
 | `NavigationControl({ showCompass, showZoom, visualizePitch })` | `useNavigationControl({ visualizePitch })` | `NavigationControl` |
 | `ScaleControl({ maxWidth, unit })` | `useScaleControl({ maximumWidthPixels, unit })` | `ScaleControl` |
@@ -58,7 +58,7 @@ with every context bridged (`useEarth`, the hooks and `<Marker>` work there).
 
 ```tsx
 import { Canvas } from '@react-three/fiber'
-import { Controls, Earth, EarthControls, useNavigationControl } from 'react-three-earth/react'
+import { Controls, Earth, EarthControls, useNavigationControl } from '@earthkit/globe/react'
 
 function Zoom() {
   const navigation = useNavigationControl()
@@ -93,7 +93,7 @@ your elements: `…ButtonProps` carry `type="button"`, `aria-label`, `title` and
 
 ```tsx
 import { useState } from 'react'
-import type { ViewMode } from 'react-three-earth'
+import type { ViewMode } from '@earthkit/globe'
 import {
   Controls,
   Earth,
@@ -103,7 +103,7 @@ import {
   useNavigationControl,
   useScaleControl,
   useViewControl,
-} from 'react-three-earth/react'
+} from '@earthkit/globe/react'
 
 function Compass() {
   const navigation = useNavigationControl({ visualizePitch: true })
@@ -205,7 +205,7 @@ Each vanilla control takes the earth, computes its state, and exposes `getState(
 returns the unsubscribe). It listens to the earth only while it has a listener.
 
 ```ts
-import { Controls, Earth, NavigationControl, ScaleControl, ViewControl } from 'react-three-earth'
+import { Controls, Earth, NavigationControl, ScaleControl, ViewControl } from '@earthkit/globe'
 
 export function addControls(earth: Earth, container: HTMLElement) {
   const controls = new Controls({ container })
@@ -256,7 +256,7 @@ Every text is in `ControlsLocale`; give a partial object as `locale` to any hook
 `switchTo2D`, `geolocateDenied`, `userLocation`, `unitKilometers`…). The state carries the translated labels.
 
 ```tsx
-import { useNavigationControl } from 'react-three-earth/react'
+import { useNavigationControl } from '@earthkit/globe/react'
 
 export function FrenchZoomIn() {
   const navigation = useNavigationControl({ locale: { zoomIn: 'Agrandir', zoomOut: 'Réduire', resetNorth: 'Orienter vers le nord' } })
@@ -291,7 +291,7 @@ as in MapLibre), and a held key keeps moving. Keys with `Ctrl`, `Alt` or
 Double-click or double-tap zooms in on that point.
 
 ```tsx
-import { EarthControls } from 'react-three-earth/react'
+import { EarthControls } from '@earthkit/globe/react'
 
 export const accessibleControls = (
   <EarthControls
@@ -320,7 +320,7 @@ map says so, in a `role="status"` region screen readers announce. One-finger dou
 Draggable markers, popups and `<Controls>` keep their own touches, and popups and `<Controls>` their wheel.
 
 ```tsx
-import { EarthControls } from 'react-three-earth/react'
+import { EarthControls } from '@earthkit/globe/react'
 
 export const mapInArticle = (
   <EarthControls

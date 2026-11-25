@@ -1,7 +1,7 @@
 ---
 name: terrain-and-imagery-sources
 description: >
-  Use when choosing or changing where a react-three-earth globe gets its elevation and its map pictures:
+  Use when choosing or changing where an earthkit globe gets its elevation and its map pictures:
   quantized-mesh terrain (Re:Earth Terrain, Cesium World Terrain, self-hosted), terrain from raster-dem elevation
   tiles (Terrarium, Mapbox Terrain-RGB, MapTiler Terrain, as MapLibre's terrain), XYZ raster tiles
   (OpenStreetMap, satellite, MapTiler raster, your own server, TMS {-y}, TileJSON), stacking or fading imagery layers, or
@@ -10,7 +10,7 @@ description: >
 metadata:
   purpose: 'Covers the source components and classes, how layers compose, opacity, and the source interfaces for custom providers.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
@@ -50,7 +50,7 @@ The library makes no network request of its own: every URL comes from you.
 ### Use quantized-mesh terrain
 
 ```tsx
-import { QuantizedMeshSource, Terrain } from 'react-three-earth/react'
+import { QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
 
 export function Ground() {
   return (
@@ -71,7 +71,7 @@ endpoint.
 The elevation tiles MapLibre users have: PNG or WebP tiles in Web Mercator XYZ whose colours encode heights.
 
 ```tsx
-import { RasterDemSource, Terrain } from 'react-three-earth/react'
+import { RasterDemSource, Terrain } from '@earthkit/globe/react'
 
 export function Ground() {
   return (
@@ -110,7 +110,7 @@ Vanilla: `new Terrain({ sources: [new RasterDemSource({ url, encoding: 'terrariu
 ### Exaggerate the relief
 
 ```tsx
-import { RasterDemSource, Terrain } from 'react-three-earth/react'
+import { RasterDemSource, Terrain } from '@earthkit/globe/react'
 
 export function DramaticGround({ exaggeration }: { exaggeration: number }) {
   return (
@@ -135,7 +135,7 @@ export function DramaticGround({ exaggeration }: { exaggeration: number }) {
 ### Drape raster imagery
 
 ```tsx
-import { Imagery, RasterTileSource } from 'react-three-earth/react'
+import { Imagery, RasterTileSource } from '@earthkit/globe/react'
 
 export function Basemap() {
   return (
@@ -169,7 +169,7 @@ Tiles decode off the main thread and are composed onto each terrain tile on the 
 ### Drape a picture or a video over four corners
 
 ```tsx
-import { ImageSource, Imagery, VideoSource } from 'react-three-earth/react'
+import { ImageSource, Imagery, VideoSource } from '@earthkit/globe/react'
 
 // Top-left, top-right, bottom-right, bottom-left, each [longitudeDegrees, latitudeDegrees].
 const survey = [[-90.02, 0.02], [-89.99, 0.025], [-89.985, -0.005], [-90.025, -0.01]] as const
@@ -206,7 +206,7 @@ sources.
 ### Stack and fade layers
 
 ```tsx
-import { Imagery, RasterTileSource } from 'react-three-earth/react'
+import { Imagery, RasterTileSource } from '@earthkit/globe/react'
 import { useState } from 'react'
 
 export function Layers() {
@@ -242,8 +242,8 @@ A source is any object with the `kind` tag and one factory method, plus an optio
 ```tsx
 import { QuantizedMeshPlugin } from '3d-tiles-renderer/three/plugins'
 import { useMemo } from 'react'
-import { RasterTileSource, type ImagerySource, type TerrainSource } from 'react-three-earth'
-import { useRegisterImagerySource, useRegisterTerrainSource } from 'react-three-earth/react'
+import { RasterTileSource, type ImagerySource, type TerrainSource } from '@earthkit/globe'
+import { useRegisterImagerySource, useRegisterTerrainSource } from '@earthkit/globe/react'
 
 /** A tenant's tiles: picks the URL template, then reuses RasterTileSource's overlay. */
 export class TenantImagerySource implements ImagerySource {
@@ -289,7 +289,7 @@ export function CustomTerrain({ url }: { url: string }) {
 (as above) is the safest route while the overlay types are internal.
 
 To use them in JSX, write a component that memoises the instance on the props that change its tiles and
-registers it with `useRegisterImagerySource` or `useRegisterTerrainSource` from `react-three-earth/react`,
+registers it with `useRegisterImagerySource` or `useRegisterTerrainSource` from `@earthkit/globe/react`,
 as the components at the end of the example above do. It stacks with the built-in sources in the order
 they register: a source mounted later, or a new instance after a prop change, goes on top of its
 `<Imagery>`. Outside its layer it throws `<TenantImagery> must sit inside <Imagery>.` A new instance

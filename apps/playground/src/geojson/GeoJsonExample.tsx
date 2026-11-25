@@ -1,6 +1,6 @@
 import type { Feature, FeatureCollection } from 'geojson'
-import type { GeoJsonSource as GeoJsonSourceImpl } from 'react-three-earth'
-import { GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+import type { GeoJsonSource as GeoJsonSourceImpl } from '@earthkit/globe'
+import { GeoJsonSource, StyleLayer } from '@earthkit/globe/react'
 import { useState } from 'react'
 
 declare global {

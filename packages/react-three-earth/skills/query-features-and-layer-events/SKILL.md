@@ -2,7 +2,7 @@
 name: query-features-and-layer-events
 description: >
   Use when an app needs to know which map features (roads, lakes, buildings, labels of a MapLibre style) are
-  under the pointer or in an area on a react-three-earth globe or flat map: queryRenderedFeatures,
+  under the pointer or in an area on an earthkit globe or flat map: queryRenderedFeatures,
   querySourceFeatures, clicking a feature, layer-scoped click / pointermove / pointerenter / pointerleave
   events (MapLibre's map.on(type, layerId) with mouseenter / mouseleave), a pointer cursor over layers, or
   highlighting the hovered feature with feature-state.
@@ -10,7 +10,7 @@ metadata:
   purpose: 'Documents earth.queryRenderedFeatures, MapStyleSource.querySourceFeatures, earth.layerEvents (addEventListener, addCursor, addHoverState), useEarthEvent with layers, useLayerCursor and useHoverFeatureState, and how hits follow what is drawn.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Earth.ts'
@@ -31,7 +31,7 @@ requires:
 Read `map-styles` (the style drawing the features) and `camera-and-events` (screen positions, pointer
 events) first.
 
-| MapLibre | react-three-earth |
+| MapLibre | @earthkit/globe |
 | --- | --- |
 | `map.queryRenderedFeatures(point \| box, { layers, filter })` | `await earth.queryRenderedFeatures(screen \| [corner, corner], { layers, filter, tolerancePixels })` |
 | `map.querySourceFeatures(sourceId, { sourceLayer, filter })` | `await mapStyleSource.querySourceFeatures(sourceId, { sourceLayer, filter })` |
@@ -48,7 +48,7 @@ GeoJSON in degrees, clipped to the tile it was read from. Rendered features also
 ## Setup
 
 ```tsx
-import { Earth, EarthControls, Imagery, MapStyleSource, QuantizedMeshSource, Terrain, useEarthEvent, useLayerCursor } from 'react-three-earth/react'
+import { Earth, EarthControls, Imagery, MapStyleSource, QuantizedMeshSource, Terrain, useEarthEvent, useLayerCursor } from '@earthkit/globe/react'
 
 function RoadPicker({ onPick }: { onPick: (name: string) => void }) {
   useLayerCursor(['road'])
@@ -79,7 +79,7 @@ The layer hooks go anywhere inside `<Earth>`. The layer ids are the style's (`so
 ### Query what is under a point or in a box
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export async function namesAt(earth: Earth, xPixels: number, yPixels: number): Promise<string[]> {
   const features = await earth.queryRenderedFeatures({ xPixels, yPixels }, { layers: ['road', 'water'], tolerancePixels: 3 })
@@ -109,7 +109,7 @@ export async function lakesInBox(earth: Earth) {
 ### Every feature of a source
 
 ```ts
-import type { MapStyleSource } from 'react-three-earth'
+import type { MapStyleSource } from '@earthkit/globe'
 
 export async function loadedBuildings(source: MapStyleSource) {
   const features = await source.querySourceFeatures('openmaptiles', { sourceLayer: 'building', filter: ['has', 'height'] })
@@ -123,7 +123,7 @@ each (as in MapLibre): dedupe by `id`. A wrong source id throws and lists the st
 ### Layer events
 
 ```tsx
-import { useEarthEvent } from 'react-three-earth/react'
+import { useEarthEvent } from '@earthkit/globe/react'
 import { useState } from 'react'
 
 export function CountryTooltip() {
@@ -149,7 +149,7 @@ returns a function that removes it.
 ### Hover highlight
 
 ```tsx
-import { MapStyleSource, StyleLayer, useHoverFeatureState } from 'react-three-earth/react'
+import { MapStyleSource, StyleLayer, useHoverFeatureState } from '@earthkit/globe/react'
 
 export function HoverHighlight() {
   useHoverFeatureState(['countries'])
@@ -178,7 +178,7 @@ the feature (see `map-styles`).
 ### Select on click
 
 ```ts
-import type { Earth, RenderedFeature } from 'react-three-earth'
+import type { Earth, RenderedFeature } from '@earthkit/globe'
 
 export function selectOnClick(earth: Earth): () => void {
   let selected: RenderedFeature | null = null
@@ -199,7 +199,7 @@ export function selectOnClick(earth: Earth): () => void {
 ### HIGH: Treating the query as synchronous
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export async function firstName(earth: Earth) {
   // Wrong: `earth.queryRenderedFeatures(point)[0]` is a Promise, not an array

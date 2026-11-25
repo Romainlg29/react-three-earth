@@ -1010,7 +1010,7 @@ Not done from the design: GPU timing of passes that own targets (reported `unava
 (left out on purpose), and draped layers that animate (static by design: motion belongs in passes or objects).
 
 **Source components from packages (W17, part 4).** Terrain and imagery sources were open interfaces, but a package
-could not ship a `<MySource>` component: the layer contexts were internal. `react-three-earth/react` now exports
+could not ship a `<MySource>` component: the layer contexts were internal. `@earthkit/globe/react` now exports
 `useRegisterTerrainSource(source, componentName)` and `useRegisterImagerySource(source, componentName)`, the same
 registration the built-in source components use (registration order, `<Name> must sit inside <Layer>` outside one).
 Unit tests: 4 new (registration and removal for both layers, a new instance replacing the old, the error outside them).
@@ -1598,7 +1598,7 @@ nothing about phones. Measuring it on a Pixel and an iPhone is the first on-devi
 
 ## Round 1 (historical)
 
-**Question:** can we build react-three-earth on 3DTilesRendererJS and takram three-geospatial, rendering
+**Question:** can we build earthkit on 3DTilesRendererJS and takram three-geospatial, rendering
 with WebGPU through React Three Fiber v10? And do we keep centimeter precision at planet scale?
 
 **Answer:** yes, with two caveats.

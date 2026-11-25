@@ -1,7 +1,7 @@
 ---
 name: markers-and-popups
 description: >
-  Use when an app needs HTML pinned to a place on the globe or flat map in react-three-earth, like
+  Use when an app needs HTML pinned to a place on the globe or flat map in @earthkit/globe, like
   MapLibre's Marker and Popup: pins and labels at a longitude and latitude, a popup that opens when a
   marker is clicked, a draggable pin that reports where it was dropped, a tooltip that follows the
   pointer, markers that hide behind the horizon or terrain, or styling and keyboard access for them.
@@ -9,7 +9,7 @@ metadata:
   purpose: 'Documents <Marker>, <Popup>, useMarker and the vanilla Marker and Popup: placement, terrain height, occlusion, dragging, popups, CSS variables, accessibility and the Earth update event.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Marker.ts'
@@ -30,7 +30,7 @@ Read `getting-started` first. A `Marker` is an HTML element pinned to a place on
 canvas; a `Popup` is a box of HTML pointing at a place, usually the one a marker opens when clicked. They
 follow MapLibre's `Marker` and `Popup`, on the globe (`view="3d"`) and the flat map (`view="2d"`).
 
-| MapLibre | react-three-earth |
+| MapLibre | @earthkit/globe |
 | --- | --- |
 | `new Marker({ element, anchor, offset, rotation, draggable })` | `<Marker anchor offsetPixels rotationDegrees draggable>` / `new Marker({ … })` |
 | `marker.setPopup(popup)` | `<Marker><Popup>…</Popup></Marker>` / `marker.setPopup(popup)` |
@@ -51,7 +51,7 @@ injected once per document.
 ### A pin that opens a popup
 
 ```tsx
-import { Earth, EarthControls, Marker, Popup } from 'react-three-earth/react'
+import { Earth, EarthControls, Marker, Popup } from '@earthkit/globe/react'
 
 export function Peak() {
   return (
@@ -79,7 +79,7 @@ Anything else in `<Marker>` is the marker's content, real React in the page's DO
 hooks work inside). It is anchored at its centre unless you give `anchor`.
 
 ```tsx
-import { Marker, Popup, useEarth } from 'react-three-earth/react'
+import { Marker, Popup, useEarth } from '@earthkit/globe/react'
 
 function Badge({ text }: { text: string }) {
   const earth = useEarth() // the content shares the app's React context
@@ -122,7 +122,7 @@ export function Label() {
 
 ```tsx
 import { useState } from 'react'
-import { Marker } from 'react-three-earth/react'
+import { Marker } from '@earthkit/globe/react'
 
 export function DraggablePin() {
   const [place, setPlace] = useState({ longitudeDegrees: 138.75, latitudeDegrees: 35.3 })
@@ -147,7 +147,7 @@ Leave `heightMeters` out of the stored state to keep following the terrain. `onD
 
 ```tsx
 import { useState } from 'react'
-import { Popup } from 'react-three-earth/react'
+import { Popup } from '@earthkit/globe/react'
 
 export function Controlled() {
   const [open, setOpen] = useState(true)
@@ -182,7 +182,7 @@ One popup open at a time, opened from markers or from a list:
 
 ```tsx
 import { useState } from 'react'
-import { Marker, Popup } from 'react-three-earth/react'
+import { Marker, Popup } from '@earthkit/globe/react'
 
 const places = [
   { id: 'paris', name: 'Paris', longitudeDegrees: 2.35, latitudeDegrees: 48.86 },
@@ -213,7 +213,7 @@ only when it changes.
 
 ```tsx
 import { useState } from 'react'
-import { Marker, useEarthFrame, useMarker } from 'react-three-earth/react'
+import { Marker, useEarthFrame, useMarker } from '@earthkit/globe/react'
 
 function VisibilityText() {
   const marker = useMarker()
@@ -235,7 +235,7 @@ export function Debug() {
 ### Vanilla
 
 ```ts
-import { Earth, Marker, Popup } from 'react-three-earth'
+import { Earth, Marker, Popup } from '@earthkit/globe'
 
 declare const earth: Earth
 declare const canvas: HTMLCanvasElement
@@ -298,7 +298,7 @@ place themselves in the Earth's `update` event, fired at the end of every `earth
 the frame that draws. Use it for your own screen-space overlays:
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export function followScreen(earth: Earth, element: HTMLElement) {
   const onUpdate = () => {

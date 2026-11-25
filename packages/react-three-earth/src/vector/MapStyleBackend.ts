@@ -69,7 +69,7 @@ export interface MapStyleBackendHost {
  */
 export function createVectorTileWorker(): Worker {
   // The build rewrites this path to the bundled worker (dist/vector-worker.js).
-  return new Worker(new URL('./worker/vectorTileWorker.ts', import.meta.url), { type: 'module', name: 'react-three-earth vector tiles' })
+  return new Worker(new URL('./worker/vectorTileWorker.ts', import.meta.url), { type: 'module', name: 'earthkit vector tiles' })
 }
 
 interface Pending {

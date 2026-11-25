@@ -1,14 +1,14 @@
 ---
 name: heatmap-layers
 description: >
-  Use when drawing point density as a heatmap on a react-three-earth globe or flat map: MapLibre heatmap layers in a
+  Use when drawing point density as a heatmap on an earthkit globe or flat map: MapLibre heatmap layers in a
   style or as a StyleLayer over a GeoJsonSource (earthquakes, sightings, GPS traces), heatmap-weight from a feature
   property, heatmap-radius and heatmap-intensity by zoom, heatmap-color with heatmap-density, heatmap-opacity,
   switching from heat to points at high zoom, clustered sources, and checking that the heat renders.
 metadata:
   purpose: 'Covers heatmap layers: their paint properties, how the kernels are drawn and composited, reach across tiles, and limits.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/vector/heatmap/HeatmapLayers.ts'
@@ -34,7 +34,7 @@ feature.
 
 ```tsx
 import type { FeatureCollection } from 'geojson'
-import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from 'react-three-earth/react'
+import { Imagery, MapStyleSource, GeoJsonSource, StyleLayer } from '@earthkit/globe/react'
 
 export function Earthquakes({ quakes }: { quakes: FeatureCollection }) {
   return (
@@ -57,7 +57,7 @@ blue, cyan, lime and yellow to red.
 ### Heat at low zoom, points when zoomed in
 
 ```tsx
-import { StyleLayer } from 'react-three-earth/react'
+import { StyleLayer } from '@earthkit/globe/react'
 
 export function QuakeLayers() {
   return (
@@ -88,7 +88,7 @@ export function QuakeLayers() {
 ### Vanilla
 
 ```ts
-import { GeoJsonSource, MapStyleSource } from 'react-three-earth'
+import { GeoJsonSource, MapStyleSource } from '@earthkit/globe'
 
 const style = new MapStyleSource({ url: 'https://example.com/style.json' })
 style.addGeoJsonSource(new GeoJsonSource({ id: 'sightings', data: 'data/sightings.geojson' }))

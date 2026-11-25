@@ -1,4 +1,4 @@
-import { prefersWebGLBackend, type CameraView } from 'react-three-earth'
+import { prefersWebGLBackend, type CameraView } from '@earthkit/globe'
 
 /**
  * Where the examples read their data. The live pages stream free public services (no key): Re:Earth terrain,

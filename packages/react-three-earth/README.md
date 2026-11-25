@@ -1,4 +1,4 @@
-# react-three-earth
+# @earthkit/globe
 
 A WebGPU map engine for three.js and React Three Fiber v10: a 3D globe with streaming terrain, raster
 imagery composed on the GPU, and a physically based atmosphere. Built to be extended, and built for
@@ -31,18 +31,18 @@ JSON.
 ## Install
 
 ```sh
-pnpm add react-three-earth three@0.187.0 @react-three/fiber@10.0.0-alpha.6 @react-three/tsl@10.0.0-alpha.6 react react-dom
+pnpm add @earthkit/globe three@0.187.0 @react-three/fiber@10.0.0-alpha.6 @react-three/tsl@10.0.0-alpha.6 react react-dom
 ```
 
-three is pinned to r187 and React Three Fiber to v10. Vanilla three.js only needs `react-three-earth`
+three is pinned to r187 and React Three Fiber to v10. Vanilla three.js only needs `@earthkit/globe`
 and `three@0.187.0`.
 
 ## Quick start (React Three Fiber)
 
 ```tsx
 import { Canvas, useThree } from '@react-three/fiber'
-import { prefersWebGLBackend, setCameraView } from 'react-three-earth'
-import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from 'react-three-earth/react'
+import { prefersWebGLBackend, setCameraView } from '@earthkit/globe'
+import { Atmosphere, AttributionControl, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain } from '@earthkit/globe/react'
 import { useLayoutEffect } from 'react'
 
 /** Starts the camera over Mount Fuji. R3F's default camera sits at the centre of the Earth. */
@@ -85,7 +85,7 @@ The canvas needs a sized parent (`html, body, #root { height: 100%; margin: 0 }`
 import { AgXToneMapping, PerspectiveCamera, Scene, Timer } from 'three'
 import { pass } from 'three/tsl'
 import { RenderPipeline, WebGPURenderer } from 'three/webgpu'
-import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from 'react-three-earth'
+import { Atmosphere, Earth, EarthControls, Imagery, QuantizedMeshSource, RasterTileSource, Terrain, prefersWebGLBackend, setCameraView } from '@earthkit/globe'
 
 const renderer = new WebGPURenderer({ antialias: true, reversedDepthBuffer: true, forceWebGL: prefersWebGLBackend() })
 renderer.setSize(innerWidth, innerHeight)
@@ -127,7 +127,7 @@ renderer.setAnimationLoop(() => {
 
 ## API at a glance
 
-| React (`react-three-earth/react`) | Vanilla (`react-three-earth`) | Role |
+| React (`@earthkit/globe/react`) | Vanilla (`@earthkit/globe`) | Role |
 | --- | --- | --- |
 | `<Earth date>` | `new Earth({ date })`, `connect`, `update`, `inspect` | root; ECEF metres; drives the sun |
 | `<Terrain exaggeration errorTargetPixels memoryBudgetBytes createMaterial …>` | `new Terrain({ sources, … })` | the ground, one terrain source; `exaggeration` scales heights |
@@ -169,7 +169,7 @@ validated in CI (every TypeScript example is typechecked against the source). Wi
 ```sh
 npx @tanstack/intent@latest install          # once per project
 npx @tanstack/intent@latest list             # see the skills of installed packages
-npx @tanstack/intent@latest load react-three-earth#getting-started
+npx @tanstack/intent@latest load @earthkit/globe#getting-started
 ```
 
 | Skill | Use when |
@@ -186,14 +186,14 @@ npx @tanstack/intent@latest load react-three-earth#getting-started
 | `inspect-and-debug` | blank or black globe, missing tiles, performance budgets, browser tests |
 | `write-a-plugin` | extending the map: style layer types, render passes, draped layers, 3D objects, taking presses from the controls |
 
-The drawing package, `react-three-earth-draw`, ships its own skills:
+The drawing package, `@earthkit/draw`, ships its own skills:
 
 | Skill | Use when |
 | --- | --- |
 | `draw-features` | drawing points, lines, polygons and solids as GeoJSON with a headless toolbar; selecting, the gizmo |
 | `edit-shapes` | Blender-style edit mode: dragging vertices, edges and faces, pushing and pulling a face, extruding |
 
-Without Intent, point your agent at `node_modules/react-three-earth/skills/<name>/SKILL.md`.
+Without Intent, point your agent at `node_modules/@earthkit/globe/skills/<name>/SKILL.md`.
 
 ## License
 

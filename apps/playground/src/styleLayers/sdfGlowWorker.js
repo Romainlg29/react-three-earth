@@ -3,7 +3,7 @@
 // JavaScript (no imports at run time). For each line segment it emits one quad, the segment's rectangle widened
 // by the glow radius, carrying both endpoints; the material computes the exact distance to the segment.
 
-/** @typedef {import('react-three-earth/plugin-worker').WorkerLayerTypeFactory} WorkerLayerTypeFactory */
+/** @typedef {import('@earthkit/globe/plugin-worker').WorkerLayerTypeFactory} WorkerLayerTypeFactory */
 
 /** @type {WorkerLayerTypeFactory} */
 export const sdfGlow = host => ({

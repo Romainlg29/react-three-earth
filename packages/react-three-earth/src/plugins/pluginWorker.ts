@@ -1,5 +1,5 @@
 // Types for a plugin's worker module (the geometry tier of custom style layer types). A worker module imports
-// only types from here (`import type { WorkerLayerTypeFactory } from 'react-three-earth/plugin-worker'`): the
+// only types from here (`import type { WorkerLayerTypeFactory } from '@earthkit/globe/plugin-worker'`): the
 // library hands it what it needs through `host`, so the module never bundles a second copy of the library.
 
 /** A point in tile units: 0 to `host.TILE_EXTENT`, y down from the tile's north edge. */

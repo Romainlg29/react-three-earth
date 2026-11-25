@@ -1,5 +1,5 @@
-import type { Earth as EarthImpl, GeoJsonSource as GeoJsonSourceImpl } from 'react-three-earth'
-import { GeoJsonSource, Imagery, MapStyleSource, Popup, StyleLayer, useEarthEvent, useHoverFeatureState, useLayerCursor } from 'react-three-earth/react'
+import type { Earth as EarthImpl, GeoJsonSource as GeoJsonSourceImpl } from '@earthkit/globe'
+import { GeoJsonSource, Imagery, MapStyleSource, Popup, StyleLayer, useEarthEvent, useHoverFeatureState, useLayerCursor } from '@earthkit/globe/react'
 import { useMemo, useRef, useState, type RefObject } from 'react'
 
 import { rasterBasemapStyle } from './data'

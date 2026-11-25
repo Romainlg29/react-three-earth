@@ -1,14 +1,14 @@
 ---
 name: 3d-buildings
 description: >
-  Use when showing 3D buildings on a react-three-earth globe or flat map from a MapLibre style's fill-extrusion
+  Use when showing 3D buildings on an earthkit globe or flat map from a MapLibre style's fill-extrusion
   layers (MapStyleSource extrusions="3d" or "draped"): heights, bases, colours, opacity and the vertical gradient,
   buildings standing on terrain, lighting by the atmosphere's sun, the flat map, checking them in tests
   (earth.inspect().terrain.extrusions), and what fill-extrusion does not do yet.
 metadata:
   purpose: 'Covers fill-extrusion as 3D buildings: the extrusions option, which paint properties are read, how buildings stand on terrain, inspect().terrain.extrusions and current limits.'
   type: core
-  library: 'react-three-earth'
+  library: '@earthkit/globe'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/sources.ts'
@@ -35,7 +35,7 @@ Nothing to set up: a style with `fill-extrusion` layers shows buildings once the
 layer's `minzoom`, usually 14 or 15).
 
 ```tsx
-import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from 'react-three-earth/react'
+import { Earth, Imagery, MapStyleSource, QuantizedMeshSource, Terrain } from '@earthkit/globe/react'
 
 const style = {
   version: 8,
@@ -91,7 +91,7 @@ Vanilla: `new MapStyleSource({ style })` in an `Imagery`, as in `map-styles`; `e
 3D. Use it for a style whose extrusions are meant as a coloured footprint, or on low-end devices.
 
 ```tsx
-import { Imagery, MapStyleSource } from 'react-three-earth/react'
+import { Imagery, MapStyleSource } from '@earthkit/globe/react'
 
 export function FlatBuildings({ url }: { url: string }) {
   return (
@@ -114,7 +114,7 @@ nearest ground read.
 ### Check them in a test
 
 ```ts
-import type { Earth } from 'react-three-earth'
+import type { Earth } from '@earthkit/globe'
 
 export function buildingsReady(earth: Earth): boolean {
   const extrusions = earth.inspect().terrain?.extrusions

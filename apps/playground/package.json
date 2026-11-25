@@ -15,8 +15,8 @@
     "@react-three/tsl": "10.0.0-alpha.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-three-earth": "workspace:*",
-    "react-three-earth-draw": "workspace:*",
+    "@earthkit/globe": "workspace:*",
+    "@earthkit/draw": "workspace:*",
     "three": "0.187.0"
   },
   "devDependencies": {

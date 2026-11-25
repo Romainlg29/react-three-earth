@@ -1,4 +1,4 @@
-import type { DrapedLayerDrawInputs, GeographicBounds } from 'react-three-earth'
+import type { DrapedLayerDrawInputs, GeographicBounds } from '@earthkit/globe'
 import { Scene, type BufferGeometry } from 'three'
 
 import { geometryBounds, geometryLines, geometryPolygons, toMercator, triangulatePolygon, type MercatorCoordinate } from '../geometry.js'

@@ -1,4 +1,4 @@
-// Puts @aeronautic's effects in react-three-earth's atmosphere: one sun, one air, one haze.
+// Puts @aeronautic's effects in earthkit's atmosphere: one sun, one air, one haze.
 //
 // - Light: an effect's smoke is lit by the sunlight and skylight at its own position
 //   (`atmosphere.getSunAndSkyIlluminance`), converted to @aeronautic's radiance unit.
@@ -11,7 +11,7 @@
 // - Units: one-point CPU lighting suits a nozzle; an effect kilometres long (a contrail) should read
 //   `atmosphere.getSunAndSkyIlluminanceNode` per sample, with the same unit conversion.
 import type { AfterburnerHooks, AfterburnerProfile } from '@aeronautic/afterburner'
-import type { Atmosphere, SunAndSkyIlluminance } from 'react-three-earth'
+import type { Atmosphere, SunAndSkyIlluminance } from '@earthkit/globe'
 import { Vector3 } from 'three'
 import { dot, float, max, vec3 } from 'three/tsl'
 

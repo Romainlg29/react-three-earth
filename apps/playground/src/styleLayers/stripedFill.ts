@@ -1,6 +1,6 @@
 // An example plugin for the material tier of custom style layer types: `striped-fill` reuses the built-in fill
 // tessellation and only brings a shader, diagonal stripes of two colours, a fixed number of pixels wide.
-import { PLUGIN_API_VERSION, type EarthPlugin } from 'react-three-earth'
+import { PLUGIN_API_VERSION, type EarthPlugin } from '@earthkit/globe'
 import { fract, mix, step } from 'three/tsl'
 import { MeshBasicNodeMaterial } from 'three/webgpu'
 

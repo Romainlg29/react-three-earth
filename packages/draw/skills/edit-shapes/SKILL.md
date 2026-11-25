@@ -1,16 +1,16 @@
 ---
 name: edit-shapes
 description: >
-  Use when users of a react-three-earth-draw app must reshape what they drew, like Blender's edit mode: pick and drag
+  Use when users of an @earthkit/draw app must reshape what they drew, like Blender's edit mode: pick and drag
   the vertices, edges or faces of a solid (a mesh), a polygon or a line; push or pull a face along its normal to resize
   a box by one side; extrude a face, or a flat polygon into a prism; double tap to edit a face; Vertex / Edge / Face /
   Extrude buttons in a headless toolbar (setElementMode, extrude, elementMode, canExtrude); Tab, 1, 2, 3 and E keys;
   touch on iPhone Safari. Also for editing meshes in code: moveMeshVertices, pushMeshFace, extrudeMeshFace.
 metadata:
-  purpose: 'Documents the edit mode of the react-three-earth-draw select mode: element modes, picking, dragging, push and pull, extrude, and the mesh editing helpers.'
+  purpose: 'Documents the edit mode of the @earthkit/draw select mode: element modes, picking, dragging, push and pull, extrude, and the mesh editing helpers.'
   type: framework
   framework: 'react'
-  library: 'react-three-earth-draw'
+  library: '@earthkit/draw'
   library_version: '0.0.0'
 sources:
   - 'Romainlg29/react-three-earth:packages/draw/src/modes/SelectMode.ts'
@@ -30,7 +30,7 @@ other face, as Tab is in Blender: instead of the gizmo, the selected feature sho
 or faces, to pick and drag. It works on meshes (solids stored as faces, see `draw-features`), polygons and lines.
 Nothing is rendered outside the map: the app builds the buttons from the state.
 
-| Blender | react-three-earth-draw |
+| Blender | @earthkit/draw |
 | --- | --- |
 | Tab | a second tap on the selected feature, a double tap on any, `select.setEditingVertices(true)`, or Tab with `keyboard` |
 | 1 / 2 / 3 (vertex, edge, face select) | `draw.setElementMode('vertex' \| 'edge' \| 'face')`, or 1 / 2 / 3 with `keyboard` |
@@ -42,8 +42,8 @@ Nothing is rendered outside the map: the app builds the buttons from the state.
 ## Setup
 
 ```tsx
-import { Draw } from 'react-three-earth-draw'
-import { useDrawState } from 'react-three-earth-draw/react'
+import { Draw } from '@earthkit/draw'
+import { useDrawState } from '@earthkit/draw/react'
 
 function EditToolbar({ draw }: { draw: Draw }) {
   const { editingVertices, elementMode, canExtrude, canUndo } = useDrawState(draw)
@@ -104,7 +104,7 @@ so the solid never turns inside out. A face seen squarely (a top from above, a w
 On a picked polygon face the arrow pulls the polygon up into a prism that tall (`prismMesh`), its top then picked.
 
 ```ts
-import { SelectMode } from 'react-three-earth-draw'
+import { SelectMode } from '@earthkit/draw'
 
 declare const select: SelectMode // the Draw's select mode, from `modes`
 // Where a press grabs the arrow, in screen pixels (for tests and tutorials): null without a picked face.
@@ -120,7 +120,7 @@ arrow's length, about 40 px on the screen. A picked polygon face becomes a prism
 when nothing is picked (`state.canExtrude`).
 
 ```ts
-import { Draw, SelectMode, StaticMode } from 'react-three-earth-draw'
+import { Draw, SelectMode, StaticMode } from '@earthkit/draw'
 
 const select = new SelectMode()
 const draw = new Draw({ modes: [new StaticMode(), select], mode: 'select' })
@@ -136,7 +136,7 @@ the input (new vertices and faces come after), so an element found before an edi
 are metres east, north and up in the east-north-up frame at the moved vertices' middle (`meshElementFrame`).
 
 ```ts
-import { createRectangle, Draw, indexMesh, meshFaceNormal, meshFromIndexed, extrudeMeshFace, moveMeshVertices, pushMeshFace } from 'react-three-earth-draw'
+import { createRectangle, Draw, indexMesh, meshFaceNormal, meshFromIndexed, extrudeMeshFace, moveMeshVertices, pushMeshFace } from '@earthkit/draw'
 import type { MultiPolygon } from 'geojson'
 
 declare const draw: Draw
