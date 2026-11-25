@@ -1,8 +1,9 @@
 import type { Position } from 'geojson'
 
 import { distanceMeters, distanceToSegment, hasAltitude, lowestAltitude, mapGeometryPositions, pointInPolygon, storedPositions, unwrapLongitudeNear } from './geometry.js'
+import type { LocalFrame } from './localFrame.js'
 import { bearingDegrees, destination } from './shapes.js'
-import type { DrawFeature, LongitudeLatitude } from './types.js'
+import type { DrawFeature, GroundHeight, LongitudeLatitude } from './types.js'
 
 /**
  * Where a vertex sits in a feature's coordinates: the ring of a polygon (0 for the exterior, 1… for holes) and the index
@@ -120,6 +121,38 @@ export function moveVertices(feature: DrawFeature, paths: readonly VertexPath[],
     changed = true
   }
   return changed ? withRings(feature, rings) : feature
+}
+
+/**
+ * The feature with the vertices at `paths` moved by `offset`, metres east, north and up in `frame`, as the gizmo moves
+ * a line's or polygon's picked vertices. A vertex at an altitude moves exactly in the frame; one on the terrain moves
+ * across it. With an `up` other than 0, every position of the feature gets an altitude first, the terrain's height under
+ * it (`groundHeightMeters`) where it had none, so raising one vertex of a draped polygon tilts it rather than lifting it
+ * whole (with any altitude already, those without one stand at the lowest, as drawn). Multipolygons are returned unchanged (`moveMeshVertices` moves a mesh's).
+ */
+export function offsetVertices(feature: DrawFeature, paths: readonly VertexPath[], offset: readonly [number, number, number], frame: LocalFrame, groundHeightMeters: number | GroundHeight = 0): DrawFeature {
+  if (!offset.every(Number.isFinite)) throw new Error(`offsetVertices: the offset is ${offset.join(', ')}; give finite metres east, north and up.`)
+  const [east, north, up] = offset
+  if (paths.length === 0 || (east === 0 && north === 0 && up === 0)) return feature
+  const ground: GroundHeight = typeof groundHeightMeters === 'number' ? () => groundHeightMeters : groundHeightMeters
+  let rings = openRings(feature).map(ring => [...ring])
+  // Positions without an altitude stand at the lowest one when the feature has any (as drawn), else on the terrain.
+  const lowest = lowestAltitude(feature.geometry)
+  if (up !== 0) rings = rings.map(ring => ring.map(position => (hasAltitude(position) ? position : [position[0]!, position[1]!, lowest ?? ground(position[0]!, position[1]!)])))
+  // Positions on the terrain move at the frame's own height (its origin's).
+  const frameHeight = frame.toGeographic(0, 0, 0)[2]
+  let changed = false
+  for (const path of new Map(paths.map(path => [`${path.ring}/${path.index}`, path])).values()) {
+    const original = rings[path.ring]?.[path.index]
+    if (original === undefined) continue
+    const altitude = hasAltitude(original)
+    const local = frame.toLocal(original[0]!, original[1]!, altitude ? original[2]! : frameHeight)
+    const [longitude, latitude, height] = frame.toGeographic(local[0] + east, local[1] + north, local[2] + up)
+    const unwrapped = unwrapLongitudeNear(longitude, original[0]!)
+    rings[path.ring]![path.index] = altitude ? [unwrapped, latitude, height] : [unwrapped, latitude]
+    changed = true
+  }
+  return changed || up !== 0 ? withRings(feature, rings) : feature
 }
 
 /** The feature with a vertex inserted at `path` (pushing the others along). Its altitude is its neighbours' average. */

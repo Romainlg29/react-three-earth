@@ -47,6 +47,7 @@ export {
   insertVertex,
   moveVertex,
   moveVertices,
+  offsetVertices,
   removeVertex,
   translateFeature,
   type FeatureMidpoint,

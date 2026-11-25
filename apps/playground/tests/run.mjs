@@ -1740,6 +1740,9 @@ async function editing(name, { touch = false, flat = false } = {}) {
   result.vertexMoved = afterVertex.length === before.length && afterVertex.filter((position, index) => position[0] !== before[index][0] || position[1] !== before[index][1]).length === 1
   await tap(520, 255) // the midpoint of the first edge
   result.verticesAfterInsert = (await ring()).length - 1
+  // The inserted vertex is picked, its move gizmo over it: dropped, so the press inside reaches the polygon.
+  result.pickedAfterInsert = await page.evaluate(() => window.draw.getState().pickedElementCount)
+  await page.evaluate(() => window.draw.clearElementSelection())
   const viewBeforeMove = await view()
   const beforeMove = await ring()
   await drag([520, 340], [470, 300])
