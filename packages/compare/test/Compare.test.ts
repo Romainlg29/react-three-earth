@@ -169,4 +169,62 @@ describe('Compare.attachHandle', () => {
     compare.attachHandle(handle)
     expect(() => compare.attachHandle(handle)).toThrow(/already a handle/)
   })
+
+  it('moves a horizontal line the way the keys point, its value growing upwards', () => {
+    const compare = new Compare({ orientation: 'horizontal', positionFraction: 0.5, keyboardStepFraction: 0.1 })
+    const handle = document.createElement('div')
+    compare.attachHandle(handle)
+    const key = (name: string) => handle.dispatchEvent(new KeyboardEvent('keydown', { key: name, bubbles: true, cancelable: true }))
+    key('ArrowUp')
+    expect(compare.positionFraction).toBeCloseTo(0.4) // towards the top edge
+    expect(handle.getAttribute('aria-valuenow')).toBe('60')
+    expect(handle.getAttribute('aria-orientation')).toBe('vertical')
+    key('ArrowDown')
+    key('ArrowDown')
+    expect(compare.positionFraction).toBeCloseTo(0.6)
+    key('End')
+    expect(compare.positionFraction).toBe(0)
+    expect(handle.getAttribute('aria-valuenow')).toBe('100')
+  })
+
+  it('lets presses through to the map while the line follows the pointer', () => {
+    const compare = new Compare()
+    const handle = document.createElement('div')
+    const detach = compare.attachHandle(handle)
+    compare.followPointer = true
+    expect(handle.style.pointerEvents).toBe('none')
+    compare.followPointer = false
+    expect(handle.style.pointerEvents).toBe('')
+    compare.followPointer = true
+    detach()
+    expect(handle.style.pointerEvents).toBe('')
+  })
+
+  it('ends a drag when the handle is detached during it', () => {
+    const compare = new Compare()
+    installed(compare)
+    const handle = document.createElement('div')
+    const detach = compare.attachHandle(handle)
+    const ended = vi.fn()
+    compare.addEventListener('slideend', ended)
+    handle.dispatchEvent(pointer('pointerdown', { clientX: 400 }))
+    detach()
+    expect(compare.getState().dragging).toBe(false)
+    expect(ended).toHaveBeenCalledTimes(1)
+  })
+
+  it('stays dragging while another handle is still dragged', () => {
+    const compare = new Compare()
+    installed(compare)
+    const first = document.createElement('div')
+    const second = document.createElement('div')
+    compare.attachHandle(first)
+    compare.attachHandle(second)
+    first.dispatchEvent(pointer('pointerdown', { clientX: 400, pointerId: 1 }))
+    second.dispatchEvent(pointer('pointerdown', { clientX: 400, pointerId: 2 }))
+    first.dispatchEvent(pointer('pointerup', { clientX: 400, pointerId: 1 }))
+    expect(compare.getState().dragging).toBe(true)
+    second.dispatchEvent(pointer('pointerup', { clientX: 400, pointerId: 2 }))
+    expect(compare.getState().dragging).toBe(false)
+  })
 })

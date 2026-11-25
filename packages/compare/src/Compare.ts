@@ -105,6 +105,8 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
   /** Layers clipped by this comparison: their clip is cleared when they leave it or the plugin is removed. */
   protected readonly clipped = new Set<Imagery>()
   protected removePointerListener: (() => void) | null = null
+  /** Handles being dragged now: `dragging` holds while any is. */
+  protected activeDrags = 0
 
   constructor({ name = 'compare', before = [], after = [], orientation = 'vertical', positionFraction = 0.5, followPointer = false, keyboardStepFraction = 0.01 }: CompareOptions = {}) {
     super()
@@ -194,8 +196,9 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
 
   /**
    * Makes `element` the slider's handle: dragging it moves the line (pointer capture, so it never pans the map), the
-   * arrow keys move it by `keyboardStepFraction` (Page Up and Page Down ten times as far, Home and End to the edges),
-   * and it gets the ARIA slider role and values, a tab stop, `touch-action: none`, and the `--compare-position` CSS
+   * arrow keys move it the way they point by `keyboardStepFraction` (Page Up and Page Down ten times as far, Home and
+   * End to the edges), and it gets the ARIA slider role and values (0 to 100, from the left, or from the bottom for a
+   * horizontal line), a tab stop, `touch-action: none` (`pointer-events: none` while `followPointer`), and the `--compare-position` CSS
    * property (`'37.5%'`) to place it with, kept current. Returns a function that undoes it all.
    *
    * @example
@@ -209,6 +212,7 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
       tabIndex: element.getAttribute('tabindex'),
       label: element.getAttribute('aria-label'),
       touchAction: element.style.touchAction,
+      pointerEvents: element.style.pointerEvents,
     }
     element.setAttribute('role', 'slider')
     if (previous.tabIndex === null) element.tabIndex = 0
@@ -217,8 +221,17 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
     this.handles.add(element)
     this.updateHandle(element)
 
-    let drag: { pointerId: number; startClient: number; startFraction: number; length: number } | null = null
-    const clientAlong = (event: PointerEvent) => (this.state.orientation === 'vertical' ? event.clientX : event.clientY)
+    // The axis is kept for the whole drag: an orientation change during it does not make the line jump.
+    let drag: { pointerId: number; vertical: boolean; startClient: number; startFraction: number; length: number } | null = null
+    const clientAlong = (event: PointerEvent, vertical: boolean) => (vertical ? event.clientX : event.clientY)
+    const endDrag = () => {
+      if (drag === null) return
+      if (element.hasPointerCapture?.(drag.pointerId)) element.releasePointerCapture(drag.pointerId)
+      drag = null
+      this.activeDrags--
+      if (this.activeDrags === 0) this.setState({ dragging: false })
+      this.dispatchEvent({ type: 'slideend', positionFraction: this.state.positionFraction })
+    }
     const onPointerDown = (event: PointerEvent) => {
       if (drag !== null || (event.pointerType === 'mouse' && event.button !== 0)) return
       // Measured once per drag: the canvas's size, else the handle's container (before the first frame).
@@ -228,35 +241,38 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
       event.preventDefault()
       event.stopPropagation()
       element.setPointerCapture?.(event.pointerId)
-      drag = { pointerId: event.pointerId, startClient: clientAlong(event), startFraction: this.state.positionFraction, length }
+      const vertical = this.state.orientation === 'vertical'
+      drag = { pointerId: event.pointerId, vertical, startClient: clientAlong(event, vertical), startFraction: this.state.positionFraction, length }
+      this.activeDrags++
       this.setState({ dragging: true })
       this.dispatchEvent({ type: 'slidestart', positionFraction: this.state.positionFraction })
     }
     const onPointerMove = (event: PointerEvent) => {
       if (drag === null || event.pointerId !== drag.pointerId) return
       event.stopPropagation()
-      this.setPosition(drag.startFraction + (clientAlong(event) - drag.startClient) / drag.length, 'drag')
+      this.setPosition(drag.startFraction + (clientAlong(event, drag.vertical) - drag.startClient) / drag.length, 'drag')
     }
     const onPointerEnd = (event: PointerEvent) => {
       if (drag === null || event.pointerId !== drag.pointerId) return
-      if (element.hasPointerCapture?.(event.pointerId)) element.releasePointerCapture(event.pointerId)
-      drag = null
-      this.setState({ dragging: false })
-      this.dispatchEvent({ type: 'slideend', positionFraction: this.state.positionFraction })
+      endDrag()
     }
     const onKeyDown = (event: KeyboardEvent) => {
       const step = this.keyboardStepFraction
       const position = this.state.positionFraction
+      // The keys move the line the way they point on the screen: up is towards the top edge (position 0) for a
+      // horizontal line. Page Up and Page Down follow Up and Down; Home and End follow the slider's value (see
+      // `updateHandle`), which grows to the right and upwards.
+      const horizontal = this.state.orientation === 'horizontal'
       const next = (
         {
           ArrowLeft: position - step,
-          ArrowDown: position - step,
           ArrowRight: position + step,
-          ArrowUp: position + step,
-          PageDown: position - step * 10,
-          PageUp: position + step * 10,
-          Home: 0,
-          End: 1,
+          ArrowDown: position + (horizontal ? step : -step),
+          ArrowUp: position + (horizontal ? -step : step),
+          PageDown: position + (horizontal ? step : -step) * 10,
+          PageUp: position + (horizontal ? -step : step) * 10,
+          Home: horizontal ? 1 : 0,
+          End: horizontal ? 0 : 1,
         } as Record<string, number>
       )[event.key]
       if (next === undefined) return
@@ -280,15 +296,13 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
       element.removeEventListener('pointercancel', onPointerEnd)
       element.removeEventListener('lostpointercapture', onPointerEnd)
       element.removeEventListener('keydown', onKeyDown)
-      if (drag !== null) {
-        drag = null
-        this.setState({ dragging: false })
-      }
+      endDrag()
       restoreAttribute(element, 'role', previous.role)
       restoreAttribute(element, 'tabindex', previous.tabIndex)
       restoreAttribute(element, 'aria-label', previous.label)
       for (const name of ['aria-valuemin', 'aria-valuemax', 'aria-valuenow', 'aria-valuetext', 'aria-orientation']) element.removeAttribute(name)
       element.style.touchAction = previous.touchAction
+      element.style.pointerEvents = previous.pointerEvents
       element.style.removeProperty(COMPARE_POSITION_PROPERTY)
     }
   }
@@ -341,12 +355,17 @@ export class Compare extends EventDispatcher<CompareEventMap> implements EarthPl
   }
 
   protected updateHandle(element: HTMLElement): void {
-    const { orientation, positionFraction } = this.state
-    const percent = Math.round(positionFraction * 1000) / 10
+    const { orientation, positionFraction, followPointer } = this.state
+    // A slider's value grows to the right, or upwards: from the bottom edge for a horizontal line.
+    const value = orientation === 'vertical' ? positionFraction : 1 - positionFraction
+    const percent = Math.round(value * 1000) / 10
     element.setAttribute('aria-valuemin', '0')
     element.setAttribute('aria-valuemax', '100')
     element.setAttribute('aria-valuenow', String(percent))
-    element.setAttribute('aria-valuetext', `${percent}%`)
+    element.setAttribute('aria-valuetext', orientation === 'vertical' ? `${percent}% from the left` : `${percent}% from the bottom`)
+    // While the line follows the pointer it is always under it: the handle lets presses through to the map, which
+    // would otherwise never get one. The keyboard still moves it.
+    element.style.pointerEvents = followPointer ? 'none' : ''
     // The slider moves across the line: sideways for a vertical line.
     element.setAttribute('aria-orientation', orientation === 'vertical' ? 'horizontal' : 'vertical')
     element.style.setProperty(COMPARE_POSITION_PROPERTY, `${positionFraction * 100}%`)

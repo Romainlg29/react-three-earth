@@ -141,10 +141,13 @@ export function configure(compare: Compare, older: Imagery, recent: Imagery, lab
 
 - Dragging it moves the line by the pointer's movement over the canvas, with pointer capture: the map never pans, on
   touch or mouse. It sets `touch-action: none` on the element.
-- `role="slider"`, a tab stop, `aria-valuenow` (0 to 100), `aria-valuetext`, `aria-orientation` (`'horizontal'` for a
-  vertical line: the handle moves sideways) and an `aria-label` (`label`, default `'Comparison position'`) unless the
-  element has one. Arrow keys move by `keyboardStepFraction` (default 0.01), Page Up / Page Down ten times as far, Home
-  and End to the edges.
+- `role="slider"`, a tab stop, `aria-valuenow` (0 to 100: from the left, or from the bottom for a horizontal line, as
+  sliders grow upwards), `aria-valuetext`, `aria-orientation` (`'horizontal'` for a vertical line: the handle moves
+  sideways) and an `aria-label` (`label`, default `'Comparison position'`) unless the element has one. Arrow keys move
+  the line the way they point by `keyboardStepFraction` (default 0.01), Page Up / Page Down ten times as far, Home and
+  End to the slider's minimum and maximum.
+- While `followPointer` is on, the handle gets `pointer-events: none`: the line sits under the pointer, so the handle
+  would otherwise catch every press and the map could never be panned. Keep the handle's visuals inside the element.
 - The `--compare-position` CSS property (`COMPARE_POSITION_PROPERTY`), kept current: place the handle with it and a
   drag re-renders no React component.
 - The returned function (or unmounting the ref's element) restores the element.
@@ -186,8 +189,8 @@ layers on each side.
 
 ### HIGH: A new `Compare` or plugins array every render
 
-`<Earth plugins>` compares by identity: create both in `useMemo` (or at module scope), or each render reinstalls the
-plugin and resets the slider.
+`<Earth plugins>` compares by identity: create both in `useMemo` (or at module scope). A new array reinstalls the
+plugin each render; a new `Compare` also starts the slider over, with no layers.
 
 ### MEDIUM: Re-rendering the map on every drag frame
 

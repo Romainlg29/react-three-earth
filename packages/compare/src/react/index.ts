@@ -18,15 +18,15 @@ export function useCompareState<T>(compare: Compare, selector: (state: CompareSt
 export function useCompareState<T>(compare: Compare, selector?: (state: CompareState) => T): T | CompareState {
   const latestSelector = useRef(selector)
   latestSelector.current = selector
-  const memory = useRef<{ state: CompareState; selected: T | CompareState } | null>(null)
+  const memory = useRef<{ state: CompareState; select: ((state: CompareState) => T) | undefined; selected: T | CompareState } | null>(null)
   const getSnapshot = useCallback((): T | CompareState => {
     const state = compare.getState()
     const previous = memory.current
-    if (previous !== null && previous.state === state) return previous.selected
     const select = latestSelector.current
+    if (previous !== null && previous.state === state && previous.select === select) return previous.selected
     const next = select === undefined ? state : select(state)
     const selected = previous !== null && Object.is(previous.selected, next) ? previous.selected : next
-    memory.current = { state, selected }
+    memory.current = { state, select, selected }
     return selected
   }, [compare])
   return useSyncExternalStore(compare.subscribe, getSnapshot, getSnapshot)
