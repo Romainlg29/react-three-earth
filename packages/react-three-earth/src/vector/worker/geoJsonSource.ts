@@ -88,6 +88,25 @@ interface TileIndex {
   getTile(z: number, x: number, y: number): { features: LegacyFeature[] } | null
 }
 
+/** A geojson-vt cut of some features: its tile index, and the features in the order it numbered them (`generateId`). */
+interface FeatureCut {
+  index: TileIndex
+  drawn: readonly Feature[]
+}
+
+/** A tile feature, with the id its tile gives it. */
+interface TileEntry {
+  feature: LegacyFeature
+  id: unknown
+}
+
+/**
+ * `updateData` cuts only the changed features, in a second index over the first; past this share of the data (and
+ * `MINIMUM_REBUILD_FEATURES`), the whole data is cut again and the second index starts empty.
+ */
+const OVERLAY_REBUILD_SHARE = 1 / 8
+const MINIMUM_REBUILD_FEATURES = 256
+
 /**
  * A GeoJSON style source in the vector tile worker. Tiles the data with geojson-vt (and clusters points with
  * supercluster when `cluster` is on), as MapLibre does, and hands the style processor tiles shaped like decoded
@@ -106,15 +125,29 @@ export class GeoJsonTileSource implements VectorTileProvider {
   protected readonly options: ResolvedOptions
   /** Every feature of the data, before the source `filter`. */
   protected features: Feature[] = []
-  protected index: TileIndex | null = null
+  /** Clustered points: supercluster over every point, made again on each change (points cluster fast). */
   protected clusters: Supercluster | null = null
+  /** Shapes: the cut of the whole data at the last `setData` (or rebuild). */
+  protected base: FeatureCut | null = null
+  /** Features added or changed by `updateData` since, by id: cut on their own (`overlayCut`), drawn over the base. */
+  protected readonly overlay = new Map<GeoJsonFeatureId, Feature>()
+  protected overlayCut: FeatureCut | null = null
+  /** Ids whose version in the base is out of date (changed or removed since): the base's tiles leave them out. */
+  protected readonly superseded = new Set<GeoJsonFeatureId>()
+  /**
+   * With `generateId`, the tile id of each feature that entered the overlay: its index in the base when it was there
+   * (whose version is left out, so the index is free), else a number after the base's. Stable until everything is cut
+   * again, so feature-state set on an edited feature stays.
+   */
+  protected readonly overlayTileIds = new Map<GeoJsonFeatureId, number>()
+  /** The next tile id `overlayTileIds` gives a feature new to the base. */
+  protected nextOverlayTileId = 0
+  /** With `generateId`, each base feature's index, by id: made when first needed. */
+  protected baseIndexes: Map<GeoJsonFeatureId, number> | null = null
   protected readonly filter: FeatureFilter | null
   /** Ids of the features left out of the tiles (`hiddenFeatureIds`), still in the data. */
   protected hidden: ReadonlySet<GeoJsonFeatureId>
-  /**
-   * The ids tiles carry for the hidden features: their own, or with `generateId` their index among the tiled
-   * features (geojson-vt numbers them so).
-   */
+  /** With clusters, the ids tiles carry for the hidden points: their own, or with `generateId` their index among the points. */
   protected hiddenTileIds: ReadonlySet<unknown> = new Set()
 
   protected constructor(
@@ -167,14 +200,69 @@ export class GeoJsonTileSource implements VectorTileProvider {
    */
   updateData(diff: GeoJsonSourceDiff): Promise<GeoJsonDataChange> {
     return this.enqueue(async () => {
-      const before = this.drawnFeatures(this.features)
+      if (this.options.cluster) {
+        const before = this.drawnFeatures(this.features)
+        this.buildIndex(applyGeoJsonDiff(this.features, diff, this.options.promoteId, this.sourceId).features)
+        return { rectangles: [...boxOf(before), ...boxOf(this.drawnFeatures(this.features))], marginTiles: this.marginTiles }
+      }
       const applied = applyGeoJsonDiff(this.features, diff, this.options.promoteId, this.sourceId)
-      this.buildIndex(applied.features)
-      const rectangles = this.options.cluster
-        ? [...boxOf(before), ...boxOf(this.drawnFeatures(this.features))]
-        : featureRectangles([...this.drawnFeatures(applied.before), ...this.drawnFeatures(applied.after)])
-      return { rectangles, marginTiles: this.marginTiles }
+      this.features = applied.features
+      const rebuilt = this.applyToOverlay(applied.before, applied.after, diff.removeAll === true)
+      if (rebuilt !== false) return { rectangles: rebuilt, marginTiles: this.marginTiles }
+      return { rectangles: featureRectangles([...this.drawnFeatures(applied.before), ...this.drawnFeatures(applied.after)]), marginTiles: this.marginTiles }
     })
+  }
+
+  /**
+   * Cuts the changed features on their own, over the base, whose versions of them are left out from now on: an edit
+   * costs the size of the edits so far, not of the data. Past a share of the data, everything is cut again: then
+   * answers where tiles changed (around every feature changed since the last full cut, or everywhere with
+   * `generateId`, whose ids all move), else false.
+   */
+  protected applyToOverlay(before: readonly Feature[], after: readonly Feature[], removedAll: boolean): MercatorRectangle[] | null | false {
+    const promoteId = this.options.promoteId
+    // Changes before additions: a replaced feature is removed, then added back as it is now.
+    for (const feature of before) {
+      const id = geoJsonFeatureId(feature, promoteId)
+      if (id === undefined) continue
+      this.superseded.add(id)
+      this.overlay.delete(id)
+    }
+    for (const feature of after) {
+      const id = geoJsonFeatureId(feature, promoteId)
+      if (id === undefined) continue
+      this.superseded.add(id)
+      this.overlay.set(id, feature)
+      if (this.options.generateId && !this.overlayTileIds.has(id)) this.overlayTileIds.set(id, this.baseIndexOf(id) ?? this.nextOverlayTileId++)
+    }
+    const baseSize = this.base?.drawn.length ?? 0
+    // Removed features count too: their versions still weigh on the base until it is cut again.
+    if (removedAll || this.superseded.size > Math.max(MINIMUM_REBUILD_FEATURES, baseSize * OVERLAY_REBUILD_SHARE)) {
+      const changed = this.options.generateId || removedAll ? null : [...this.overlay.values(), ...(this.base?.drawn ?? []).filter(feature => this.isSuperseded(feature))]
+      this.buildIndex(this.features)
+      return changed === null ? null : featureRectangles(changed)
+    }
+    const drawn = this.drawnFeatures([...this.overlay.values()])
+    this.overlayCut = drawn.length === 0 ? null : { index: this.cut(drawn), drawn }
+    return false
+  }
+
+  protected isSuperseded(feature: Feature): boolean {
+    const id = geoJsonFeatureId(feature, this.options.promoteId)
+    return id !== undefined && this.superseded.has(id)
+  }
+
+  /** With `generateId`, a feature's index in the base, or undefined when the base does not hold it. */
+  protected baseIndexOf(id: GeoJsonFeatureId): number | undefined {
+    if (this.baseIndexes === null) {
+      const promoteId = this.options.promoteId
+      this.baseIndexes = new Map()
+      for (const [index, feature] of (this.base?.drawn ?? []).entries()) {
+        const featureId = geoJsonFeatureId(feature, promoteId)
+        if (featureId !== undefined && !this.baseIndexes.has(featureId)) this.baseIndexes.set(featureId, index)
+      }
+    }
+    return this.baseIndexes.get(id)
   }
 
   /**
@@ -213,14 +301,40 @@ export class GeoJsonTileSource implements VectorTileProvider {
 
   async loadTile(x: number, y: number, z: number): Promise<VectorTileLike | null> {
     await this.ready
-    const tile = this.index?.getTile(z, x, y) ?? null
-    if (tile === null) return null
-    const features = this.hiddenTileIds.size === 0 ? tile.features : tile.features.filter(feature => !this.isHidden(feature))
-    return features.length === 0 ? null : new GeoJsonTile(features)
+    const entries: TileEntry[] = []
+    if (this.clusters !== null) {
+      for (const feature of this.clusters.getTile(z, x, y)?.features ?? []) {
+        if (this.hiddenTileIds.size === 0 || !this.isHiddenPoint(feature as LegacyFeature)) entries.push({ feature: feature as LegacyFeature, id: (feature as LegacyFeature).id })
+      }
+    } else {
+      // The base without its out-of-date and hidden features, then the changed features over it.
+      const left = (id: GeoJsonFeatureId | undefined) => id === undefined || (!this.superseded.has(id) && !this.hidden.has(id))
+      const base = this.base
+      const overlay = this.overlayCut
+      for (const feature of base?.index.getTile(z, x, y)?.features ?? []) if (left(this.originalId(feature, base!))) entries.push({ feature, id: feature.id })
+      for (const feature of overlay?.index.getTile(z, x, y)?.features ?? []) {
+        const id = this.originalId(feature, overlay!)
+        if (id !== undefined && this.hidden.has(id)) continue
+        // Generated ids stay as they were in the base, or follow on from the base's for new features: distinct and stable.
+        entries.push({ feature, id: this.options.generateId ? this.overlayTileIds.get(id!) : feature.id })
+      }
+    }
+    return entries.length === 0 ? null : new GeoJsonTile(entries)
   }
 
-  /** Whether a tile feature is hidden (`hiddenFeatureIds`): by its id, or its `promoteId` property. Clusters never are. */
-  protected isHidden(feature: LegacyFeature): boolean {
+  /** The id of a cut's tile feature in the data: its `id` or `promoteId` property, or with `generateId` its feature's. */
+  protected originalId(feature: LegacyFeature, cut: FeatureCut): GeoJsonFeatureId | undefined {
+    const promoteId = this.options.promoteId
+    if (this.options.generateId) {
+      const source = cut.drawn[feature.id as number]
+      return source === undefined ? undefined : geoJsonFeatureId(source, promoteId)
+    }
+    const id = promoteId === undefined ? feature.id : (feature.tags as Record<string, unknown> | null)?.[promoteId]
+    return typeof id === 'string' || typeof id === 'number' ? id : undefined
+  }
+
+  /** Whether a clustered tile feature is a hidden point (`hiddenFeatureIds`). Clusters never are. */
+  protected isHiddenPoint(feature: LegacyFeature): boolean {
     // A cluster's id is supercluster's own number, which may equal a hidden point's id.
     if ((feature.tags as Record<string, unknown> | null)?.['cluster'] === true) return false
     const promoteId = this.options.promoteId
@@ -229,16 +343,16 @@ export class GeoJsonTileSource implements VectorTileProvider {
   }
 
   /**
-   * The ids tiles carry for features of these ids: the same, or with `generateId` their index among the tiled features
-   * (among the clustered points, a MultiPoint's points each, when points are clustered).
+   * With clusters, the ids tiles carry for points of these ids: the same, or with `generateId` their index among the
+   * clustered points (a MultiPoint's points each).
    */
   protected tileIdsOf(ids: ReadonlySet<GeoJsonFeatureId>): ReadonlySet<unknown> {
-    if (ids.size === 0 || !this.options.generateId) return ids
+    if (ids.size === 0 || !this.options.generateId || !this.options.cluster) return ids
     const promoteId = this.options.promoteId
     const indexes = new Set<number>()
     let index = 0
     for (const feature of this.drawnFeatures(this.features)) {
-      const count = this.options.cluster ? clusterablePoints(feature).length : 1
+      const count = clusterablePoints(feature).length
       const id = geoJsonFeatureId(feature, promoteId)
       if (id !== undefined && ids.has(id)) for (let each = 0; each < count; each++) indexes.add(index + each)
       index += count
@@ -285,14 +399,19 @@ export class GeoJsonTileSource implements VectorTileProvider {
     })
   }
 
-  /** Keeps every feature and tiles those the filter keeps. */
+  /** Keeps every feature and tiles those the filter keeps, all over again. */
   protected buildIndex(features: Feature[]): void {
     this.features = features
-    // With `generateId`, a feature's tile id is its index, which the new data may change.
-    if (this.options.generateId) this.hiddenTileIds = this.tileIdsOf(this.hidden)
+    this.overlay.clear()
+    this.overlayCut = null
+    this.superseded.clear()
+    this.overlayTileIds.clear()
+    this.baseIndexes = null
     const drawn = this.drawnFeatures(features)
     const options = this.options
     if (options.cluster) {
+      // With `generateId`, a point's tile id is its index, which the new data may change.
+      if (options.generateId) this.hiddenTileIds = this.tileIdsOf(this.hidden)
       const points = drawn.flatMap(clusterablePoints)
       const clusters = new Supercluster({
         minZoom: 0,
@@ -304,11 +423,17 @@ export class GeoJsonTileSource implements VectorTileProvider {
         ...(options.clusterProperties !== undefined ? compileClusterProperties(options.clusterProperties, this.sourceId) : {}),
       }).load(points as never)
       this.clusters = clusters
-      this.index = clusters as unknown as TileIndex
       return
     }
     this.clusters = null
-    this.index = new GeoJSONVT(
+    this.base = { index: this.cut(drawn), drawn }
+    this.nextOverlayTileId = drawn.length
+  }
+
+  /** A geojson-vt index over features, with the source's options. */
+  protected cut(drawn: Feature[]): TileIndex {
+    const options = this.options
+    return new GeoJSONVT(
       { type: 'FeatureCollection', features: drawn },
       {
         maxZoom: options.maximumZoom,
@@ -395,24 +520,24 @@ function compileClusterProperties(clusterProperties: Record<string, [unknown, un
 /** A geojson-vt or supercluster tile, shaped like a decoded vector tile with one layer. */
 class GeoJsonTile implements VectorTileLike {
   readonly layers: Record<string, VectorTileLayerLike>
-  constructor(features: LegacyFeature[]) {
+  constructor(entries: TileEntry[]) {
     this.layers = {
       [GEOJSON_LAYER]: {
         extent: TILE_EXTENT,
-        length: features.length,
-        feature: index => toTileFeature(features[index]!),
+        length: entries.length,
+        feature: index => toTileFeature(entries[index]!.feature, entries[index]!.id),
       },
     }
   }
 }
 
-function toTileFeature(feature: LegacyFeature): VectorTileFeatureLike {
+function toTileFeature(feature: LegacyFeature, id: unknown): VectorTileFeatureLike {
   const properties = (feature.tags ?? {}) as Record<string, number | string | boolean>
   const loadGeometry = (): Point[][] =>
     feature.type === 1 ? feature.geometry.map(([x, y]) => [{ x, y }]) : feature.geometry.map(ring => ring.map(([x, y]) => ({ x, y })))
   return {
     type: feature.type,
-    id: feature.id,
+    id: id as LegacyFeature['id'],
     properties,
     loadGeometry,
     bbox: () => {

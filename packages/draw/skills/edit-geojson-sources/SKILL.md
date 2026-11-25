@@ -116,11 +116,11 @@ It costs a redraw of the regions around those features, whatever the size of the
 
 - Selecting, deselecting and dragging never tile the data again: the drag is drawn by the overlay, the hide is a
   filter in the tile worker.
-- Each committed change is one `updateData`: the main thread does O(changes) lookups and one array of the features;
-  the tile worker cuts the source again off the main thread, while the edited feature is still hidden, so it shows
-  at its new place when deselected.
-- The style document and the tile worker apply each diff too, and the worker cuts the whole source again (geojson-vt
-  has no incremental update): fine for edits, too heavy for changes every frame.
+- Each committed change is one `updateData`. Without `cluster`, the tile worker cuts only the features changed since
+  the last full cut, in a small second index drawn over the first: one edit in 50,000 polygons takes under a
+  millisecond where cutting everything took 300 ms, growing with the edits made since. Once the changed and removed
+  features pass an eighth of the data (and 256), everything is cut again. Changed features draw above the others until
+  then, and keep their `generateId` ids. Clustered sources cluster every point again on each change.
 - A tap tests only the draped features whose box is within reach of it, so selecting in a file of thousands of
   features projects a handful of them (in a tilted view, a tap that finds nothing nearby tests them all). Features with
   a third coordinate are always tested.

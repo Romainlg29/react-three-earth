@@ -282,6 +282,46 @@ describe('GeoJSON sources in the worker', () => {
     expect((await clustered.processTile({ sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
   })
 
+  it('cuts only the changed features on updateData, over the base cut once, and cuts everything again past a share', async () => {
+    const many = Array.from({ length: 300 }, (_, index) => point(`p${index}`, -170 + index * 0.01, -60))
+    const processor = await createProcessor({ shapes: { type: 'geojson', data: collection(point(1, -150, 0), point(2, 150, 0), ...many), generateId: true } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    const provider = (processor as unknown as { fetchers: Map<string, { base: object; overlay: Map<unknown, unknown> }> }).fetchers.get('shapes')!
+    const base = provider.base
+    const east = { sourceId: 'shapes', x: 14, y: 7, z: 4, zoom: 4 }
+    const west = { sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 }
+    // Point 2 moves from 150° E to 150° W, point 1 is removed, point 3 is added at 150° E
+    await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { update: [{ id: 2, newGeometry: { type: 'Point', coordinates: [-150, 1] } }], remove: [1], add: [point(3, 150, 1)] }] }])
+    expect(provider.base).toBe(base) // not cut again
+    expect(provider.overlay.size).toBe(2)
+    const raw = (processor as unknown as { getRawTile(source: string, x: number, y: number, z: number): Promise<{ layers: Record<string, { length: number; feature(index: number): { id: unknown } }> } | null> })
+    const ids = async (tile: { x: number; y: number; z: number }) => {
+      const layer = (await raw.getRawTile('shapes', tile.x, tile.y, tile.z))?.layers[GEOJSON_LAYER]
+      return Array.from({ length: layer?.length ?? 0 }, (_, index) => layer!.feature(index).id)
+    }
+    // One point on each side, each drawn once: the base's versions are left out, generated ids stay distinct
+    const eastIds = await ids(east)
+    const westIds = await ids(west)
+    expect(eastIds).toHaveLength(1)
+    expect(westIds).toHaveLength(1)
+    expect(eastIds[0]).not.toBe(westIds[0])
+    expect(eastIds[0]).toBe(302) // new: after the base's 302 features
+    expect(westIds[0]).toBe(1) // changed: its index in the base, which stays
+    // Changed again, ids stay where they were
+    await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { update: [{ id: 2, newGeometry: { type: 'Point', coordinates: [-150, 2] } }] }] }])
+    expect(await ids(west)).toEqual([1])
+    expect(await ids(east)).toEqual([302])
+    // Hiding reaches the changed features too
+    await processor.applyCommands([{ command: 'setGeoJSONSourceHiddenFeatures', args: ['shapes', [3]] }])
+    expect(await ids(east)).toHaveLength(0)
+    // Past the share (removed features count), the whole data is cut again, redrawing everywhere as generated ids move
+    const result = await processor.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { remove: many.map(feature => feature.id!) }] }])
+    expect(result.rebuiltAreas![0]!.rectangles).toBeNull()
+    expect(provider.base).not.toBe(base)
+    expect(provider.overlay.size).toBe(0)
+    expect(await ids(east)).toHaveLength(0) // still hidden
+    expect(await ids(west)).toHaveLength(1)
+  })
+
   it('keeps the previous data when a new URL fails, and reports it', async () => {
     const processor = await createProcessor({ shapes: { type: 'geojson', data: collection(point(1, 0, 0)) } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
