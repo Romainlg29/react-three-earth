@@ -94,7 +94,7 @@ export function EditableParcels({ data, editing }: { data: FeatureCollection; ed
 ### Ids
 
 Every feature is updated by id: its `id`, or the `promoteId` property. Draw ids are strings: a numeric id `7` is `'7'`
-in Draw and stays `7` in the source. Features with neither get an id from `createId` in one `setData` when editing
+in Draw and stays `7` in the source, after an undo too. Two ids that read the same (`1` and `'1'`) throw. Features with neither get an id from `createId` in one `setData` when editing
 starts. A feature drawn new in a `promoteId` source gets that property set to its id.
 
 ### Hiding features from a GeoJsonSource's tiles
@@ -119,8 +119,11 @@ It costs a redraw of the regions around those features, whatever the size of the
 - Each committed change is one `updateData`: the main thread does O(changes) lookups and one array of the features;
   the tile worker cuts the source again off the main thread, while the edited feature is still hidden, so it shows
   at its new place when deselected.
-- A tap tests only the features whose box is within reach of it, so selecting in a file of thousands of features
-  projects a handful of them.
+- The style document and the tile worker apply each diff too, and the worker cuts the whole source again (geojson-vt
+  has no incremental update): fine for edits, too heavy for changes every frame.
+- A tap tests only the draped features whose box is within reach of it, so selecting in a file of thousands of
+  features projects a handful of them (in a tilted view, a tap that finds nothing nearby tests them all). Features with
+  a third coordinate are always tested.
 
 ## Common Mistakes
 
@@ -132,12 +135,19 @@ write them to the source again. Use one Draw per source edited in place, and ano
 ### HIGH: Changing the source behind Draw's back
 
 Change the data through Draw while it edits (`addFeatures`, `removeFeatures`). After `source.setData` or
-`source.updateData` from elsewhere, call `draw.setSource(source)` again: Draw does not see the change.
+`source.updateData` from elsewhere, call `draw.setSource(source)` again, which reloads the features: Draw does not see
+the change on its own.
 
 ### HIGH: A React `<GeoJsonSource>` whose features have no ids
 
 Draw gives id-less features ids with `setData`, and the next render of `<GeoJsonSource data={…}>` with the old object
 replaces that data again. Give every feature an `id` when the data is loaded, before rendering it.
+
+### HIGH: Files whose positions carry a third coordinate
+
+KML exports and GPS tracks often carry `[longitude, latitude, 0]` or heights above sea level. The source's layers drape
+them, but Draw treats a third coordinate as an altitude above the ellipsoid: it hit-tests and edits them there, so taps
+miss them in tilted mountain views. Strip the third coordinate when the file is loaded, before rendering it.
 
 ### MEDIUM: Data loaded from a URL
 

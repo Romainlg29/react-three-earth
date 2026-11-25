@@ -180,7 +180,7 @@ export class GeoJsonTileSource implements VectorTileProvider {
   /**
    * Leaves the features of these ids out of the tiles (replacing the previous ids), keeping them in the data: no
    * tiling again, only the tiles around the features that appear or disappear are processed again (around the whole
-   * data when points are clustered; hidden points still count in their clusters). Applies in order with data changes.
+   * data when points are clustered; hidden points still count in their clusters, and clusters are never hidden). Applies in order with data changes.
    */
   setHiddenFeatures(ids: readonly GeoJsonFeatureId[]): Promise<GeoJsonDataChange> {
     return this.enqueue(async () => {
@@ -221,20 +221,28 @@ export class GeoJsonTileSource implements VectorTileProvider {
 
   /** Whether a tile feature is hidden (`hiddenFeatureIds`): by its id, or its `promoteId` property. Clusters never are. */
   protected isHidden(feature: LegacyFeature): boolean {
+    // A cluster's id is supercluster's own number, which may equal a hidden point's id.
+    if ((feature.tags as Record<string, unknown> | null)?.['cluster'] === true) return false
     const promoteId = this.options.promoteId
     const id = promoteId === undefined || this.options.generateId ? feature.id : (feature.tags as Record<string, unknown> | null)?.[promoteId]
     return id !== undefined && id !== null && this.hiddenTileIds.has(id)
   }
 
-  /** The ids tiles carry for features of these ids: the same, or with `generateId` their index among the tiled features. */
+  /**
+   * The ids tiles carry for features of these ids: the same, or with `generateId` their index among the tiled features
+   * (among the clustered points, a MultiPoint's points each, when points are clustered).
+   */
   protected tileIdsOf(ids: ReadonlySet<GeoJsonFeatureId>): ReadonlySet<unknown> {
-    if (ids.size === 0 || !this.options.generateId || this.options.cluster) return ids
+    if (ids.size === 0 || !this.options.generateId) return ids
     const promoteId = this.options.promoteId
     const indexes = new Set<number>()
-    this.drawnFeatures(this.features).forEach((feature, index) => {
+    let index = 0
+    for (const feature of this.drawnFeatures(this.features)) {
+      const count = this.options.cluster ? clusterablePoints(feature).length : 1
       const id = geoJsonFeatureId(feature, promoteId)
-      if (id !== undefined && ids.has(id)) indexes.add(index)
-    })
+      if (id !== undefined && ids.has(id)) for (let each = 0; each < count; each++) indexes.add(index + each)
+      index += count
+    }
     return indexes
   }
 

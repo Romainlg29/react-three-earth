@@ -194,6 +194,18 @@ describe('select mode', () => {
     expect(groundBox(line())).toBeNull()
   })
 
+  it('tests every feature when a tap in a tilted view found none near the tapped ground', () => {
+    // A view squashed 3 times north-south: tilted. A ridge trail 2° north is drawn 6 px from the tap.
+    const ridge: DrawFeature<LineString> = { ...line(), id: 'ridge', geometry: { type: 'LineString', coordinates: [[-1, 2], [1, 2]] } }
+    const { context } = createContext([ridge])
+    context.project = ([longitude, latitude]) => ({ x: longitude * 100, y: latitude * 3 })
+    const mode = new SelectMode()
+    mode.enter(context)
+    // The ray hits the ground far beyond the ridge, as past a crest.
+    mode.click({ ...pointer(0, 0, 'mouse'), geographic: { longitudeDegrees: 0, latitudeDegrees: -40, heightMeters: 0 } })
+    expect(mode.selectedFeatureIds()).toEqual(['ridge'])
+  })
+
   it('selects the polygon that contains a tap over a neighbour whose edge is near', () => {
     const left = square()
     const right: DrawFeature<Polygon> = { ...square(), id: 'right', geometry: { type: 'Polygon', coordinates: [[[1, 0], [2, 0], [2, 1], [1, 1], [1, 0]]] } }

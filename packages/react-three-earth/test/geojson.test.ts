@@ -276,6 +276,10 @@ describe('GeoJSON sources in the worker', () => {
     expect((await generated.processTile({ sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
     await generated.applyCommands([{ command: 'updateGeoJSONSourceData', args: ['shapes', { remove: ['west'] }] }])
     expect((await generated.processTile(east)).shapes).toBeNull() // its index changed with the data
+    // Clustered with generateId: unclustered points carry their index among the points
+    const clustered = await createProcessor({ shapes: { type: 'geojson', data: collection(point('west', -150, 0), point('east', 150, 0)), cluster: true, generateId: true, hiddenFeatureIds: ['east'] } }, [{ id: 'dots', type: 'circle', source: 'shapes' }])
+    expect((await clustered.processTile(east)).shapes).toBeNull()
+    expect((await clustered.processTile({ sourceId: 'shapes', x: 1, y: 7, z: 4, zoom: 4 })).shapes).not.toBeNull()
   })
 
   it('keeps the previous data when a new URL fails, and reports it', async () => {

@@ -170,6 +170,40 @@ describe('Draw editing a GeoJSON source in place', () => {
     expect(source.hiddenFeatureIds).toEqual([]) // shown again when editing stops
   })
 
+  it('adds a removed feature back under the id the source knew (an undo), numeric and promoted alike', () => {
+    const numeric = new GeoJsonSource({ id: 'numeric', data: { type: 'FeatureCollection', features: [pointFeature(7, 1)] } })
+    const draw = new Draw({ source: numeric })
+    const removed = draw.getFeature('7')!
+    draw.removeFeatures(['7'])
+    draw.addFeatures([removed])
+    expect(features(numeric).map(feature => feature.id)).toEqual([7])
+
+    const promoted = new GeoJsonSource({ id: 'promoted', promoteId: 'code', data: { type: 'FeatureCollection', features: [pointFeature('x', 1, { code: 12 })] } })
+    draw.setSource(promoted)
+    const promotedFeature = draw.getFeature('12')!
+    draw.removeFeatures(['12'])
+    draw.addFeatures([promotedFeature, { ...pointFeature(undefined, 2, { code: 99 }) } as never])
+    expect(features(promoted).map(feature => [feature.id, feature.properties?.['code']])).toEqual([['x', 12], [undefined, 99]])
+    expect(draw.getFeature('99')).toBeDefined()
+  })
+
+  it('reloads the same source after a change made elsewhere, and drops the selection when the source changes', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature('a', 1)] } })
+    const other = new GeoJsonSource({ id: 'other', data: { type: 'FeatureCollection', features: [pointFeature('a', 9)] } })
+    const draw = new Draw({ source })
+    source.setData({ type: 'FeatureCollection', features: [pointFeature('a', 1), pointFeature('b', 2)] })
+    draw.setSource(source)
+    expect(draw.getFeatures().features.map(feature => feature.id)).toEqual(['a', 'b'])
+    draw.select(['a'])
+    draw.setSource(other)
+    expect(draw.getSelectedIds()).toEqual([])
+  })
+
+  it('states the fix for two features whose ids read the same', () => {
+    const source = new GeoJsonSource({ id: 'places', data: { type: 'FeatureCollection', features: [pointFeature(1, 1), pointFeature('1', 2)] } })
+    expect(() => new Draw({ source })).toThrow(/distinct id/)
+  })
+
   it('states the fix for data loaded from a URL', () => {
     expect(() => new Draw({ source: new GeoJsonSource({ id: 'remote', data: 'places.geojson' }) })).toThrow(/fetch the GeoJSON in the app/)
   })

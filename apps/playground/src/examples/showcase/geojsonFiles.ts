@@ -139,8 +139,15 @@ export function loadGeoJsonText(name: string, text: string): LoadedGeoJsonFile {
  * `<GeoJsonSource>` was rendered with.
  */
 function withIds(collection: FeatureCollection): FeatureCollection {
-  if (collection.features.every(feature => feature.id !== undefined && feature.id !== null)) return collection
-  return { ...collection, features: collection.features.map((feature, index) => (feature.id === undefined || feature.id === null ? { ...feature, id: `f${index + 1}` } : feature)) }
+  const missing = (feature: Feature) => feature.id === undefined || feature.id === null
+  if (!collection.features.some(missing)) return collection
+  const taken = new Set(collection.features.map(feature => String(feature.id)))
+  let next = 1
+  const freshId = () => {
+    while (taken.has(`f${next}`)) next++
+    return `f${next++}`
+  }
+  return { ...collection, features: collection.features.map(feature => (missing(feature) ? { ...feature, id: freshId() } : feature)) }
 }
 
 /** Whether a dropped file looks like GeoJSON by its name or type. */
