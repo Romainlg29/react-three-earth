@@ -1,0 +1,79 @@
+{
+  "name": "@earthkit/geocoder",
+  "version": "0.0.0",
+  "description": "Headless place search for @earthkit/globe: search as you type, keyboard selection, fly to the result, reverse geocoding, with Nominatim, Photon, Pelias, MapTiler or your own GeoJSON",
+  "keywords": [
+    "earthkit",
+    "three",
+    "react-three-fiber",
+    "webgpu",
+    "map",
+    "geocoder",
+    "geocoding",
+    "search",
+    "nominatim",
+    "photon",
+    "tanstack-intent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Romainlg29/react-three-earth.git",
+    "directory": "packages/geocoder"
+  },
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "default": "./dist/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:changed": "vitest run --changed origin/master --passWithNoTests",
+    "validate:skills": "intent validate skills"
+  },
+  "dependencies": {
+    "@types/geojson": "^7946.0.16"
+  },
+  "devDependencies": {
+    "@earthkit/globe": "workspace:*",
+    "@react-three/fiber": "10.0.0-alpha.6",
+    "@tanstack/intent": "0.5.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/three": "^0.187.0",
+    "react": "~19.3.1",
+    "three": "0.187.0",
+    "tsdown": "^0.23.7",
+    "typescript": "~6.0.2",
+    "vitest": "^5.1.1"
+  },
+  "peerDependencies": {
+    "@earthkit/globe": "0.x",
+    "react": ">=19.0 <19.4",
+    "three": ">=0.187.0 <0.188.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  }
+}

@@ -6,6 +6,7 @@ import { setCameraView } from '../src/core/camera.js'
 import { getFlatRegionBox } from '../src/tiles/EarthTilesRenderer.js'
 import { computeFlatPositions, FLAT_POSITION_ATTRIBUTE, FlatMapPlugin, HEIGHT_OFFSET_ATTRIBUTE, toInstancedGeometry } from '../src/tiles/FlatMapPlugin.js'
 import { sampleTerrainHeight } from '../src/tiles/terrainHeights.js'
+import { TERRAIN_SURFACE_ATTRIBUTE } from '../src/tiles/terrainSurface.js'
 import { ViewMorph } from '../src/view/ViewMorph.js'
 import {
   ecefToGeodetic,
@@ -237,6 +238,64 @@ describe('computeFlatPositions', () => {
     WGS84_ELLIPSOID.getEastNorthUpAxes(degrees(35.4), degrees(138.7), new Vector3(), new Vector3(), up)
     expect(summit.clone().normalize().dot(up)).toBeCloseTo(1, 6)
     expect(new Vector3().fromBufferAttribute(offsets, 0).length()).toBeCloseTo(0, 3)
+  })
+})
+
+describe('terrain surface attribute', () => {
+  /** A one-vertex mesh at a position, with its normal tilted from the local up by `slopeDegrees` towards `aspectDegrees` (downhill). */
+  function surfaceOf(latitudeDegrees: number, longitudeDegrees: number, heightMeters: number, slopeDegrees: number, aspectDegrees: number, meshToEarth = new Matrix4()) {
+    const east = new Vector3()
+    const north = new Vector3()
+    const up = new Vector3()
+    WGS84_ELLIPSOID.getEastNorthUpAxes(degrees(latitudeDegrees), degrees(longitudeDegrees), east, north, up)
+    const slope = degrees(slopeDegrees)
+    const aspect = degrees(aspectDegrees)
+    const normalEarth = up
+      .clone()
+      .multiplyScalar(Math.cos(slope))
+      .add(east.multiplyScalar(Math.sin(slope) * Math.sin(aspect)))
+      .add(north.multiplyScalar(Math.sin(slope) * Math.cos(aspect)))
+    const positionEarth = WGS84_ELLIPSOID.getCartographicToPosition(degrees(latitudeDegrees), degrees(longitudeDegrees), heightMeters, new Vector3())
+    const earthToMesh = meshToEarth.clone().invert()
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(positionEarth.clone().applyMatrix4(earthToMesh).toArray()), 3))
+    geometry.setAttribute('normal', new BufferAttribute(new Float32Array(normalEarth.clone().transformDirection(earthToMesh).toArray()), 3))
+    computeFlatPositions(geometry, meshToEarth, null)
+    const surface = geometry.getAttribute(TERRAIN_SURFACE_ATTRIBUTE)
+    const normalEast = surface.getY(0)
+    const normalNorth = surface.getZ(0)
+    const normalUp = Math.sqrt(Math.max(0, 1 - normalEast ** 2 - normalNorth ** 2))
+    const aspectOut = (MathUtils.radToDeg(Math.atan2(normalEast, normalNorth)) + 360) % 360
+    return { elevation: surface.getX(0), slope: MathUtils.radToDeg(Math.atan2(Math.hypot(normalEast, normalNorth), normalUp)), aspect: aspectOut }
+  }
+
+  it('stores the elevation and the normal in east-north-up, from which slope and aspect come back', () => {
+    const summit = surfaceOf(35.3606, 138.7274, 3776, 30, 135)
+    expect(summit.elevation).toBeCloseTo(3776, 0)
+    expect(summit.slope).toBeCloseTo(30, 3)
+    expect(summit.aspect).toBeCloseTo(135, 3)
+    // A west-facing slope in the southern hemisphere, below the ellipsoid
+    const shore = surfaceOf(-33.9, 18.4, -20, 12, 270)
+    expect(shore.elevation).toBeCloseTo(-20, 0)
+    expect(shore.slope).toBeCloseTo(12, 3)
+    expect(shore.aspect).toBeCloseTo(270, 3)
+  })
+
+  it('reads the normals in the mesh frame, whatever the tile transform turns them by', () => {
+    const meshToEarth = new Matrix4().makeRotationAxis(new Vector3(1, 2, 3).normalize(), 1.1).setPosition(100, -200, 300)
+    const turned = surfaceOf(46.5, 9.8, 2500, 40, 10, meshToEarth)
+    expect(turned.elevation).toBeCloseTo(2500, 0)
+    expect(turned.slope).toBeCloseTo(40, 3)
+    expect(turned.aspect).toBeCloseTo(10, 3)
+  })
+
+  it('takes a mesh without normals as flat ground', () => {
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new BufferAttribute(new Float32Array(WGS84_ELLIPSOID.getCartographicToPosition(0.5, 0.2, 800, new Vector3()).toArray()), 3))
+    computeFlatPositions(geometry, new Matrix4(), null)
+    const surface = geometry.getAttribute(TERRAIN_SURFACE_ATTRIBUTE)
+    expect(surface.getX(0)).toBeCloseTo(800, 0)
+    expect([surface.getY(0), surface.getZ(0)]).toEqual([0, 0])
   })
 })
 

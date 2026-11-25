@@ -1740,6 +1740,9 @@ async function editing(name, { touch = false, flat = false } = {}) {
   result.vertexMoved = afterVertex.length === before.length && afterVertex.filter((position, index) => position[0] !== before[index][0] || position[1] !== before[index][1]).length === 1
   await tap(520, 255) // the midpoint of the first edge
   result.verticesAfterInsert = (await ring()).length - 1
+  // The inserted vertex is picked, its move gizmo over it: dropped, so the press inside reaches the polygon.
+  result.pickedAfterInsert = await page.evaluate(() => window.draw.getState().pickedElementCount)
+  await page.evaluate(() => window.draw.clearElementSelection())
   const viewBeforeMove = await view()
   const beforeMove = await ring()
   await drag([520, 340], [470, 300])
@@ -2723,6 +2726,95 @@ const HEATMAP_2D_VIEW = '&view=2d&camera=139.12,35.37,0,40000,0,-90'
 const RELIEF_FUJI = '&camera=138.75,35.42,0,15000,0,-89&view=2d'
 // Pitched from the south-west, close: walls, roofs, the courtyard and the glass tower.
 const BUILDINGS_PITCHED = '&camera=-90,0,3900,700,20,-25'
+/**
+ * The measuring plugin (`?example=measure`, @earthkit/measure): a distance and an area drawn by tapping, mouse or
+ * finger, globe or flat map. The figure follows the pointer while drawing; finished measurements are geodesic on the
+ * WGS84 ellipsoid, labelled on the map with markers, and a line's elevation profile samples the loaded terrain.
+ */
+async function measuring(name, { touch = false, flat = false } = {}) {
+  const page = await browser.newPage({ viewport: { width: 800, height: 600 }, hasTouch: touch })
+  const errors = []
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+  page.on('pageerror', e => errors.push(String(e)))
+  await page.goto(`${BASE}/?fixtures&atmosphere=0&example=measure&camera=-90,0,0,60000,0,-60`)
+  const idle = () => page.waitForFunction(() => {
+    const inspection = window.earth?.inspect()
+    return inspection?.terrain?.tilesLoaded > 5 && inspection.idle && !window.earth.camera.animating
+  }, null, { timeout: 240_000, polling: 300 })
+  await idle()
+  if (flat) {
+    await page.evaluate(() => window.earth.setView('2d', { durationSeconds: 0 }))
+    await page.waitForTimeout(500)
+    await idle()
+  }
+  const tap = async (x, y) => {
+    await (touch ? page.touchscreen.tap(x, y) : page.mouse.click(x, y))
+    await page.waitForTimeout(150)
+  }
+  const result = { check: `measuring, ${name}`, errors }
+  await page.evaluate(() => window.measure.setMode('distance'))
+  await tap(420, 200)
+  await tap(620, 220)
+  // The figure follows the mouse (touch screens have no hover: the last tap is the end).
+  if (!touch) {
+    const before = await page.evaluate(() => window.measure.getState().live.lengthMeters)
+    await page.mouse.move(700, 320, { steps: 4 })
+    await page.waitForTimeout(150)
+    const after = await page.evaluate(() => window.measure.getState().live)
+    result.liveFollowsPointer = after.positions.length === 3 && after.lengthMeters > before
+  }
+  await tap(700, 320)
+  await tap(700, 320) // the last vertex finishes the line
+  await page.evaluate(() => window.measure.setMode('area'))
+  for (const [x, y] of [[440, 380], [600, 370], [620, 500], [450, 510]]) await tap(x, y)
+  result.liveArea = await page.evaluate(() => window.measure.getState().live?.areaSquareMeters ?? 0)
+  await tap(440, 380) // the first vertex closes the ring
+  await page.evaluate(() => window.measure.setMode('static'))
+  await page.waitForTimeout(500)
+  await idle()
+  await page.waitForTimeout(800)
+  Object.assign(result, await page.evaluate(() => {
+    const { measurements, live } = window.measure.getState()
+    // A spherical cross-check of the geodesic figures (they differ by well under 1 %).
+    const radians = Math.PI / 180
+    const sphere = (a, b) => {
+      const s = Math.sin(((b[1] - a[1]) * radians) / 2) ** 2 + Math.cos(a[1] * radians) * Math.cos(b[1] * radians) * Math.sin(((b[0] - a[0]) * radians) / 2) ** 2
+      return 2 * 6_371_008.8 * Math.asin(Math.sqrt(s))
+    }
+    const distance = measurements.find(each => each.kind === 'distance')
+    const area = measurements.find(each => each.kind === 'area')
+    const sphericalLength = distance === undefined ? 0 : distance.positions.slice(1).reduce((sum, position, index) => sum + sphere(distance.positions[index], position), 0)
+    const profile = distance === undefined ? null : window.measure.elevationProfile(distance.id, { sampleCount: 64 })
+    const heights = profile?.samples.filter(sample => sample.heightMeters !== null).map(sample => sample.heightMeters) ?? []
+    return {
+      kinds: measurements.map(each => each.kind),
+      vertices: measurements.map(each => each.positions.length),
+      liveAfter: live,
+      lengthMeters: distance?.lengthMeters ?? 0,
+      lengthAgainstSphere: distance === undefined ? 0 : distance.lengthMeters / sphericalLength,
+      areaSquareMeters: area?.areaSquareMeters ?? 0,
+      perimeterMeters: area?.perimeterMeters ?? 0,
+      profile: profile === null ? null : { samples: profile.samples.length, known: heights.length, finite: heights.every(Number.isFinite), lengthMeters: profile.lengthMeters },
+      labels: [...document.querySelectorAll('.measure-label')].map(element => element.textContent),
+      chart: document.querySelector('[data-testid="measure-profile"] polyline') !== null,
+    }
+  }))
+  const png = await page.screenshot()
+  writeFileSync(new URL(`measuring-${name.replaceAll(' ', '-').replace(',', '')}.png`, OUT), png)
+  Object.assign(result, await analyse(page, png, `
+    // Right of the card: the yellow lines and fills, dimmed on the lit globe (red at least green, blue far under both;
+    // the fixture ground is green or grey).
+    let yellow = 0
+    for (let y = 0; y < height; y++) for (let x = 360; x < width; x++) {
+      const i = (y * width + x) * 4
+      if (px[i] > 100 && px[i + 1] > 70 && px[i] >= px[i + 1] && px[i + 2] < px[i + 1] * 0.5) yellow++
+    }
+    return { yellowPixels: yellow }
+  `))
+  await page.close()
+  results.push(result)
+}
+
 const CHECKS = [
   ['precision/on', () => precision(true)],
   ['precision/off', () => precision(false)],
@@ -2821,6 +2913,8 @@ const CHECKS = [
   ['draw/solids-over-sky', () => solidsOverSky()],
   ['draw/mesh-editing-globe-mouse', () => meshEditing('globe, mouse')],
   ['draw/mesh-editing-globe-touch', () => meshEditing('globe, touch', { touch: true })],
+  ['measure/measuring-globe-mouse', () => measuring('globe, mouse')],
+  ['measure/measuring-flat-touch', () => measuring('flat map, touch', { touch: true, flat: true })],
   ['examples/city', () => galleryExample('city')],
   ['examples/labels', () => galleryExample('labels', '', async (page, idle) => {
     await page.getByRole('button', { name: 'Vertical Japanese and Chinese' }).click()
@@ -2839,12 +2933,30 @@ const CHECKS = [
     return { popup: await page.evaluate(() => document.querySelector('[role=dialog]')?.textContent ?? null) }
   })],
   ['examples/heatmap', () => galleryExample('heatmap')],
-  ['examples/terrain', () => galleryExample('terrain', '', async (page, idle) => {
+  ['examples/terrain', () => galleryExample('terrain', '&camera=-77.15,0.02,0,30000,20,-30', async (page, idle) => {
     await page.locator('input[type=range]').fill('3')
     await page.getByRole('button', { name: 'Map and hillshade' }).click()
     await page.waitForTimeout(500)
     await idle()
-    return { exaggeration: await page.evaluate(() => window.earth.terrain.exaggeration) }
+    const exaggeration = await page.evaluate(() => window.earth.terrain.exaggeration)
+    // No layers: the terrain material colours the ground by elevation, slope and aspect.
+    await page.getByRole('button', { name: 'Stylised, no layers' }).click()
+    await page.waitForTimeout(500)
+    await idle()
+    await page.waitForTimeout(1500)
+    const stylized = await analyse(page, await page.screenshot(), `
+      // Low ground between the fixture hills: green below 1200 m, earthy hilltops above.
+      let green = 0, earth = 0, ground = 0
+      for (let i = 0; i < px.length; i += 4) {
+        const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
+        if (r + g + b < 60) continue // sky
+        ground++
+        if (g > r + 8 && g > b + 15) green++
+        else if (r > g && g > b && r - b > 30) earth++
+      }
+      return { green: green / ground, earth: earth / ground }
+    `)
+    return { exaggeration, stylized }
   })],
   ['examples/overlay', () => galleryExample('overlay', '', async (page, idle) => {
     const radarShare = async () => {
@@ -2895,6 +3007,38 @@ const CHECKS = [
       after = await glow()
     }
     return { glow: { before, after } }
+  })],
+  ['examples/geocoder', () => galleryExample('geocoder', '', async (page, idle) => {
+    // Typed letter by letter, faster than the pause: one search as you type, for the whole word.
+    await page.evaluate(() => {
+      window.geocoderSearches = []
+      window.geocoder.addEventListener('results', event => window.geocoderSearches.push(event.query))
+    })
+    const input = page.getByTestId('geocoder-input')
+    await input.click()
+    await input.pressSequentially('fixture', { delay: 40 })
+    await page.waitForFunction(() => window.geocoder.getState().status === 'success' && window.geocoder.getState().results.length > 0, null, { timeout: 30_000, polling: 100 })
+    const options = await page.locator('[role="option"]').allTextContents()
+    const expanded = await input.getAttribute('aria-expanded')
+    await input.press('ArrowDown')
+    const activeDescendant = await input.getAttribute('aria-activedescendant')
+    const activeOptionId = await page.locator('[role="option"][aria-selected="true"]').getAttribute('id')
+    await input.press('Enter')
+    await page.waitForTimeout(300)
+    await idle()
+    await page.waitForTimeout(1000) // the marker's terrain height and fade
+    const view = await page.evaluate(() => window.earth.camera.getView())
+    const marker = await page.evaluate(() => {
+      const element = document.querySelector('.react-three-earth-marker')
+      return element === null ? null : { visibility: element.dataset.visibility, label: element.getAttribute('aria-label') }
+    })
+    const listHidden = await page.locator('[role="listbox"]').evaluate(element => element.hidden)
+    // A click near the peak, off the pin: what is there.
+    await page.mouse.click(600, 400)
+    await page.waitForFunction(() => window.geocoder.getState().reverse.status === 'success', null, { timeout: 30_000, polling: 100 })
+    const reverse = await page.getByTestId('geocoder-reverse').textContent()
+    const searches = await page.evaluate(() => window.geocoderSearches)
+    return { geocoder: { searches, options, expanded, activeDescendant, activeOptionId, query: await input.inputValue(), view, marker, listHidden, reverse } }
   })],
   ['examples/embedded', () => galleryExample('embedded', '', async page => {
     // A plain wheel over the map scrolls the page and leaves the camera where it was.

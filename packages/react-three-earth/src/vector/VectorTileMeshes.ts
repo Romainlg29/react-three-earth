@@ -65,14 +65,26 @@ function createMaterial(): MeshBasicNodeMaterial {
  * With a feature colour table, vertices whose `colorSlot` is not 0 read their colour from the table instead
  * (looked up per vertex): feature-state changes only update the table.
  */
-export function createShapeMaterial(colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
+export function createShapeMaterial(colorTable?: FeatureColorTexture, { blurred = false }: { blurred?: boolean } = {}): MeshBasicNodeMaterial {
   const material = createMaterial()
   const color = shapeColor(colorTable)
   material.colorNode = Fn(() => {
     discardOutsideTile()
-    return color
+    return blurred ? fadeEdges(color) : color
   })()
   return material
+}
+
+/**
+ * `line-blur` and `circle-blur`: the colour faded towards the shape's edge over the vertex's blur share (from the
+ * `edge` attribute: position across the shape, and blur as a share of its half width; 0 is sharp).
+ */
+function fadeEdges(color: Node<'vec4'>): Node<'vec4'> {
+  const edge = attribute<'vec2'>('edge', 'vec2')
+  const share = edge.y
+  const inside = float(1).sub(edge.x.abs())
+  const fade = select(share.greaterThan(0), smoothstep(float(0), max(share, float(1e-6)), inside), float(1))
+  return vec4(color.rgb, color.a.mul(fade)) as unknown as Node<'vec4'>
 }
 
 /** The linear vertex colour of a shape, or its slot's colour in the table when it has one. */
@@ -280,7 +292,7 @@ function samplePattern(atlas: ImageAtlasTexture, rectangle: Node<'vec4'>, coordi
  * Fills, lines and circles of a tile that has patterns: like `createShapeMaterial`, and vertices with a
  * pattern rectangle take the pattern's colour, times the vertex colour's alpha (the opacity).
  */
-export function createPatternShapeMaterial(atlas: ImageAtlasTexture, colorTable?: FeatureColorTexture): MeshBasicNodeMaterial {
+export function createPatternShapeMaterial(atlas: ImageAtlasTexture, colorTable?: FeatureColorTexture, { blurred = false }: { blurred?: boolean } = {}): MeshBasicNodeMaterial {
   const material = createMaterial()
   const shape = shapeColor(colorTable)
   material.colorNode = Fn(() => {
@@ -289,7 +301,8 @@ export function createPatternShapeMaterial(atlas: ImageAtlasTexture, colorTable?
     // Normalised 16-bit attribute: back to atlas pixels.
     const rectangle = attribute<'vec4'>('pattern', 'vec4').mul(65535)
     const pattern = samplePattern(atlas, rectangle, attribute<'vec2'>('patternCoordinates', 'vec2'))
-    return mix(color, vec4(pattern.rgb, pattern.a.mul(color.a)), step(0.5, rectangle.z))
+    const shaded = mix(color, vec4(pattern.rgb, pattern.a.mul(color.a)), step(0.5, rectangle.z)) as unknown as Node<'vec4'>
+    return blurred ? fadeEdges(shaded) : shaded
   })()
   return material
 }
@@ -342,9 +355,12 @@ export interface ShapeMaterials {
   slotted?: MeshBasicNodeMaterial
   patterned?: MeshBasicNodeMaterial
   slottedPatterned?: MeshBasicNodeMaterial
+  /** The same four for tiles with blurred lines or circles; without one, the sharp material draws them. */
+  blurred?: Omit<ShapeMaterials, 'blurred'>
 }
 
-function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slotted: boolean): MeshBasicNodeMaterial {
+function chooseShapeMaterial(materials: ShapeMaterials, patterned: boolean, slotted: boolean, blurred = false): MeshBasicNodeMaterial {
+  if (blurred && materials.blurred !== undefined) return chooseShapeMaterial(materials.blurred, patterned, slotted)
   if (patterned && slotted) return materials.slottedPatterned ?? materials.patterned ?? materials.slotted ?? materials.plain
   if (patterned) return materials.patterned ?? materials.plain
   if (slotted) return materials.slotted ?? materials.plain
@@ -376,6 +392,7 @@ export class BucketMeshes {
       const patterned = shapes.patterns != null && shapes.patternCoordinates != null
       const pattern = patterned ? new BufferAttribute(shapes.patterns!, 4, true) : null
       const patternCoordinates = patterned ? new BufferAttribute(shapes.patternCoordinates!, 2) : null
+      const edges = shapes.edges == null ? null : new BufferAttribute(shapes.edges, 2)
       for (const { group, start, count } of shapes.groups) {
         const geometry = new BufferGeometry()
         geometry.setAttribute('position', position)
@@ -385,10 +402,11 @@ export class BucketMeshes {
           geometry.setAttribute('pattern', pattern)
           geometry.setAttribute('patternCoordinates', patternCoordinates)
         }
+        if (edges !== null) geometry.setAttribute('edge', edges)
         geometry.setIndex(index)
         geometry.setDrawRange(start, count)
         this.geometries.push(geometry)
-        this.shapes.push({ group, mesh: createMesh(geometry, chooseShapeMaterial(shapeMaterials, patterned, slots !== null)) })
+        this.shapes.push({ group, mesh: createMesh(geometry, chooseShapeMaterial(shapeMaterials, patterned, slots !== null, edges !== null)) })
       }
     }
     for (const layer of bucket.layers) {

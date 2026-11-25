@@ -235,7 +235,8 @@ or an animation under a still pointer does not query again until the pointer mov
 
 ### MEDIUM: Translate properties
 
-`fill-translate`, `line-translate` and `circle-translate` are not drawn yet, so queries ignore them too.
+`fill-translate`, `line-translate` and `circle-translate` move both the drawing and the hit test: a click lands on
+the shape where it is drawn, not on its source geometry. A `viewport` anchor is drawn and queried as `map`.
 
 ### MEDIUM: Very wide lines near their edge
 

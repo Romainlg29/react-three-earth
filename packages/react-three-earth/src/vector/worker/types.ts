@@ -408,6 +408,12 @@ export interface ShapeMesh {
    */
   patterns: Uint16Array | null
   patternCoordinates: Float32Array | null
+  /**
+   * Blurred lines and circles (`line-blur`, `circle-blur`), or null when the tile has none: per vertex, where it sits
+   * across its shape (-1 to 1 across a line band, 0 to 1 from a circle's centre) and the blur as a share of the
+   * shape's half width (0: sharp).
+   */
+  edges: Float32Array | null
 }
 
 /**
@@ -656,6 +662,7 @@ export function collectTransferables(bucket: TileBucket | null): Transferable[] 
   if (shapes !== null) buffers.push(shapes.positions.buffer, shapes.colors.buffer, shapes.indices.buffer)
   if (shapes?.colorSlots) buffers.push(shapes.colorSlots.buffer)
   if (shapes?.patterns != null && shapes.patternCoordinates !== null) buffers.push(shapes.patterns.buffer, shapes.patternCoordinates.buffer)
+  if (shapes?.edges) buffers.push(shapes.edges.buffer)
   if (text !== null) buffers.push(text.positions.buffer, text.uvs.buffer, text.colors.buffer, text.haloColors.buffer, text.haloEdges.buffer, text.indices.buffer)
   if (atlas !== null) for (const glyph of atlas.glyphs) buffers.push(glyph.data.buffer)
   if (symbols != null) buffers.push(...symbolMeshBuffers(symbols))

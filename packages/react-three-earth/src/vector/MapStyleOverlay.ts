@@ -320,6 +320,12 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
       slotted: createShapeMaterial(this.featureColors),
       patterned: createPatternShapeMaterial(this.imageAtlas),
       slottedPatterned: createPatternShapeMaterial(this.imageAtlas, this.featureColors),
+      blurred: {
+        plain: createShapeMaterial(undefined, { blurred: true }),
+        slotted: createShapeMaterial(this.featureColors, { blurred: true }),
+        patterned: createPatternShapeMaterial(this.imageAtlas, undefined, { blurred: true }),
+        slottedPatterned: createPatternShapeMaterial(this.imageAtlas, this.featureColors, { blurred: true }),
+      },
     }
     this.backgroundPattern = createBackgroundPatternMaterial(this.imageAtlas)
     this.backgroundPatternMesh = new Mesh(new PlaneGeometry(1, 1), this.backgroundPattern.material)
@@ -1127,7 +1133,8 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
     this.scratch?.dispose()
     this.atlas.dispose()
     this.imageAtlas.dispose()
-    for (const material of Object.values(this.shapeMaterials)) material?.dispose()
+    const { blurred, ...sharp } = this.shapeMaterials
+    for (const material of [...Object.values(sharp), ...Object.values(blurred ?? {})]) material?.dispose()
     this.backgroundPattern.material.dispose()
     this.backgroundPatternMesh.geometry.dispose()
     this.featureColors.dispose()
