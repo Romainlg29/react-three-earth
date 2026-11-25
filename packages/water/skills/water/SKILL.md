@@ -111,7 +111,9 @@ has blown over: short fetch, short steep waves), dispersed through the water's d
 simulated by FFT (64 texels a side on the CPU, 256 on the GPU, whose tiles then repeat far less) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
 roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
 Under WebGPU the simulation runs in compute shaders (a few dispatches a frame, no CPU cost) and also draws foam on the
-crests that break (where the choppy waves' Jacobian folds), covering the whitecap share (`whitecapCoverage`). On WebGL2
+crests that break (where the choppy waves' Jacobian folds). The foam lasts: crests breaking now
+(`WAVE_BREAKING_SHARE` of the whitecap share) leave patches that fade over `WAVE_FOAM_LIFETIME_SECONDS` (4 s) into a web
+of bubbles, then wisps, together covering about the whitecap share (`whitecapCoverage`). On WebGL2
 it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: the whitecaps pale the sea evenly.
 
 - `water.state.significantWaveHeightMeters` gives the sea state's wave height (about 1 m at 5 m/s over 100 km).

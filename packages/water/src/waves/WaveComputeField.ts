@@ -1,8 +1,9 @@
 import { HalfFloatType, LinearFilter, RepeatWrapping } from 'three'
-import { cos, fract, Fn, instancedArray, instanceIndex, int, ivec2, sin, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
+import { cos, float, fract, Fn, instancedArray, instanceIndex, int, ivec2, max, sin, smoothstep, storageTexture, uniform, vec2, vec4 } from 'three/tsl'
 import { StorageArrayTexture, type ComputeNode, type Node, type StorageBufferNode, type WebGPURenderer } from 'three/webgpu'
 
 import { createFourierPlan } from './fft.js'
+import { WAVE_CHOPPINESS, WAVE_FOAM_LIFETIME_SECONDS } from './foam.js'
 import { WAVE_REPEAT_PERIOD_SECONDS, type WaveField } from './WaveField.js'
 
 /**
@@ -22,7 +23,20 @@ export class WaveComputeField {
    * itself east and north, metres per unit choppiness (the surface moves by -λ D).
    */
   readonly foldTexture: StorageArrayTexture
+  /**
+   * Per cascade: the foam the cascade's breaking crests left, 0 to 1, in x. Crests add to it as they fold, and it fades
+   * over `WAVE_FOAM_LIFETIME_SECONDS` where they have passed, so the foam trails behind the waves that broke.
+   */
+  readonly foamTexture: StorageArrayTexture
+  /** Φ⁻¹ of the share of each cascade's surface breaking at any moment: how far below its mean the Jacobian falls there. */
+  readonly breakingScore = uniform(-8)
   protected readonly field: WaveField
+  /** What the foam keeps of itself this frame: exp(-Δt / lifetime). */
+  protected readonly foamKept = uniform(0)
+  /** Per cascade: the spread of its Jacobian per unit choppiness, the root of its slope variance. */
+  protected readonly cascadeSpreads: StorageBufferNode<'float'>
+  protected readonly foam: StorageBufferNode<'float'>
+  protected lastTimeSeconds: number | null = null
   /** The time as a share of `WAVE_REPEAT_PERIOD_SECONDS`, reduced in 64-bit on the CPU. */
   protected readonly periodShare = uniform(0)
   protected readonly spectrum: StorageBufferNode<'vec4'>
@@ -40,6 +54,9 @@ export class WaveComputeField {
     const count = cells * layers
     this.surfaceTexture = createStorageTexture(size, layers)
     this.foldTexture = createStorageTexture(size, layers)
+    this.foamTexture = createStorageTexture(size, layers)
+    this.cascadeSpreads = instancedArray(layers, 'float')
+    this.foam = instancedArray(count, 'float')
 
     this.spectrum = instancedArray(count, 'vec4')
     this.waves = instancedArray(count, 'vec4')
@@ -129,10 +146,23 @@ export class WaveComputeField {
       const folded = fold[final]!.element(index)
       storageTexture(this.surfaceTexture, texel, value).depth(cascade).toStack()
       storageTexture(this.foldTexture, texel, folded).depth(cascade).toStack()
+      // This cascade's own Jacobian: its crests break where it folds, past its own spread (see foam.ts).
+      const lambda = WAVE_CHOPPINESS
+      const jacobian = float(1)
+        .sub(value.z.mul(lambda))
+        .mul(float(1).sub(value.w.mul(lambda)))
+        .sub(folded.x.mul(folded.x).mul(lambda * lambda))
+      const spread = this.cascadeSpreads.element(cascade).mul(lambda)
+      const threshold = float(1).add(spread.mul(this.breakingScore))
+      const edge = spread.mul(0.25).add(1e-4)
+      const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
+      const foam = max(this.foam.element(index).mul(this.foamKept), breaking)
+      this.foam.element(index).assign(foam)
+      storageTexture(this.foamTexture, texel, vec4(foam, 0, 0, 1)).depth(cascade).toStack()
     })().compute(count)
 
     this.kernels = [advance, ...transforms, resolve]
-    this.buffers = [this.spectrum, this.waves, ...surface, ...fold, butterflies]
+    this.buffers = [this.spectrum, this.waves, ...surface, ...fold, butterflies, this.cascadeSpreads, this.foam]
   }
 
   /** Advances the waves to `timeSeconds` on the GPU, uploading the spectrum first if the sea state changed. */
@@ -141,9 +171,16 @@ export class WaveComputeField {
       this.field.writeSpectrum(this.spectrum.value.array as Float32Array, this.waves.value.array as Float32Array)
       this.spectrum.value.needsUpdate = true
       this.waves.value.needsUpdate = true
+      const spreads = this.cascadeSpreads.value.array as Float32Array
+      this.field.cascades.forEach((cascade, index) => {
+        spreads[index] = Math.sqrt(cascade.meanSquareSlope)
+      })
+      this.cascadeSpreads.value.needsUpdate = true
       this.uploadedVersion = this.field.seaStateVersion
     }
     this.periodShare.value = (timeSeconds % WAVE_REPEAT_PERIOD_SECONDS) / WAVE_REPEAT_PERIOD_SECONDS
+    this.foamKept.value = foamKept(this.lastTimeSeconds === null ? null : timeSeconds - this.lastTimeSeconds)
+    this.lastTimeSeconds = timeSeconds
     // One compute pass, one submit: each dispatch sees what the previous one wrote.
     void renderer.compute(this.kernels)
   }
@@ -153,7 +190,17 @@ export class WaveComputeField {
     for (const buffer of this.buffers) buffer.value.dispose()
     this.surfaceTexture.dispose()
     this.foldTexture.dispose()
+    this.foamTexture.dispose()
   }
+}
+
+/**
+ * What the foam keeps of itself over `deltaSeconds` of the waves' clock: exp(-Δt / lifetime). None on the first frame or
+ * when the clock jumps back (the foam then is not this sea's); a jump forward of more than a second counts as one.
+ */
+export function foamKept(deltaSeconds: number | null): number {
+  if (deltaSeconds === null || !(deltaSeconds >= 0)) return 0
+  return Math.exp(-Math.min(deltaSeconds, 1) / WAVE_FOAM_LIFETIME_SECONDS)
 }
 
 function createStorageTexture(size: number, layers: number): StorageArrayTexture {

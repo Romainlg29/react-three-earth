@@ -6,6 +6,18 @@
  * Φ(z) is the whitecap coverage (Monahan) makes the drawn foam cover the measured share, wherever it is.
  */
 
+/**
+ * How long foam lasts once its crest has passed, seconds: the e-folding time of the residual foam patches a breaking
+ * crest leaves (Monahan & Woolf's stage B whitecaps, about 3 to 4 s).
+ */
+export const WAVE_FOAM_LIFETIME_SECONDS = 4
+
+/**
+ * The share of the whitecap coverage that is crests breaking now (Monahan's stage A); the rest is the foam they left,
+ * fading over `WAVE_FOAM_LIFETIME_SECONDS`. Monahan's coverage counts both.
+ */
+export const WAVE_BREAKING_SHARE = 0.3
+
 /** Choppiness λ: how far the displacement moves the surface towards the crests. 1 is the sea's own (linear theory). */
 export const WAVE_CHOPPINESS = 1
 
