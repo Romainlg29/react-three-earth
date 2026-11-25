@@ -1,5 +1,5 @@
-import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec4 } from 'three/tsl'
+import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
+import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
 import { inverseStandardNormal, WAVE_CHOPPINESS } from './foam.js'
@@ -27,6 +27,8 @@ export const WAVE_MAXIMUM_CAMERA_HEIGHT_METERS = 30_000
 export const WAVE_COMPUTE_GRID_SIZE = 256
 
 export interface WaveSurfaceNodes {
+  /** Where the fragment lies on the wave plane: metres east and north of its anchor. */
+  plane: Node<'vec2'>
   /** The resolved waves' slope at the fragment, east and north, dimensionless. 0 where the waves fade out. */
   slope: Node<'vec2'>
   /** The slope variance the drawn waves carry at the fragment: what roughness need not stand for any more. */
@@ -74,6 +76,22 @@ export class WaveSurface {
   protected readonly east = uniform(new Vector3(1, 0, 0))
   protected readonly north = uniform(new Vector3(0, 1, 0))
   protected readonly cameraFromAnchor = uniform(new Vector3())
+  /** The camera on the wave plane: metres east and north of the anchor. */
+  readonly cameraPlane = uniform(new Vector2())
+  /** Sea level, metres above the ellipsoid: where a mesh of the waves lies. */
+  seaLevelMeters = 0
+  /** The camera's height above sea level, metres, from the last `update`. */
+  cameraHeightAboveSeaMeters = Infinity
+  /**
+   * The wave plane's frame in ECEF (the earth's frame) at sea level under the anchor: x east, y north, z up, metres. A mesh
+   * of the waves placed in it lies on the plane; `curvatureRadiusMeters` bends it down with the Earth.
+   */
+  readonly planeFrame = new Matrix4()
+  /** The Earth's mean radius of curvature at the anchor, metres. */
+  curvatureRadiusMeters = EQUATORIAL_RADIUS_METERS
+  protected laidSeaLevelMeters = 0
+  /** Counts the anchor's moves, so a mesh knows to lay itself again. */
+  anchorVersion = 0
   protected readonly meanSquareSlopes: UniformNode<'float', number>[]
   protected anchorEarthCenteredMeters: Vector3 | null = null
   protected readonly anchorEast = new Vector3()
@@ -113,8 +131,29 @@ export class WaveSurface {
     return this.computeField
   }
 
+  /**
+   * The waves' clock, seconds. It advances with every `update`; set it (with the same seed) to show the same sea on
+   * several devices at once, for example from a shared server time.
+   */
   get timeSeconds(): number {
     return this.timeSecondsValue
+  }
+
+  set timeSeconds(value: number) {
+    if (!Number.isFinite(value)) throw new Error(`WaveSurface: timeSeconds must be a finite number, got ${value}.`)
+    this.timeSecondsValue = value
+  }
+
+  /** The seed of the waves' random phases: the same seed, sea state and time draw the same sea everywhere. */
+  get seed(): number {
+    return this.field.seed
+  }
+
+  /** Draws another sea from `seed` (any integer), in the same sea state. */
+  setSeed(seed: number): void {
+    this.field.setSeed(seed)
+    this.computeSpectrum?.setSeed(seed)
+    this.useField(this.computeSpectrum ?? this.field)
   }
 
   setSeaState(options: SeaStateOptions): void {
@@ -141,7 +180,9 @@ export class WaveSurface {
     this.timeSecondsValue += deltaSeconds
     const cameraWorld = scratchCamera.setFromMatrixPosition(camera.matrixWorld)
     const cameraEarth = scratchCameraEarth.copy(cameraWorld).applyMatrix4(scratchMatrix.copy(earth.matrixWorld).invert())
-    if (heightAboveEllipsoid(cameraEarth) > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
+    const height = geodeticLatitudeAndHeight(cameraEarth).height
+    this.cameraHeightAboveSeaMeters = height - this.seaLevelMeters
+    if (height > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
     if (renderer !== undefined && isWebGPUBackend(renderer)) {
       this.computeField ??= this.startCompute()
       this.computeField.update(renderer, this.timeSecondsValue)
@@ -156,7 +197,7 @@ export class WaveSurface {
 
   /** Moves the simulation to the GPU: the shaders already built sample its textures from now on. */
   protected startCompute(): WaveComputeField {
-    const spectrum = new WaveField({ ...this.fieldOptions, gridSize: WAVE_COMPUTE_GRID_SIZE })
+    const spectrum = new WaveField({ ...this.fieldOptions, seed: this.field.seed, gridSize: WAVE_COMPUTE_GRID_SIZE })
     if (this.seaState !== null) spectrum.setSeaState(this.seaState)
     this.computeSpectrum = spectrum
     this.useField(spectrum)
@@ -187,16 +228,47 @@ export class WaveSurface {
       this.anchorEast.copy(east)
       this.anchorNorth.copy(north)
       this.anchorUp.copy(up)
+      this.layPlaneFrame(cameraEarth)
+    } else if (this.laidSeaLevelMeters !== this.seaLevelMeters) {
+      this.layPlaneFrame(anchor)
     }
     this.east.value.copy(this.anchorEast).transformDirection(earth.matrixWorld)
     this.north.value.copy(this.anchorNorth).transformDirection(earth.matrixWorld)
     // Both in 64-bit: the difference is small near the anchor, so it survives the shader's 32-bit floats.
     this.cameraFromAnchor.value.copy(cameraWorld).sub(scratchAnchor.copy(this.anchorEarthCenteredMeters!).applyMatrix4(earth.matrixWorld))
+    const fromAnchor = scratchOffset.copy(cameraEarth).sub(this.anchorEarthCenteredMeters!)
+    this.cameraPlane.value.set(fromAnchor.dot(this.anchorEast), fromAnchor.dot(this.anchorNorth))
   }
 
+  /** Lays the plane's frame at sea level under the anchor, with the Earth's curvature there. */
+  protected layPlaneFrame(anchor: Vector3): void {
+    const { latitude, height } = geodeticLatitudeAndHeight(anchor)
+    const origin = scratchOrigin.copy(anchor).addScaledVector(this.anchorUp, this.seaLevelMeters - height)
+    this.planeFrame.makeBasis(this.anchorEast, this.anchorNorth, this.anchorUp).setPosition(origin)
+    const sine = Math.sin(latitude)
+    const denominator = 1 - ECCENTRICITY_SQUARED * sine * sine
+    const meridian = (EQUATORIAL_RADIUS_METERS * (1 - ECCENTRICITY_SQUARED)) / denominator ** 1.5
+    const primeVertical = EQUATORIAL_RADIUS_METERS / Math.sqrt(denominator)
+    this.curvatureRadiusMeters = Math.sqrt(meridian * primeVertical)
+    this.laidSeaLevelMeters = this.seaLevelMeters
+    this.anchorVersion++
+  }
+
+  /**
+   * The waves at the fragment of a surface lying on the sea (the terrain), from its camera-relative position: the plane
+   * coordinates follow from it, and each cascade fades by the fragment's footprint.
+   */
   createNodes(): WaveSurfaceNodes {
     const offset = cameraWorldMatrix.mul(vec4(positionView, 0)).xyz.add(this.cameraFromAnchor)
-    const plane = vec2(offset.dot(this.east), offset.dot(this.north))
+    const plane = vec2(offset.dot(this.east), offset.dot(this.north)) as unknown as Node<'vec2'>
+    return this.sampleWaves(plane)
+  }
+
+  /**
+   * The waves at a point of the plane (metres east and north of the anchor), in a fragment shader: each cascade fades
+   * where the fragment's footprint on the plane covers several of its texels.
+   */
+  sampleWaves(plane: Node<'vec2'>): WaveSurfaceNodes {
     // Metres a pixel spans on the plane.
     const footprint = max(fwidth(plane.x), fwidth(plane.y))
     let slope: Node = vec2(0)
@@ -206,9 +278,7 @@ export class WaveSurface {
     let resolved: Node = float(0)
     let total: Node = float(0)
     this.field.cascades.forEach((cascade, index) => {
-      const texelMeters = this.texelSizes[index]!
-      // Gone before a pixel spans two texels: without mipmaps, a cascade sampled sparser than that shimmers.
-      const fade = float(1).sub(smoothstep(texelMeters.mul(0.75), texelMeters.mul(2), footprint)).mul(this.weight)
+      const fade = this.cascadeFade(index, footprint)
       const uv = plane.div(cascade.lengthMeters)
       const surface = this.surfaceSampler.sample(uv).depth(int(index))
       slope = (slope as Node<'vec2'>).add(surface.xy.mul(fade))
@@ -234,12 +304,67 @@ export class WaveSurface {
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
     const foam = mix(this.whitecapCoverage, breaking, drawnShare)
     return {
+      plane,
       slope: slope as Node<'vec2'>,
       resolvedMeanSquareSlope: resolved as Node<'float'>,
       east: this.east as unknown as Node<'vec3'>,
       north: this.north as unknown as Node<'vec3'>,
       foam: foam as unknown as Node<'float'>,
     }
+  }
+
+  /**
+   * The surface's displacement at a point of the plane, in a vertex shader: east and north (the choppy waves' pull
+   * towards the crests, -λ D) and up (the height), metres. Each cascade fades where `spacingMeters` (the vertices'
+   * spacing) covers several of its texels, so a coarse mesh does not alias the short waves. Zero on the CPU path, which
+   * transforms neither.
+   */
+  sampleDisplacement(plane: Node<'vec2'>, spacingMeters: Node<'float'>): Node<'vec3'> {
+    let displacement: Node = vec3(0)
+    this.field.cascades.forEach((cascade, index) => {
+      const fade = this.cascadeFade(index, spacingMeters)
+      const fold = this.foldSampler.sample(plane.div(cascade.lengthMeters)).depth(int(index)).level(float(0))
+      displacement = (displacement as Node<'vec3'>).add(vec3(fold.z.mul(-WAVE_CHOPPINESS), fold.w.mul(-WAVE_CHOPPINESS), fold.y).mul(fade))
+    })
+    return (displacement as Node<'vec3'>).mul(this.foamFromWaves) as unknown as Node<'vec3'>
+  }
+
+  /**
+   * The surface's slopes (east, north) at a point of the plane, outside a fragment shader: each cascade fades where
+   * `spacingMeters` covers several of its texels, as in `sampleDisplacement`.
+   */
+  sampleSlope(plane: Node<'vec2'>, spacingMeters: Node<'float'>): Node<'vec2'> {
+    let slope: Node = vec2(0)
+    this.field.cascades.forEach((cascade, index) => {
+      const fade = this.cascadeFade(index, spacingMeters)
+      const surface = this.surfaceSampler.sample(plane.div(cascade.lengthMeters)).depth(int(index)).level(float(0))
+      slope = (slope as Node<'vec2'>).add(surface.xy.mul(fade))
+    })
+    return slope as Node<'vec2'>
+  }
+
+  /**
+   * Where a point given in ECEF metres lies on the wave plane: metres east and north of its anchor, into `target`. Null
+   * before the plane is first laid (the first `update` below `WAVE_MAXIMUM_CAMERA_HEIGHT_METERS`).
+   */
+  planePosition(earthCentered: Vector3, target: Vector2): Vector2 | null {
+    const anchor = this.anchorEarthCenteredMeters
+    if (anchor === null) return null
+    const offset = scratchOffset.copy(earthCentered).sub(anchor)
+    return target.set(offset.dot(this.anchorEast), offset.dot(this.anchorNorth))
+  }
+
+  /** Turns a direction from the plane's frame (x east, y north, z up, at the anchor) into ECEF, in place. */
+  planeDirectionToEarth(direction: Vector3): Vector3 {
+    const { x, y, z } = direction
+    return direction.copy(this.anchorEast).multiplyScalar(x).addScaledVector(this.anchorNorth, y).addScaledVector(this.anchorUp, z)
+  }
+
+  /** 1 while a cascade's texels are well sampled at `footprint` metres, falling to 0 before it spans two of them. */
+  protected cascadeFade(index: number, footprint: Node<'float'>): Node<'float'> {
+    const texelMeters = this.texelSizes[index]!
+    // Without mipmaps, a cascade sampled sparser than that shimmers.
+    return float(1).sub(smoothstep(texelMeters.mul(0.75), texelMeters.mul(2), footprint)).mul(this.weight) as unknown as Node<'float'>
   }
 
   dispose(): void {
@@ -265,6 +390,7 @@ export function eastNorthAt(point: Vector3): { east: Vector3; north: Vector3; up
 }
 
 const scratchCamera = new Vector3()
+const scratchOrigin = new Vector3()
 const scratchCameraEarth = new Vector3()
 const scratchAnchor = new Vector3()
 const scratchOffset = new Vector3()
@@ -276,10 +402,31 @@ function horizontalDistance(point: Vector3, anchor: Vector3, up: Vector3): numbe
   return Math.sqrt(Math.max(offset.lengthSq() - vertical * vertical, 0))
 }
 
-/** Height of an ECEF point above the WGS84 ellipsoid, metres, to within a few kilometres: enough to tell orbit from sea. */
-function heightAboveEllipsoid(point: Vector3): number {
-  const horizontal = Math.hypot(point.x, point.y)
-  const latitude = Math.atan2(point.z, horizontal)
-  const radius = Math.hypot(EQUATORIAL_RADIUS_METERS * Math.cos(latitude), POLAR_RADIUS_METERS * Math.sin(latitude))
-  return point.length() - radius
+const ECCENTRICITY_SQUARED = 1 - (POLAR_RADIUS_METERS / EQUATORIAL_RADIUS_METERS) ** 2
+
+/** A geographic position (WGS84 degrees, metres above the ellipsoid) in ECEF metres, into `target`. */
+export function earthCenteredFromGeographic(longitudeDegrees: number, latitudeDegrees: number, heightMeters: number, target: Vector3): Vector3 {
+  const longitude = (longitudeDegrees * Math.PI) / 180
+  const latitude = (latitudeDegrees * Math.PI) / 180
+  const sine = Math.sin(latitude)
+  const cosine = Math.cos(latitude)
+  const primeVertical = EQUATORIAL_RADIUS_METERS / Math.sqrt(1 - ECCENTRICITY_SQUARED * sine * sine)
+  const horizontal = (primeVertical + heightMeters) * cosine
+  return target.set(horizontal * Math.cos(longitude), horizontal * Math.sin(longitude), (primeVertical * (1 - ECCENTRICITY_SQUARED) + heightMeters) * sine)
 }
+
+/** Geodetic latitude (radians) and height above the WGS84 ellipsoid (metres) of an ECEF point, to the millimetre (Bowring). */
+export function geodeticLatitudeAndHeight(point: Vector3): { latitude: number; height: number } {
+  const a = EQUATORIAL_RADIUS_METERS
+  const b = POLAR_RADIUS_METERS
+  const horizontal = Math.hypot(point.x, point.y)
+  const secondEccentricitySquared = (a * a - b * b) / (b * b)
+  const theta = Math.atan2(point.z * a, horizontal * b)
+  const latitude = Math.atan2(point.z + secondEccentricitySquared * b * Math.sin(theta) ** 3, horizontal - ECCENTRICITY_SQUARED * a * Math.cos(theta) ** 3)
+  const sine = Math.sin(latitude)
+  const primeVertical = a / Math.sqrt(1 - ECCENTRICITY_SQUARED * sine * sine)
+  // Near the poles the horizontal form loses precision: use the vertical one there.
+  const height = Math.abs(Math.cos(latitude)) > 1e-3 ? horizontal / Math.cos(latitude) - primeVertical : Math.abs(point.z) / Math.abs(sine) - primeVertical * (1 - ECCENTRICITY_SQUARED)
+  return { latitude, height }
+}
+

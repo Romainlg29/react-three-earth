@@ -1,5 +1,5 @@
 import type { Material } from 'three'
-import { materialColor, materialEmissive, materialMetalness, materialNormal, materialRoughness, vec4 } from 'three/tsl'
+import { bool, materialColor, materialEmissive, materialMetalness, materialNormal, materialRoughness, vec4 } from 'three/tsl'
 import type { Node, NodeMaterial } from 'three/webgpu'
 
 import type { TerrainShadingDefinition, TerrainShadingInputs } from '../plugins/terrainShadings.js'
@@ -13,7 +13,7 @@ import type { TerrainShadingDefinition, TerrainShadingInputs } from '../plugins/
 
 export type TerrainMaterialSlot = keyof TerrainShadingInputs
 
-const SLOTS = ['color', 'roughness', 'metalness', 'normal', 'emissive'] as const satisfies readonly TerrainMaterialSlot[]
+const SLOTS = ['color', 'roughness', 'metalness', 'normal', 'emissive', 'mask'] as const satisfies readonly TerrainMaterialSlot[]
 
 const SLOT_PROPERTIES = {
   color: 'colorNode',
@@ -21,6 +21,7 @@ const SLOT_PROPERTIES = {
   metalness: 'metalnessNode',
   normal: 'normalNode',
   emissive: 'emissiveNode',
+  mask: 'maskNode',
 } as const satisfies Record<TerrainMaterialSlot, string>
 
 type SlotNodes = Record<TerrainMaterialSlot, Node | null>
@@ -217,6 +218,7 @@ function buildSlots({ bases, overlay, shadings }: TerrainMaterialState): SlotNod
     metalness: (bases.metalness ?? materialMetalness) as Node<'float'>,
     normal: (bases.normal ?? materialNormal) as Node<'vec3'>,
     emissive: (bases.emissive ?? materialEmissive) as Node<'vec3'>,
+    mask: (bases.mask ?? KEEP_EVERY_FRAGMENT) as Node<'bool'>,
   }
   for (const definition of definitions) {
     let outputs: Partial<TerrainShadingInputs>
@@ -233,5 +235,9 @@ function buildSlots({ bases, overlay, shadings }: TerrainMaterialState): SlotNod
     }
     inputs = next
   }
-  return inputs
+  // No shading masked: no discard in the shader.
+  return { ...inputs, mask: inputs.mask === KEEP_EVERY_FRAGMENT ? bases.mask : inputs.mask }
 }
+
+/** The mask shadings start from when the material has none: every fragment kept. */
+const KEEP_EVERY_FRAGMENT = bool(true)

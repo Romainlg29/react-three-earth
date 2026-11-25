@@ -18,6 +18,11 @@ export interface TerrainShadingInputs {
   normal: Node<'vec3'>
   /** Light the surface gives off. */
   emissive: Node<'vec3'>
+  /**
+   * Whether the fragment is drawn, as `NodeMaterial.maskNode`: false discards it, to let geometry of the plugin's own
+   * stand in for the ground there (a sea mesh near the camera). Combine with the input (`inputs.mask.and(…)`).
+   */
+  mask: Node<'bool'>
 }
 
 /** What a terrain shading changes: the slots it leaves out keep their input. */

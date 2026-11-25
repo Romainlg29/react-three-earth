@@ -9,12 +9,14 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, step, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
-import { WaveSurface } from './waves/WaveSurface.js'
+import { WaveMesh, type WaveMeshShading } from './waves/WaveMesh.js'
+import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
+import { WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 import { WATER_PRESETS, type WaterPreset } from './presets.js'
 
 export interface WaterSettings {
@@ -63,6 +65,16 @@ export interface WaterSettings {
   seaLevelMeters?: number
   /** The seafloor's colour for `depthFromElevation` (sRGB). Default: `'#c2b280'`, sand. */
   seafloorColor?: ColorRepresentation
+  /**
+   * Seeds the waves' random phases (an integer): the same seed, sea state and wave time (`water.waveSurface.timeSeconds`)
+   * draw the same sea on every device. Default: 1.
+   */
+  waveSeed?: number
+  /**
+   * Draw the sea near the camera as geometry moved by the waves (needs WebGPU): crests rise, troughs sink and the
+   * surface leans towards the crests. Off, or on WebGL2, the waves tilt the terrain's normals only. Default: true.
+   */
+  waveMesh?: boolean
 }
 
 export interface WaterOptions extends WaterSettings {
@@ -92,6 +104,8 @@ export interface WaterState {
   readonly diffuseAttenuationPerMeter: readonly [number, number, number]
   readonly imageryOpacity: number
   readonly depthFromElevation: boolean
+  readonly waveSeed: number
+  readonly waveMesh: boolean
 }
 
 const DEFAULT_FLAT_MAP_COLOR = '#a0c8f0'
@@ -138,13 +152,18 @@ export class Water implements EarthPlugin {
   protected readonly fixedRoughnessWeight = uniform(0)
   /** The surface's whole slope variance from the wind (Cox & Munk): drawn waves carry part of it, roughness the rest. */
   protected readonly meanSquareSlope = uniform(0)
+  /** The sea near the camera as geometry moved by the waves (GPU path only). */
+  readonly waveMesh: WaveMesh
   /** The waves, simulated on the GPU under WebGPU (with foam on the breaking crests), else on the CPU, and laid under the camera. */
   readonly waveSurface = new WaveSurface()
+
+  protected readonly probes = new Set<WaveProbe>()
 
   constructor({ name = 'water', ...settings }: WaterOptions = {}) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
     this.name = name
     this.settingsValue = {}
+    this.waveMesh = new WaveMesh(this.waveSurface, waves => this.meshShading(waves))
     this.setSettings(settings)
   }
 
@@ -186,6 +205,8 @@ export class Water implements EarthPlugin {
     this.fixedRoughnessWeight.value = fixedRoughness === null ? 0 : 1
     this.meanSquareSlope.value = surfaceMeanSquareSlope(state.windSpeedMetersPerSecond)
     this.waveSurface.weight.value = state.waves ? 1 : 0
+    this.waveSurface.seaLevelMeters = settings.seaLevelMeters ?? 0
+    this.waveSurface.setSeed(state.waveSeed)
     if (state.waves) this.waveSurface.setSeaState(seaStateOf(state))
     this.earth?.requestFrame()
   }
@@ -194,14 +215,29 @@ export class Water implements EarthPlugin {
     const { earth } = context
     this.earth = earth
     context.registerTerrainShading(this.createShading())
+    context.addObject(this.waveMesh.mesh)
     // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
-      if (!this.stateValue.waves || morph >= 1) return false
-      return this.waveSurface.update(deltaSeconds, camera, earth, renderer)
+      const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
+      // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
+      this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0)
+      for (const probe of this.probes) probe.update(renderer)
+      return animating
     })
     context.onDispose(() => {
       if (this.earth === earth) this.earth = null
     })
+  }
+
+  /**
+   * Samples the sea's height and normal at a few points, to float a boat on the waves: set its points with
+   * `probe.setPoints([{ longitudeDegrees, latitudeDegrees }])` and read `probe.samples` each frame (they lag a frame or
+   * two). It reads what the wave mesh draws; `probe.dispose()` stops it.
+   */
+  createProbe(options?: WaveProbeOptions): WaveProbe {
+    const probe = new WaveProbe(this.waveSurface, this.waveMesh, options, disposed => this.probes.delete(disposed))
+    this.probes.add(probe)
+    return probe
   }
 
   inspect(): WaterState {
@@ -219,9 +255,19 @@ export class Water implements EarthPlugin {
     return mix(withFoam, this.roughness, this.fixedRoughnessWeight) as unknown as Node<'float'>
   }
 
-  /** Frees the wave textures. Call when the plugin will not be installed again. */
+  /** Frees the wave textures, mesh and probes. Call when the plugin will not be installed again. */
   dispose(): void {
+    for (const probe of [...this.probes]) probe.dispose()
     this.waveSurface.dispose()
+    this.waveMesh.dispose()
+  }
+
+  /** The sea on the wave mesh: the water's colour and the wind's roughness, as on the terrain, without a seafloor. */
+  protected meshShading(waves: WaveSurfaceNodes): WaveMeshShading {
+    return {
+      color: mix(this.albedo, vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
+      roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
+    }
   }
 
   /** The terrain shading: built once per terrain shader, read from this plugin's uniforms. */
@@ -249,6 +295,10 @@ export class Water implements EarthPlugin {
           color: vec4(mix(ground, sea, terrainWaterMask), inputs.color.a) as unknown as Node<'vec4'>,
           roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea), foam as unknown as Node<'float'>), terrainWaterMask) as unknown as Node<'float'>,
           metalness: mix(inputs.metalness, float(0), terrainWaterMask) as unknown as Node<'float'>,
+          // Under the wave mesh the terrain's sea gives way to it; land, and water above sea level (lakes), stay.
+          mask: inputs.mask.and(
+            this.waveMesh.coverage(waves.plane, 4).mul(terrainWaterMask).mul(step(terrainElevationMeters, this.seaLevelMeters.add(1))).lessThan(0.5),
+          ) as unknown as Node<'bool'>,
           // The waves tilt the surface: their slopes, east and north, taken off the ground's normal.
           normal: inputs.normal
             .sub(cameraViewMatrix.mul(vec4(waves.east, 0)).xyz.mul(waves.slope.x.mul(onSea)))
@@ -313,6 +363,7 @@ export function resolveState(settings: WaterSettings): WaterState {
   const temperatureCelsius = settings.temperatureCelsius ?? preset.temperatureCelsius
   const fixedRoughness = settings.roughness === undefined ? preset.roughness : settings.roughness
   const fixedColor = settings.color === undefined ? preset.color : settings.color
+  const waveSeed = settings.waveSeed ?? 1
 
   if (!inRange(windSpeedMetersPerSecond, 0, 60)) throw new Error(`Water: windSpeedMetersPerSecond must be between 0 and 60, got ${windSpeedMetersPerSecond}.`)
   if (!inRange(chlorophyllMilligramsPerCubicMeter, 0, 100)) {
@@ -324,6 +375,7 @@ export function resolveState(settings: WaterSettings): WaterState {
   if (!Number.isFinite(windDirectionDegrees)) throw new Error(`Water: windDirectionDegrees must be a finite number (270: from the west), got ${windDirectionDegrees}.`)
   if (!inRange(fetchKilometers, 0.1, 5000)) throw new Error(`Water: fetchKilometers must be between 0.1 and 5000, got ${fetchKilometers}.`)
   if (!inRange(temperatureCelsius, -2, 40)) throw new Error(`Water: temperatureCelsius must be between -2 and 40 (liquid seawater), got ${temperatureCelsius}.`)
+  if (!Number.isSafeInteger(waveSeed)) throw new Error(`Water: waveSeed must be an integer (the same seed draws the same sea), got ${waveSeed}.`)
   checkColor('color', fixedColor)
   checkColor('flatMapColor', settings.flatMapColor)
   checkColor('seafloorColor', settings.seafloorColor)
@@ -353,5 +405,7 @@ export function resolveState(settings: WaterSettings): WaterState {
     diffuseAttenuationPerMeter: optics.diffuseAttenuationPerMeter,
     imageryOpacity,
     depthFromElevation: settings.depthFromElevation ?? false,
+    waveSeed,
+    waveMesh: settings.waveMesh ?? true,
   }
 }

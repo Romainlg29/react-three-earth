@@ -1,6 +1,6 @@
 import { Earth } from '@earthkit/globe'
 import { Color } from 'three'
-import { float, vec3, vec4 } from 'three/tsl'
+import { bool, float, vec3, vec4 } from 'three/tsl'
 import { describe, expect, it, vi } from 'vitest'
 
 import { computeWaterOptics, inherentOpticalProperties, surfaceRoughness, whitecapCoverage } from '../src/optics.js'
@@ -131,7 +131,7 @@ describe('Water', () => {
     const water = new Water({ name: 'sea' })
     earth.addPlugin(water)
     const definition = earth.terrainShadings.get('sea')!
-    const outputs = definition.shade({ color: vec4(1), roughness: float(1), metalness: float(0), normal: vec3(0, 0, 1), emissive: vec3(0) } as never)
-    expect(Object.keys(outputs).sort()).toEqual(['color', 'metalness', 'normal', 'roughness'])
+    const outputs = definition.shade({ color: vec4(1), roughness: float(1), metalness: float(0), normal: vec3(0, 0, 1), emissive: vec3(0), mask: bool(true) } as never)
+    expect(Object.keys(outputs).sort()).toEqual(['color', 'mask', 'metalness', 'normal', 'roughness'])
   })
 })

@@ -104,6 +104,18 @@ describe('terrain material slots', () => {
     expect(getTerrainMaterialBase(material, 'color')).toBe(base)
   })
 
+  it('discard fragments only where a shading masks them', () => {
+    const plain = new MeshStandardNodeMaterial()
+    attachTerrainShadings(plain, setOf(glossy))
+    // No shading masked: no discard in the shader.
+    expect(plain.maskNode).toBeNull()
+    const hole = float(0.5).greaterThan(0.25) as unknown as Node<'bool'>
+    const masking: TerrainShadingDefinition = { name: 'masking', shade: inputs => ({ mask: inputs.mask.and(hole) as unknown as Node<'bool'> }) }
+    const masked = new MeshStandardNodeMaterial()
+    attachTerrainShadings(masked, setOf(glossy, masking))
+    expect(masked.maskNode).not.toBeNull()
+  })
+
   it('leave the material as its factory made it without shadings', () => {
     const base = color('#88aa66')
     const roughness = float(0.4)

@@ -71,7 +71,9 @@ export class WaveField {
   seaStateVersion = 0
   protected readonly plan: FourierPlan
   /** Per cascade: two unit Gaussian numbers per wavenumber, drawn once so a new sea state keeps the same waves. */
-  protected readonly gaussians: Float64Array[]
+  protected gaussians: Float64Array[]
+  protected seedValue: number
+  protected lastSeaState: SeaStateOptions | null = null
   /** Per cascade: the starting amplitudes h0(k), interleaved complex. */
   protected readonly amplitudes: Float64Array[]
   /** Per cascade: ω(k). */
@@ -89,7 +91,7 @@ export class WaveField {
     this.gridSize = gridSize
     this.plan = createFourierPlan(gridSize)
     const cells = gridSize * gridSize
-    const random = createRandom(seed)
+    this.seedValue = seed
     const halves = new Uint16Array(cells * 2 * lengthsMeters.length)
     const texture = new DataArrayTexture(halves, gridSize, gridSize, lengthsMeters.length)
     texture.format = RGFormat
@@ -110,17 +112,7 @@ export class WaveField {
       minimumWavenumber = maximumWavenumber
       return cascade
     })
-    this.gaussians = this.cascades.map(() => {
-      const values = new Float64Array(cells * 2)
-      for (let index = 0; index < cells; index++) {
-        // Box–Muller.
-        const radius = Math.sqrt(-2 * Math.log(Math.max(random(), 1e-12)))
-        const angle = 2 * Math.PI * random()
-        values[index * 2] = radius * Math.cos(angle)
-        values[index * 2 + 1] = radius * Math.sin(angle)
-      }
-      return values
-    })
+    this.gaussians = this.drawGaussians(seed)
     this.amplitudes = this.cascades.map(() => new Float64Array(cells * 2))
     this.frequencies = this.cascades.map(() => new Float64Array(cells))
     this.work = new Float64Array(cells * 2)
@@ -136,8 +128,38 @@ export class WaveField {
     return (2 * Math.PI * signed) / lengthMeters
   }
 
+  /** The seed of the random phases. */
+  get seed(): number {
+    return this.seedValue
+  }
+
+  /** Draws another sea: new random phases from `seed`, shaped by the same sea state. The same seed draws the same sea. */
+  setSeed(seed: number): void {
+    if (seed === this.seedValue) return
+    this.seedValue = seed
+    this.gaussians = this.drawGaussians(seed)
+    if (this.lastSeaState !== null) this.setSeaState(this.lastSeaState)
+  }
+
+  /** Two unit Gaussian numbers per wavenumber and cascade (Box–Muller), from a seeded generator. */
+  protected drawGaussians(seed: number): Float64Array[] {
+    const random = createRandom(seed)
+    const cells = this.gridSize * this.gridSize
+    return this.cascades.map(() => {
+      const values = new Float64Array(cells * 2)
+      for (let index = 0; index < cells; index++) {
+        const radius = Math.sqrt(-2 * Math.log(Math.max(random(), 1e-12)))
+        const angle = 2 * Math.PI * random()
+        values[index * 2] = radius * Math.cos(angle)
+        values[index * 2 + 1] = radius * Math.sin(angle)
+      }
+      return values
+    })
+  }
+
   /** Shapes the waves for a sea state. The random phases stay, so the sea changes in place. */
   setSeaState(options: SeaStateOptions): void {
+    this.lastSeaState = { ...options }
     const constants = seaStateConstants(options)
     const size = this.gridSize
     this.cascades.forEach((cascade, cascadeIndex) => {
