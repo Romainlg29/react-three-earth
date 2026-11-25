@@ -65,8 +65,8 @@ export interface EarthOptions {
    */
   initialView?: MapViewChange
   /**
-   * Whether markers and popups get the built-in look: the default pin, the popup's box, tip and close button,
-   * focus rings. False leaves them unstyled apart from what places them, for an app that brings its own CSS
+   * Whether markers and popups get the built-in look: the popup's font, colours, box, tip and close button,
+   * the focus rings (the default pin keeps its shape and `--earthkit-marker-color`). False leaves them unstyled apart from what places them, for an app that brings its own CSS
    * (target `.earthkit-marker`, `.earthkit-popup`, `.earthkit-popup-content`, …). With it on, restyle through
    * the same classes or the `--earthkit-popup-*` and `--earthkit-marker-color` CSS variables. Default: true.
    */

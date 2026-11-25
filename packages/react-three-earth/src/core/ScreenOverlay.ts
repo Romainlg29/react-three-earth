@@ -349,6 +349,8 @@ const STYLE = `
   position: absolute; left: 0; top: 0; z-index: 3; display: flex; pointer-events: auto; will-change: transform;
 }
 [data-earthkit-popup][data-tracking-pointer] { pointer-events: none; }
+/* Lets the box shrink under the popup's maximumWidthPixels. */
+:where([data-earthkit-popup]) > .earthkit-popup-content { box-sizing: border-box; min-width: 0; max-width: 100%; }
 [data-earthkit-popup][data-anchor="bottom"], [data-earthkit-popup][data-anchor^="bottom-"] { flex-direction: column-reverse; }
 [data-earthkit-popup][data-anchor="top"], [data-earthkit-popup][data-anchor^="top-"] { flex-direction: column; }
 [data-earthkit-popup][data-anchor="left"] { flex-direction: row; }
@@ -360,7 +362,7 @@ ${THEMED} .earthkit-popup {
   color: var(--earthkit-popup-color, #222);
 }
 ${THEMED} .earthkit-popup-content {
-  position: relative; box-sizing: border-box; min-width: 0; max-width: 100%;
+  position: relative;
   padding: var(--earthkit-popup-padding, 10px 12px);
   background: var(--earthkit-popup-background, #fff);
   border-radius: var(--earthkit-popup-radius, 6px);

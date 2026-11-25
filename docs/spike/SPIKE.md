@@ -1107,7 +1107,7 @@ is the example.
 - **Controls.** `Controls({ container })` is an unstyled `<div data-earthkit-controls>` that stops
   `pointerdown`, `click`, `dblclick`, `contextmenu`, `wheel` and `touchstart`, so a press on a control never starts a map
   gesture or a map `click`. The React `<Controls className style>` renders its children as HTML in it through `useDomRoot`
-  (contexts bridged, so the hooks and `<Marker>` work inside). The class also marks map UI for `GeolocateControl` and
+  (contexts bridged, so the hooks and `<Marker>` work inside). The attribute also marks map UI for `GeolocateControl` and
   cooperative gestures.
 - **State.** `NavigationControl` (zoom by `camera.zoomTo`, summing calls made during the ease; compass rotation, tilt and
   a CSS transform from the `rotate`/`pitch` events, `north`; `visualizePitch` resets pitch too), `ScaleControl`

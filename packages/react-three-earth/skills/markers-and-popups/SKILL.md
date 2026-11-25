@@ -15,6 +15,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Marker.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Popup.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/markerLayout.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Earth.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/ScreenOverlay.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/events.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Marker.tsx'
@@ -281,8 +282,9 @@ with variables on any ancestor, or override the classes `earthkit-marker`,
 `data-visibility="visible" | "occluded" | "hidden"`, `data-draggable` and `data-dragging`, so CSS can react.
 
 To bring your own design, turn the built-in look off with `<Earth defaultOverlayStyles={false}>` (vanilla:
-`new Earth({ defaultOverlayStyles: false })`): the popup's box, tip, close button and the focus rings go, and what places
-markers and popups stays. The default pin keeps its shape and `--earthkit-marker-color`; pass your own `element` or
+`new Earth({ defaultOverlayStyles: false })`): the popup's font, colours, box and tip, the close button's look and the focus
+rings go (the close button stays, as a plain `<button class="earthkit-popup-close">`), and what places markers and
+popups stays. The default pin keeps its shape and `--earthkit-marker-color`; pass your own `element` or
 children for another. The library finds its elements by the `data-earthkit-marker`, `data-earthkit-popup` and
 `data-earthkit-markers` attributes, never by class, so leave those alone and style the classes.
 
