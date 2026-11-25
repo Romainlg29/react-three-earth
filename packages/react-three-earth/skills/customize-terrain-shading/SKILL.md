@@ -220,7 +220,8 @@ export function glossySea() {
 - Registering or removing a shading rebuilds every loaded tile's shader (no reload); register once at install.
 - Read the terrain nodes (`terrainWaterMask`, `terrainElevationMeters`, `terrainSlopeDegrees`) for where to shade.
 - A shading that throws is logged and skipped; the terrain draws without it.
-- On the fully unrolled flat map the terrain shows its colour unlit, so only a shading's `color` shows there.
+- On the fully unrolled flat map the terrain shows its colour unlit, so only a shading's `color` shows there. Fade to
+  a colour meant to be seen flat with `terrainFlatMorph` (0 on the globe, 1 on the map): `mix(globeColor, mapColor, terrainFlatMorph)`.
 - `earth.inspect().terrainShadings` lists them in the order they run; vanilla: `earth.terrainShadings.register(definition)`.
 
 ## Common Mistakes

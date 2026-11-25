@@ -24,7 +24,10 @@ export interface WaterSettings {
   chlorophyllMilligramsPerCubicMeter?: number
   /** Salinity, g/kg: 35 for the ocean, 0 for fresh water. Salt water scatters a little more light. */
   salinityPartsPerThousand?: number
-  /** A fixed colour (sRGB) instead of the one the water's optics give, for a stylised sea; null for the optics. */
+  /**
+   * A fixed colour instead of the one the water's optics give, for a stylised sea; null for the optics. Strings and
+   * numbers are sRGB, a `Color` is taken as linear (three's working space).
+   */
   color?: ColorRepresentation | null
   /** A fixed roughness, 0 to 1, instead of the wind's; null for the wind's. */
   roughness?: number | null
@@ -35,7 +38,7 @@ export interface WaterSettings {
   imageryOpacity?: number
   /**
    * The colour the sea takes on the flat map, where the terrain is drawn unlit as a map (sRGB); null keeps the ground's
-   * colour there (the imagery). Default: the preset's colour, else `'#a0c8f0'`.
+   * colour there (the imagery). Default: `color`, else the preset's colour, else `'#a0c8f0'`.
    */
   flatMapColor?: ColorRepresentation | null
   /**
@@ -43,7 +46,7 @@ export interface WaterSettings {
    * holds the seafloor (Terrarium through `RasterDemSource` with `flattenBelowSeaLevel`). Default: false.
    */
   depthFromElevation?: boolean
-  /** The sea's height for `depthFromElevation`, metres. Default: 0. */
+  /** The sea's height for `depthFromElevation`, metres: match the terrain source's `seaLevelMeters`. Default: 0. */
   seaLevelMeters?: number
   /** The seafloor's colour for `depthFromElevation` (sRGB). Default: `'#c2b280'`, sand. */
   seafloorColor?: ColorRepresentation
@@ -143,7 +146,8 @@ export class Water implements EarthPlugin {
     this.whitecaps.value = state.whitecapCoverage
     this.imageryOpacity.value = state.imageryOpacity
     const preset = WATER_PRESETS[state.preset]
-    const flatMapColor = settings.flatMapColor === undefined ? (preset.color ?? DEFAULT_FLAT_MAP_COLOR) : settings.flatMapColor
+    const fixedColor = settings.color === undefined ? preset.color : settings.color
+    const flatMapColor = settings.flatMapColor === undefined ? (fixedColor ?? DEFAULT_FLAT_MAP_COLOR) : settings.flatMapColor
     this.flatMapColorWeight.value = flatMapColor === null ? 0 : 1
     if (flatMapColor !== null) this.flatMapColor.value.set(flatMapColor)
     this.depthWeight.value = state.depthFromElevation ? 1 : 0
@@ -154,10 +158,11 @@ export class Water implements EarthPlugin {
   }
 
   install(context: PluginContext): void {
-    this.earth = context.earth
+    const { earth } = context
+    this.earth = earth
     context.registerTerrainShading(this.createShading())
     context.onDispose(() => {
-      this.earth = null
+      if (this.earth === earth) this.earth = null
     })
   }
 
@@ -189,6 +194,28 @@ export class Water implements EarthPlugin {
   }
 }
 
+/** Throws, stating the fix, on a colour string three does not know (it would draw white, or keep the last colour). */
+function checkColor(setting: string, value: ColorRepresentation | null | undefined): void {
+  if (typeof value === 'string' && !isKnownColor(value)) {
+    throw new Error(`Water: ${setting} must be a CSS colour ('#1b4f8a', 'rgb(27, 79, 138)', 'steelblue'), got "${value}".`)
+  }
+}
+
+function isKnownColor(value: string): boolean {
+  // Two different starting colours: an unknown string leaves each as it was.
+  const first = new Color(1, 0, 0)
+  const second = new Color(0, 0, 1)
+  const warn = console.warn
+  console.warn = () => {}
+  try {
+    first.setStyle(value)
+    second.setStyle(value)
+  } finally {
+    console.warn = warn
+  }
+  return first.equals(second)
+}
+
 function inRange(value: number, minimum: number, maximum: number): boolean {
   return Number.isFinite(value) && value >= minimum && value <= maximum
 }
@@ -214,6 +241,9 @@ export function resolveState(settings: WaterSettings): WaterState {
   if (!inRange(salinityPartsPerThousand, 0, 45)) throw new Error(`Water: salinityPartsPerThousand must be between 0 (fresh) and 45, got ${salinityPartsPerThousand}.`)
   if (!inRange(imageryOpacity, 0, 1)) throw new Error(`Water: imageryOpacity must be between 0 and 1, got ${imageryOpacity}.`)
   if (fixedRoughness !== null && !inRange(fixedRoughness, 0, 1)) throw new Error(`Water: roughness must be between 0 and 1, or null for the wind's, got ${fixedRoughness}.`)
+  checkColor('color', fixedColor)
+  checkColor('flatMapColor', settings.flatMapColor)
+  checkColor('seafloorColor', settings.seafloorColor)
   if (settings.seaLevelMeters !== undefined && !Number.isFinite(settings.seaLevelMeters)) {
     throw new Error(`Water: seaLevelMeters must be a finite number, got ${settings.seaLevelMeters}.`)
   }

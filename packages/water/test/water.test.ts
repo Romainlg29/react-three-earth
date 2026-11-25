@@ -85,6 +85,9 @@ describe('resolveState', () => {
     expect(() => resolveState({ roughness: 2 })).toThrow("roughness must be between 0 and 1, or null for the wind's")
     expect(() => resolveState({ imageryOpacity: -0.5 })).toThrow('imageryOpacity must be between 0 and 1')
     expect(() => resolveState({ seaLevelMeters: Number.POSITIVE_INFINITY })).toThrow('seaLevelMeters must be a finite number')
+    expect(() => resolveState({ color: 'bleu' })).toThrow(`color must be a CSS colour ('#1b4f8a', 'rgb(27, 79, 138)', 'steelblue'), got "bleu"`)
+    expect(() => resolveState({ seafloorColor: 'sand' })).toThrow('seafloorColor must be a CSS colour')
+    expect(resolveState({ color: 'steelblue', flatMapColor: '#fff' }).albedo).toEqual(new Color('steelblue').toArray())
   })
 })
 
@@ -109,6 +112,11 @@ describe('Water', () => {
     expect(water.state.windSpeedMetersPerSecond).toBe(12)
     expect(earth.terrainShadings.get('water')).toBe(shading)
     expect(requestFrame).toHaveBeenCalled()
+  })
+
+  it('shows a fixed colour on the flat map too, unless told otherwise', () => {
+    const water = new Water({ color: '#1b4f8a' }) as unknown as { flatMapColor: { value: Color } }
+    expect(water.flatMapColor.value.getHexString()).toBe('1b4f8a')
   })
 
   it('keeps its settings when new ones are refused', () => {

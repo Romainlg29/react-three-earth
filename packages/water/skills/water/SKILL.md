@@ -92,6 +92,7 @@ Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3}
 - `depthFromElevation`: the seafloor (`seafloorColor`, default sand) shows through shallow water, fading with depth by
   the water's own attenuation (blue reaches farthest). Needs a source holding the seafloor: Terrarium through
   `RasterDemSource` with `flattenBelowSeaLevel`. Leave it off for quantized mesh, whose sea heights are not depths.
+  Depth is measured from `seaLevelMeters` (default 0): set it to the source's `seaLevelMeters` when you change that.
 
 `water.state` (and `earth.inspect().plugins.water`) gives the resolved values: `albedo` (linear RGB), `roughness`,
 `whitecapCoverage`, `diffuseAttenuationPerMeter`.
@@ -114,8 +115,8 @@ export function setWind(water: Water, windSpeedMetersPerSecond: number): void {
 - Over imagery, the sea takes the water's colour (`imageryOpacity: 0`, the default), so a satellite sea's
   photographed glare and haze do not fight the sky reflection. Raise `imageryOpacity` to let the imagery show through.
 - On the flat map the terrain is drawn unlit, as a map, so the sea fades to `flatMapColor` as it unrolls (default the
-  preset's colour, else `#a0c8f0`). `flatMapColor: null` keeps the imagery's own sea there.
-- A stylised sea: `color` (sRGB) replaces the optics' colour, `roughness` the wind's. The `map` preset sets both;
+  `color` or the preset's colour, else `#a0c8f0`). `flatMapColor: null` keeps the imagery's own sea there.
+- A stylised sea: `color` (a CSS colour; an unknown one throws) replaces the optics' colour, `roughness` the wind's. The `map` preset sets both;
   `color: null` and `roughness: null` go back to the physics.
 
 ### The optics on their own

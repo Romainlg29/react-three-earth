@@ -1,7 +1,7 @@
 /**
  * The colour of a water body from its inherent optical properties, in the manner of ocean colour remote sensing:
  * absorption and backscattering of seawater, phytoplankton and coloured dissolved matter per wavelength, turned into the
- * light the water sends back up (Lee et al. 2002), averaged over the red, green and blue bands. "Case 1" waters: the
+ * light the water sends back up (Gordon et al. 1988, through the surface after Lee et al. 2002), averaged over the red, green and blue bands. "Case 1" waters: the
  * open ocean and clear coasts, where phytoplankton drives the colour. Sediment-laden river mouths are not modelled.
  */
 
@@ -23,9 +23,13 @@ function phytoplanktonAbsorption440(chlorophyll: number): number {
   return 0.06 * chlorophyll ** 0.65
 }
 
-/** The shape of phytoplankton absorption, 1 at 440 nm: the chlorophyll peaks in the blue and at 675 nm. */
+/**
+ * The shape of phytoplankton absorption, 1 at 440 nm: the chlorophyll peaks in the blue and at 675 nm. A fit of this
+ * library's (sum of Gaussians), close to measured mean spectra: about 0.4 at 675 nm and 0.1 at 550 nm.
+ */
 function phytoplanktonShape(wavelength: number): number {
-  const shape = (λ: number) => Math.exp(-(((λ - 440) / 40) ** 2)) + 0.35 * Math.exp(-(((λ - 495) / 55) ** 2)) + 0.45 * Math.exp(-(((λ - 675) / 15) ** 2))
+  const shape = (nanometres: number) =>
+    Math.exp(-(((nanometres - 440) / 40) ** 2)) + 0.35 * Math.exp(-(((nanometres - 495) / 55) ** 2)) + 0.45 * Math.exp(-(((nanometres - 675) / 15) ** 2))
   return shape(wavelength) / shape(440)
 }
 
@@ -59,7 +63,7 @@ export function inherentOpticalProperties(
   const water = PURE_WATER_ABSORPTION[Math.min(Math.max(index, 0), PURE_WATER_ABSORPTION.length - 1)]!
   const phytoplankton440 = chlorophyll > 0 ? phytoplanktonAbsorption440(chlorophyll) : 0
   const phytoplankton = phytoplankton440 * phytoplanktonShape(wavelength)
-  // Coloured dissolved organic matter covaries with phytoplankton in case 1 waters (Morel & Maritorena 2001).
+  // Coloured dissolved organic matter covaries with phytoplankton in case 1 waters (Prieur & Sathyendranath 1981 form).
   const dissolved = 0.2 * phytoplankton440 * Math.exp(-0.014 * (wavelength - 440))
 
   const waterScattering = PURE_WATER_SCATTERING_500 * (1 + (0.3 * salinity) / SEAWATER_SCATTERING_SALINITY) * (wavelength / 500) ** -4.32
@@ -84,14 +88,15 @@ export function computeWaterOptics(options: WaterOpticsOptions): WaterOptics {
     let albedo = 0
     let attenuation = 0
     for (const wavelength of inBand) {
-      const { absorptionPerMeter: a, backscatteringPerMeter: backscattering } = inherentOpticalProperties(wavelength, options)
-      const u = backscattering / (a + backscattering)
-      // Subsurface remote-sensing reflectance (Lee et al. 2002), taken through the surface, then as a diffuse albedo.
-      const below = u * (0.0949 + 0.0794 * u)
+      const { absorptionPerMeter: absorption, backscatteringPerMeter: backscattering } = inherentOpticalProperties(wavelength, options)
+      const backscatteredShare = backscattering / (absorption + backscattering)
+      // Subsurface remote-sensing reflectance (Gordon et al. 1988), taken through the surface (Lee et al. 2002), then
+      // as a diffuse albedo: π × Rrs gives the water-leaving radiance from a Lambertian surface.
+      const below = backscatteredShare * (0.0949 + 0.0794 * backscatteredShare)
       const above = (0.52 * below) / (1 - 1.7 * below)
       albedo += Math.PI * above
       // Diffuse attenuation for a high sun (Gordon 1989).
-      attenuation += 1.0395 * (a + backscattering)
+      attenuation += 1.0395 * (absorption + backscattering)
     }
     deepAlbedo[band] = albedo / inBand.length
     diffuseAttenuationPerMeter[band] = attenuation / inBand.length
