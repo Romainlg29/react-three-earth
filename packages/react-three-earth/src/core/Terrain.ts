@@ -1,5 +1,5 @@
-import { Group, type Camera, type Material, type Object3D } from 'three'
-import type { WebGPURenderer } from 'three/webgpu'
+import { Color, Group, type Camera, type Material, type Object3D, type RenderTarget, type Scene } from 'three'
+import type { NodeMaterial, WebGPURenderer } from 'three/webgpu'
 
 import type { DrapedLayerRegistry } from '../plugins/drapedLayers.js'
 import type { StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
@@ -58,6 +58,9 @@ interface FrameRequestDispatcher {
   removeEventListener(type: string, listener: () => void): void
 }
 
+/** The layer every terrain tile mesh is on (besides layer 0): `Terrain.renderTiles` draws it alone. */
+export const TERRAIN_LAYER = 29
+
 /** The ground: a terrain tile pyramid with imagery layers draped on it. */
 export class Terrain implements AttributionProvider {
   readonly tiles: EarthTilesRenderer
@@ -103,7 +106,10 @@ export class Terrain implements AttributionProvider {
     // A tile whose plugins were still processing it when the shadings changed was not listed as loaded then: catch it up.
     ;(this.tiles as unknown as { addEventListener(type: 'load-model', listener: (event: { scene: Object3D }) => void): void }).addEventListener(
       'load-model',
-      ({ scene }) => recomposeScene(scene),
+      ({ scene }) => {
+        recomposeScene(scene)
+        scene.traverse(object => object.layers.enable(TERRAIN_LAYER))
+      },
     )
     ;(this.tiles as unknown as FrameRequestDispatcher).addEventListener('tile-visibility-change', () => {
       this.visibleTilesVersionValue++
@@ -218,6 +224,58 @@ export class Terrain implements AttributionProvider {
       const extrusions = extrusionsOf(overlay)
       if (extrusions !== null) this.extrusions.remove(extrusions.object)
     }
+  }
+
+  /**
+   * Draws the terrain's tiles alone, as they stand this frame, from `camera` into `target`, every tile with `material`:
+   * a node material reading the terrain's nodes (`terrainElevationMeters`, `terrainWaterMask`, …) in its `outputNode`.
+   * The tiles keep their own vertex positions (morph, exaggeration). For a plugin's own view of the ground, as a sea's
+   * map of the water and the seafloor around the camera. Returns false, drawing nothing, while the tiles are in no scene.
+   */
+  renderTiles(renderer: WebGPURenderer, camera: Camera, target: RenderTarget, material: NodeMaterial, clearColor: Color, clearAlpha = 1): boolean {
+    let root: Object3D = this.tiles.group
+    while (root.parent !== null) root = root.parent
+    if ((root as Scene).isScene !== true) return false
+    const scene = root as Scene & { backgroundNode?: unknown; fogNode?: unknown }
+    const saved = {
+      overrideMaterial: scene.overrideMaterial,
+      background: scene.background,
+      backgroundNode: scene.backgroundNode,
+      fog: scene.fog,
+      fogNode: scene.fogNode,
+      layers: camera.layers.mask,
+      target: renderer.getRenderTarget(),
+      mrt: renderer.getMRT(),
+      autoClear: renderer.autoClear,
+      clearAlpha: renderer.getClearAlpha(),
+    }
+    renderer.getClearColor(scratchClearColor)
+    scene.overrideMaterial = material
+    scene.background = null
+    scene.backgroundNode = null
+    scene.fog = null
+    scene.fogNode = null
+    camera.layers.set(TERRAIN_LAYER)
+    try {
+      renderer.setMRT(null)
+      renderer.setRenderTarget(target)
+      renderer.setClearColor(clearColor, clearAlpha)
+      renderer.clear()
+      renderer.autoClear = false
+      renderer.render(scene, camera)
+    } finally {
+      scene.overrideMaterial = saved.overrideMaterial
+      scene.background = saved.background
+      scene.backgroundNode = saved.backgroundNode
+      scene.fog = saved.fog
+      scene.fogNode = saved.fogNode
+      camera.layers.mask = saved.layers
+      renderer.setRenderTarget(saved.target)
+      renderer.setMRT(saved.mrt)
+      renderer.autoClear = saved.autoClear
+      renderer.setClearColor(scratchClearColor, saved.clearAlpha)
+    }
+    return true
   }
 
   /** Goes up whenever a terrain tile is shown or hidden or the exaggeration changes: heights read before may have changed. */
@@ -397,3 +455,5 @@ function extrusionsOf(overlay: unknown): Extrusions | null {
 function screenSymbolsOf(overlay: unknown): ScreenSymbols | null {
   return (overlay as { screenSymbols?: ScreenSymbols | null }).screenSymbols ?? null
 }
+
+const scratchClearColor = new Color()

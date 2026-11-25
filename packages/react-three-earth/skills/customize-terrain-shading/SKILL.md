@@ -18,6 +18,7 @@ sources:
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainSurface.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
+  - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/FlatMapPlugin.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/core/Terrain.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/react/Terrain.tsx'
@@ -227,6 +228,28 @@ export function glossySea() {
 - On the fully unrolled flat map the terrain shows its colour unlit, so only a shading's `color` shows there. Fade to
   a colour meant to be seen flat with `terrainFlatMorph` (0 on the globe, 1 on the map): `mix(globeColor, mapColor, terrainFlatMorph)`.
 - `earth.inspect().terrainShadings` lists them in the order they run; vanilla: `earth.terrainShadings.register(definition)`.
+
+### Draw the ground from a camera of your own
+
+`earth.terrain.renderTiles(renderer, camera, target, material, clearColor, clearAlpha)` draws the terrain's tiles
+alone (every tile mesh sits on `TERRAIN_LAYER`) into a render target, all with one node material whose `outputNode`
+reads the terrain's nodes: a map of the water and the seafloor around the camera, an elevation map for a shader. The
+tiles keep their own positions; the scene's background, fog and the renderer's target are put back after. Call it from a
+plugin's `onUpdate` (the tiles are current then), and only when what it shows changed: it draws every visible tile.
+
+```ts
+import { terrainElevationMeters, terrainWaterMask, type Earth } from '@earthkit/globe'
+import { Color, OrthographicCamera, RenderTarget } from 'three'
+import { vec4 } from 'three/tsl'
+import { MeshBasicNodeMaterial, type WebGPURenderer } from 'three/webgpu'
+
+const material = new MeshBasicNodeMaterial()
+material.outputNode = vec4(terrainWaterMask, terrainElevationMeters, 0, 1)
+
+export function drawGround(earth: Earth, renderer: WebGPURenderer, topDown: OrthographicCamera, target: RenderTarget): boolean {
+  return earth.terrain?.renderTiles(renderer, topDown, target, material, new Color(0, 0, 0), 0) ?? false
+}
+```
 
 ## Common Mistakes
 

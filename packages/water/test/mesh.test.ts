@@ -126,8 +126,9 @@ describe('WaveProbe', () => {
 
   it('reads the GPU back into heights and normals at each point', async () => {
     const readings = new Float32Array(16)
-    // Point 0: 1.5 m up, sloping up eastwards. Point 1: not written yet.
+    // Point 0: 1.5 m up, sloping up eastwards. Point 1: not written yet. Point 2: on land, 12 m up.
     readings.set([1.5, 0.2, 0, 1], 0)
+    readings.set([12, 0, 0, 2], 8)
     const renderer = webgpu({ getArrayBufferAsync: vi.fn(async () => readings.buffer) })
     const surface = laidSurface(30, renderer)
     surface.seaLevelMeters = 2
@@ -137,8 +138,9 @@ describe('WaveProbe', () => {
     probe.setPoints([
       { longitudeDegrees: 0.001, latitudeDegrees: 0 },
       { longitudeDegrees: 0.002, latitudeDegrees: 0 },
+      { longitudeDegrees: 0.003, latitudeDegrees: 0 },
     ])
-    expect(probe.samples.map(sample => sample.ready)).toEqual([false, false])
+    expect(probe.samples.map(sample => sample.ready)).toEqual([false, false, false])
     probe.update(renderer)
     // One reading in flight at a time.
     probe.update(renderer)
@@ -149,7 +151,9 @@ describe('WaveProbe', () => {
     expect(sample!.heightMeters).toBeCloseTo(3.5, 6)
     expect(sample!.normal.x).toBeCloseTo(-0.2 / Math.hypot(0.2, 1), 4)
     expect(sample!.normal.z).toBeCloseTo(1 / Math.hypot(0.2, 1), 4)
+    expect(sample!.onWater).toBe(true)
     expect(unwritten!.ready).toBe(false)
+    expect(probe.samples[2]).toMatchObject({ onWater: false, waveHeightMeters: 12, ready: true })
     const targets = (probe as unknown as { targets: { value: { array: Float32Array } } }).targets.value.array
     expect(targets[0]).toBeCloseTo(111.32, 1)
     probe.dispose()
@@ -172,5 +176,72 @@ describe('WaveProbe', () => {
     const dispose = vi.spyOn(owned, 'dispose')
     water.dispose()
     expect(dispose).toHaveBeenCalled()
+  })
+})
+
+describe('WaveDepthCache', () => {
+  /** A terrain stand-in that records its draws and says where its ground is. */
+  function fakeTerrain(groundMeters: number | null = 0) {
+    return {
+      visibleTilesVersion: 0,
+      renderTiles: vi.fn(() => true),
+      sampleElevation: vi.fn(() => groundMeters),
+    }
+  }
+
+  it('draws the ground again only when the mesh moves, or now and then when tiles change', () => {
+    const renderer = webgpu()
+    const surface = laidSurface(30, renderer)
+    const mesh = new WaveMesh(surface, shade)
+    const terrain = fakeTerrain()
+    const earth = new Group()
+    const source = { renderer, terrain: terrain as never, earth }
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000)
+    mesh.update(true, source)
+    expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
+    expect(mesh.ground.valid.value).toBe(1)
+    // The shore pass follows each draw, in one submit: seeds, the jump flood's ten steps (768 texels), the ground.
+    expect((vi.mocked(renderer.compute).mock.lastCall![0] as unknown[]).length).toBe(12)
+    // Covers the outer ring: 2 × 48 of its 128 m cells.
+    expect(mesh.ground.halfSizeMeters.value).toBe(48 * 128)
+    expect(mesh.ground.target.width).toBe(96 * 8)
+    mesh.update(true, source)
+    expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
+    // Tiles changed: not before the refresh interval.
+    terrain.visibleTilesVersion++
+    now.mockReturnValue(1100)
+    mesh.update(true, source)
+    expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
+    now.mockReturnValue(1300)
+    mesh.update(true, source)
+    expect(terrain.renderTiles).toHaveBeenCalledTimes(2)
+    // Lower: finer cells, a smaller square, drawn at once.
+    surface.cameraHeightMeters = 3
+    surface.cameraHeightAboveSeaMeters = 3
+    mesh.update(true, source)
+    expect(terrain.renderTiles).toHaveBeenCalledTimes(3)
+    expect(mesh.ground.halfSizeMeters.value).toBe(48 * 128 / 8)
+    // Without a terrain nothing is known: the mesh lies at sea level over everything.
+    mesh.update(true, { renderer, terrain: null, earth })
+    expect(mesh.ground.valid.value).toBe(0)
+    now.mockRestore()
+  })
+
+  it('sizes the mesh by the camera height over the ground drawn under it, a lake below sea level included', () => {
+    const surface = laidSurface(30)
+    surface.cameraHeightMeters = -400
+    surface.cameraHeightAboveSeaMeters = -400
+    const mesh = new WaveMesh(surface, shade)
+    const cellSize = (mesh as unknown as { cellSize: { value: number } }).cellSize
+    // 30 m over the Dead Sea's surface at -430 m.
+    mesh.update(true, { renderer: webgpu(), terrain: fakeTerrain(-430) as never, earth: new Group() })
+    expect(mesh.mesh.visible).toBe(true)
+    expect(cellSize.value).toBe(1)
+    // 3 m over a sea whose seafloor the terrain draws 2 km down: by the sea's level.
+    surface.cameraHeightMeters = 3
+    surface.cameraHeightAboveSeaMeters = 3
+    mesh.update(true, { renderer: webgpu(), terrain: fakeTerrain(-2000) as never, earth: new Group() })
+    expect(mesh.mesh.visible).toBe(true)
+    expect(cellSize.value).toBe(1 / 8)
   })
 })

@@ -9,12 +9,12 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, step, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, exp, float, max, mix, pow, smoothstep, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
-import { WaveMesh, type WaveMeshShading } from './waves/WaveMesh.js'
+import { WaveMesh, type WaveMeshGround, type WaveMeshShading } from './waves/WaveMesh.js'
 import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
 import { WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 import { WATER_PRESETS, type WaterPreset } from './presets.js'
@@ -163,7 +163,7 @@ export class Water implements EarthPlugin {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
     this.name = name
     this.settingsValue = {}
-    this.waveMesh = new WaveMesh(this.waveSurface, waves => this.meshShading(waves))
+    this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground) => this.meshShading(waves, ground))
     this.setSettings(settings)
   }
 
@@ -205,6 +205,8 @@ export class Water implements EarthPlugin {
     this.fixedRoughnessWeight.value = fixedRoughness === null ? 0 : 1
     this.meanSquareSlope.value = surfaceMeanSquareSlope(state.windSpeedMetersPerSecond)
     this.waveSurface.weight.value = state.waves ? 1 : 0
+    this.waveMesh.depthWeight.value = state.depthFromElevation ? 1 : 0
+    this.waveMesh.significantWaveHeightMeters.value = state.significantWaveHeightMeters
     this.waveSurface.seaLevelMeters = settings.seaLevelMeters ?? 0
     this.waveSurface.setSeed(state.waveSeed)
     if (state.waves) this.waveSurface.setSeaState(seaStateOf(state))
@@ -220,7 +222,7 @@ export class Water implements EarthPlugin {
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
       const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
-      this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0)
+      this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0, { renderer, terrain: earth.terrain, earth })
       for (const probe of this.probes) probe.update(renderer)
       return animating
     })
@@ -262,12 +264,21 @@ export class Water implements EarthPlugin {
     this.waveMesh.dispose()
   }
 
-  /** The sea on the wave mesh: the water's colour and the wind's roughness, as on the terrain, without a seafloor. */
-  protected meshShading(waves: WaveSurfaceNodes): WaveMeshShading {
+  /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain. */
+  protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround): WaveMeshShading {
     return {
-      color: mix(this.albedo, vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
+      color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
     }
+  }
+
+  /** The water's own colour over a seafloor `depth` metres down: the seafloor's light, dimmed going down and coming back up (Maritorena et al. 1994). */
+  protected waterBody(depth: Node<'float'>): Node<'vec3'> {
+    // Elevation models fill the sea with sea level where they hold no depth (Terrarium's land data near coasts, in
+    // rectangles): no depth there is no seafloor, not a sandbar. Real shallows, half a metre down, still show.
+    const knownDepth = smoothstep(0.05, 0.5, depth)
+    const seafloorShare = exp(this.diffuseAttenuation.mul(depth).mul(-2)).mul(this.depthWeight).mul(knownDepth)
+    return mix(this.albedo, this.seafloorAlbedo, seafloorShare) as unknown as Node<'vec3'>
   }
 
   /** The terrain shading: built once per terrain shader, read from this plugin's uniforms. */
@@ -278,13 +289,7 @@ export class Water implements EarthPlugin {
         const ground = inputs.color.rgb
         const waves = this.waveSurface.createNodes()
         const onSea = terrainWaterMask.mul(float(1).sub(terrainFlatMorph))
-        // Shallow water: the seafloor's light, dimmed going down and coming back up (Maritorena et al. 1994).
-        const depth = max(this.seaLevelMeters.sub(terrainElevationMeters), 0)
-        // Elevation models fill the sea with sea level where they hold no depth (Terrarium's land data near coasts, in
-        // rectangles): no depth there is no seafloor, not a sandbar. Real shallows, half a metre down, still show.
-        const knownDepth = smoothstep(0.05, 0.5, depth)
-        const seafloorShare = exp(this.diffuseAttenuation.mul(depth).mul(-2)).mul(this.depthWeight).mul(knownDepth)
-        const body = mix(this.albedo, this.seafloorAlbedo, seafloorShare)
+        const body = this.waterBody(max(this.seaLevelMeters.sub(terrainElevationMeters), 0) as unknown as Node<'float'>)
         // Off the sea (and on the flat map) the foam is the whitecap share, as without waves.
         const foam = mix(this.whitecaps, waves.foam, onSea)
         const surface = mix(body, vec3(FOAM_ALBEDO), foam)
@@ -295,10 +300,9 @@ export class Water implements EarthPlugin {
           color: vec4(mix(ground, sea, terrainWaterMask), inputs.color.a) as unknown as Node<'vec4'>,
           roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea), foam as unknown as Node<'float'>), terrainWaterMask) as unknown as Node<'float'>,
           metalness: mix(inputs.metalness, float(0), terrainWaterMask) as unknown as Node<'float'>,
-          // Under the wave mesh the terrain's sea gives way to it; land, and water above sea level (lakes), stay.
-          mask: inputs.mask.and(
-            this.waveMesh.coverage(waves.plane, 4).mul(terrainWaterMask).mul(step(terrainElevationMeters, this.seaLevelMeters.add(1))).lessThan(0.5),
-          ) as unknown as Node<'bool'>,
+          // Under the wave mesh the terrain's water gives way to it, by the mesh's own map of the ground (so no gap opens
+          // between them); land stays.
+          mask: inputs.mask.and(this.waveMesh.coverage(waves.plane, 4).lessThan(0.5).or(this.waveMesh.coversWater(waves.plane).not())) as unknown as Node<'bool'>,
           // The waves tilt the surface: their slopes, east and north, taken off the ground's normal.
           normal: inputs.normal
             .sub(cameraViewMatrix.mul(vec4(waves.east, 0)).xyz.mul(waves.slope.x.mul(onSea)))
