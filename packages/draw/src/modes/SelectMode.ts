@@ -1,6 +1,6 @@
 import type { MultiPolygon, Position } from 'geojson'
 
-import { featureMidpoints, featureVertices, hitFeature, insertVertex, moveVertex, moveVertices, offsetVertices, removeVertex, translateFeature, type VertexPath } from '../editing.js'
+import { featureMidpoints, featureVertices, groundBox, groundBoxWithinReach, hitFeature, insertVertex, moveVertex, moveVertices, offsetVertices, removeVertex, translateFeature, type VertexPath } from '../editing.js'
 import { distanceToSegment, hasAltitude, lowestAltitude, storedLines, storedPositions, unwrapLongitudeNear } from '../geometry.js'
 import { LocalFrame, type LocalPoint } from '../localFrame.js'
 import { indexMesh, isClosedMesh, isMeshGeometry, meshFromIndexed, meshSharpEdges, prismMesh, type IndexedMesh } from '../mesh.js'
@@ -2028,8 +2028,15 @@ export class SelectMode extends DrawMode {
     const context = this.context
     if (context === null) return null
     const input = this.hitInput(event)
+    // Draped features whose box is out of reach of the tap are skipped unprojected: a tap on a large data set
+    // projects only the features near it.
+    const reach = groundReachDegrees(input)
     let best: { feature: DrawFeature; rank: number; distance: number } | null = null
     for (const feature of context.store.values()) {
+      if (reach !== null) {
+        const box = groundBox(feature)
+        if (box !== null && !groundBoxWithinReach(box, input.ground, reach.longitudeDegrees, reach.latitudeDegrees)) continue
+      }
       const distance = hitFeature(feature, input)
       if (distance === null) continue
       // 0: points and lines, 1: polygons and meshes containing the tap, 2: those whose outline is near it.
@@ -2835,4 +2842,34 @@ function insideScreenFace(face: readonly number[][], x: Float64Array, y: Float64
     }
   }
   return inside
+}
+
+/** Degrees of longitude and latitude a step from a tap's ground position, to measure the screen around it. */
+const REACH_STEP_DEGREES = 1e-4
+/** The reach is measured on the screen's local linear map: doubled, it stays above the true one over the tolerance. */
+const REACH_SAFETY = 2
+
+/**
+ * How far on the ground, in degrees of longitude and latitude, a tap reaches within its tolerance: the box around the
+ * tolerance circle mapped back to the ground (through the screen's local linear map at the tap), with a margin. Null
+ * on the sky, or where the map is seen edge-on.
+ */
+function groundReachDegrees(input: { ground: LongitudeLatitude; tolerancePixels: number; project: (position: Position) => { x: number; y: number } | null }): { longitudeDegrees: number; latitudeDegrees: number } | null {
+  const [longitude, latitude] = input.ground
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null
+  const latitudeStep = latitude > 0 ? -REACH_STEP_DEGREES : REACH_STEP_DEGREES
+  const origin = input.project([longitude, latitude])
+  const east = input.project([longitude + REACH_STEP_DEGREES, latitude])
+  const north = input.project([longitude, latitude + latitudeStep])
+  if (origin === null || east === null || north === null) return null
+  // Screen pixels per degree east (a) and north (b): the columns of the local linear map.
+  const ax = (east.x - origin.x) / REACH_STEP_DEGREES
+  const ay = (east.y - origin.y) / REACH_STEP_DEGREES
+  const bx = (north.x - origin.x) / latitudeStep
+  const by = (north.y - origin.y) / latitudeStep
+  const determinant = Math.abs(ax * by - ay * bx)
+  if (!(determinant > 1e-9)) return null
+  const reachPixels = input.tolerancePixels * REACH_SAFETY
+  // The inverse map's rows have lengths |b| / det and |a| / det: the half-widths of the tolerance circle's image.
+  return { longitudeDegrees: (reachPixels * Math.hypot(bx, by)) / determinant, latitudeDegrees: (reachPixels * Math.hypot(ax, ay)) / determinant }
 }

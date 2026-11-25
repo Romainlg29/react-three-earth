@@ -107,6 +107,16 @@ export class FeatureStore {
 
 const GEOMETRY_TYPES = new Set(['Point', 'LineString', 'Polygon', 'MultiPolygon'])
 
+/** Whether a `Draw` can hold a feature (`validateFeature` would not throw). */
+export function isDrawableFeature(feature: DrawFeature): boolean {
+  try {
+    validateFeature(feature)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Throws, stating the fix, for a feature a `Draw` cannot hold. */
 export function validateFeature(feature: DrawFeature): void {
   if (feature?.type !== 'Feature') throw new Error('Draw: features must be GeoJSON features ({ type: "Feature", geometry, properties }).')
