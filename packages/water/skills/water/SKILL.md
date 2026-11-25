@@ -4,7 +4,7 @@ description: >
   Use when an earthkit globe needs a sea, ocean, lakes or water that looks real or like a map: water coloured from its
   optics (chlorophyll, salinity), glossy from the wind with the sun's glint and sky reflection, whitecaps in a gale,
   the seafloor through shallow water, a flat light-blue map sea, presets (map, calm, breeze, open-ocean, storm,
-  coastal), changing the wind at runtime, the sea on the flat 2D map.
+  coastal), FFT waves from wind, fetch and temperature, changing the wind at runtime, the sea on the flat 2D map.
 metadata:
   purpose: 'Documents @earthkit/water: the Water plugin and <Water> component, its settings and presets, the optics behind the colour (computeWaterOptics, surfaceRoughness, whitecapCoverage), and how it composes with imagery, terrain styles and the atmosphere.'
   type: framework
@@ -15,6 +15,9 @@ sources:
   - 'Romainlg29/react-three-earth:packages/water/src/Water.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/optics.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/presets.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/spectrum.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveField.ts'
+  - 'Romainlg29/react-three-earth:packages/water/src/waves/WaveSurface.ts'
   - 'Romainlg29/react-three-earth:packages/water/src/react/index.tsx'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/tiles/terrainWaterMask.ts'
   - 'Romainlg29/react-three-earth:packages/react-three-earth/src/plugins/terrainShadings.ts'
@@ -32,7 +35,8 @@ over the imagery and any terrain style. It needs a terrain source that says wher
 - `QuantizedMeshSource` with a server that serves the quantized-mesh water mask (Cesium World Terrain does).
 - `RasterDemSource`: heights at or below `seaLevelMeters` (default 0). With Terrarium, add `flattenBelowSeaLevel`.
 
-Without a water mask nothing changes. It draws no waves yet: the wind sets the gloss and the whitecaps, not geometry.
+Without a water mask nothing changes. Near the camera it draws waves (an FFT ocean, as normals: the coastline and the
+terrain's geometry stay flat); farther off the wind's roughness stands for them.
 
 ## Setup
 
@@ -88,7 +92,23 @@ Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3}
   included: deep blue looking down, pale towards the horizon.
 - `chlorophyllMilligramsPerCubicMeter`: the colour, from the absorption and scattering of seawater, phytoplankton and
   dissolved matter (ocean colour models). 0.03 deep blue gyres, 0.1 to 0.3 open ocean, 1 to 10 green-blue coasts.
-- `salinityPartsPerThousand`: 35 sea, 0 fresh water (a little less scattering).
+- `salinityPartsPerThousand`: 35 sea, 0 fresh water (a little less scattering, lighter water).
+
+### Waves
+
+The physical presets draw waves near the camera (`waves`, default true but for `map`): a JONSWAP spectrum from the
+wind's speed, `windDirectionDegrees` (where it blows from, default 270, a westerly) and `fetchKilometers` (open water it
+has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
+(`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
+simulated by FFT on the CPU (about 1.5 ms a frame on a desktop, skipped from high above) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the roughness takes back the
+slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance.
+
+- `water.state.significantWaveHeightMeters` gives the sea state's wave height (about 1 m at 5 m/s over 100 km).
+- Waves animate: the earth renders every frame while they can show, that is below 30 km and off the flat map.
+  `waves: false` stops them (and the CPU cost).
+- The plane the waves lie on follows the camera, laid again after 20 km: the pattern shifts once then, unseen from
+  the heights such a move takes.
+- They are normals only, with no foam patterns yet: `whitecapCoverage` pales the sea evenly.
 - `depthFromElevation`: the seafloor (`seafloorColor`, default sand) shows through shallow water, fading with depth by
   the water's own attenuation (blue reaches farthest). Needs a source holding the seafloor: Terrarium through
   `RasterDemSource` with `flattenBelowSeaLevel`. Leave it off for quantized mesh, whose sea heights are not depths.

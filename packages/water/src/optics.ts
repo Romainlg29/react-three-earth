@@ -110,8 +110,12 @@ export function computeWaterOptics(options: WaterOpticsOptions): WaterOptics {
  * ≈ the Beckmann width). 0.23 in still air, 0.41 at 5 m/s, 0.48 at 10 m/s, 0.57 at 20 m/s.
  */
 export function surfaceRoughness(windSpeedMetersPerSecond: number): number {
-  const meanSquareSlope = 0.003 + 0.00512 * Math.max(windSpeedMetersPerSecond, 0)
-  return meanSquareSlope ** 0.25
+  return surfaceMeanSquareSlope(windSpeedMetersPerSecond) ** 0.25
+}
+
+/** The sea surface's mean square slope (both directions) from the wind, after Cox & Munk (1954): `0.003 + 0.00512 U`. */
+export function surfaceMeanSquareSlope(windSpeedMetersPerSecond: number): number {
+  return 0.003 + 0.00512 * Math.max(windSpeedMetersPerSecond, 0)
 }
 
 /**

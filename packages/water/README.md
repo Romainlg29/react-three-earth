@@ -7,6 +7,7 @@ the terrain is water, over the imagery and any terrain style:
   clear ocean is deep blue and productive coasts green-blue, with the seafloor through shallow water;
 - the gloss comes from the wind (Cox & Munk), so under `<Atmosphere>` the sea mirrors the sky and the sun's glint widens
   as the wind rises, and whitecaps pale a gale;
+- near the camera, waves from a JONSWAP spectrum (wind speed, direction and fetch), simulated by FFT;
 - on the flat map, the sea takes a map colour.
 
 ```sh
@@ -31,7 +32,8 @@ function App() {
 ```
 
 - Presets: `map` (flat light blue, as street maps), `calm`, `breeze` (default), `open-ocean`, `storm`, `coastal`.
-- Settings: `windSpeedMetersPerSecond`, `chlorophyllMilligramsPerCubicMeter`, `salinityPartsPerThousand`,
+- Settings: `windSpeedMetersPerSecond`, `windDirectionDegrees`, `fetchKilometers`, `temperatureCelsius`, `waves`,
+  `chlorophyllMilligramsPerCubicMeter`, `salinityPartsPerThousand`,
   `depthFromElevation`, `imageryOpacity`, `flatMapColor`, and `color` / `roughness` for a stylised sea. Changing them
   updates uniforms only.
 - Vanilla: `earth.addPlugin(new Water({ preset: 'calm' }))`, `water.setSettings(...)`.

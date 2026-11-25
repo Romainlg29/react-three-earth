@@ -132,6 +132,6 @@ describe('Water', () => {
     earth.addPlugin(water)
     const definition = earth.terrainShadings.get('sea')!
     const outputs = definition.shade({ color: vec4(1), roughness: float(1), metalness: float(0), normal: vec3(0, 0, 1), emissive: vec3(0) } as never)
-    expect(Object.keys(outputs).sort()).toEqual(['color', 'metalness', 'roughness'])
+    expect(Object.keys(outputs).sort()).toEqual(['color', 'metalness', 'normal', 'roughness'])
   })
 })
