@@ -237,6 +237,8 @@
   display: block;
   color: #b4bdcc;
   font-size: 0.9em;
+}
+
 /* The compare example's slider: a line across the map at --compare-position (set by @earthkit/compare), with a grip. */
 .compare-handle {
   position: absolute;
