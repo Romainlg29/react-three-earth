@@ -8,15 +8,24 @@ import {
   Terrain,
   useEarth,
 } from '@earthkit/globe/react'
-import { useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useState, type ComponentProps, type ReactNode } from 'react'
 
 import { MapControls } from '../controls/MapControls'
 import { cameraFromParams, forceWebGL, terrainAttribution, terrainUrl, withAtmosphere } from './data'
+import { cameraLongitude, dateAtLocalSolarHours, parseTimeOfDay, TimeOfDay } from './TimeOfDay'
 import './examples.css'
 
+const searchParams = new URLSearchParams(location.search)
 /** `?date=<ISO time>` fixes the sun, so browser checks see the same light at any hour. Default: now. */
-const requestedDate = new Date(new URLSearchParams(location.search).get('date') ?? Number.NaN)
+const requestedDate = new Date(searchParams.get('date') ?? Number.NaN)
 const date = Number.isNaN(requestedDate.getTime()) ? undefined : requestedDate
+/** `?time=HH:MM`: local solar time at the example's starting view, on the UTC day of `?date`, or today. */
+const requestedTimeOfDay = parseTimeOfDay(searchParams.get('time'))
+
+function initialDate(view: CameraView): Date {
+  const startView = cameraFromParams(view)
+  return requestedTimeOfDay === null ? (date ?? new Date()) : dateAtLocalSolarHours(requestedTimeOfDay, startView.longitudeDegrees, date)
+}
 
 function InitialView({ view, onEarth }: { view: CameraView; onEarth?: (earth: EarthImpl) => void }) {
   const camera = useThree(state => state.camera)
@@ -60,7 +69,7 @@ export interface ExampleShellProps {
   overlay?: ReactNode
   /** The DOM around the canvas, for an example that embeds the map in a page. Default: the whole window. */
   className?: string
-  /** The sun's time, overriding `?date`. Default: now. */
+  /** The sun's time, overriding `?date`, `?time` and the time-of-day slider (which it hides). Default: now. */
   date?: Date
   /** Show the globe / flat map button in the map controls. Default: false. */
   viewSwitch?: boolean
@@ -73,11 +82,25 @@ export interface ExampleShellProps {
  */
 export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas', date: dateOverride, viewSwitch = false }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
+  const [sunDate, setSunDate] = useState(() => initialDate(camera))
+  const [earth, setEarth] = useState<EarthImpl | null>(null)
+  const [longitudeDegrees, setLongitudeDegrees] = useState(() => cameraFromParams(camera).longitudeDegrees)
+  const handleEarth = (mounted: EarthImpl) => {
+    setEarth(mounted)
+    onEarth?.(mounted)
+  }
+  // The slider reads local solar time where the camera came to rest: follow it after each move.
+  useEffect(() => {
+    if (!earth) return
+    const follow = () => setLongitudeDegrees(current => cameraLongitude(earth, current))
+    earth.addEventListener('moveend', follow)
+    return () => earth.removeEventListener('moveend', follow)
+  }, [earth])
   return (
     <div className={className}>
       <Canvas renderer={{ antialias: true, reversedDepthBuffer: true, forceWebGL }} camera={{ fov: 60, near: 1, far: 1e8 }} dpr={[1, 2]}>
-        <Earth plugins={plugins} date={dateOverride ?? date}>
-          <InitialView view={camera} onEarth={onEarth} />
+        <Earth plugins={plugins} date={dateOverride ?? sunDate}>
+          <InitialView view={camera} onEarth={handleEarth} />
           <Terrain exaggeration={exaggeration} createMaterial={createTerrainMaterial}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
           {atmosphere ? <Atmosphere /> : <PlainLights />}
@@ -101,6 +124,7 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
             <div className="example-body">
               <p>{description}</p>
               {panel}
+              {dateOverride === undefined ? <TimeOfDay date={sunDate} onChange={setSunDate} longitudeDegrees={longitudeDegrees} /> : null}
             </div>
           )}
         </section>

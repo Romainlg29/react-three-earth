@@ -3034,7 +3034,7 @@ const CHECKS = [
   })],
   ['examples/heatmap', () => galleryExample('heatmap')],
   ['examples/terrain', () => galleryExample('terrain', '&camera=-77.15,0.02,0,30000,20,-30', async (page, idle) => {
-    await page.locator('input[type=range]').fill('3')
+    await page.getByRole('slider', { name: 'Exaggeration' }).fill('3')
     await page.getByRole('button', { name: 'Map and hillshade' }).click()
     await page.waitForTimeout(500)
     await idle()
@@ -3061,12 +3061,13 @@ const CHECKS = [
     await page.waitForTimeout(500)
     await idle()
     await page.waitForTimeout(1500)
+    const card = await page.evaluate(() => document.querySelector('.example-card').getBoundingClientRect().toJSON())
     const monochrome = await analyse(page, await page.screenshot(), `
       let grey = 0, ground = 0
       for (let i = 0; i < px.length; i += 4) {
         const [r, g, b] = [px[i], px[i + 1], px[i + 2]]
         const x = (i / 4) % width, y = Math.floor(i / 4 / width)
-        if (r + g + b < 60 || (x < 360 && y < 400)) continue // sky, the example's card
+        if (r + g + b < 60 || (x < ${card.right} && y < ${card.bottom})) continue // sky, the example's card
         ground++
         if (Math.max(r, g, b) - Math.min(r, g, b) < 12) grey++
       }
@@ -3078,12 +3079,14 @@ const CHECKS = [
     const radarShare = async () => {
       await idle()
       await page.waitForTimeout(1000)
+      const card = await page.evaluate(() => document.querySelector('.example-card').getBoundingClientRect().toJSON())
       return analyse(page, await page.screenshot(), `
         // Radar colours over the green fixture imagery, below the card: more red or blue than green. The centre
         // of the rain moves between frames.
         let radar = 0, sumX = 0
         for (let y = Math.floor(height / 3); y < height - 40; y++) {
           for (let x = 0; x < width; x++) {
+            if (x < ${card.right} && y < ${card.bottom}) continue // the example's card
             const i = (y * width + x) * 4
             if (px[i] > px[i + 1] + 15 || px[i + 2] > px[i + 1] + 15) { radar++; sumX += x }
           }
@@ -3096,7 +3099,7 @@ const CHECKS = [
     await page.waitForTimeout(2000)
     await page.getByRole('button', { name: 'Pause' }).click()
     const played = await radarShare()
-    await page.locator('input[type=range]').fill('0')
+    await page.getByRole('slider', { name: 'Opacity' }).fill('0')
     const hidden = await radarShare()
     return { radar: { shown, played, hidden } }
   })],
