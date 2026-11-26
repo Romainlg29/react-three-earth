@@ -124,7 +124,13 @@ export interface WaveMeshOptions {
  */
 export class WaveMesh {
   readonly mesh: Mesh<BufferGeometry, MeshPhysicalNodeMaterial>
-  readonly resolution: number
+  /** Cells from the centre to the edge of each ring (`setResolution` changes it). */
+  get resolution(): number {
+    return this.resolutionValue
+  }
+  protected resolutionValue: number
+  /** `resolution` for the shaders, so a change needs no new ones. */
+  protected readonly resolutionNode = uniform(WAVE_MESH_RESOLUTION)
   readonly levels: number
   /** The innermost ring's cell size, metres. */
   protected readonly cellSize = uniform(1)
@@ -156,12 +162,11 @@ export class WaveMesh {
   protected laidAnchorVersion = -1
 
   constructor(surface: WaveSurface, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading, { resolution = WAVE_MESH_RESOLUTION, levels = WAVE_MESH_LEVELS }: WaveMeshOptions = {}) {
-    if (!Number.isInteger(resolution) || resolution < 24 || resolution % 4 !== 0) {
-      throw new Error(`WaveMesh: resolution must be a multiple of 4 of at least 24 (cells from the centre to a ring's edge), got ${resolution}.`)
-    }
+    checkResolution(resolution)
     if (!Number.isInteger(levels) || levels < 1 || levels > 16) throw new Error(`WaveMesh: levels must be a whole number from 1 to 16, got ${levels}.`)
     this.surface = surface
-    this.resolution = resolution
+    this.resolutionValue = resolution
+    this.resolutionNode.value = resolution
     this.levels = levels
     // The outer ring: `2 resolution` of its cells across.
     this.ground = new WaveDepthCache(surface, 2 * resolution)
@@ -208,6 +213,19 @@ export class WaveMesh {
     }
   }
 
+  /**
+   * Lays the rings again with `resolution` cells from the centre to each ring's edge: a quality change at runtime. The
+   * shaders stay as they are; the ground map keeps its texels over the new rings.
+   */
+  setResolution(resolution: number): void {
+    checkResolution(resolution)
+    if (resolution === this.resolutionValue) return
+    this.resolutionValue = resolution
+    this.resolutionNode.value = resolution
+    this.mesh.geometry.dispose()
+    this.mesh.geometry = createRings(resolution, this.levels)
+  }
+
   /** The surf near the shore: its height in open water (0: none), metres, and its period, seconds. */
   setSurf(heightMeters: number, periodSeconds: number): void {
     if (!(heightMeters >= 0) || !Number.isFinite(heightMeters)) throw new Error(`WaveMesh: the surf's height must be a finite number of metres of at least 0, got ${heightMeters}.`)
@@ -237,7 +255,7 @@ export class WaveMesh {
    * cell (where the outer ring lies flat) and no gap opens between them.
    */
   coverage(plane: Node<'vec2'>, insetCells = 3): Node<'float'> {
-    const reach = this.cellSize.mul(2 ** (this.levels - 1) * (this.resolution - insetCells))
+    const reach = this.cellSize.mul(2 ** (this.levels - 1)).mul(this.resolutionNode.sub(insetCells))
     const offset = abs(plane.sub(this.centre))
     return float(1).sub(smoothstep(reach, reach.add(1e-3), max(offset.x, offset.y))).mul(this.active) as unknown as Node<'float'>
   }
@@ -249,7 +267,8 @@ export class WaveMesh {
    * `heightAboveSeaMeters` the surface's height over sea level at the point (a lake's level included); `water` 1 over water.
    */
   sampleSurface(plane: Node<'vec2'>): { displacement: Node<'vec3'>; slope: Node<'vec2'>; heightAboveSeaMeters: Node<'float'>; water: Node<'float'> } {
-    const { resolution, levels } = this
+    const { levels } = this
+    const resolution = this.resolutionNode as unknown as Node<'float'>
     const offset = abs(plane.sub(this.centre))
     const distance = max(offset.x, offset.y)
     // The innermost ring that reaches the point draws it (each ring is `resolution` of its cells from centre to edge).
@@ -258,11 +277,11 @@ export class WaveMesh {
     const cells = distance.div(cell)
     const morph = morphAt(cells, resolution)
     const ground = this.groundAt(plane)
-    const amplitude = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1))
+    const amplitude = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution.mul(0.5), resolution.mul(0.85), cells)), float(1))
       .mul(this.active)
       .mul(ground.calm)
     const spacing = cell.mul(morph.add(1)) as unknown as Node<'float'>
-    const fade = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1)).mul(this.active)
+    const fade = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution.mul(0.5), resolution.mul(0.85), cells)), float(1)).mul(this.active)
     const surf = this.surfAt(plane, ground, spacing, fade as unknown as Node<'float'>)
     const displacement = this.surface.sampleDisplacement(plane, spacing).mul(amplitude).add(surf.displacement)
     const displacementHeight = displacement.z
@@ -370,7 +389,8 @@ export class WaveMesh {
   }
 
   protected buildNodes(material: MeshPhysicalNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading): void {
-    const { surface, resolution } = this
+    const { surface } = this
+    const resolution = this.resolutionNode as unknown as Node<'float'>
     const camera = this.centre
     const local = positionGeometry.xy
     const level = positionGeometry.z
@@ -385,7 +405,7 @@ export class WaveMesh {
     const plane = centre.add(morphed.mul(cell))
     // The outer ring flattens to the plane before its edge, where the terrain's sea takes over.
     const outer = level.greaterThan(this.levels - 1.5)
-    const amplitude = select(outer, float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1))
+    const amplitude = select(outer, float(1).sub(smoothstep(resolution.mul(0.5), resolution.mul(0.85), cells)), float(1))
     const ground = this.groundAt(plane as unknown as Node<'vec2'>)
     const spacing = cell.mul(morph.add(1)) as unknown as Node<'float'>
     const surf = this.surfAt(plane as unknown as Node<'vec2'>, ground, spacing, amplitude as unknown as Node<'float'>)
@@ -460,8 +480,14 @@ export function lookAhead(camera: Vector2, forward: Vector3, heightMeters: numbe
  * apart), all of it before the next ring overlaps this one (up to 4 cells inside this ring's edge), so where both are
  * drawn they have the same shape.
  */
-function morphAt(cells: Node<'float'>, resolution: number): Node<'float'> {
-  return smoothstep(resolution * 0.55, resolution - 6, cells) as unknown as Node<'float'>
+function morphAt(cells: Node<'float'>, resolution: Node<'float'>): Node<'float'> {
+  return smoothstep(resolution.mul(0.55), resolution.sub(6), cells) as unknown as Node<'float'>
+}
+
+function checkResolution(resolution: number): void {
+  if (!Number.isInteger(resolution) || resolution < 24 || resolution % 4 !== 0) {
+    throw new Error(`WaveMesh: resolution must be a multiple of 4 of at least 24 (cells from the centre to a ring's edge), got ${resolution}.`)
+  }
 }
 
 /**

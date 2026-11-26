@@ -201,8 +201,9 @@ mesh: the terrain's sea, tilted by the waves, with their foam (`WATER_QUALITY_LE
 `adaptiveQuality` (default true, read once) lowers high to low while the wave mesh is drawn and frames average slower
 than `WATER_SLOW_FRAME_SECONDS` (30 a second) for `WATER_SLOW_SECONDS` (5 s, after 10 s to settle), and logs it. It
 never raises the level again and never drops to minimal, which would take the mesh's waves away. `water.quality` says
-the level drawn now; `water.setQuality(level)` changes it yourself, for a quality picker (the mesh keeps its first
-resolution, and the close-up detail applies to shaders built after).
+the level drawn now; `water.setQuality(level)` changes it yourself, for a quality picker: everything at once (the
+simulation, the mesh and its resolution, the close-up detail, with no new shaders), and the level picked stays, as it
+turns `adaptiveQuality` off.
 
 ```tsx
 import { Water } from '@earthkit/water/react'

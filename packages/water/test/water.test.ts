@@ -194,8 +194,14 @@ describe('adapting the quality', () => {
     expect(water.waveSurface.framesPerSimulationStep).toBe(WATER_QUALITY_LEVELS.minimal.framesPerSimulationStep)
     expect(water.waveSurface.detail).toBe(false)
     expect(WATER_QUALITY_LEVELS.minimal.mesh).toBe(false)
-    // The mesh keeps the resolution it was built with.
+    // Everything follows at run time: the mesh's rings, and the detail the shaders branch on.
+    expect(water.waveMesh.resolution).toBe(WATER_QUALITY_LEVELS.minimal.meshResolution)
+    const rings = water.waveMesh.mesh.geometry
+    water.setQuality('high')
     expect(water.waveMesh.resolution).toBe(WATER_QUALITY_LEVELS.high.meshResolution)
+    expect(water.waveMesh.mesh.geometry).not.toBe(rings)
+    expect(water.waveSurface.detail).toBe(true)
+    expect(water.waveSurface.detailWeight.value).toBe(1)
     expect(() => water.setQuality('ultra' as never)).toThrow(/'high', 'low' or 'minimal'/)
     water.dispose()
   })
