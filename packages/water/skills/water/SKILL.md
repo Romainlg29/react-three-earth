@@ -166,9 +166,21 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   side, half floats, about 15 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
   its outer cells) or tiles change (at most four times a second): a draw of the tiles with a trivial shader and a dozen
   compute dispatches.
-- The waves flatten over the last texels of the shore. With `depthFromElevation`, they also calm where they would
-  break in the shallows (taller than 0.78 of the depth, `WAVE_BREAKING_DEPTH_RATIO`) and the seafloor shows through the
-  mesh as on the terrain.
+- The wind's waves calm where they would break in the shallows (taller than 0.78 of the depth,
+  `WAVE_BREAKING_DEPTH_RATIO`): with `depthFromElevation` over the terrain's depth, otherwise over a beach sloping 1 in
+  33 from the nearest shore (`SURF_BEACH_SLOPE`). With `depthFromElevation` the seafloor shows through the mesh as on
+  the terrain.
+- Surf: near a shore, a train of waves runs straight at the land with its crests along the coast, shortening and
+  steepening over the shallows (shoaling), leaning forward, then breaking with foam on the crests at 0.78 of the depth
+  and shrinking with it to the beach. `surfHeightMeters` sets its height off the coast (default `SURF_HEIGHT_SHARE`, 0.6,
+  of the wind sea's significant wave height; 0 turns it off) and `surfPeriodSeconds` its period (default the wind sea's
+  peak period, `peakPeriodSeconds`, from 4 to 16 s). It shows where the water is shallower than half its wavelength
+  (within a few kilometres of a shore without depth data), on the mesh only, and probes and buoyancy ride it. It costs
+  two texture reads a vertex and a few instructions a pixel.
+
+  ```tsx
+  <Water preset="open-ocean" surfHeightMeters={1.5} surfPeriodSeconds={12} />
+  ```
 - The map is as sharp as its texels: 16 m from 25 m up, 1 m at the water. Where no tile is drawn (off screen), the mesh
   falls back to sea level.
 - The mesh shows no imagery (`imageryOpacity`): with it, the colour steps at the mesh's edge.

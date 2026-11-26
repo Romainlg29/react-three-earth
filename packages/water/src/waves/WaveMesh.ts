@@ -1,9 +1,10 @@
 import type { Terrain } from '@earthkit/globe'
 import { BufferAttribute, BufferGeometry, DoubleSide, Mesh, Vector2, Vector3, type Object3D } from 'three'
-import { abs, ceil, clamp, exp2, float, floor, fract, frontFacing, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
+import { abs, ceil, clamp, cos, exp2, float, floor, fract, frontFacing, log2, max, min, positionGeometry, select, sin, smoothstep, transformNormalToView, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { MeshPhysicalNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
-import { WaveDepthCache, type WaveGround } from './WaveDepthCache.js'
+import { WaveDepthCache, type WaveGround, type WaveShore } from './WaveDepthCache.js'
+import { deepWavenumber, SURF_BEACH_SLOPE, shallowWavenumberNode, shoalingCoefficientNode, surfPhaseNode } from './surf.js'
 import type { WaveSurface, WaveSurfaceNodes } from './WaveSurface.js'
 
 /** Cells from the centre to the edge of each ring of the mesh (a ring is twice this across). */
@@ -70,6 +71,25 @@ export const WATER_INDEX_OF_REFRACTION = 1.34
 /** Waves break where they stand taller than this share of the water's depth (McCowan): the mesh calms them there. */
 export const WAVE_BREAKING_DEPTH_RATIO = 0.78
 
+/**
+ * The surf at a point of the plane, from the vertex to its fragments: the way to the shore, the phase from it (without
+ * time), its height, wavenumber, lean and how much it breaks.
+ */
+interface WaveSurf {
+  displacement: Node<'vec3'>
+  towardsShore: Node<'vec2'>
+  phase: Node<'float'>
+  amplitudeMeters: Node<'float'>
+  wavenumber: Node<'float'>
+  /** Gerstner's `Q A k`: how far the crests lean and sharpen, 0 to below 1. */
+  lean: Node<'float'>
+  breaking: Node<'float'>
+}
+
+/** How far a surf crest leans (Gerstner's `Q A k`) before it breaks, and once broken. */
+const SURF_LEAN = 0.45
+const SURF_BREAKING_LEAN = 0.85
+
 export interface WaveMeshOptions {
   /** Cells from the centre to the edge of each ring. Default: `WAVE_MESH_RESOLUTION`. */
   resolution?: number
@@ -109,6 +129,16 @@ export class WaveMesh {
   readonly depthWeight = uniform(0)
   /** The sea state's significant wave height, metres: the shallows calm the waves below `WAVE_BREAKING_DEPTH_RATIO` of it. */
   readonly significantWaveHeightMeters = uniform(1)
+  /**
+   * The surf's height in open water off the coast, metres (0: no surf). Near the shore a train of it runs straight at the
+   * land, shortens and steepens over the shallows and breaks at `WAVE_BREAKING_DEPTH_RATIO` of the depth.
+   */
+  readonly surfHeightMeters = uniform(0)
+  /** The surf's deep-water wavenumber, rad/m: from its period (`setSurf`). */
+  protected readonly surfDeepWavenumber = uniform(deepWavenumber(8))
+  /** The surf's phase in time, `ω t` modulo a turn: its crests run towards the shore. */
+  protected readonly surfTimePhase = uniform(0)
+  protected surfAngularFrequency = (2 * Math.PI) / 8
   /** The ground under the mesh, drawn from above: where the water is, its level and depth. */
   readonly ground: WaveDepthCache
   protected readonly surface: WaveSurface
@@ -148,6 +178,7 @@ export class WaveMesh {
     this.mesh.visible = shown
     this.active.value = shown ? 1 : 0
     if (!shown) return
+    this.surfTimePhase.value = (this.surfAngularFrequency * surface.timeSeconds) % (2 * Math.PI)
     // Finer near the sea (the innermost ring reaches about half the height), a power of two so the rings keep their places.
     this.cellSize.value = 2 ** Math.min(0, Math.max(Math.log2(WAVE_MESH_MINIMUM_CELL_METERS), Math.floor(Math.log2(height / (2 * this.resolution)))))
     lookAhead(surface.cameraPlane.value, surface.cameraForward, height, this.centre.value)
@@ -164,6 +195,15 @@ export class WaveMesh {
       this.curvature.value = 1 / (2 * surface.curvatureRadiusMeters)
       this.laidAnchorVersion = surface.anchorVersion
     }
+  }
+
+  /** The surf near the shore: its height in open water (0: none), metres, and its period, seconds. */
+  setSurf(heightMeters: number, periodSeconds: number): void {
+    if (!(heightMeters >= 0) || !Number.isFinite(heightMeters)) throw new Error(`WaveMesh: the surf's height must be a finite number of metres of at least 0, got ${heightMeters}.`)
+    if (!(periodSeconds > 0) || !Number.isFinite(periodSeconds)) throw new Error(`WaveMesh: the surf's period must be a positive number of seconds, got ${periodSeconds}.`)
+    this.surfHeightMeters.value = heightMeters
+    this.surfDeepWavenumber.value = deepWavenumber(periodSeconds)
+    this.surfAngularFrequency = (2 * Math.PI) / periodSeconds
   }
 
   /**
@@ -211,11 +251,13 @@ export class WaveMesh {
       .mul(this.active)
       .mul(ground.calm)
     const spacing = cell.mul(morph.add(1)) as unknown as Node<'float'>
-    const displacement = this.surface.sampleDisplacement(plane, spacing).mul(amplitude)
+    const fade = select(level.greaterThan(levels - 1.5), float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1)).mul(this.active)
+    const surf = this.surfAt(plane, ground, spacing, fade as unknown as Node<'float'>)
+    const displacement = this.surface.sampleDisplacement(plane, spacing).mul(amplitude).add(surf.displacement)
     const displacementHeight = displacement.z
     return {
       displacement: displacement as unknown as Node<'vec3'>,
-      slope: this.surface.sampleSlope(plane, spacing).mul(amplitude) as unknown as Node<'vec2'>,
+      slope: this.surface.sampleSlope(plane, spacing).mul(amplitude).add(this.surfSlope(surf.towardsShore, surf.phase, surf.amplitudeMeters, surf.wavenumber, surf.lean)) as unknown as Node<'vec2'>,
       // The water's level over the plane, put back over the ellipsoid's curve: over sea level at the point.
       heightAboveSeaMeters: ground.surfaceMeters.add(plane.dot(plane).mul(this.curvature)).mul(this.active).add(displacementHeight) as unknown as Node<'float'>,
       water: ground.water,
@@ -227,16 +269,81 @@ export class WaveMesh {
    * the cache knows nothing), whether it is water, its depth, and how much the waves keep there: calmed where they would
    * break in the shallows (when the depth is known) and flat over the last metres of the shore.
    */
-  protected groundAt(plane: Node<'vec2'>): WaveGround & { calm: Node<'float'> } {
+  protected groundAt(plane: Node<'vec2'>): WaveGround & { calm: Node<'float'>; shore: WaveShore; shallowMeters: Node<'float'> } {
     const bend = plane.dot(plane).mul(this.curvature).negate() as unknown as Node<'float'>
     const ground = this.ground.sample(plane, bend)
-    const breaking = ground.depthMeters.mul(WAVE_BREAKING_DEPTH_RATIO).div(max(this.significantWaveHeightMeters, 0.05)).clamp(0, 1)
+    const shore = this.ground.sampleShore(plane)
     // Elevation models fill the sea with sea level where they hold no depth (as for the seafloor's colour): no depth there,
-    // and none for water above sea level (a lake), whose depth the elevation does not give. Leave the waves as they are.
-    const depthKnown = smoothstep(0.05, 0.5, ground.depthMeters)
-    const shallows = float(1).add(breaking.sub(1).mul(this.depthWeight.mul(ground.known).mul(depthKnown)))
-    const shore = smoothstep(0.5, 1, ground.water)
-    return { ...ground, calm: shallows.mul(shore) as unknown as Node<'float'> }
+    // and none for water above sea level (a lake), whose depth the elevation does not give. There, a beach's slope from
+    // the nearest shore stands for it (very deep where no shore is in reach).
+    const depthKnown = smoothstep(0.05, 0.5, ground.depthMeters).mul(this.depthWeight).mul(ground.known)
+    const sloping = float(UNKNOWN_SHALLOW_METERS).add(max(shore.distanceMeters, 0).mul(SURF_BEACH_SLOPE).sub(UNKNOWN_SHALLOW_METERS).mul(shore.known))
+    const shallowMeters = sloping.add(ground.depthMeters.sub(sloping).mul(depthKnown)) as unknown as Node<'float'>
+    // The wind's waves break where they stand taller than `WAVE_BREAKING_DEPTH_RATIO` of the depth: calmed there.
+    const shallows = shallowMeters.mul(WAVE_BREAKING_DEPTH_RATIO).div(max(this.significantWaveHeightMeters, 0.05)).clamp(0, 1)
+    const atShore = smoothstep(0.5, 1, ground.water)
+    return { ...ground, shore, shallowMeters, calm: shallows.mul(atShore) as unknown as Node<'float'> }
+  }
+
+  /**
+   * The surf at a point of the plane: a train of waves running straight at the nearest shore (refracted until their
+   * crests lie along it), shortening and steepening over the shallows (Eckart's dispersion and the shoaling of their
+   * energy flux), leaning forward, then breaking where they would stand taller than `WAVE_BREAKING_DEPTH_RATIO` of the
+   * depth, beyond which they shrink with it. It fades in where the water is shallower than half its wavelength (where
+   * waves start to feel the bottom), and out where the vertices lie too far apart to draw it (`spacingMeters`). Its
+   * phase follows a beach's slope from the shore (`surfPhase`) so its crests keep their spacing; its height and breaking
+   * follow the depth itself.
+   */
+  protected surfAt(plane: Node<'vec2'>, ground: { water: Node<'float'>; shore: WaveShore; shallowMeters: Node<'float'> }, spacingMeters: Node<'float'>, fade: Node<'float'>): WaveSurf {
+    const { shore, shallowMeters } = ground
+    const deep = this.surfDeepWavenumber as unknown as Node<'float'>
+    const deepLength = float(2 * Math.PI).div(deep)
+    const depth = max(shallowMeters, 0.2) as unknown as Node<'float'>
+    const wavenumber = shallowWavenumberNode(deep, depth)
+    const height = this.surfHeightMeters.mul(shoalingCoefficientNode(wavenumber.mul(depth) as unknown as Node<'float'>))
+    const limit = depth.mul(WAVE_BREAKING_DEPTH_RATIO)
+    const breaking = smoothstep(0.8, 1, height.div(limit))
+    // Sets of bigger waves, and crests that rise and fall along the shore, so the lines are never ruled.
+    const phase = surfPhaseNode(deep, max(shore.distanceMeters, 0) as unknown as Node<'float'>)
+    const sets = cos(phase.add(this.surfTimePhase).mul(1 / 7)).mul(0.2).add(0.8)
+    const along = sin(plane.dot(vec2(0.0071, 0.0053)).add(1.3)).mul(sin(plane.dot(vec2(-0.0043, 0.0089)))).mul(0.25).add(0.75)
+    const wavelength = float(2 * Math.PI).div(wavenumber)
+    const weight = shore.known
+      .mul(float(1).sub(smoothstep(deepLength.mul(0.25), deepLength.mul(0.5), depth)))
+      .mul(float(1).sub(smoothstep(wavelength.mul(1 / 4), wavelength.mul(1 / 2), spacingMeters)))
+      .mul(smoothstep(0.5, 1, ground.water))
+      .mul(fade)
+    const amplitude = min(height, limit).mul(0.5).mul(sets).mul(along).mul(weight) as unknown as Node<'float'>
+    // Gerstner: the water turns in orbits, gathering under the crests; `Q A k` grows to `SURF_BREAKING_LEAN` as they break.
+    const lean = min(amplitude.mul(wavenumber), breaking.mul(SURF_BREAKING_LEAN - SURF_LEAN).add(SURF_LEAN)) as unknown as Node<'float'>
+    const now = phase.add(this.surfTimePhase)
+    const towards = shore.towardsShore
+    const horizontal = towards.mul(sin(now).mul(lean).div(wavenumber))
+    return {
+      displacement: vec3(horizontal, cos(now).mul(amplitude)) as unknown as Node<'vec3'>,
+      towardsShore: towards,
+      phase,
+      amplitudeMeters: amplitude,
+      wavenumber,
+      lean,
+      breaking: breaking.mul(weight) as unknown as Node<'float'>,
+    }
+  }
+
+  /**
+   * The surf's slope where its phase from the shore is `phase`: `A k sin φ` towards the shore, over how much the crests
+   * gather (`1 − Q A k cos φ`), so the crests are sharp and the troughs broad.
+   */
+  protected surfSlope(towards: Node<'vec2'>, phase: Node<'float'>, amplitude: Node<'float'>, wavenumber: Node<'float'>, lean: Node<'float'>): Node<'vec2'> {
+    const now = phase.add(this.surfTimePhase)
+    const gathered = max(float(1).sub(lean.mul(cos(now))), 0.15)
+    return towards.mul(amplitude.mul(wavenumber).mul(sin(now)).div(gathered)) as unknown as Node<'vec2'>
+  }
+
+  /** The foam on the surf's breaking crests, on their front, the shoreward side. */
+  protected surfFoam(phase: Node<'float'>, breaking: Node<'float'>): Node<'float'> {
+    const now = phase.add(this.surfTimePhase)
+    return breaking.mul(smoothstep(0.3, 1, cos(now.add(0.5)))) as unknown as Node<'float'>
   }
 
   protected buildNodes(material: MeshPhysicalNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading): void {
@@ -257,7 +364,9 @@ export class WaveMesh {
     const outer = level.greaterThan(this.levels - 1.5)
     const amplitude = select(outer, float(1).sub(smoothstep(resolution * 0.5, resolution * 0.85, cells)), float(1))
     const ground = this.groundAt(plane as unknown as Node<'vec2'>)
-    const displacement = surface.sampleDisplacement(plane as unknown as Node<'vec2'>, cell.mul(morph.add(1)) as unknown as Node<'float'>).mul(amplitude.mul(ground.calm))
+    const spacing = cell.mul(morph.add(1)) as unknown as Node<'float'>
+    const surf = this.surfAt(plane as unknown as Node<'vec2'>, ground, spacing, amplitude as unknown as Node<'float'>)
+    const displacement = surface.sampleDisplacement(plane as unknown as Node<'vec2'>, spacing).mul(amplitude.mul(ground.calm)).add(surf.displacement)
     // On the water's own level: sea level with the Earth's curvature, or what the terrain draws (a lake, a geoid).
     const moved = plane.add(displacement.xy)
     material.positionNode = vec3(moved, displacement.z.add(ground.surfaceMeters))
@@ -268,7 +377,16 @@ export class WaveMesh {
     const depthMeters = varying(ground.depthMeters, 'waveDepth') as unknown as Node<'float'>
     const waveHeightMeters = varying(displacement.z, 'waveHeight') as unknown as Node<'float'>
     const waterLevel = varying(ground.surfaceMeters, 'waveLevel') as unknown as Node<'float'>
-    const waves = surface.sampleWaves(fragmentPlane)
+    // The surf, per pixel from its phase at the vertices: one varying pair rather than another lookup of the shore.
+    const surfOrbit = varying(vec4(surf.towardsShore, surf.phase, surf.amplitudeMeters), 'waveSurfOrbit') as unknown as Node<'vec4'>
+    const surfShape = varying(vec4(surf.wavenumber, surf.lean, surf.breaking, 0), 'waveSurfShape') as unknown as Node<'vec4'>
+    const surfTowards = surfOrbit.xy.div(max(surfOrbit.xy.length(), 1e-6)) as unknown as Node<'vec2'>
+    const sea = surface.sampleWaves(fragmentPlane)
+    const waves: WaveSurfaceNodes = {
+      ...sea,
+      slope: sea.slope.add(this.surfSlope(surfTowards, surfOrbit.z as unknown as Node<'float'>, surfOrbit.w as unknown as Node<'float'>, max(surfShape.x, 1e-4) as unknown as Node<'float'>, surfShape.y as unknown as Node<'float'>)) as unknown as Node<'vec2'>,
+      foam: max(sea.foam, this.surfFoam(surfOrbit.z as unknown as Node<'float'>, surfShape.z as unknown as Node<'float'>)) as unknown as Node<'float'>,
+    }
     // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
     const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize() as unknown as Node<'vec3'>
     const toCamera = vec3(surface.cameraPlane.sub(drawnPlane), surface.cameraPlaneHeight.sub(waterLevel.add(waveHeightMeters))).normalize() as unknown as Node<'vec3'>
@@ -361,3 +479,5 @@ export function createRings(resolution: number, levels: number): BufferGeometry 
 }
 
 const scratchCentre = new Vector2()
+/** The depth taken where neither the terrain nor a shore gives one, metres: deep enough that no wave feels the bottom. */
+const UNKNOWN_SHALLOW_METERS = 10_000

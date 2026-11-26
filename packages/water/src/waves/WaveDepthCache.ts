@@ -1,6 +1,6 @@
 import { terrainElevationMeters, terrainWaterMask, type Terrain } from '@earthkit/globe'
 import { Color, FloatType, HalfFloatType, LinearFilter, Matrix4, OrthographicCamera, RenderTarget, RGBAFormat, Vector2, type Object3D } from 'three'
-import { clamp, float, Fn, If, instancedArray, instanceIndex, int, ivec2, max, positionView, select, storageTexture, texture, uint, uniform, vec2, vec4 } from 'three/tsl'
+import { clamp, float, Fn, If, instancedArray, instanceIndex, int, ivec2, max, positionView, select, smoothstep, storageTexture, texture, uint, uniform, vec2, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial, NoBlending, StorageTexture, type ComputeNode, type Node, type StorageBufferNode, type WebGPURenderer } from 'three/webgpu'
 
 import type { WaveSurface } from './WaveSurface.js'
@@ -28,6 +28,16 @@ export interface WaveGround {
   known: Node<'float'>
 }
 
+/** Where the shore lies from a point of the wave plane, for the surf. */
+export interface WaveShore {
+  /** How far the nearest shore lies, metres: positive over water, negative over land. */
+  distanceMeters: Node<'float'>
+  /** Towards the nearest shore on the plane (east, north), unit: the way the surf runs. */
+  towardsShore: Node<'vec2'>
+  /** 1 where a shore was found in the cache, 0 where none is in reach (and outside it). */
+  known: Node<'float'>
+}
+
 /**
  * A map of the ground under the wave mesh, drawn from above (Crest's "sea floor depth cache"): per texel, whether the
  * terrain is water there, the water's level and the seafloor's depth. The mesh reads it to draw only over water, at the
@@ -40,14 +50,19 @@ export interface WaveGround {
  *
  * It covers the mesh's outer ring and is drawn again only when that ring moves (the camera crosses two of its cells),
  * the cells change size, the plane is laid again, or tiles change (at most every `WAVE_DEPTH_CACHE_REFRESH_SECONDS`):
- * one small draw of the tiles with a trivial shader and a dozen compute dispatches, now and then. Half floats, filtered:
- * one sample a vertex.
+ * one small draw of the tiles with a trivial shader and fourteen compute dispatches, now and then. Half floats, filtered:
+ * two samples a vertex (the ground and the shore). It also keeps the distance and way to the nearest shore, for the surf.
  */
 export class WaveDepthCache {
   /** The tiles as drawn from above: water mask, height over the plane, elevation over sea level, 1 where drawn. */
   readonly target: RenderTarget
   /** What the mesh samples: water, level over the plane (times `shore`), `shore` (1 where a shore was found), depth. */
   readonly ground: StorageTexture
+  /**
+   * The nearest shore per texel, weighted by whether one was found (`w`): the offset to it on the plane (x, y, metres,
+   * pointing to the land), the signed distance to it (z, metres, negative on land).
+   */
+  readonly shore: StorageTexture
   readonly texels: number
   /** The cache's centre on the wave plane, metres east and north of the anchor. */
   readonly centre = uniform(new Vector2())
@@ -62,7 +77,10 @@ export class WaveDepthCache {
   protected readonly material = new MeshBasicNodeMaterial()
   protected readonly seaLevel = uniform(0)
   protected readonly sampler
+  protected readonly shoreSampler
   protected readonly seeds: StorageBufferNode<'uint'>[]
+  /** The shore before and between the passes of its blur. */
+  protected readonly shoreBuffers: StorageBufferNode<'vec4'>[]
   protected readonly kernels: ComputeNode[]
   protected laidKey = ''
   protected laidTilesVersion = -1
@@ -82,6 +100,12 @@ export class WaveDepthCache {
     this.ground.magFilter = LinearFilter
     this.ground.generateMipmaps = false
     this.ground.name = 'WaveDepthCache'
+    this.shore = new StorageTexture(size, size)
+    this.shore.type = HalfFloatType
+    this.shore.minFilter = LinearFilter
+    this.shore.magFilter = LinearFilter
+    this.shore.generateMipmaps = false
+    this.shore.name = 'WaveDepthCacheShore'
     this.camera.matrixAutoUpdate = false
     this.camera.matrixWorldAutoUpdate = false
     this.material.name = 'WaveDepthCache'
@@ -90,7 +114,9 @@ export class WaveDepthCache {
     const height = float(CAMERA_HEIGHT_METERS).add(positionView.z)
     this.material.outputNode = vec4(terrainWaterMask, height, terrainElevationMeters.sub(this.seaLevel), 1)
     this.sampler = texture(this.ground)
+    this.shoreSampler = texture(this.shore)
     this.seeds = [instancedArray(size * size, 'uint'), instancedArray(size * size, 'uint')]
+    this.shoreBuffers = [instancedArray(size * size, 'vec4'), instancedArray(size * size, 'vec4')]
     this.kernels = this.createKernels(size)
   }
 
@@ -166,12 +192,16 @@ export class WaveDepthCache {
 
     const metresPerTexel = this.halfSizeMeters.mul(2 / size)
     const planeOf = (x: Node<'float'>, y: Node<'float'>) => vec2(x.add(0.5), y.add(0.5)).mul(metresPerTexel).sub(this.halfSizeMeters).add(this.centre)
+    const shoreRaw = this.shoreBuffers[0]!
+    const shoreBlurred = this.shoreBuffers[1]!
     const resolve = Fn(() => {
       const here = read(column, row) as unknown as Node<'vec4'>
       const drawn = here.w.greaterThan(0.5)
       const shoreSeed = nearest.element(index)
       const found = shoreSeed.notEqual(uint(NO_SEED)).and(drawn)
       const level = float(0).toVar()
+      const towards = vec2(0).toVar()
+      const distance = float(0).toVar()
       If(found, () => {
         const shoreColumn = int(shoreSeed.mod(65536))
         const shoreRow = int(shoreSeed.div(65536))
@@ -180,6 +210,13 @@ export class WaveDepthCache {
         const shorePlane = planeOf(float(shoreColumn), float(shoreRow))
         const herePlane = planeOf(float(column), float(row))
         level.assign(shore.y.add(shorePlane.dot(shorePlane).sub(herePlane.dot(herePlane)).mul(this.curvature)))
+        // The shore lies half a texel past its seed, the last water texel. On land the seed is the nearest water: the
+        // offset turns round, so it points inland on both sides and the distance changes sign.
+        const offset = shorePlane.sub(herePlane)
+        const water = isWater(here)
+        const reach = offset.length().add(metresPerTexel.mul(0.5))
+        towards.assign(select(water, offset, offset.negate()))
+        distance.assign(select(water, reach, reach.negate()))
       })
       const shoreWeight = select(found, float(1), float(0))
       const value = vec4(
@@ -190,9 +227,25 @@ export class WaveDepthCache {
         select(drawn, max(here.z.negate(), 0), float(UNKNOWN_DEPTH_METERS)),
       )
       storageTexture(this.ground, ivec2(column, row), value).toStack()
+      shoreRaw.element(index).assign(vec4(towards.mul(shoreWeight), distance.mul(shoreWeight), shoreWeight))
     })().compute(count)
 
-    return [seed, ...steps, resolve]
+    // The distance to the nearest seed rises in scallops along a coast the texels stair-step: smoothed over a few texels
+    // (a separable binomial blur), the surf's crests lie along the coast instead.
+    const blur = (from: StorageBufferNode<'vec4'>, along: [number, number], write: (value: Node<'vec4'>) => void) =>
+      Fn(() => {
+        const sum = vec4(0).toVar()
+        for (const [offset, weight] of SHORE_BLUR) {
+          const x = clamp(column.add(along[0] * offset) as never, 0, size - 1) as unknown as Node<'int'>
+          const y = clamp(row.add(along[1] * offset) as never, 0, size - 1) as unknown as Node<'int'>
+          sum.addAssign(from.element(y.mul(size).add(x)).mul(weight))
+        }
+        write(sum)
+      })().compute(count)
+    const across = blur(shoreRaw, [1, 0], value => shoreBlurred.element(index).assign(value))
+    const down = blur(shoreBlurred, [0, 1], value => storageTexture(this.shore, ivec2(column, row), value).toStack())
+
+    return [seed, ...steps, resolve, across, down]
   }
 
   /**
@@ -252,14 +305,35 @@ export class WaveDepthCache {
     }
   }
 
+  /**
+   * The nearest shore from a point of the plane, in any shader stage: filtered, so the distance and the way to the shore
+   * turn smoothly round a headland or into a bay. Unknown (`known` 0) where no shore is in reach.
+   */
+  sampleShore(plane: Node<'vec2'>): WaveShore {
+    const uv = plane.sub(this.centre).div(this.halfSizeMeters.mul(2)).add(0.5)
+    const texel = this.shoreSampler.sample(vec2(uv)).level(float(0))
+    const inside = uv.x.greaterThan(0).and(uv.x.lessThan(1)).and(uv.y.greaterThan(0)).and(uv.y.lessThan(1))
+    const found = texel.w.mul(this.valid).mul(select(inside, float(1), float(0)))
+    const towards = texel.xy
+    return {
+      distanceMeters: texel.z.div(max(texel.w, 1e-4)) as unknown as Node<'float'>,
+      towardsShore: towards.div(max(towards.length(), 1e-6)) as unknown as Node<'vec2'>,
+      known: smoothstep(0.5, 1, found) as unknown as Node<'float'>,
+    }
+  }
+
   dispose(): void {
     for (const kernel of this.kernels) kernel.dispose()
     for (const seeds of this.seeds) seeds.value.dispose()
+    for (const buffer of this.shoreBuffers) buffer.value.dispose()
     this.target.dispose()
     this.ground.dispose()
+    this.shore.dispose()
     this.material.dispose()
   }
 }
 
 const CLEAR_COLOR = new Color(1, 0, 0)
+/** The shore's blur, each way: offsets in texels and binomial weights (1 6 15 20 15 6 1, over 64). */
+const SHORE_BLUR: ReadonlyArray<readonly [number, number]> = [-3, -2, -1, 0, 1, 2, 3].map((offset, index) => [offset, [1, 6, 15, 20, 15, 6, 1][index]! / 64] as const)
 const scratchMatrix = new Matrix4()
