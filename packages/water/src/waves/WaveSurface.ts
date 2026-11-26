@@ -1,5 +1,5 @@
 import { DataArrayTexture, type DataTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
+import { cameraWorldMatrix, dFdx, dFdy, float, Fn, fwidth, If, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
 import { choppinessForWind, inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS } from './foam.js'
@@ -26,6 +26,12 @@ export const WAVE_MAXIMUM_CAMERA_HEIGHT_METERS = 30_000
  * the waves that show at a given distance come from a longer tile and its repeats are far apart.
  */
 export const WAVE_COMPUTE_GRID_SIZE = 256
+
+/** How a point of the plane changes across a pixel (dFdx, dFdy), metres: what textures read inside a branch need. */
+interface PlaneGradients {
+  x: Node<'vec2'>
+  y: Node<'vec2'>
+}
 
 export interface WaveSurfaceNodes {
   /** Where the fragment lies on the wave plane: metres east and north of its anchor. */
@@ -352,21 +358,57 @@ export class WaveSurface {
 
   /**
    * The waves at the fragment of a surface lying on the sea (the terrain), from its camera-relative position: the plane
-   * coordinates follow from it, and each cascade fades by the fragment's footprint.
+   * coordinates follow from it, and each cascade fades by the fragment's footprint. `where`, from the plane coordinates,
+   * says where waves may be drawn at all: elsewhere (land, a surface another one covers) nothing is sampled.
    */
-  createNodes(): WaveSurfaceNodes {
+  createNodes(where?: (plane: Node<'vec2'>) => Node<'bool'>): WaveSurfaceNodes {
+    const plane = this.fragmentPlane()
+    return this.sampleWaves(plane, where?.(plane))
+  }
+
+  /** Where the fragment of a surface lying on the sea (the terrain) lies on the plane, from its camera-relative position. */
+  fragmentPlane(): Node<'vec2'> {
     const offset = cameraWorldMatrix.mul(vec4(positionView, 0)).xyz.add(this.cameraFromAnchor)
-    const plane = vec2(offset.dot(this.east), offset.dot(this.north)) as unknown as Node<'vec2'>
-    return this.sampleWaves(plane)
+    return vec2(offset.dot(this.east), offset.dot(this.north)) as unknown as Node<'vec2'>
   }
 
   /**
    * The waves at a point of the plane (metres east and north of the anchor), in a fragment shader: each cascade fades
-   * where the fragment's footprint on the plane covers several of its texels.
+   * where the fragment's footprint on the plane covers several of its texels. Only where the waves show (on, and near
+   * enough for the largest cascade) and `where` holds does it sample anything: elsewhere the fragment skips the work,
+   * with no slope and the whitecap share as foam.
    */
-  sampleWaves(plane: Node<'vec2'>): WaveSurfaceNodes {
-    // Metres a pixel spans on the plane.
-    const footprint = max(fwidth(plane.x), fwidth(plane.y))
+  sampleWaves(plane: Node<'vec2'>, where?: Node<'bool'>): WaveSurfaceNodes {
+    // Metres a pixel spans on the plane, and its derivatives: taken here, where every pixel runs, as the branch below
+    // may not run for its neighbours.
+    const footprint = max(fwidth(plane.x), fwidth(plane.y)) as unknown as Node<'float'>
+    const gradients: PlaneGradients = { x: dFdx(plane) as unknown as Node<'vec2'>, y: dFdy(plane) as unknown as Node<'vec2'> }
+    // Past twice the largest cascade's texel every cascade has faded out: nothing to sample.
+    const visible = this.weight.greaterThan(0).and(footprint.lessThan(this.texelSizes[0]!.mul(2)))
+    const condition = where === undefined ? visible : visible.and(where)
+    // Slope east and north, the slope variance drawn and the foam; without waves, the whitecap share spread evenly.
+    const packed = Fn(() => {
+      const result = vec4(0, 0, 0, this.whitecapCoverage).toVar()
+      If(condition, () => {
+        result.assign(this.computeWaves(plane, footprint, gradients))
+      })
+      return result
+    })() as unknown as Node<'vec4'>
+    return {
+      plane,
+      slope: packed.xy as unknown as Node<'vec2'>,
+      resolvedMeanSquareSlope: packed.z as unknown as Node<'float'>,
+      east: this.east as unknown as Node<'vec3'>,
+      north: this.north as unknown as Node<'vec3'>,
+      foam: packed.w as unknown as Node<'float'>,
+    }
+  }
+
+  /**
+   * The waves at a point of the plane, packed (slope east and north, the slope variance drawn, the foam), inside a branch:
+   * textures read at an explicit level, or by the gradients taken before it.
+   */
+  protected computeWaves(plane: Node<'vec2'>, footprint: Node<'float'>, gradients: PlaneGradients): Node<'vec4'> {
     let slope: Node = vec2(0)
     // ∂Dx/∂x, ∂Dy/∂y and ∂Dx/∂y of the displacement, summed over the cascades.
     let stretch: Node = vec2(0)
@@ -378,14 +420,14 @@ export class WaveSurface {
     this.field.cascades.forEach((cascade, index) => {
       const fade = this.cascadeFade(index, footprint)
       const uv = plane.div(cascade.lengthMeters)
-      const surface = this.surfaceSampler.sample(uv).depth(int(index))
+      const surface = this.surfaceSampler.sample(uv).depth(int(index)).level(float(0))
       slope = (slope as Node<'vec2'>).add(surface.xy.mul(fade))
       stretch = (stretch as Node<'vec2'>).add(surface.zw.mul(fade))
-      shear = (shear as Node<'float'>).add(this.foldSampler.sample(uv).depth(int(index)).x.mul(fade))
+      shear = (shear as Node<'float'>).add(this.foldSampler.sample(uv).depth(int(index)).level(float(0)).x.mul(fade))
       // The slopes are scaled by the fade, so the variance drawn by its square.
       const drawn = this.meanSquareSlopes[index]!.mul(fade.mul(fade))
       resolved = (resolved as Node<'float'>).add(drawn)
-      left = (left as Node<'float'>).add(this.foamSampler.sample(uv).depth(int(index)).x.mul(drawn))
+      left = (left as Node<'float'>).add(this.foamSampler.sample(uv).depth(int(index)).level(float(0)).x.mul(drawn))
       total = (total as Node<'float'>).add(this.meanSquareSlopes[index]!)
     })
     const stretched = stretch as Node<'vec2'>
@@ -409,19 +451,13 @@ export class WaveSurface {
     // Crests breaking now, and the foam left where they broke, fading.
     const lingering = (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8))
     // The foam left behind is blown into streaks along the wind; fresh breakers stay whole.
-    const density = max(max(breaking, spume), lingering.mul(this.foamStreaks(plane, footprint)))
+    const density = max(max(breaking, spume), lingering.mul(this.foamStreaks(plane, footprint, gradients)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
-    const patterned = this.detail ? this.foamPattern(plane, footprint, density as Node<'float'>) : (density as Node<'float'>)
+    const patterned = this.detail ? this.foamPattern(plane, footprint, density as Node<'float'>, gradients) : (density as Node<'float'>)
     const foam = mix(this.whitecapCoverage, patterned, drawnShare)
-    return {
-      plane,
-      slope: (slope as Node<'vec2'>).add(detailSlope) as unknown as Node<'vec2'>,
-      resolvedMeanSquareSlope: (resolved as Node<'float'>).add(detailMeanSquareSlope) as unknown as Node<'float'>,
-      east: this.east as unknown as Node<'vec3'>,
-      north: this.north as unknown as Node<'vec3'>,
-      foam: foam as unknown as Node<'float'>,
-    }
+    const totalSlope = (slope as Node<'vec2'>).add(detailSlope)
+    return vec4(totalSlope, (resolved as Node<'float'>).add(detailMeanSquareSlope), foam) as unknown as Node<'vec4'>
   }
 
   /**
@@ -443,7 +479,7 @@ export class WaveSurface {
       const turned = vec2(plane.x.mul(cosine).sub(plane.y.mul(sine)), plane.x.mul(sine).add(plane.y.mul(cosine)))
       const texelMeters = this.texelSizes[last]!.div(scale)
       const fade = float(1).sub(smoothstep(texelMeters.mul(0.75), texelMeters.mul(2), footprint)).mul(this.weight)
-      const sampled = this.surfaceSampler.sample(turned.mul(scale / lengthMeters)).depth(int(last)).xy
+      const sampled = this.surfaceSampler.sample(turned.mul(scale / lengthMeters)).depth(int(last)).level(float(0)).xy
       // The slope found in the turned frame, turned back.
       const back = vec2(sampled.x.mul(cosine).add(sampled.y.mul(sine)), sampled.y.mul(cosine).sub(sampled.x.mul(sine)))
       slope = (slope as Node<'vec2'>).add(back.mul(gain.mul(fade)))
@@ -509,12 +545,12 @@ export class WaveSurface {
    * so lingering foam lies in streaks once the wind blows them out. 1 (no streaks) at a stretch of 1, and farther than a
    * pixel per streak.
    */
-  protected foamStreaks(plane: Node<'vec2'>, footprint: Node<'float'>): Node<'float'> {
+  protected foamStreaks(plane: Node<'vec2'>, footprint: Node<'float'>, gradients: PlaneGradients): Node<'float'> {
     const downwind = this.downwind as unknown as Node<'vec2'>
-    const along = plane.dot(downwind).div(this.streakStretch)
-    const across = plane.dot(vec2(downwind.y, downwind.x.negate()))
-    // The green channel's noise has two features a tile: a tile spans two streaks.
-    const bands = this.foamPatternSampler.sample(vec2(across, along).div(FOAM_STREAK_WIDTH_METERS * 2)).y.mul(2).sub(1)
+    const across = vec2(downwind.y, downwind.x.negate())
+    // Into the streaks' frame (across, along), a tile spanning two streaks (the green channel has two features a tile).
+    const toStreaks = (offset: Node<'vec2'>) => vec2(offset.dot(across), offset.dot(downwind).div(this.streakStretch)).div(FOAM_STREAK_WIDTH_METERS * 2)
+    const bands = this.foamPatternSampler.sample(toStreaks(plane)).grad(toStreaks(gradients.x), toStreaks(gradients.y)).y.mul(2).sub(1)
     const strength = smoothstep(1, 3, this.streakStretch).mul(float(1).sub(smoothstep(FOAM_STREAK_WIDTH_METERS * 0.25, FOAM_STREAK_WIDTH_METERS, footprint)))
     return float(1).add(bands.mul(2.2).mul(strength)).max(0) as unknown as Node<'float'>
   }
@@ -523,8 +559,8 @@ export class WaveSurface {
    * Foam of `density` (0 to 1) broken into bubbly cells, from the foam texture: fresh foam covers them all, thinning foam
    * opens their middles into a web, then wisps. Farther than a pixel per cell, the density itself.
    */
-  protected foamPattern(plane: Node<'vec2'>, footprint: Node<'float'>, density: Node<'float'>): Node<'float'> {
-    const pattern = this.foamPatternSampler.sample(plane.div(FOAM_TILE_METERS)).x
+  protected foamPattern(plane: Node<'vec2'>, footprint: Node<'float'>, density: Node<'float'>, gradients: PlaneGradients): Node<'float'> {
+    const pattern = this.foamPatternSampler.sample(plane.div(FOAM_TILE_METERS)).grad(gradients.x.div(FOAM_TILE_METERS), gradients.y.div(FOAM_TILE_METERS)).x
     const patches = smoothstep(pattern.sub(0.1), pattern.add(0.1), density)
     return mix(patches, density, smoothstep(FOAM_CELL_METERS * 0.5, FOAM_CELL_METERS * 2, footprint)) as unknown as Node<'float'>
   }
