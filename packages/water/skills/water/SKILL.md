@@ -122,7 +122,7 @@ roughness takes back the slopes it carried, so the sea is sharp near the camera 
 ripples finer than the smallest tile (the rest of Cox & Munk's slopes) are drawn as detail within a few metres of the
 camera (`WAVE_DETAIL_SCALES`), and on the GPU's wave mesh the sun's glint off them glitters: cells about a pixel wide
 flash in turn along the glint, instead of one smooth, milky highlight.
-Under WebGPU the simulation runs in compute shaders (a few dispatches a frame, no CPU cost) and also draws foam on the
+Under WebGPU the simulation runs in compute shaders (four dispatches a frame, each FFT direction one pass in workgroup memory) and also draws foam on the
 crests that break (where the choppy waves' Jacobian folds). The foam lasts: crests breaking now
 (`WAVE_BREAKING_SHARE` of the whitecap share) leave patches that fade over `WAVE_FOAM_LIFETIME_SECONDS` (4 s) into a web
 of bubbles, then wisps, together covering about the whitecap share (`whitecapCoverage`). On WebGL2
