@@ -139,23 +139,19 @@ export class WaveSurface {
   protected readonly anchorNorth = new Vector3()
   protected readonly anchorUp = new Vector3()
   protected timeSecondsValue = 0
-  /** Texels a side of the GPU's simulation. */
-  readonly computeGridSize: number
-  /** Whether fragments draw the close-up ripples and break the foam into cells. */
-  readonly detail: boolean
+  /** Texels a side of the GPU's simulation (`setLevel` changes it). */
+  computeGridSize: number
+  /** Whether fragments draw the close-up ripples and break the foam into cells: read when a shader is built. */
+  detail: boolean
   /** The GPU simulation steps every this many updates. */
-  readonly framesPerSimulationStep: number
+  framesPerSimulationStep: number
   protected framesSinceStep = 0
 
   constructor({ computeGridSize = WAVE_COMPUTE_GRID_SIZE, detail = true, framesPerSimulationStep = 1, ...options }: WaveSurfaceOptions = {}) {
-    if (!Number.isInteger(Math.log2(computeGridSize)) || computeGridSize < 16 || computeGridSize > 512) {
-      throw new Error(`WaveSurface: computeGridSize must be a power of two from 16 to 512, got ${computeGridSize}.`)
-    }
-    if (!Number.isInteger(framesPerSimulationStep) || framesPerSimulationStep < 1 || framesPerSimulationStep > 8) {
-      throw new Error(`WaveSurface: framesPerSimulationStep must be a whole number from 1 to 8, got ${framesPerSimulationStep}.`)
-    }
+    checkComputeGridSize(computeGridSize)
     this.computeGridSize = computeGridSize
     this.detail = detail
+    checkFramesPerSimulationStep(framesPerSimulationStep)
     this.framesPerSimulationStep = framesPerSimulationStep
     this.fieldOptions = options
     this.field = new WaveField(options)
@@ -208,6 +204,22 @@ export class WaveSurface {
     this.downwind.value.set(Math.sin(towards), Math.cos(towards))
     this.streakStretch.value = 1 + Math.max(windSpeedMetersPerSecond - 8, 0) * WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND
     this.spume.value = Math.min(Math.max((windSpeedMetersPerSecond - 15) / 10, 0), 1)
+  }
+
+  /**
+   * Changes what the waves cost while they run: a new `computeGridSize` restarts the GPU's simulation at that size on the
+   * next update, `framesPerSimulationStep` applies at once, and `detail` to the shaders built from now on (those built
+   * keep theirs).
+   */
+  setLevel({ computeGridSize = this.computeGridSize, framesPerSimulationStep = this.framesPerSimulationStep, detail = this.detail }: Pick<WaveSurfaceOptions, 'computeGridSize' | 'framesPerSimulationStep' | 'detail'>): void {
+    checkComputeGridSize(computeGridSize)
+    checkFramesPerSimulationStep(framesPerSimulationStep)
+    if (computeGridSize !== this.computeGridSize) {
+      this.computeGridSize = computeGridSize
+      if (this.computeField !== null) this.stopCompute()
+    }
+    this.framesPerSimulationStep = framesPerSimulationStep
+    this.detail = detail
   }
 
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
@@ -600,6 +612,18 @@ const WAVE_SPUME_OPACITY = 0.7
 const FOAM_CELL_METERS = 0.6
 /** One tile of the foam texture, metres. */
 const FOAM_TILE_METERS = FOAM_CELL_METERS * FOAM_TEXTURE_CELLS
+
+function checkComputeGridSize(computeGridSize: number): void {
+  if (!Number.isInteger(Math.log2(computeGridSize)) || computeGridSize < 16 || computeGridSize > 512) {
+    throw new Error(`WaveSurface: computeGridSize must be a power of two from 16 to 512, got ${computeGridSize}.`)
+  }
+}
+
+function checkFramesPerSimulationStep(framesPerSimulationStep: number): void {
+  if (!Number.isInteger(framesPerSimulationStep) || framesPerSimulationStep < 1 || framesPerSimulationStep > 8) {
+    throw new Error(`WaveSurface: framesPerSimulationStep must be a whole number from 1 to 8, got ${framesPerSimulationStep}.`)
+  }
+}
 
 function isWebGPUBackend(renderer: WebGPURenderer): boolean {
   return (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true

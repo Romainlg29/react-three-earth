@@ -2,11 +2,15 @@ export { computeWaterOptics, inherentOpticalProperties, surfaceMeanSquareSlope, 
 export { WATER_PRESETS, type WaterPreset, type WaterPresetValues } from './presets.js'
 export {
   detectWaterQuality,
+  isSoftwareRenderer,
   resolveState as resolveWaterState,
   Water,
   WATER_QUALITY_LEVELS,
+  WATER_SLOW_FRAME_SECONDS,
+  WATER_SLOW_SECONDS,
   type WaterOptions,
   type WaterQuality,
+  type WaterQualityLevel,
   type WaterSettings,
   type WaterState,
 } from './Water.js'

@@ -173,12 +173,19 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   falls back to sea level.
 - The mesh shows no imagery (`imageryOpacity`): with it, the colour steps at the mesh's edge.
 
-### Quality on phones
+### Quality on phones and devices without a GPU
 
 `quality` (read once, like `name`) sets what the sea costs. `'auto'` (the default) picks `'low'` on a touch screen (a
-coarse pointer) and `'high'` otherwise; `water.quality` says which it chose. Low simulates 128 texels a side instead of
-256, stepping every other frame, lays 32 cells a ring instead of 48 (about 66 000 triangles instead of 146 000, same
-reach) and leaves out the close-up ripples, the glitter and the foam's cells (`WATER_QUALITY_LEVELS`).
+coarse pointer) and `'high'` otherwise, then `'minimal'` if the first frame shows a software renderer (SwiftShader,
+llvmpipe, a fallback adapter: `isSoftwareRenderer`). Low simulates 128 texels a side instead of 256, stepping every
+other frame, lays 32 cells a ring instead of 48 (about 66 000 triangles instead of 146 000, same reach) and leaves out
+the close-up ripples, the glitter and the foam's cells. Minimal simulates 64 texels every third frame and draws no wave
+mesh: the terrain's sea, tilted by the waves, with their foam (`WATER_QUALITY_LEVELS`).
+
+`adaptiveQuality` (default true, read once) lowers the level, high to low to minimal, while frames average slower than
+`WATER_SLOW_FRAME_SECONDS` (30 a second) for `WATER_SLOW_SECONDS`, and logs it; it never raises it again.
+`water.quality` says the level drawn now; `water.setQuality(level)` changes it yourself (the mesh keeps its first
+resolution, and the close-up detail applies to shaders built after).
 
 ```tsx
 import { Water } from '@earthkit/water/react'
