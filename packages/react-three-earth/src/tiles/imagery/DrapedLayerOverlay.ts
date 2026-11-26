@@ -7,6 +7,7 @@ import type { DrapedLayerDrawer, DrapedLayerRegion, RegisteredDrapedLayer } from
 import { boundsToMercatorRectangles, rectanglesOverlap, type MercatorRectangle } from '../../vector/worker/rectangles.js'
 import type { CompositionPriority, ImageryCompositor } from './ImageryCompositor.js'
 import type { GpuComposedOverlay } from './XYZImageryOverlay.js'
+import { setRegionVisibleBalanced } from '../regionVisibility.js'
 
 /** Deepest level of the (never fetched) tiling the overlay borrows from `XYZTilesOverlay`. */
 const TILING_LEVELS = 25
@@ -318,5 +319,10 @@ export class DrapedLayerOverlay extends XYZTilesOverlay implements GpuComposedOv
         return { x: (x - minimumX) / width, y: (latitudeToY(latitudeDegrees) - minimumY) / height }
       },
     }
+  }
+
+  // Upstream throws when a tile is reported hidden without having been counted shown (`setRegionVisibleBalanced`).
+  setRegionVisible(range: number[], visible: boolean): void {
+    setRegionVisibleBalanced(this, range, visible)
   }
 }
