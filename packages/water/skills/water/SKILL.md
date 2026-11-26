@@ -209,6 +209,31 @@ export function useFloat(water: WaterImpl | null, anchor: GeographicAnchor, long
 }
 ```
 
+For a hull, use buoyancy instead of fitting the plane yourself: `useWaveBuoyancy` (vanilla `water.createBuoyancy(hull)`)
+samples its four corners from `lengthMeters`, `beamMeters` and `headingDegrees`, and gives `state.heightMeters`,
+`pitchRadians` (bow up) and `rollRadians` (starboard up), followed with a lag of `responseSeconds` (default 0.35 s, longer
+for a heavier boat) so it rides the swell rather than every ripple. `draftMeters` sinks it to its waterline.
+
+```tsx
+import type { GeographicAnchor } from '@earthkit/globe'
+import type { Water as WaterImpl } from '@earthkit/water'
+import { useWaveBuoyancy } from '@earthkit/water/react'
+import { useFrame } from '@react-three/fiber'
+import type { Object3D } from 'three'
+
+export function useBoat(water: WaterImpl | null, anchor: GeographicAnchor, hull: Object3D) {
+  const shape = { longitudeDegrees: 0.19, latitudeDegrees: 49.71, headingDegrees: 90, lengthMeters: 11, beamMeters: 3.6 }
+  const buoyancy = useWaveBuoyancy(water, shape, { draftMeters: 0.4 })
+  useFrame(() => {
+    const state = buoyancy?.state
+    if (state === undefined || !state.ready) return
+    anchor.setPosition({ ...shape, heightMeters: state.heightMeters }, shape.headingDegrees)
+    // In the anchor's frame turned to the heading: x starboard, y forward, z up.
+    hull.rotation.set(state.pitchRadians, -state.rollRadians, 0)
+  })
+}
+```
+
 Over a lake below sea level a sample's `heightMeters` is the lake's surface; where the terrain draws land, `onWater` is
 false and the sample holds the ground's level. Vanilla: `const probe = water.createProbe({ capacity: 4 })`, then
 `probe.setPoints(points)` and read `probe.samples` every frame; `probe.dispose()` stops it. Without the mesh (WebGL2, high camera, `waveMesh: false`) the sea is drawn flat

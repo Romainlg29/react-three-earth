@@ -15,6 +15,7 @@ import type { Node } from 'three/webgpu'
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
 import { WATER_INDEX_OF_REFRACTION, WaveMesh, type WaveMeshGround, type WaveMeshShading, type WaveMeshView } from './waves/WaveMesh.js'
+import { WaveBuoyancy, type WaveBuoyancyHull, type WaveBuoyancyOptions } from './waves/WaveBuoyancy.js'
 import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
 import { earthCenteredFromGeographic, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 import { WATER_PRESETS, type WaterPreset } from './presets.js'
@@ -196,6 +197,7 @@ export class Water implements EarthPlugin {
   readonly quality: WaterQuality
 
   protected readonly probes = new Set<WaveProbe>()
+  protected readonly buoyancies = new Set<WaveBuoyancy>()
 
   constructor({ name = 'water', quality = 'auto', ...settings }: WaterOptions = {}) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
@@ -272,6 +274,7 @@ export class Water implements EarthPlugin {
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
       this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0, { renderer, terrain: earth.terrain, earth })
       for (const probe of this.probes) probe.update(renderer)
+      for (const buoyancy of this.buoyancies) buoyancy.update(deltaSeconds)
       return animating
     })
     context.onDispose(() => {
@@ -288,6 +291,16 @@ export class Water implements EarthPlugin {
     const probe = new WaveProbe(this.waveSurface, this.waveMesh, options, disposed => this.probes.delete(disposed))
     this.probes.add(probe)
     return probe
+  }
+
+  /**
+   * Floats a hull on the waves: four probes at its corners give its height, pitch and roll, updated every frame (read
+   * `buoyancy.state`). `buoyancy.setHull` moves or turns it; `buoyancy.dispose()` stops it.
+   */
+  createBuoyancy(hull: WaveBuoyancyHull, options?: WaveBuoyancyOptions): WaveBuoyancy {
+    const buoyancy = new WaveBuoyancy(this.createProbe({ capacity: 4 }), hull, options, disposed => this.buoyancies.delete(disposed))
+    this.buoyancies.add(buoyancy)
+    return buoyancy
   }
 
   inspect(): WaterState {
@@ -307,6 +320,7 @@ export class Water implements EarthPlugin {
 
   /** Frees the wave textures, mesh and probes. Call when the plugin will not be installed again. */
   dispose(): void {
+    for (const buoyancy of [...this.buoyancies]) buoyancy.dispose()
     for (const probe of [...this.probes]) probe.dispose()
     this.waveSurface.dispose()
     this.waveMesh.dispose()
@@ -385,12 +399,22 @@ export class Water implements EarthPlugin {
     return (this.sunIlluminance as unknown as Node<'vec3'>).mul(highlight.mul(flashing).mul(GLITTER_GAIN).mul(daylight).mul(float(1).sub(foam))) as unknown as Node<'vec3'>
   }
 
+  /**
+   * The surface seen from below (a crest over the camera): the sunlight through the water above, turquoise as through a
+   * crest (`crestTransmittance`), dimmed to about what a diver sees looking up past the bright window overhead.
+   */
+  protected undersideLight(): Node<'vec3'> {
+    const daylight = saturate(this.sunInPlane.z.mul(4))
+    return (this.crestColor as unknown as Node<'vec3'>).mul(this.sunIlluminance as unknown as Node<'vec3'>).mul(daylight.mul(UNDERSIDE_BRIGHTNESS)) as unknown as Node<'vec3'>
+  }
+
   /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain, and the light scattered through its crests. */
   protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
       emissive: this.waveSurface.detail ? (this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>) : this.scatteredSunlight(view, waves.foam),
       color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
+      underside: this.undersideLight(),
     }
   }
 
@@ -541,6 +565,8 @@ export function resolveState(settings: WaterSettings): WaterState {
 const SCATTER_THROUGH_CRESTS = 0.6
 /** How much scattered light every face turned to the camera sends (Atlas's k2). */
 const SCATTER_TOWARDS_CAMERA = 0.3
+/** How bright the waves' underside is, per unit of sunlight through a crest. */
+const UNDERSIDE_BRIGHTNESS = 0.3
 /** Water's reflectance looking straight down: ((n - 1) / (n + 1))². */
 const WATER_REFLECTANCE_STRAIGHT_ON = ((WATER_INDEX_OF_REFRACTION - 1) / (WATER_INDEX_OF_REFRACTION + 1)) ** 2
 /** The glitter's smallest cells, metres. */

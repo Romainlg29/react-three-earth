@@ -40,4 +40,12 @@ export {
   type WaveMeshShading,
   type WaveMeshView,
 } from './waves/WaveMesh.js'
+export {
+  hullCorners,
+  WAVE_BUOYANCY_RESPONSE_SECONDS,
+  WaveBuoyancy,
+  type WaveBuoyancyHull,
+  type WaveBuoyancyOptions,
+  type WaveBuoyancyState,
+} from './waves/WaveBuoyancy.js'
 export { WAVE_PROBE_CAPACITY, WAVE_PROBE_ITERATIONS, WaveProbe, type WaveProbeOptions, type WaveProbePoint, type WaveProbeSample } from './waves/WaveProbe.js'

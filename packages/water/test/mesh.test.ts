@@ -1,4 +1,4 @@
-import { Group, PerspectiveCamera, Vector2, Vector3 } from 'three'
+import { DoubleSide, Group, PerspectiveCamera, Vector2, Vector3 } from 'three'
 import { vec3 } from 'three/tsl'
 import type { MeshPhysicalNodeMaterial, WebGPURenderer } from 'three/webgpu'
 import { describe, expect, it, vi } from 'vitest'
@@ -114,14 +114,15 @@ describe('wave mesh material', () => {
     const plain = new WaveMesh(laidSurface(30), shade)
     expect((plain.mesh.material as MeshPhysicalNodeMaterial).ior).toBe(WATER_INDEX_OF_REFRACTION)
     expect((plain.mesh.material as MeshPhysicalNodeMaterial).metalness).toBe(0)
-    expect((plain.mesh.material as MeshPhysicalNodeMaterial).emissiveNode).toBeNull()
+    // Both sides: a crest over the camera shows its underside rather than a hole.
+    expect((plain.mesh.material as MeshPhysicalNodeMaterial).side).toBe(DoubleSide)
     const glow = vec3(0, 0.1, 0.2)
     let seen: Parameters<ConstructorParameters<typeof WaveMesh>[1]>[2] | undefined
     const glowing = new WaveMesh(laidSurface(30), (_waves, _ground, view) => {
       seen = view
       return { ...shade(), emissive: glow }
     })
-    expect((glowing.mesh.material as MeshPhysicalNodeMaterial).emissiveNode).toBe(glow)
+    expect((glowing.mesh.material as MeshPhysicalNodeMaterial).emissiveNode).not.toBeNull()
     expect(seen?.significantWaveHeightMeters).toBe(glowing.significantWaveHeightMeters)
   })
 })

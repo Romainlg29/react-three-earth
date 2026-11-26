@@ -1,6 +1,6 @@
 import type { Terrain } from '@earthkit/globe'
-import { BufferAttribute, BufferGeometry, Mesh, Vector2, Vector3, type Object3D } from 'three'
-import { abs, ceil, clamp, exp2, float, floor, fract, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
+import { BufferAttribute, BufferGeometry, DoubleSide, Mesh, Vector2, Vector3, type Object3D } from 'three'
+import { abs, ceil, clamp, exp2, float, floor, fract, frontFacing, log2, max, positionGeometry, select, smoothstep, transformNormalToView, uniform, varying, vec3 } from 'three/tsl'
 import { MeshPhysicalNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
 import { WaveDepthCache, type WaveGround } from './WaveDepthCache.js'
@@ -31,6 +31,11 @@ export interface WaveMeshShading {
   roughness: Node<'float'>
   /** Light the water sends out of itself (the sun's light scattered through the crests), radiance. */
   emissive?: Node<'vec3'>
+  /**
+   * The surface seen from below, radiance: when a crest rises over the camera, it sees the waves' underside. Without it,
+   * the underside is dark.
+   */
+  underside?: Node<'vec3'>
 }
 
 /** The geometry at a fragment of the mesh, in the wave plane's frame (x east, y north, z up), for its shading. */
@@ -267,11 +272,14 @@ export class WaveMesh {
     // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
     const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize() as unknown as Node<'vec3'>
     const toCamera = vec3(surface.cameraPlane.sub(drawnPlane), surface.cameraPlaneHeight.sub(waterLevel.add(waveHeightMeters))).normalize() as unknown as Node<'vec3'>
-    const { color, roughness, emissive } = shade(waves, { depthMeters }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
-    material.colorNode = color
-    material.roughnessNode = roughness
-    if (emissive !== undefined) material.emissiveNode = emissive
-    material.normalNode = transformNormalToView(normal)
+    const { color, roughness, emissive, underside } = shade(waves, { depthMeters }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
+    // Both sides: a crest higher than the camera shows its underside, which would otherwise leave a hole to the sky's black.
+    material.side = DoubleSide
+    material.colorNode = select(frontFacing, color, vec3(0)) as unknown as Node<'vec3'>
+    material.roughnessNode = select(frontFacing, roughness, float(1)) as unknown as Node<'float'>
+    material.emissiveNode = select(frontFacing, emissive ?? vec3(0), underside ?? vec3(0)) as unknown as Node<'vec3'>
+    // Seen from below, the surface faces down.
+    material.normalNode = transformNormalToView(select(frontFacing, normal, normal.negate()) as unknown as Node<'vec3'>)
     // Only over water, where it lies after the waves moved it (the terrain's sea gives way by the same map); beyond the
     // terrain's edge of the mesh (`coverage`), the terrain draws the sea.
     material.maskNode = this.coverage(drawnPlane).greaterThan(0.5).and(this.coversWater(drawnPlane))
