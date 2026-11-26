@@ -187,10 +187,17 @@ export class WaveMesh {
    * `WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS` over the water (or the ground) under the camera, and when `visible` (waves
    * on, the globe rather than the flat map). With `source`, it draws the ground under it again when it moved.
    */
+  /**
+   * Whether the last `update` found the camera close enough for the mesh, waves on: it then shows on the GPU path. On
+   * WebGL2 (no mesh) it says when the close sea is in view, what `adaptiveQuality` judges.
+   */
+  cameraNearSurface = false
+
   update(visible: boolean, source?: WaveMeshGroundSource): void {
     const { surface } = this
     const height = this.cameraHeightAboveSurface(source?.terrain ?? null)
-    const shown = visible && surface.compute !== null && height < WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS
+    this.cameraNearSurface = visible && height < WAVE_MESH_MAXIMUM_CAMERA_HEIGHT_METERS
+    const shown = this.cameraNearSurface && surface.compute !== null
     this.mesh.visible = shown
     this.active.value = shown ? 1 : 0
     if (!shown) return
