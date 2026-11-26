@@ -200,23 +200,30 @@ describe('adapting the quality', () => {
     water.dispose()
   })
 
-  it("lowers the quality a level at a time while frames stay slow, and picks 'minimal' on a software renderer for 'auto'", () => {
+  it("lowers the quality from high to low while frames stay slow, and picks 'minimal' on a software renderer for 'auto'", () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    let meshDrawn = true
     const run = (water: Water, frameSeconds: number, seconds: number, renderer?: never) => {
-      for (let time = 0; time < seconds; time += frameSeconds) (water as unknown as { adaptQuality(delta: number, renderer?: never): void }).adaptQuality(frameSeconds, renderer)
+      for (let time = 0; time < seconds; time += frameSeconds) (water as unknown as { adaptQuality(delta: number, renderer: never | undefined, meshDrawn: boolean): void }).adaptQuality(frameSeconds, renderer, meshDrawn)
     }
     const fast = new Water({ quality: 'high' })
     run(fast, 1 / 60, 20)
     expect(fast.quality).toBe('high')
     const slow = new Water({ quality: 'high' })
-    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 3.5)
+    // Ten seconds to settle, then five slow ones.
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 14)
     expect(slow.quality).toBe('high')
-    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 2.5)
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 1.5)
     expect(slow.quality).toBe('low')
-    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 6)
-    expect(slow.quality).toBe('minimal')
-    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 10)
-    expect(slow.quality).toBe('minimal')
+    // Never down to minimal, which would drop the waves' mesh.
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 60)
+    expect(slow.quality).toBe('low')
+    // Slow frames while the mesh is not drawn (over land, high up) are not the sea's.
+    meshDrawn = false
+    const overLand = new Water({ quality: 'high' })
+    run(overLand, WATER_SLOW_FRAME_SECONDS * 2, 60)
+    expect(overLand.quality).toBe('high')
+    meshDrawn = true
     expect(info).toHaveBeenCalledWith(expect.stringContaining('adaptiveQuality: false'))
     // Pauses (a hidden tab) do not count, and the option turns it off.
     const paused = new Water({ quality: 'high' })
@@ -231,7 +238,7 @@ describe('adapting the quality', () => {
     const chosen = new Water({ quality: 'high', adaptiveQuality: false })
     run(chosen, 1 / 60, 0.1, fakeRenderer({ vendor: 'google', architecture: 'swiftshader' }))
     expect(chosen.quality).toBe('high')
-    for (const water of [fast, slow, paused, fixed, auto, chosen]) water.dispose()
+    for (const water of [fast, slow, overLand, paused, fixed, auto, chosen]) water.dispose()
     info.mockRestore()
   })
 })
