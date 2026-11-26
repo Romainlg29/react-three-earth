@@ -9,6 +9,12 @@ import { MeshStandardNodeMaterial } from 'three/webgpu'
 
 import { elevationAttribution, elevationTilesUrl, rasterBasemapStyle, useFixtures } from './data'
 import { ExampleShell } from './ExampleShell'
+
+/** `?quality=low` or `high` forces the sea's quality level; by default the device decides. */
+const requestedQuality = (() => {
+  const quality = new URLSearchParams(location.search).get('quality')
+  return quality === 'low' || quality === 'high' ? quality : 'auto'
+})()
 import { flyToPlace, placesFor, type Place } from './places'
 
 interface Coast extends Place {
@@ -191,6 +197,7 @@ export function SeaExample() {
         <MapStyleSource style={style} />
       </Imagery>
       <Water
+        quality={requestedQuality}
         ref={setWater}
         preset={preset}
         windSpeedMetersPerSecond={wind ?? undefined}

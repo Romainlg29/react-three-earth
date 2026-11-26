@@ -43,6 +43,15 @@ export interface WaveSurfaceNodes {
   foam: Node<'float'>
 }
 
+export interface WaveSurfaceOptions extends WaveFieldOptions {
+  /** Texels a side of the GPU's simulation, a power of two: finer waves, at four times the cost per doubling. Default: `WAVE_COMPUTE_GRID_SIZE`. */
+  computeGridSize?: number
+  /** Close-up ripples and foam broken into cells in the fragments. Default: true. */
+  detail?: boolean
+  /** Steps the GPU's simulation every this many updates (2 halves its cost; the waves move at half the frame rate). Default: 1. */
+  framesPerSimulationStep?: number
+}
+
 /**
  * The wave field laid on the globe: a flat plane tangent to the ellipsoid under the camera, on which the cascades tile.
  * A fragment's place on it comes from its camera-relative position (exact under the renderer's `highPrecision`) and
@@ -112,8 +121,24 @@ export class WaveSurface {
   protected readonly anchorNorth = new Vector3()
   protected readonly anchorUp = new Vector3()
   protected timeSecondsValue = 0
+  /** Texels a side of the GPU's simulation. */
+  readonly computeGridSize: number
+  /** Whether fragments draw the close-up ripples and break the foam into cells. */
+  readonly detail: boolean
+  /** The GPU simulation steps every this many updates. */
+  readonly framesPerSimulationStep: number
+  protected framesSinceStep = 0
 
-  constructor(options: WaveFieldOptions = {}) {
+  constructor({ computeGridSize = WAVE_COMPUTE_GRID_SIZE, detail = true, framesPerSimulationStep = 1, ...options }: WaveSurfaceOptions = {}) {
+    if (!Number.isInteger(Math.log2(computeGridSize)) || computeGridSize < 16 || computeGridSize > 512) {
+      throw new Error(`WaveSurface: computeGridSize must be a power of two from 16 to 512, got ${computeGridSize}.`)
+    }
+    if (!Number.isInteger(framesPerSimulationStep) || framesPerSimulationStep < 1 || framesPerSimulationStep > 8) {
+      throw new Error(`WaveSurface: framesPerSimulationStep must be a whole number from 1 to 8, got ${framesPerSimulationStep}.`)
+    }
+    this.computeGridSize = computeGridSize
+    this.detail = detail
+    this.framesPerSimulationStep = framesPerSimulationStep
     this.fieldOptions = options
     this.field = new WaveField(options)
     this.meanSquareSlopes = this.field.cascades.map(() => uniform(0) as UniformNode<'float', number>)
@@ -215,8 +240,13 @@ export class WaveSurface {
     this.cameraLongitudeRadians = Math.atan2(cameraEarth.y, cameraEarth.x)
     if (height > WAVE_MAXIMUM_CAMERA_HEIGHT_METERS) return false
     if (renderer !== undefined && isWebGPUBackend(renderer)) {
+      const starting = this.computeField === null
       this.computeField ??= this.startCompute()
-      this.computeField.update(renderer, this.timeSecondsValue)
+      // Every `framesPerSimulationStep` updates: the textures hold the sea meanwhile, as fixed on the plane as ever.
+      if (starting || ++this.framesSinceStep >= this.framesPerSimulationStep) {
+        this.framesSinceStep = 0
+        this.computeField.update(renderer, this.timeSecondsValue)
+      }
     } else {
       // No WebGPU (or another renderer took over): back to the CPU.
       if (this.computeField !== null) this.stopCompute()
@@ -230,7 +260,7 @@ export class WaveSurface {
 
   /** Moves the simulation to the GPU: the shaders already built sample its textures from now on. */
   protected startCompute(): WaveComputeField {
-    const spectrum = new WaveField({ ...this.fieldOptions, seed: this.field.seed, gridSize: WAVE_COMPUTE_GRID_SIZE })
+    const spectrum = new WaveField({ ...this.fieldOptions, seed: this.field.seed, gridSize: this.computeGridSize })
     if (this.seaState !== null) spectrum.setSeaState(this.seaState)
     this.computeSpectrum = spectrum
     this.useField(spectrum)
@@ -341,12 +371,15 @@ export class WaveSurface {
     const threshold = float(1).add(spread.mul(this.whitecapScore))
     const edge = spread.mul(0.25).add(1e-4)
     const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
-    const { slope: detailSlope, meanSquareSlope: detailMeanSquareSlope } = this.sampleDetail(plane, footprint)
+    const { slope: detailSlope, meanSquareSlope: detailMeanSquareSlope } = this.detail
+      ? this.sampleDetail(plane, footprint)
+      : { slope: vec2(0) as unknown as Node<'vec2'>, meanSquareSlope: float(0) as unknown as Node<'float'> }
     // Crests breaking now, and the foam left where they broke, fading.
     const density = max(breaking, (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
-    const foam = mix(this.whitecapCoverage, foamPattern(plane, footprint, density as Node<'float'>), drawnShare)
+    const patterned = this.detail ? foamPattern(plane, footprint, density as Node<'float'>) : (density as Node<'float'>)
+    const foam = mix(this.whitecapCoverage, patterned, drawnShare)
     return {
       plane,
       slope: (slope as Node<'vec2'>).add(detailSlope) as unknown as Node<'vec2'>,

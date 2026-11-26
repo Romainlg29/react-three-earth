@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { computeWaterOptics, inherentOpticalProperties, surfaceRoughness, whitecapCoverage } from '../src/optics.js'
 import { WATER_PRESETS } from '../src/presets.js'
-import { resolveState, Water } from '../src/Water.js'
+import { detectWaterQuality, resolveState, Water, WATER_QUALITY_LEVELS } from '../src/Water.js'
 
 const ocean = { chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35 }
 
@@ -145,5 +145,28 @@ describe('Water', () => {
     const definition = earth.terrainShadings.get('sea')!
     const outputs = definition.shade({ color: vec4(1), roughness: float(1), metalness: float(0), normal: vec3(0, 0, 1), emissive: vec3(0), mask: bool(true) } as never)
     expect(Object.keys(outputs).sort()).toEqual(['color', 'mask', 'metalness', 'normal', 'roughness'])
+  })
+})
+
+describe('water quality', () => {
+  it('draws a lighter sea at low quality, picks it on a touch screen, and refuses an unknown level', () => {
+    const low = new Water({ quality: 'low' })
+    expect(low.quality).toBe('low')
+    expect(low.waveSurface.computeGridSize).toBe(WATER_QUALITY_LEVELS.low.computeGridSize)
+    expect(low.waveSurface.framesPerSimulationStep).toBe(2)
+    expect(low.waveSurface.detail).toBe(false)
+    expect(low.waveMesh.resolution).toBe(WATER_QUALITY_LEVELS.low.meshResolution)
+    const high = new Water({ quality: 'high' })
+    expect(high.waveSurface.computeGridSize).toBe(256)
+    expect(high.waveMesh.resolution).toBe(48)
+    const matchMedia = vi.fn((query: string) => ({ matches: query === '(pointer: coarse)' }))
+    vi.stubGlobal('matchMedia', matchMedia)
+    expect(detectWaterQuality()).toBe('low')
+    expect(new Water().quality).toBe('low')
+    vi.unstubAllGlobals()
+    expect(detectWaterQuality()).toBe('high')
+    expect(() => new Water({ quality: 'medium' as never })).toThrow(/'auto', 'high' or 'low'/)
+    low.dispose()
+    high.dispose()
   })
 })

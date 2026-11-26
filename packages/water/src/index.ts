@@ -1,6 +1,15 @@
 export { computeWaterOptics, inherentOpticalProperties, surfaceMeanSquareSlope, surfaceRoughness, WATER_CREST_THICKNESS_METERS, whitecapCoverage, type WaterOptics, type WaterOpticsOptions } from './optics.js'
 export { WATER_PRESETS, type WaterPreset, type WaterPresetValues } from './presets.js'
-export { resolveState as resolveWaterState, Water, type WaterOptions, type WaterSettings, type WaterState } from './Water.js'
+export {
+  detectWaterQuality,
+  resolveState as resolveWaterState,
+  Water,
+  WATER_QUALITY_LEVELS,
+  type WaterOptions,
+  type WaterQuality,
+  type WaterSettings,
+  type WaterState,
+} from './Water.js'
 export {
   angularFrequency,
   directionalSpreading,
@@ -14,7 +23,7 @@ export {
 export { WAVE_CASCADE_LENGTHS_METERS, WAVE_GRID_SIZE, WAVE_REPEAT_PERIOD_SECONDS, WaveField, type WaveCascade, type WaveFieldOptions } from './waves/WaveField.js'
 export { inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS, WAVE_FOAM_LIFETIME_SECONDS } from './waves/foam.js'
 export { createButterflies, foamKept, WaveComputeField } from './waves/WaveComputeField.js'
-export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
+export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, type WaveSurfaceOptions, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 export {
   createRings,
   lookAhead,
