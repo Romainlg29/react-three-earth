@@ -417,6 +417,18 @@ export class WaveSurface {
   }
 
   /**
+   * Foam of a density (0 to 1) broken into the foam's bubbly patches at a point of the plane, in a fragment shader, as
+   * the whitecaps are: thin foam clears into a web, then wisps; far away, the density itself. Without `detail`, the
+   * density as given. Call it where every pixel runs (it takes the plane's derivatives).
+   */
+  patternFoam(plane: Node<'vec2'>, density: Node<'float'>): Node<'float'> {
+    if (!this.detail) return density
+    const footprint = max(fwidth(plane.x), fwidth(plane.y)) as unknown as Node<'float'>
+    const gradients: PlaneGradients = { x: dFdx(plane) as unknown as Node<'vec2'>, y: dFdy(plane) as unknown as Node<'vec2'> }
+    return this.foamPattern(plane, footprint, density, gradients)
+  }
+
+  /**
    * The waves at a point of the plane, packed (slope east and north, the slope variance drawn, the foam), inside a branch:
    * textures read at an explicit level, or by the gradients taken before it.
    */

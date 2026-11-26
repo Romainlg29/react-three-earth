@@ -181,6 +181,10 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   ```tsx
   <Water preset="open-ocean" surfHeightMeters={1.5} surfPeriodSeconds={12} />
   ```
+- The surf zone, where the surf breaks: whitewater left behind each breaking crest that thins until the next one, a
+  lasting sheen of foam between them (both broken into the whitecaps' bubbly patches), and water clouded with the
+  sand the waves stir up (the `seafloorColor`, lightened). A fixed `color` keeps its colour there. A custom mesh
+  shading gets the zone as `ground.surfZone` (0 to 1).
 - The map is as sharp as its texels: 16 m from 25 m up, 1 m at the water. Where no tile is drawn (off screen), the mesh
   falls back to sea level.
 - The mesh shows no imagery (`imageryOpacity`): with it, the colour steps at the mesh's edge.

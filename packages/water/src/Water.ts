@@ -219,6 +219,10 @@ const DEFAULT_SEAFLOOR_COLOR = '#c2b280'
 const FOAM_ALBEDO = 0.4
 /** Light crossing the surface twice, down to the seafloor and back up, keeps about half. */
 const SURFACE_TRANSMITTANCE = 0.5
+/** How much of the surf zone's colour is the sand its breaking waves stir up. */
+const SURF_ZONE_TURBIDITY = 0.45
+/** Suspended sand against the seafloor's albedo (which `SURFACE_TRANSMITTANCE` halved): brighter, nearer the surface. */
+const SURF_ZONE_SEDIMENT_BRIGHTNESS = 1.4
 
 /**
  * A physically based sea for the terrain, as a plugin: install it with `<Earth plugins={[water]}>`,
@@ -252,6 +256,8 @@ export class Water implements EarthPlugin {
   protected readonly depthWeight = uniform(0)
   protected readonly seaLevelMeters = uniform(0)
   protected readonly seafloorAlbedo = uniform(new Color())
+  /** 0 for a fixed `color`, which draws the sea as given. */
+  protected readonly surfZoneWeight = uniform(1)
   protected readonly diffuseAttenuation = uniform(new Vector3())
   /** The colour of sunlight scattered back out of the water after a metre through it: the faint glow of faces turned to the camera. */
   protected readonly scatterColor = uniform(new Color())
@@ -398,6 +404,7 @@ export class Water implements EarthPlugin {
     this.depthWeight.value = state.depthFromElevation ? 1 : 0
     this.seaLevelMeters.value = settings.seaLevelMeters ?? 0
     this.seafloorAlbedo.value.set(settings.seafloorColor ?? DEFAULT_SEAFLOOR_COLOR).multiplyScalar(SURFACE_TRANSMITTANCE)
+    this.surfZoneWeight.value = fixedColor === null ? 1 : 0
     this.diffuseAttenuation.value.set(...state.diffuseAttenuationPerMeter)
     const [red, green, blue] = state.diffuseAttenuationPerMeter
     this.scatterColor.value.setRGB(state.albedo[0] * Math.exp(-red), state.albedo[1] * Math.exp(-green), state.albedo[2] * Math.exp(-blue))
@@ -570,13 +577,22 @@ export class Water implements EarthPlugin {
   protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
       emissive: this.waveSurface.detail ? (this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>) : this.scatteredSunlight(view, waves.foam),
-      color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
+      color: mix(this.surfZoneBody(this.waterBody(ground.depthMeters), ground.surfZone), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
       underside: this.undersideLight(),
     }
   }
 
   /** The water's own colour over a seafloor `depth` metres down: the seafloor's light, dimmed going down and coming back up (Maritorena et al. 1994). */
+  /**
+   * The water in the surf zone (`surfZone` 1), churned by the breaking waves: clouded with the sand they stir up, as
+   * suspended sediment's colour (the seafloor's, lightened by the bubbles), over `SURF_ZONE_TURBIDITY` of the light.
+   */
+  protected surfZoneBody(body: Node<'vec3'>, surfZone: Node<'float'>): Node<'vec3'> {
+    const sediment = (this.seafloorAlbedo as unknown as Node<'vec3'>).mul(SURF_ZONE_SEDIMENT_BRIGHTNESS)
+    return mix(body, sediment, surfZone.mul(this.surfZoneWeight).mul(SURF_ZONE_TURBIDITY)) as unknown as Node<'vec3'>
+  }
+
   protected waterBody(depth: Node<'float'>): Node<'vec3'> {
     // Elevation models fill the sea with sea level where they hold no depth (Terrarium's land data near coasts, in
     // rectangles): no depth there is no seafloor, not a sandbar. Real shallows, half a metre down, still show.
