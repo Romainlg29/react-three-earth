@@ -95,8 +95,9 @@ export interface WaterOptions extends WaterSettings {
    */
   quality?: WaterQuality | 'auto'
   /**
-   * Lower the quality a level (high, low, then minimal) while frames take longer than `WATER_SLOW_FRAME_SECONDS` on
-   * average for `WATER_SLOW_SECONDS`, never raising it again; a console message says when. Default: true.
+   * Lower the quality from high to low while the wave mesh is drawn and frames take longer than
+   * `WATER_SLOW_FRAME_SECONDS` on average for `WATER_SLOW_SECONDS` (after ten seconds to settle), never raising it again
+   * and never to minimal (which drops the mesh); a console message says when. Default: true.
    */
   adaptiveQuality?: boolean
 }
@@ -130,15 +131,18 @@ export const WATER_QUALITY_LEVELS: Readonly<Record<WaterQuality, Readonly<WaterQ
   minimal: { computeGridSize: 64, framesPerSimulationStep: 3, meshResolution: 32, detail: false, mesh: false },
 }
 
-/** The quality levels from the costliest down, as `adaptiveQuality` steps through them. */
-const QUALITY_ORDER: readonly WaterQuality[] = ['high', 'low', 'minimal']
+/**
+ * The levels `adaptiveQuality` steps through, from the costliest down. Not to `'minimal'`, which drops the wave mesh: a
+ * GPU that is merely busy keeps its waves, only a software renderer (or a choice) draws the sea flat.
+ */
+const ADAPTIVE_QUALITY_ORDER: readonly WaterQuality[] = ['high', 'low']
 
 /** A frame slower than this on average, seconds, counts as slow for `adaptiveQuality`: under 30 frames a second. */
 export const WATER_SLOW_FRAME_SECONDS = 1 / 30
 /** How long frames must stay slow before `adaptiveQuality` lowers the quality, seconds. */
-export const WATER_SLOW_SECONDS = 2
-/** Frames after a start or a change of quality that `adaptiveQuality` does not judge: shaders compile, tiles load. */
-const ADAPTIVE_SETTLE_SECONDS = 3
+export const WATER_SLOW_SECONDS = 5
+/** Seconds after a start or a change of quality that `adaptiveQuality` does not judge: shaders compile, tiles stream. */
+const ADAPTIVE_SETTLE_SECONDS = 10
 
 /**
  * Whether the renderer draws in software, on the CPU (SwiftShader, llvmpipe, Microsoft's Basic Render Driver, a
@@ -313,7 +317,7 @@ export class Water implements EarthPlugin {
    * Watches the frame time for `adaptiveQuality`, and on the first frame looks for a software renderer for `'auto'`:
    * lowers the quality a level when frames stay slow, saying so on the console.
    */
-  protected adaptQuality(deltaSeconds: number, renderer: WebGPURenderer | undefined): void {
+  protected adaptQuality(deltaSeconds: number, renderer: WebGPURenderer | undefined, meshDrawn = this.waveMesh.mesh.visible): void {
     if (!this.checkedRenderer && renderer !== undefined) {
       this.checkedRenderer = true
       if (this.autoQuality && this.qualityValue !== 'minimal' && isSoftwareRenderer(renderer)) {
@@ -324,6 +328,11 @@ export class Water implements EarthPlugin {
     }
     // A frame after a pause (a hidden tab, a demand frame loop) says nothing about the frame rate.
     if (!this.adaptiveQuality || !(deltaSeconds > 0) || deltaSeconds > 0.5) return
+    // Judged only while the sea's costly part draws: slow frames over land or from high up are not the sea's.
+    if (!meshDrawn) {
+      this.slowSeconds = 0
+      return
+    }
     this.secondsSinceQualityChange += deltaSeconds
     if (this.secondsSinceQualityChange < ADAPTIVE_SETTLE_SECONDS) {
       this.averageFrameSeconds = deltaSeconds
@@ -333,7 +342,8 @@ export class Water implements EarthPlugin {
     this.averageFrameSeconds += (deltaSeconds - this.averageFrameSeconds) * Math.min(1, deltaSeconds / 0.5)
     this.slowSeconds = this.averageFrameSeconds > WATER_SLOW_FRAME_SECONDS ? this.slowSeconds + deltaSeconds : 0
     if (this.slowSeconds < WATER_SLOW_SECONDS) return
-    const lower = QUALITY_ORDER[QUALITY_ORDER.indexOf(this.qualityValue) + 1]
+    const step = ADAPTIVE_QUALITY_ORDER.indexOf(this.qualityValue)
+    const lower = step < 0 ? undefined : ADAPTIVE_QUALITY_ORDER[step + 1]
     if (lower === undefined) {
       this.slowSeconds = 0
       return

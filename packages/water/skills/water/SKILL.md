@@ -182,9 +182,10 @@ other frame, lays 32 cells a ring instead of 48 (about 66 000 triangles instead 
 the close-up ripples, the glitter and the foam's cells. Minimal simulates 64 texels every third frame and draws no wave
 mesh: the terrain's sea, tilted by the waves, with their foam (`WATER_QUALITY_LEVELS`).
 
-`adaptiveQuality` (default true, read once) lowers the level, high to low to minimal, while frames average slower than
-`WATER_SLOW_FRAME_SECONDS` (30 a second) for `WATER_SLOW_SECONDS`, and logs it; it never raises it again.
-`water.quality` says the level drawn now; `water.setQuality(level)` changes it yourself (the mesh keeps its first
+`adaptiveQuality` (default true, read once) lowers high to low while the wave mesh is drawn and frames average slower
+than `WATER_SLOW_FRAME_SECONDS` (30 a second) for `WATER_SLOW_SECONDS` (5 s, after 10 s to settle), and logs it. It
+never raises the level again and never drops to minimal, which would take the mesh's waves away. `water.quality` says
+the level drawn now; `water.setQuality(level)` changes it yourself, for a quality picker (the mesh keeps its first
 resolution, and the close-up detail applies to shaders built after).
 
 ```tsx

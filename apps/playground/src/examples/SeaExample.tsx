@@ -1,9 +1,9 @@
 import type { Earth as EarthImpl } from '@earthkit/globe'
 import { Imagery, MapStyleSource, QuantizedMeshSource, RasterDemSource, useEarth } from '@earthkit/globe/react'
-import { resolveWaterState, WATER_PRESETS, type Water as WaterImpl, type WaterPreset, type WaterSettings } from '@earthkit/water'
+import { resolveWaterState, WATER_PRESETS, WATER_QUALITY_LEVELS, type Water as WaterImpl, type WaterPreset, type WaterQuality, type WaterSettings } from '@earthkit/water'
 import { useWaveBuoyancy, Water } from '@earthkit/water/react'
 import { useFrame } from '@react-three/fiber'
-import { useLayoutEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { BoxGeometry, CylinderGeometry, Group, Mesh } from 'three'
 import { MeshStandardNodeMaterial } from 'three/webgpu'
 
@@ -34,6 +34,7 @@ const COASTS = placesFor<Coast>(
 )
 
 const PRESETS = Object.keys(WATER_PRESETS) as WaterPreset[]
+const QUALITIES = Object.keys(WATER_QUALITY_LEVELS) as WaterQuality[]
 
 /** A gale's light: dim, as under thick cloud (the atmosphere's default exposure is 10). */
 const STORM_EXPOSURE = 4
@@ -177,6 +178,7 @@ export function SeaExample() {
               Seafloor in shallow water
             </button>
           </div>
+          <QualityPicker water={water} />
           <SeaState preset={preset} windSpeedMetersPerSecond={wind ?? undefined} windDirectionDegrees={windDirection} />
         </>
       }
@@ -195,6 +197,39 @@ export function SeaExample() {
       />
       <Boat key={coast.name} water={water} longitudeDegrees={coast.view.longitudeDegrees} latitudeDegrees={coast.view.latitudeDegrees} headingDegrees={windDirection} />
     </ExampleShell>
+  )
+}
+
+/**
+ * The quality the sea draws at, and buttons to change it: `'auto'` may have picked `'minimal'` (no wave mesh) on a software
+ * renderer, and `adaptiveQuality` lowers high to low when frames run slow; `water.quality` changes without a render, so
+ * it is read every half second.
+ */
+function QualityPicker({ water }: { water: WaterImpl | null }) {
+  const [quality, setQuality] = useState<WaterQuality | null>(null)
+  useEffect(() => {
+    if (water === null) return
+    setQuality(water.quality)
+    const timer = setInterval(() => setQuality(water.quality), 500)
+    return () => clearInterval(timer)
+  }, [water])
+  return (
+    <div className="example-buttons" aria-label="Quality">
+      {QUALITIES.map(level => (
+        <button
+          key={level}
+          type="button"
+          aria-pressed={level === quality}
+          disabled={water === null}
+          onClick={() => {
+            water?.setQuality(level)
+            setQuality(level)
+          }}
+        >
+          {level === 'minimal' ? 'minimal (no wave mesh)' : `${level} quality`}
+        </button>
+      ))}
+    </div>
   )
 }
 
