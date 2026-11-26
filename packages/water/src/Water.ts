@@ -76,7 +76,8 @@ export interface WaterSettings {
   seafloorColor?: ColorRepresentation
   /**
    * Seeds the waves' random phases (an integer): the same seed, sea state and wave time (`water.waveSurface.timeSeconds`)
-   * draw the same sea on every device. Default: 1.
+   * draw the same sea on every device at the same quality, and the same long waves (over about 50 m, 100 m at low) at any
+   * quality. Default: 1.
    */
   waveSeed?: number
   /**
@@ -104,7 +105,7 @@ export interface WaterOptions extends WaterSettings {
    */
   quality?: WaterQuality | 'auto'
   /**
-   * Lower the quality from high to low while the wave mesh is drawn and frames take longer than
+   * Lower the quality from high to low while the wave mesh is drawn (on WebGL2, where it would be) and frames take longer than
    * `WATER_SLOW_FRAME_SECONDS` on average for `WATER_SLOW_SECONDS` (after ten seconds to settle), never raising it again
    * and never to minimal (which drops the mesh); a console message says when. Default: true.
    */
@@ -283,6 +284,8 @@ export class Water implements EarthPlugin {
   /** `quality: 'auto'`: the first frame may still find a software renderer. */
   protected readonly autoQuality: boolean
   protected adaptiveQuality: boolean
+  /** Whether the waves simulated last frame: on WebGL2, what `adaptiveQuality` judges. */
+  protected wavesAnimated = false
   /** Whether the quality level draws the wave mesh. */
   protected meshAllowed = true
   /** Seconds since the last change of quality, and the slow seconds counted since. */
@@ -342,7 +345,7 @@ export class Water implements EarthPlugin {
    * Watches the frame time for `adaptiveQuality`, and on the first frame looks for a software renderer for `'auto'`:
    * lowers the quality a level when frames stay slow, saying so on the console.
    */
-  protected adaptQuality(deltaSeconds: number, renderer: WebGPURenderer | undefined, meshDrawn = this.waveMesh.mesh.visible): void {
+  protected adaptQuality(deltaSeconds: number, renderer: WebGPURenderer | undefined, costlyPartDrawn = this.waveMesh.mesh.visible): void {
     if (!this.checkedRenderer && renderer !== undefined) {
       this.checkedRenderer = true
       if (this.autoQuality && this.qualityValue !== 'minimal' && isSoftwareRenderer(renderer)) {
@@ -354,7 +357,7 @@ export class Water implements EarthPlugin {
     // A frame after a pause (a hidden tab, a demand frame loop) says nothing about the frame rate.
     if (!this.adaptiveQuality || !(deltaSeconds > 0) || deltaSeconds > 0.5) return
     // Judged only while the sea's costly part draws: slow frames over land or from high up are not the sea's.
-    if (!meshDrawn) {
+    if (!costlyPartDrawn) {
       this.slowSeconds = 0
       return
     }
@@ -439,9 +442,11 @@ export class Water implements EarthPlugin {
     context.addObject(this.waveMesh.mesh)
     // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
-      this.adaptQuality(deltaSeconds, renderer)
+      // The sea's costly part: the mesh, or on WebGL2 (no mesh) the CPU's simulation where the mesh would show.
+      this.adaptQuality(deltaSeconds, renderer, this.waveMesh.mesh.visible || (this.wavesAnimated && this.waveSurface.compute === null && this.waveMesh.cameraNearSurface))
       this.followSun(earth)
       const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
+      this.wavesAnimated = animating
       this.glitterTime.value = this.waveSurface.timeSeconds % GLITTER_PERIOD_SECONDS
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
       this.waveMesh.update(animating && this.stateValue.waveMesh && this.meshAllowed && morph === 0, { renderer, terrain: earth.terrain, earth })

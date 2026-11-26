@@ -38,20 +38,32 @@ export interface WaveFieldOptions {
   lengthsMeters?: readonly number[]
   /** Default: `WAVE_GRID_SIZE`. */
   gridSize?: number
-  /** Seeds the random phases: the same seed draws the same sea. Default: 1. */
+  /** Seeds the random phases: the same seed draws the same sea, its long waves alike on grids of any size. Default: 1. */
   seed?: number
 }
 
-/** A small seeded generator (mulberry32): the same sea on every load and every device. */
-function createRandom(seed: number): () => number {
-  let state = seed >>> 0
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0
-    let value = state
-    value = Math.imul(value ^ (value >>> 15), value | 1)
-    value ^= value + Math.imul(value ^ (value >>> 7), value | 61)
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296
-  }
+/** Mixes a 32-bit integer (lowbias32): neighbouring inputs give unrelated outputs. */
+function mix32(value: number): number {
+  value ^= value >>> 16
+  value = Math.imul(value, 0x7feb352d)
+  value ^= value >>> 15
+  value = Math.imul(value, 0x846ca68b)
+  value ^= value >>> 16
+  return value >>> 0
+}
+
+/**
+ * The hash of one wave's draw, from the seed, the cascade and the wave's signed wavenumber indices, chained so each part
+ * can be hashed once for many waves. Hashed rather than drawn in turn, so a wave keeps its phase whatever the grid's
+ * size: the GPU's 256² and 128² simulations and the CPU's share their long waves, on every device.
+ */
+function hashStep(hash: number, value: number): number {
+  return mix32((hash ^ value) >>> 0)
+}
+
+/** A 32-bit hash as a uniform number strictly inside (0, 1). */
+function unitInterval(hash: number): number {
+  return (hash + 0.5) / 4294967296
 }
 
 /**
@@ -141,17 +153,29 @@ export class WaveField {
     if (this.lastSeaState !== null) this.setSeaState(this.lastSeaState)
   }
 
-  /** Two unit Gaussian numbers per wavenumber and cascade (Box–Muller), from a seeded generator. */
+  /**
+   * Two unit Gaussian numbers per wavenumber and cascade (Box–Muller), hashed from the seed and the wave's signed
+   * wavenumber indices: the same wave gets the same numbers on a grid of any size.
+   */
   protected drawGaussians(seed: number): Float64Array[] {
-    const random = createRandom(seed)
-    const cells = this.gridSize * this.gridSize
-    return this.cascades.map(() => {
+    const size = this.gridSize
+    const cells = size * size
+    const seedHash = mix32(seed >>> 0)
+    return this.cascades.map((_, cascadeIndex) => {
       const values = new Float64Array(cells * 2)
-      for (let index = 0; index < cells; index++) {
-        const radius = Math.sqrt(-2 * Math.log(Math.max(random(), 1e-12)))
-        const angle = 2 * Math.PI * random()
-        values[index * 2] = radius * Math.cos(angle)
-        values[index * 2 + 1] = radius * Math.sin(angle)
+      const cascadeHash = hashStep(seedHash, cascadeIndex)
+      for (let column = 0; column < size; column++) {
+        const waveX = column < size / 2 ? column : column - size
+        const columnHash = hashStep(cascadeHash, waveX & 0xffff)
+        for (let row = 0; row < size; row++) {
+          const waveY = row < size / 2 ? row : row - size
+          const waveHash = hashStep(columnHash, waveY & 0xffff)
+          const index = row * size + column
+          const radius = Math.sqrt(-2 * Math.log(unitInterval(hashStep(waveHash, 0))))
+          const angle = 2 * Math.PI * unitInterval(hashStep(waveHash, 1))
+          values[index * 2] = radius * Math.cos(angle)
+          values[index * 2 + 1] = radius * Math.sin(angle)
+        }
       }
       return values
     })

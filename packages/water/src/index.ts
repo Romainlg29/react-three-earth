@@ -39,7 +39,7 @@ export {
   SURF_MINIMUM_PERIOD_SECONDS,
   surfPhase,
 } from './waves/surf.js'
-export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND, type WaveSurfaceOptions, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
+export { cpuGridSizeFor, earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_MINIMUM_CPU_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND, type WaveSurfaceOptions, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 export {
   createRings,
   lookAhead,

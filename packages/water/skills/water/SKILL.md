@@ -117,7 +117,7 @@ The physical presets draw waves near the camera (`waves`, default true but for `
 wind's speed, `windDirectionDegrees` (where it blows from, default 270, a westerly) and `fetchKilometers` (open water it
 has blown over: short fetch, short steep waves), dispersed through the water's density and surface tension
 (`temperatureCelsius`, salinity: a small effect at the drawn scales). Four tiles of 800 m, 110 m, 15 m and 2.1 m are
-simulated by FFT (64 texels a side on the CPU, 256 on the GPU, whose tiles then repeat far less) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
+simulated by FFT (256 texels a side on the GPU at quality high, whose tiles then repeat far less; a quarter of that on the CPU) and tilt the surface's normal; each fades out where a pixel covers several of its texels, and the
 roughness takes back the slopes it carried, so the sea is sharp near the camera and the glint stays right at a distance. The
 ripples finer than the smallest tile (the rest of Cox & Munk's slopes) are drawn as detail within a few metres of the
 camera (`WAVE_DETAIL_SCALES`), and on the GPU's wave mesh the sun's glint off them glitters: cells about a pixel wide
@@ -126,7 +126,7 @@ Under WebGPU the simulation runs in compute shaders (four dispatches a frame, ea
 crests that break (where the choppy waves' Jacobian folds). The foam lasts: crests breaking now
 (`WAVE_BREAKING_SHARE` of the whitecap share) leave patches that fade over `WAVE_FOAM_LIFETIME_SECONDS` (4 s) into a web
 of bubbles, then wisps, together covering about the whitecap share (`whitecapCoverage`). On WebGL2
-it runs on the CPU (about 1.5 ms a frame on a desktop) without foam patterns: the whitecaps pale the sea evenly.
+it runs on the CPU (64 texels a side at high, about 1.5 ms a frame on a desktop; 32 at low and minimal, a quarter of that) without foam patterns: the whitecaps pale the sea evenly.
 
 - `water.state.significantWaveHeightMeters` gives the sea state's wave height (about 1 m at 5 m/s over 100 km).
 - Waves animate: the earth renders every frame while they can show, that is below 30 km and off the flat map.
@@ -199,9 +199,12 @@ coarse pointer) and `'high'` otherwise, then `'minimal'` if the first frame show
 llvmpipe, a fallback adapter: `isSoftwareRenderer`). Low simulates 128 texels a side instead of 256, stepping every
 other frame, lays 32 cells a ring instead of 48 (about 66 000 triangles instead of 146 000, same reach) and leaves out
 the close-up ripples, the glitter and the foam's cells. Minimal simulates 64 texels every third frame and draws no wave
-mesh: the terrain's sea, tilted by the waves, with their foam (`WATER_QUALITY_LEVELS`).
+mesh: the terrain's sea, tilted by the waves, with their foam (`WATER_QUALITY_LEVELS`). On WebGL2 (no GPU simulation, no
+mesh) the CPU simulates a quarter of the level's texels a side (64 at high, 32 below, `cpuGridSizeFor`) and steps as
+often as the level says, so low costs about an eighth of high there.
 
-`adaptiveQuality` (default true, read once) lowers high to low while the wave mesh is drawn and frames average slower
+`adaptiveQuality` (default true, read once) lowers high to low while the wave mesh is drawn (on WebGL2, while the CPU
+simulates the waves and the camera is as close as the mesh needs) and frames average slower
 than `WATER_SLOW_FRAME_SECONDS` (30 a second) for `WATER_SLOW_SECONDS` (5 s, after 10 s to settle), and logs it. It
 never raises the level again and never drops to minimal, which would take the mesh's waves away. `water.quality` says
 the level drawn now; `water.setQuality(level)` changes it yourself, for a quality picker: everything at once (the
@@ -219,9 +222,11 @@ export function PhoneSea() {
 ### Seed and wave time
 
 `waveSeed` (an integer, default 1) seeds the waves' random phases. The same seed, sea state and wave time draw the same
-sea on every WebGPU client, so they agree on where the crests are (and where a probed boat floats): set
+sea on every client at the same quality, so they agree on where the crests are (and where a probed boat floats): set
 `water.waveSurface.timeSeconds` on each from a shared clock before the frame (it then advances by the frame's time; the
-waves repeat every hour, `WAVE_REPEAT_PERIOD_SECONDS`). WebGL2 clients simulate a coarser grid, so their sea differs.
+waves repeat every hour, `WAVE_REPEAT_PERIOD_SECONDS`). Each wave's phase is hashed from the seed and its wavenumber, so
+a coarser grid (a lower quality, WebGL2's CPU) draws the same long waves: those over about 50 m between high and the
+CPU at high, over about 100 m between low and the CPU below it. Shorter ones differ.
 
 ### Float a boat: wave probes
 

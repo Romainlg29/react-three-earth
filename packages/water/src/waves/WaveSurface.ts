@@ -26,6 +26,16 @@ export const WAVE_MAXIMUM_CAMERA_HEIGHT_METERS = 30_000
  * the waves that show at a given distance come from a longer tile and its repeats are far apart.
  */
 export const WAVE_COMPUTE_GRID_SIZE = 256
+/** The CPU's simulation (WebGL2) is never coarser than this many texels a side. */
+export const WAVE_MINIMUM_CPU_GRID_SIZE = 32
+
+/**
+ * Texels a side of the CPU's simulation for a GPU size: a quarter of it, from `WAVE_MINIMUM_CPU_GRID_SIZE`, so a lower
+ * quality level costs less on WebGL2 too (64 at 256, 32 at 128 and below).
+ */
+export function cpuGridSizeFor(computeGridSize: number): number {
+  return Math.max(WAVE_MINIMUM_CPU_GRID_SIZE, computeGridSize / 4)
+}
 
 /** How a point of the plane changes across a pixel (dFdx, dFdy), metres: what textures read inside a branch need. */
 interface PlaneGradients {
@@ -67,8 +77,16 @@ export interface WaveSurfaceOptions extends WaveFieldOptions {
  * roughness takes them back.
  */
 export class WaveSurface {
-  /** The CPU simulation (WebGL2), `WAVE_GRID_SIZE` texels a side. */
-  readonly field: WaveField
+  /**
+   * The CPU simulation (WebGL2): `WaveFieldOptions.gridSize` texels a side when given, else a quarter of
+   * `computeGridSize` (`cpuGridSizeFor`). A new one when `setLevel` changes the size.
+   */
+  get field(): WaveField {
+    return this.cpuField
+  }
+  protected cpuField: WaveField
+  /** Whether `WaveFieldOptions.gridSize` fixed the CPU's size, so `setLevel` leaves it. */
+  protected readonly cpuGridSizeFixed: boolean
   /** The spectrum the GPU simulates, `WAVE_COMPUTE_GRID_SIZE` texels a side: made with the GPU simulation. */
   protected computeSpectrum: WaveField | null = null
   protected readonly fieldOptions: WaveFieldOptions
@@ -150,6 +168,8 @@ export class WaveSurface {
   /** The GPU simulation steps every this many updates. */
   framesPerSimulationStep: number
   protected framesSinceStep = 0
+  /** Whether the CPU field has stepped since it was made or took over: its first update always steps. */
+  protected cpuStepped = false
 
   constructor({ computeGridSize = WAVE_COMPUTE_GRID_SIZE, detail = true, framesPerSimulationStep = 1, ...options }: WaveSurfaceOptions = {}) {
     checkComputeGridSize(computeGridSize)
@@ -158,7 +178,8 @@ export class WaveSurface {
     checkFramesPerSimulationStep(framesPerSimulationStep)
     this.framesPerSimulationStep = framesPerSimulationStep
     this.fieldOptions = options
-    this.field = new WaveField(options)
+    this.cpuGridSizeFixed = options.gridSize !== undefined
+    this.cpuField = new WaveField({ ...options, gridSize: options.gridSize ?? cpuGridSizeFor(computeGridSize) })
     this.meanSquareSlopes = this.field.cascades.map(() => uniform(0) as UniformNode<'float', number>)
     this.texelSizes = this.field.cascades.map(cascade => uniform(cascade.lengthMeters / this.field.gridSize) as UniformNode<'float', number>)
     this.surfaceSampler = texture(this.field.texture)
@@ -212,8 +233,8 @@ export class WaveSurface {
 
   /**
    * Changes what the waves cost while they run: a new `computeGridSize` restarts the GPU's simulation at that size on the
-   * next update, `framesPerSimulationStep` applies at once, and `detail` to the shaders built from now on (those built
-   * keep theirs).
+   * next update and resizes the CPU's (`cpuGridSizeFor`), `framesPerSimulationStep` applies at once on either, and
+   * `detail` to the shaders built from now on (those built keep theirs).
    */
   setLevel({ computeGridSize = this.computeGridSize, framesPerSimulationStep = this.framesPerSimulationStep, detail = this.detail }: Pick<WaveSurfaceOptions, 'computeGridSize' | 'framesPerSimulationStep' | 'detail'>): void {
     checkComputeGridSize(computeGridSize)
@@ -221,9 +242,25 @@ export class WaveSurface {
     if (computeGridSize !== this.computeGridSize) {
       this.computeGridSize = computeGridSize
       if (this.computeField !== null) this.stopCompute()
+      if (!this.cpuGridSizeFixed) this.resizeCpuField(cpuGridSizeFor(computeGridSize))
     }
     this.framesPerSimulationStep = framesPerSimulationStep
     this.detailWeight.value = detail ? 1 : 0
+  }
+
+  /** A new CPU simulation of `gridSize` texels a side: the same seed and sea state, so its long waves stay as they were. */
+  protected resizeCpuField(gridSize: number): void {
+    if (gridSize === this.cpuField.gridSize) return
+    const previous = this.cpuField
+    this.cpuField = new WaveField({ ...this.fieldOptions, seed: previous.seed, gridSize })
+    if (this.seaState !== null) this.cpuField.setSeaState(this.seaState)
+    previous.dispose()
+    if (this.computeField === null) {
+      this.surfaceSampler.value = this.cpuField.texture
+      this.useField(this.cpuField)
+    }
+    // The next update steps the new field at once: its texture starts empty.
+    this.cpuStepped = false
   }
 
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
@@ -251,6 +288,7 @@ export class WaveSurface {
 
   /** Draws another sea from `seed` (any integer), in the same sea state. */
   setSeed(seed: number): void {
+    this.cpuStepped = false
     this.field.setSeed(seed)
     this.computeSpectrum?.setSeed(seed)
     this.useField(this.computeSpectrum ?? this.field)
@@ -258,6 +296,8 @@ export class WaveSurface {
 
   setSeaState(options: SeaStateOptions): void {
     this.seaState = { ...options }
+    // The CPU's texture shows the new sea on the next update, with the roughness that already follows it.
+    this.cpuStepped = false
     this.field.setSeaState(options)
     this.computeSpectrum?.setSeaState(options)
     this.useField(this.computeSpectrum ?? this.field)
@@ -298,9 +338,13 @@ export class WaveSurface {
         this.computeField.update(renderer, this.timeSecondsValue)
       }
     } else {
-      // No WebGPU (or another renderer took over): back to the CPU.
+      // No WebGPU (or another renderer took over): back to the CPU, stepping as often as the GPU would.
       if (this.computeField !== null) this.stopCompute()
-      this.field.update(this.timeSecondsValue)
+      if (!this.cpuStepped || ++this.framesSinceStep >= this.framesPerSimulationStep) {
+        this.framesSinceStep = 0
+        this.cpuStepped = true
+        this.cpuField.update(this.timeSecondsValue)
+      }
     }
     this.followCamera(cameraWorld, cameraEarth, earth)
     const forward = camera.getWorldDirection(scratchForward).transformDirection(scratchMatrix)
@@ -334,6 +378,7 @@ export class WaveSurface {
     this.computeField = null
     this.computeSpectrum?.dispose()
     this.computeSpectrum = null
+    this.cpuStepped = false
     this.useField(this.field)
   }
 

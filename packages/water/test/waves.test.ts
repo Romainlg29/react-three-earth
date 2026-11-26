@@ -149,6 +149,21 @@ describe('WaveField', () => {
     still.setSeaState({ ...openOcean, windSpeedMetersPerSecond: 0 })
     expect(still.cascades.every(cascade => cascade.meanSquareSlope === 0)).toBe(true)
   })
+  it('gives a wave the same phase on a grid of any size, so every device and quality level draws the same long waves', () => {
+    const gaussiansOf = (field: WaveField) => (field as unknown as { gaussians: Float64Array[] }).gaussians
+    const small = new WaveField({ seed: 3, gridSize: 32 })
+    const large = new WaveField({ seed: 3, gridSize: 256 })
+    for (const [waveX, waveY] of [[1, 0], [-3, 5], [7, -7], [-16, -2]] as const) {
+      const at = (field: WaveField) => {
+        const size = field.gridSize
+        const index = ((waveY + size) % size) * size + ((waveX + size) % size)
+        return gaussiansOf(field).map(values => [values[index * 2], values[index * 2 + 1]])
+      }
+      expect(at(small)).toEqual(at(large))
+    }
+    // Another seed, another sea.
+    expect(gaussiansOf(new WaveField({ seed: 4, gridSize: 32 }))[0]![2]).not.toBe(gaussiansOf(small)[0]![2])
+  })
 })
 
 describe('WaveSurface', () => {
@@ -181,6 +196,36 @@ describe('WaveSurface', () => {
     camera.position.set(6378137 + 400_000, 0, 0)
     camera.updateMatrixWorld()
     expect(surface.update(0.016, camera, earth)).toBe(false)
+  })
+  it('sizes and steps the CPU simulation (WebGL2) by the quality level', () => {
+    const surface = new WaveSurface({ computeGridSize: 256, seed: 5 })
+    surface.setSeaState(openOcean)
+    expect(surface.field.gridSize).toBe(64)
+    const earth = new Group()
+    earth.updateMatrixWorld()
+    const camera = new PerspectiveCamera()
+    camera.position.set(6378137 + 500, 0, 0)
+    camera.updateMatrixWorld()
+    const before = surface.field
+    surface.setLevel({ computeGridSize: 128, framesPerSimulationStep: 2 })
+    expect(surface.field.gridSize).toBe(32)
+    expect(surface.field).not.toBe(before)
+    expect(surface.field.seed).toBe(5)
+    expect(surface.field.cascades[0]!.meanSquareSlope).toBeGreaterThan(0)
+    const samplers = surface as unknown as { surfaceSampler: { value: Texture } }
+    expect(samplers.surfaceSampler.value).toBe(surface.field.texture)
+    let steps = 0
+    const update = surface.field.update.bind(surface.field)
+    surface.field.update = (time: number) => {
+      steps++
+      update(time)
+    }
+    for (let frame = 0; frame < 6; frame++) surface.update(0.016, camera, earth)
+    // The first update steps at once, then every other one.
+    expect(steps).toBe(3)
+    surface.setLevel({ computeGridSize: 64 })
+    expect(surface.field.gridSize).toBe(32)
+    expect(new WaveSurface({ computeGridSize: 128, gridSize: 64 }).field.gridSize).toBe(64)
   })
 })
 
