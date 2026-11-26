@@ -309,8 +309,11 @@ export class WaveMesh {
     const depthKnown = smoothstep(0.05, 0.5, ground.depthMeters).mul(this.depthWeight).mul(ground.known)
     const sloping = float(UNKNOWN_SHALLOW_METERS).add(max(shore.distanceMeters, 0).mul(SURF_BEACH_SLOPE).sub(UNKNOWN_SHALLOW_METERS).mul(shore.known))
     const shallowMeters = sloping.add(ground.depthMeters.sub(sloping).mul(depthKnown)) as unknown as Node<'float'>
-    // The wind's waves break where they stand taller than `WAVE_BREAKING_DEPTH_RATIO` of the depth: calmed there.
-    const shallows = shallowMeters.mul(WAVE_BREAKING_DEPTH_RATIO).div(max(this.significantWaveHeightMeters, 0.05)).clamp(0, 1)
+    // The wind's waves break where they stand taller than `WAVE_BREAKING_DEPTH_RATIO` of the depth: calmed there, where
+    // the terrain gives the depth only. The beach's slope stands for it for the surf alone: the shore map it comes from
+    // is redrawn as the camera moves, and the open sea must not change with it.
+    const breakingDepth = float(UNKNOWN_SHALLOW_METERS).add(ground.depthMeters.sub(UNKNOWN_SHALLOW_METERS).mul(depthKnown))
+    const shallows = breakingDepth.mul(WAVE_BREAKING_DEPTH_RATIO).div(max(this.significantWaveHeightMeters, 0.05)).clamp(0, 1)
     const atShore = smoothstep(0.5, 1, ground.water)
     return { ...ground, shore, shallowMeters, calm: shallows.mul(atShore) as unknown as Node<'float'> }
   }
@@ -342,8 +345,12 @@ export class WaveMesh {
       .mul(float(1).sub(smoothstep(deepLength.mul(0.25), deepLength.mul(0.5), depth)))
       .mul(smoothstep(0.5, 1, ground.water))
       .mul(fade)
-    // The waves themselves only where the vertices lie close enough to draw them; the surf zone's foam everywhere.
-    const resolved = float(1).sub(smoothstep(wavelength.mul(1 / 4), wavelength.mul(1 / 2), spacingMeters))
+    // The waves themselves only where the vertices lie close enough to draw them, and the shore map (whose texels grow
+    // with the camera's height) places their crests well enough; the surf zone's foam and sand everywhere.
+    const mapTexelMeters = this.ground.halfSizeMeters.mul(2 / this.ground.texels)
+    const resolved = float(1)
+      .sub(smoothstep(wavelength.mul(1 / 4), wavelength.mul(1 / 2), spacingMeters))
+      .mul(float(1).sub(smoothstep(wavelength.mul(0.5), wavelength, mapTexelMeters)))
     const amplitude = min(height, limit).mul(0.5).mul(sets).mul(along).mul(present).mul(resolved) as unknown as Node<'float'>
     // Gerstner: the water turns in orbits, gathering under the crests; `Q A k` grows to `SURF_BREAKING_LEAN` as they break.
     const lean = min(amplitude.mul(wavenumber), breaking.mul(SURF_BREAKING_LEAN - SURF_LEAN).add(SURF_LEAN)) as unknown as Node<'float'>
@@ -420,20 +427,24 @@ export class WaveMesh {
     const depthMeters = varying(ground.depthMeters, 'waveDepth') as unknown as Node<'float'>
     const waveHeightMeters = varying(displacement.z, 'waveHeight') as unknown as Node<'float'>
     const waterLevel = varying(ground.surfaceMeters, 'waveLevel') as unknown as Node<'float'>
-    // The surf, per pixel from its phase at the vertices: one varying pair rather than another lookup of the shore.
-    const surfOrbit = varying(vec4(surf.towardsShore, surf.phase, surf.amplitudeMeters), 'waveSurfOrbit') as unknown as Node<'vec4'>
-    const surfShape = varying(vec4(surf.wavenumber, surf.lean, surf.breaking, surf.resolved), 'waveSurfShape') as unknown as Node<'vec4'>
-    const surfTowards = surfOrbit.xy.div(max(surfOrbit.xy.length(), 1e-6)) as unknown as Node<'vec2'>
+    // The surf: its height, wavenumber, lean and breaking vary slowly, from the vertices; its phase and way to the shore
+    // from the shore map per pixel, as the vertices' phase, interpolated across a triangle, would bend the crests into
+    // a sawtooth where the vertices lie a few to a wave.
+    const surfShape = varying(vec4(surf.amplitudeMeters, surf.wavenumber, surf.lean, surf.breaking), 'waveSurfShape') as unknown as Node<'vec4'>
+    const surfResolved = varying(surf.resolved, 'waveSurfResolved') as unknown as Node<'float'>
+    const fragmentShore = this.ground.sampleShore(fragmentPlane)
+    const surfPhase = surfPhaseNode(this.surfDeepWavenumber as unknown as Node<'float'>, max(fragmentShore.distanceMeters, 0) as unknown as Node<'float'>)
+    const surfTowards = fragmentShore.towardsShore
     const sea = surface.sampleWaves(fragmentPlane)
     const waves: WaveSurfaceNodes = {
       ...sea,
-      slope: sea.slope.add(this.surfSlope(surfTowards, surfOrbit.z as unknown as Node<'float'>, surfOrbit.w as unknown as Node<'float'>, max(surfShape.x, 1e-4) as unknown as Node<'float'>, surfShape.y as unknown as Node<'float'>)) as unknown as Node<'vec2'>,
-      foam: max(sea.foam, surface.patternFoam(fragmentPlane, this.surfFoam(surfOrbit.z as unknown as Node<'float'>, surfShape.z as unknown as Node<'float'>, surfShape.w as unknown as Node<'float'>))) as unknown as Node<'float'>,
+      slope: sea.slope.add(this.surfSlope(surfTowards, surfPhase, surfShape.x as unknown as Node<'float'>, max(surfShape.y, 1e-4) as unknown as Node<'float'>, surfShape.z as unknown as Node<'float'>)) as unknown as Node<'vec2'>,
+      foam: max(sea.foam, surface.patternFoam(fragmentPlane, this.surfFoam(surfPhase, surfShape.w as unknown as Node<'float'>, surfResolved))) as unknown as Node<'float'>,
     }
     // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
     const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize() as unknown as Node<'vec3'>
     const toCamera = vec3(surface.cameraPlane.sub(drawnPlane), surface.cameraPlaneHeight.sub(waterLevel.add(waveHeightMeters))).normalize() as unknown as Node<'vec3'>
-    const { color, roughness, emissive, underside } = shade(waves, { depthMeters, surfZone: surfShape.z as unknown as Node<'float'> }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
+    const { color, roughness, emissive, underside } = shade(waves, { depthMeters, surfZone: surfShape.w as unknown as Node<'float'> }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
     // Both sides: a crest higher than the camera shows its underside, which would otherwise leave a hole to the sky's black.
     material.side = DoubleSide
     material.colorNode = select(frontFacing, color, vec3(0)) as unknown as Node<'vec3'>
