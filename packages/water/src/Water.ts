@@ -48,6 +48,13 @@ export interface WaterSettings {
   /** A fixed roughness, 0 to 1, instead of the wind's; null for the wind's. */
   roughness?: number | null
   /**
+   * The share of the sky under cloud, 0 to 1: the sun's glow through the crests, its glitter and the light under the
+   * waves dim with it. The sky and the sun's own light are the atmosphere's: for a storm, lower its exposure
+   * (`<Atmosphere exposure={4}>`) or give it haze (`AtmosphereParameters.fromVisibility(12_000)`). Default: the
+   * preset's (0.9 for `'storm'`, 0 for the others).
+   */
+  cloudCover?: number
+  /**
    * How much of the ground's own colour (the imagery, or the terrain style) shows through on water, 0 to 1. Default: 0,
    * the water's colour alone, as the satellite sea is a photograph of other light and weather.
    */
@@ -125,6 +132,8 @@ export interface WaterState {
   readonly roughness: number
   /** The share of the sea white with whitecaps. */
   readonly whitecapCoverage: number
+  /** The share of the sky under cloud, 0 to 1. */
+  readonly cloudCover: number
   /** Downwelling light lost per metre of depth, per band (red, green, blue). */
   readonly diffuseAttenuationPerMeter: readonly [number, number, number]
   /** The share of sunlight a crest lit from behind sends on to the eye, per band (`WaterOptics.crestTransmittance`); 0 for a fixed `color`. */
@@ -185,6 +194,8 @@ export class Water implements EarthPlugin {
   protected readonly glitterTime = uniform(0)
   /** The sunlight reaching the sea under the camera, through the atmosphere, in the scene's units; 0 without one. */
   protected readonly sunIlluminance = uniform(new Vector3())
+  /** The share of the sun the clouds let through (`1 - cloudCover`), scaling `sunIlluminance`. */
+  protected sunThroughClouds = 1
   /** 1 when `roughness` is fixed: the drawn waves then do not change it. */
   protected readonly fixedRoughnessWeight = uniform(0)
   /** The surface's whole slope variance from the wind (Cox & Munk): drawn waves carry part of it, roughness the rest. */
@@ -257,6 +268,8 @@ export class Water implements EarthPlugin {
     this.waveMesh.significantWaveHeightMeters.value = state.significantWaveHeightMeters
     this.waveSurface.seaLevelMeters = settings.seaLevelMeters ?? 0
     this.waveSurface.setSeed(state.waveSeed)
+    this.sunThroughClouds = 1 - state.cloudCover
+    this.waveSurface.setWind(state.windSpeedMetersPerSecond, state.windDirectionDegrees)
     if (state.waves) this.waveSurface.setSeaState(seaStateOf(state))
     this.earth?.requestFrame()
   }
@@ -337,7 +350,7 @@ export class Water implements EarthPlugin {
     surface.directionToPlane(atmosphere.sunDirectionECEF, this.sunInPlane.value)
     const position = earthCenteredFromGeographic((surface.cameraLongitudeRadians * 180) / Math.PI, (surface.cameraLatitudeRadians * 180) / Math.PI, surface.seaLevelMeters, scratchPosition)
     const { sun } = atmosphere.getSunAndSkyIlluminance(position, scratchIlluminance)
-    this.sunIlluminance.value.copy(sun).multiplyScalar(atmosphere.opacity)
+    this.sunIlluminance.value.copy(sun).multiplyScalar(atmosphere.opacity * this.sunThroughClouds)
   }
 
   /**
@@ -514,6 +527,7 @@ export function resolveState(settings: WaterSettings): WaterState {
   const fixedRoughness = settings.roughness === undefined ? preset.roughness : settings.roughness
   const fixedColor = settings.color === undefined ? preset.color : settings.color
   const waveSeed = settings.waveSeed ?? 1
+  const cloudCover = settings.cloudCover ?? preset.cloudCover
 
   if (!inRange(windSpeedMetersPerSecond, 0, 60)) throw new Error(`Water: windSpeedMetersPerSecond must be between 0 and 60, got ${windSpeedMetersPerSecond}.`)
   if (!inRange(chlorophyllMilligramsPerCubicMeter, 0, 100)) {
@@ -525,6 +539,7 @@ export function resolveState(settings: WaterSettings): WaterState {
   if (!Number.isFinite(windDirectionDegrees)) throw new Error(`Water: windDirectionDegrees must be a finite number (270: from the west), got ${windDirectionDegrees}.`)
   if (!inRange(fetchKilometers, 0.1, 5000)) throw new Error(`Water: fetchKilometers must be between 0.1 and 5000, got ${fetchKilometers}.`)
   if (!inRange(temperatureCelsius, -2, 40)) throw new Error(`Water: temperatureCelsius must be between -2 and 40 (liquid seawater), got ${temperatureCelsius}.`)
+  if (!inRange(cloudCover, 0, 1)) throw new Error(`Water: cloudCover must be between 0 (clear) and 1 (overcast), got ${cloudCover}.`)
   if (!Number.isSafeInteger(waveSeed)) throw new Error(`Water: waveSeed must be an integer (the same seed draws the same sea), got ${waveSeed}.`)
   checkColor('color', fixedColor)
   checkColor('flatMapColor', settings.flatMapColor)
@@ -552,6 +567,7 @@ export function resolveState(settings: WaterSettings): WaterState {
     // Foam is matte: whitecaps roughen the sea in proportion.
     roughness: fixedRoughness ?? windRoughness + (1 - windRoughness) * whitecaps,
     whitecapCoverage: whitecaps,
+    cloudCover,
     diffuseAttenuationPerMeter: optics.diffuseAttenuationPerMeter,
     crestTransmittance: fixedColor === null ? optics.crestTransmittance : [0, 0, 0],
     imageryOpacity,

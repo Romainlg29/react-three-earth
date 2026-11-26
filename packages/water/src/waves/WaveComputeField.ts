@@ -30,6 +30,8 @@ export class WaveComputeField {
   readonly foamTexture: StorageArrayTexture
   /** Φ⁻¹ of the share of each cascade's surface breaking at any moment: how far below its mean the Jacobian falls there. */
   readonly breakingScore = uniform(-8)
+  /** Choppiness λ: how far the surface moves towards the crests (`choppinessForWind`). */
+  readonly choppiness = uniform(WAVE_CHOPPINESS)
   protected readonly field: WaveField
   /** What the foam keeps of itself this frame: exp(-Δt / lifetime). */
   protected readonly foamKept = uniform(0)
@@ -147,11 +149,11 @@ export class WaveComputeField {
       storageTexture(this.surfaceTexture, texel, value).depth(cascade).toStack()
       storageTexture(this.foldTexture, texel, folded).depth(cascade).toStack()
       // This cascade's own Jacobian: its crests break where it folds, past its own spread (see foam.ts).
-      const lambda = WAVE_CHOPPINESS
+      const lambda = this.choppiness
       const jacobian = float(1)
         .sub(value.z.mul(lambda))
         .mul(float(1).sub(value.w.mul(lambda)))
-        .sub(folded.x.mul(folded.x).mul(lambda * lambda))
+        .sub(folded.x.mul(folded.x).mul(lambda.mul(lambda)))
       const spread = this.cascadeSpreads.element(cascade).mul(lambda)
       const threshold = float(1).add(spread.mul(this.breakingScore))
       const edge = spread.mul(0.25).add(1e-4)
