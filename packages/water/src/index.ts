@@ -18,6 +18,7 @@ export {
   angularFrequency,
   directionalSpreading,
   jonswapSpectrum,
+  peakPeriodSeconds,
   seawaterDensity,
   seawaterSurfaceTension,
   significantWaveHeight,
@@ -28,6 +29,16 @@ export { WAVE_CASCADE_LENGTHS_METERS, WAVE_GRID_SIZE, WAVE_REPEAT_PERIOD_SECONDS
 export { choppinessForWind, inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS, WAVE_FOAM_LIFETIME_SECONDS } from './waves/foam.js'
 export { createButterflies, foamKept, WaveComputeField } from './waves/WaveComputeField.js'
 export { createFoamTexture, FOAM_TEXTURE_CELLS, FOAM_TEXTURE_SIZE } from './waves/foamTexture.js'
+export {
+  deepWavenumber,
+  shallowWavenumber,
+  shoalingCoefficient,
+  SURF_BEACH_SLOPE,
+  SURF_HEIGHT_SHARE,
+  SURF_MAXIMUM_PERIOD_SECONDS,
+  SURF_MINIMUM_PERIOD_SECONDS,
+  surfPhase,
+} from './waves/surf.js'
 export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND, type WaveSurfaceOptions, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 export {
   createRings,

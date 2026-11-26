@@ -57,6 +57,16 @@ export function jonswapSpectrum(frequency: number, windSpeedMetersPerSecond: num
   return phillips * gravity ** 2 * frequency ** -5 * Math.exp(-1.25 * (peakFrequency / frequency) ** 4) * peakEnhancement
 }
 
+/**
+ * The period of the waves carrying the most energy in a JONSWAP sea, seconds: `2π / ωp`, `ωp = 22 (g²/(U F))^(1/3)`.
+ * Zero in still air.
+ */
+export function peakPeriodSeconds(windSpeedMetersPerSecond: number, fetchMeters: number): number {
+  if (windSpeedMetersPerSecond <= 0) return 0
+  const gravity = GRAVITY_METERS_PER_SECOND_SQUARED
+  return (2 * Math.PI) / (22 * (gravity ** 2 / (windSpeedMetersPerSecond * fetchMeters)) ** (1 / 3))
+}
+
 /** Spreading exponent of `directionalSpreading`: most energy within about 40° of downwind. */
 const SPREADING_EXPONENT = 8
 const SPREADING_NORMALISATION = (() => {

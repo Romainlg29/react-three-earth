@@ -13,7 +13,8 @@ import { cameraViewMatrix, ceil, dot, exp, exp2, float, floor, fwidth, hash, log
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
-import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
+import { peakPeriodSeconds, significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
+import { SURF_HEIGHT_SHARE, SURF_MAXIMUM_PERIOD_SECONDS, SURF_MINIMUM_PERIOD_SECONDS } from './waves/surf.js'
 import { WATER_INDEX_OF_REFRACTION, WaveMesh, type WaveMeshGround, type WaveMeshShading, type WaveMeshView } from './waves/WaveMesh.js'
 import { WaveBuoyancy, type WaveBuoyancyHull, type WaveBuoyancyOptions } from './waves/WaveBuoyancy.js'
 import { WaveProbe, type WaveProbeOptions } from './waves/WaveProbe.js'
@@ -83,6 +84,14 @@ export interface WaterSettings {
    * surface leans towards the crests. Off, or on WebGL2, the waves tilt the terrain's normals only. Default: true.
    */
   waveMesh?: boolean
+  /**
+   * The surf's height in open water off the coast, metres: near the shore (on the wave mesh), a train of waves runs
+   * straight at the land, shortens and steepens over the shallows and breaks with foam. 0 turns it off. Default:
+   * `SURF_HEIGHT_SHARE` of the wind sea's significant wave height.
+   */
+  surfHeightMeters?: number
+  /** The surf's period, seconds: longer, longer waves. Default: the wind sea's peak period, from 4 to 16 s. */
+  surfPeriodSeconds?: number
 }
 
 export interface WaterOptions extends WaterSettings {
@@ -199,6 +208,9 @@ export interface WaterState {
   readonly depthFromElevation: boolean
   readonly waveSeed: number
   readonly waveMesh: boolean
+  /** The surf's height off the coast, metres (0 without waves), and its period, seconds. */
+  readonly surfHeightMeters: number
+  readonly surfPeriodSeconds: number
 }
 
 const DEFAULT_FLAT_MAP_COLOR = '#a0c8f0'
@@ -397,6 +409,7 @@ export class Water implements EarthPlugin {
     this.waveSurface.weight.value = state.waves ? 1 : 0
     this.waveMesh.depthWeight.value = state.depthFromElevation ? 1 : 0
     this.waveMesh.significantWaveHeightMeters.value = state.significantWaveHeightMeters
+    this.waveMesh.setSurf(state.surfHeightMeters, state.surfPeriodSeconds)
     this.waveSurface.seaLevelMeters = settings.seaLevelMeters ?? 0
     this.waveSurface.setSeed(state.waveSeed)
     this.sunThroughClouds = 1 - state.cloudCover
@@ -679,6 +692,12 @@ export function resolveState(settings: WaterSettings): WaterState {
   checkColor('color', fixedColor)
   checkColor('flatMapColor', settings.flatMapColor)
   checkColor('seafloorColor', settings.seafloorColor)
+  if (settings.surfHeightMeters !== undefined && !inRange(settings.surfHeightMeters, 0, 30)) {
+    throw new Error(`Water: surfHeightMeters must be between 0 (no surf) and 30, got ${settings.surfHeightMeters}.`)
+  }
+  if (settings.surfPeriodSeconds !== undefined && !inRange(settings.surfPeriodSeconds, 2, 30)) {
+    throw new Error(`Water: surfPeriodSeconds must be between 2 and 30, got ${settings.surfPeriodSeconds}.`)
+  }
   if (settings.seaLevelMeters !== undefined && !Number.isFinite(settings.seaLevelMeters)) {
     throw new Error(`Water: seaLevelMeters must be a finite number, got ${settings.seaLevelMeters}.`)
   }
@@ -688,16 +707,19 @@ export function resolveState(settings: WaterSettings): WaterState {
   // A fixed style has no foam: it draws the sea as given.
   const whitecaps = fixedColor === null ? whitecapCoverage(windSpeedMetersPerSecond) : 0
   const windRoughness = surfaceRoughness(windSpeedMetersPerSecond)
+  const waves = settings.waves ?? preset.waves
+  const significantWaveHeightMeters = significantWaveHeight({ windSpeedMetersPerSecond, windDirectionDegrees, fetchKilometers, temperatureCelsius, salinityPartsPerThousand })
+  const peakPeriod = peakPeriodSeconds(windSpeedMetersPerSecond, fetchKilometers * 1000)
   return {
     preset: presetName,
     windSpeedMetersPerSecond,
     chlorophyllMilligramsPerCubicMeter,
     salinityPartsPerThousand,
-    waves: settings.waves ?? preset.waves,
+    waves,
     windDirectionDegrees,
     fetchKilometers,
     temperatureCelsius,
-    significantWaveHeightMeters: significantWaveHeight({ windSpeedMetersPerSecond, windDirectionDegrees, fetchKilometers, temperatureCelsius, salinityPartsPerThousand }),
+    significantWaveHeightMeters,
     albedo,
     // Foam is matte: whitecaps roughen the sea in proportion.
     roughness: fixedRoughness ?? windRoughness + (1 - windRoughness) * whitecaps,
@@ -709,6 +731,8 @@ export function resolveState(settings: WaterSettings): WaterState {
     depthFromElevation: settings.depthFromElevation ?? false,
     waveSeed,
     waveMesh: settings.waveMesh ?? true,
+    surfHeightMeters: waves ? (settings.surfHeightMeters ?? significantWaveHeightMeters * SURF_HEIGHT_SHARE) : 0,
+    surfPeriodSeconds: settings.surfPeriodSeconds ?? Math.min(Math.max(peakPeriod, SURF_MINIMUM_PERIOD_SECONDS), SURF_MAXIMUM_PERIOD_SECONDS),
   }
 }
 
