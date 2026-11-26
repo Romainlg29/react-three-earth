@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/measure",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless measuring for @earthkit/globe: geodesic distances, areas and elevation profiles on the globe and the flat map",
   "keywords": [
     "earthkit",

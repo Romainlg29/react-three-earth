@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/water",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Physically based sea for @earthkit/globe: water coloured from its optics (chlorophyll, salinity), glossy from the wind, with whitecaps, shallow-water tint and presets",
   "keywords": [
     "earthkit",

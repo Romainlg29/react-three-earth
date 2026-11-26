@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/draw",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless drawing and editing for @earthkit/globe: points, lines, polygons and shapes on the globe and the flat map, as GeoJSON",
   "keywords": [
     "earthkit",

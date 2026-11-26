@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/geocoder",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless place search for @earthkit/globe: search as you type, keyboard selection, fly to the result, reverse geocoding, with Nominatim, Photon, Pelias, MapTiler or your own GeoJSON",
   "keywords": [
     "earthkit",

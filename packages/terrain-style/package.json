@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/terrain-style",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Stylised terrain for @earthkit/globe: colour the ground by elevation, slope and aspect with MapLibre-style expressions, or a ready-made look",
   "keywords": [
     "earthkit",

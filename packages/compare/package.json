@@ -1,6 +1,6 @@
 {
   "name": "@earthkit/compare",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Headless swipe comparison for @earthkit/globe: two imagery layers or map styles side by side on one globe, with a slider",
   "keywords": [
     "earthkit",
