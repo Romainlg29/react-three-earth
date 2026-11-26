@@ -627,9 +627,14 @@ export class Water implements EarthPlugin {
       shade: inputs => {
         const ground = inputs.color.rgb
         // Under the wave mesh the terrain's water gives way to it, by the mesh's own map of the ground (so no gap opens
-        // between them); land stays.
+        // between them). Land stays, though the map (a texel of up to 64 m) says water there: a cliff or a beach within
+        // half a texel of the coast would otherwise be cut away, opening a hole to whatever lies behind it.
         const plane = this.waveSurface.fragmentPlane()
-        const underMesh = this.waveMesh.coverage(plane, 4).greaterThanEqual(0.5).and(this.waveMesh.coversWater(plane))
+        const underMesh = this.waveMesh
+          .coverage(plane, 4)
+          .greaterThanEqual(0.5)
+          .and(this.waveMesh.coversWater(plane))
+          .and(terrainWaterMask.greaterThanEqual(0.5))
         // Waves only on the globe's sea, outside the mesh: land and the sea the mesh covers skip them.
         const waves = this.waveSurface.sampleWaves(plane, terrainWaterMask.greaterThan(0).and(terrainFlatMorph.lessThan(1)).and(underMesh.not()) as unknown as Node<'bool'>)
         const onSea = terrainWaterMask.mul(float(1).sub(terrainFlatMorph))

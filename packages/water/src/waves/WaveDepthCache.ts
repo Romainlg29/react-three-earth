@@ -1,6 +1,6 @@
-import { terrainElevationMeters, terrainWaterMask, type Terrain } from '@earthkit/globe'
+import { terrainElevationMeters, terrainWaterLevelMeters, terrainWaterMask, type Terrain } from '@earthkit/globe'
 import { Color, FloatType, HalfFloatType, LinearFilter, Matrix4, OrthographicCamera, RenderTarget, RGBAFormat, Vector2, type Object3D } from 'three'
-import { clamp, float, Fn, If, instancedArray, instanceIndex, int, ivec2, max, min, positionView, select, smoothstep, storageTexture, texture, uint, uniform, vec2, vec4 } from 'three/tsl'
+import { abs, clamp, float, Fn, If, instancedArray, instanceIndex, int, ivec2, max, min, select, smoothstep, storageTexture, texture, uint, uniform, vec2, vec4 } from 'three/tsl'
 import { MeshBasicNodeMaterial, NoBlending, StorageTexture, type ComputeNode, type Node, type StorageBufferNode, type WebGPURenderer } from 'three/webgpu'
 
 import type { WaveSurface } from './WaveSurface.js'
@@ -24,7 +24,10 @@ const NO_SEED = 0xffffffff
 export interface WaveGround {
   /** 1 over water (as the terrain says), 0 over land and where no tile was drawn; 1 everywhere without a terrain. */
   water: Node<'float'>
-  /** The water's level over the wave plane, metres: its nearest shore's; `fallback` where no shore is in reach. */
+  /**
+   * The water's level over the wave plane, metres: sea level (`seaLevelOverPlaneMeters`) raised by the water's own level
+   * where the terrain draws it elsewhere (a lake, a sea on the geoid).
+   */
   surfaceMeters: Node<'float'>
   /** How far the seafloor lies below sea level, metres (0 on land; very deep where unknown); from the terrain's elevation. */
   depthMeters: Node<'float'>
@@ -48,9 +51,11 @@ export interface WaveShore {
  * water's own level, and to calm its waves in the shallows; the terrain's sea gives way under the mesh by the same map, so
  * the two never leave a gap.
  *
- * The level is the height of the nearest shore, found by a jump flood on the GPU: a lake below sea level (the Dead Sea),
- * a sea on the geoid and a sea over a seafloor the terrain draws (bathymetry under its water mask) all come out right,
- * as each body of water takes the level where it meets the land. Where no shore is in reach, it is sea level.
+ * The level is the water's own surface as the terrain gives it (`terrainWaterLevelMeters`): sea level for water from
+ * elevation (a raster DEM, its seafloor drawn or flattened), the drawn height under a quantized mesh's mask, so a lake
+ * below sea level (the Dead Sea) or a sea on the geoid comes out right. Only flat water counts: a coarse tile's coastal
+ * triangles climb into the land under the mask, so the water near a coast takes the level of the nearest flat water
+ * instead, and the land near the water takes it too, so the mesh does not climb the beach.
  *
  * It covers the mesh's outer ring and is drawn again only when that ring moves (the camera crosses two of its cells),
  * the cells change size, the plane is laid again, or tiles change (at most every `WAVE_DEPTH_CACHE_REFRESH_SECONDS`):
@@ -58,9 +63,9 @@ export interface WaveShore {
  * two samples a vertex (the ground and the shore). It also keeps the distance and way to the nearest shore, for the surf.
  */
 export class WaveDepthCache {
-  /** The tiles as drawn from above: water mask, height over the plane, elevation over sea level, 1 where drawn. */
+  /** The tiles as drawn from above: water mask, the water's level and the elevation over sea level, 1 where drawn. */
   readonly target: RenderTarget
-  /** What the mesh samples: water, level over the plane (times `shore`), `shore` (1 where a shore was found), depth. */
+  /** What the mesh samples: water, the water's level over sea level (times `known`), `known` (1 where it is), depth. */
   readonly ground: StorageTexture
   /**
    * The nearest shore per texel, weighted by whether one was found (`w`): the offset to it on the plane (x, y, metres,
@@ -74,21 +79,18 @@ export class WaveDepthCache {
   readonly halfSizeMeters = uniform(1)
   /** 1 once drawn for the current place; 0 when nothing could be drawn (no terrain): every point is then unknown. */
   readonly valid = uniform(0)
-  /** The Earth's curvature on the plane, 1 / (2 R): heights over the plane fall by r² times it. */
-  readonly curvature = uniform(0)
   protected readonly surface: WaveSurface
   protected readonly camera = new OrthographicCamera()
   protected readonly material = new MeshBasicNodeMaterial()
   protected readonly seaLevel = uniform(0)
+  /** The terrain's exaggeration: the terrain draws its water's level scaled by it, so the mesh's level is too. */
+  protected readonly exaggeration = uniform(1)
   protected readonly sampler
   protected readonly shoreSampler
   protected readonly seeds: StorageBufferNode<'uint'>[]
   /** The shore before and between the passes of its blur. */
   protected readonly shoreBuffers: StorageBufferNode<'vec4'>[]
-  /**
-   * The lowest water level within `SHORE_LEVEL_STEPS` of each water texel, brought onto the Earth's curve (the level
-   * over the plane plus r² times the curvature), before and between its passes.
-   */
+  /** The level of the nearest flat water (`WATER_LEVEL_STEPS` reach it), before and between its passes. */
   protected readonly shoreLevels: StorageBufferNode<'float'>[]
   protected readonly kernels: ComputeNode[]
   protected laidKey = ''
@@ -119,9 +121,7 @@ export class WaveDepthCache {
     this.camera.matrixWorldAutoUpdate = false
     this.material.name = 'WaveDepthCache'
     this.material.blending = NoBlending
-    // The camera looks down the plane's up: its view z is the height below it.
-    const height = float(CAMERA_HEIGHT_METERS).add(positionView.z)
-    this.material.outputNode = vec4(terrainWaterMask, height, terrainElevationMeters.sub(this.seaLevel), 1)
+    this.material.outputNode = vec4(terrainWaterMask, terrainWaterLevelMeters.mul(this.exaggeration).sub(this.seaLevel), terrainElevationMeters.sub(this.seaLevel), 1)
     this.sampler = texture(this.ground)
     this.shoreSampler = texture(this.shore)
     this.seeds = [instancedArray(size * size, 'uint'), instancedArray(size * size, 'uint')]
@@ -131,8 +131,8 @@ export class WaveDepthCache {
   }
 
   /**
-   * The shore pass: seeds where water meets land, a jump flood carrying each texel its nearest seed, then the ground
-   * texture with each water texel at its shore's level (moved along the Earth's curve to where it is).
+   * The shore pass: the water's level spread from its flat parts, seeds where water meets land, a jump flood carrying each
+   * texel its nearest seed, then the ground texture and the way to the shore.
    */
   protected createKernels(size: number): ComputeNode[] {
     const count = size * size
@@ -176,42 +176,47 @@ export class WaveDepthCache {
       first.element(index).assign(select(shore, uint(row).mul(65536).add(uint(column)), uint(NO_SEED)))
     })().compute(count)
 
-    // Each shore's level: the lowest water drawn at or above sea level near it. Terrains rarely draw the water flat to
-    // the coast: a quantized mesh's coastal triangles climb into the land under its water mask, the more the coarser the
-    // tile, so the last water texel can stand metres above the sea and the water would float there in a plateau, with a
-    // cliff where the next tile's shore is lower. The lowest level spreads over the water in passes of halving steps,
-    // up to about a kilometre on the outer ring, so the shores of one sea share it.
     const metresPerTexel = this.halfSizeMeters.mul(2 / size)
     const planeOf = (x: Node<'float'>, y: Node<'float'>) => vec2(x.add(0.5), y.add(0.5)).mul(metresPerTexel).sub(this.halfSizeMeters).add(this.centre)
-    // Levels over the plane fall by r² times the curvature away from its origin: added back, they compare along the Earth.
-    const curved = (level: Node<'float'>, plane: Node<'vec2'>) => level.add(plane.dot(plane).mul(this.curvature))
-    const [levelsFirst, levelsSecond] = this.shoreLevels as [StorageBufferNode<'float'>, StorageBufferNode<'float'>]
+    // The water's level, from its flat parts only. A quantized mesh's coastal triangles climb into the land under its
+    // water mask, the more the coarser the tile, so the last water texels can stand metres above the sea; skirts in the
+    // cracks between tiles hold their top's level. Flat water (each neighbour water within a few centimetres) is the
+    // water's surface: a raster DEM's sea (all at sea level, its seafloor drawn or flattened), a quantized mesh's sea on
+    // the geoid, a lake.
+    const levelsFirst = this.shoreLevels[0]!
+    const flatMeters = max(metresPerTexel.mul(FLAT_WATER_SLOPE), FLAT_WATER_METERS)
     const levelInit = Fn(() => {
       const here = read(column, row)
-      // Only water drawn at or above sea level: below it the terrain may draw the seafloor (bathymetry under its water
-      // mask), whose depths are not the water's level.
-      const level = select(isWater(here).and(here.z.greaterThanEqual(0)), curved(here.y, planeOf(float(column), float(row))), float(NO_LEVEL))
-      levelsFirst.element(index).assign(level)
+      const level = here.y
+      const flatTo = (texel: Node<'vec4'>) => isWater(texel).and(abs(texel.y.sub(level)).lessThanEqual(flatMeters))
+      const flat = isWater(here)
+        .and(flatTo(read(column.add(1), row)))
+        .and(flatTo(read(column.sub(1), row)))
+        .and(flatTo(read(column, row.add(1))))
+        .and(flatTo(read(column, row.sub(1))))
+      levelsFirst.element(index).assign(select(flat, level, float(NO_LEVEL)))
     })().compute(count)
+    // Spread to every texel without one (water near the coasts, and the land beside them) in passes of doubling steps:
+    // each takes the lowest level found at the step, so the nearest flat water wins, out to 63 texels.
     const levelSteps: ComputeNode[] = []
     let levelSource = 0
-    for (const step of SHORE_LEVEL_STEPS) {
+    for (const step of WATER_LEVEL_STEPS) {
       const from = this.shoreLevels[levelSource]!
       const to = this.shoreLevels[1 - levelSource]!
       levelSteps.push(
         Fn(() => {
-          const lowest = from.element(index).toVar()
-          If(isWater(read(column, row)), () => {
+          const level = from.element(index).toVar()
+          If(level.greaterThan(NO_LEVEL / 2), () => {
             for (const ox of [-step, 0, step]) {
               for (const oy of [-step, 0, step]) {
                 if (ox === 0 && oy === 0) continue
                 const x = clamp(column.add(ox) as never, 0, size - 1) as unknown as Node<'int'>
                 const y = clamp(row.add(oy) as never, 0, size - 1) as unknown as Node<'int'>
-                lowest.assign(min(lowest, from.element(y.mul(size).add(x))))
+                level.assign(min(level, from.element(y.mul(size).add(x))))
               }
             }
           })
-          to.element(index).assign(lowest)
+          to.element(index).assign(level)
         })().compute(count),
       )
       levelSource = 1 - levelSource
@@ -265,7 +270,6 @@ export class WaveDepthCache {
       const drawn = here.w.greaterThan(0.5)
       const shoreSeed = nearest.element(index)
       const found = shoreSeed.notEqual(uint(NO_SEED)).and(drawn)
-      const level = float(0).toVar()
       const towards = vec2(0).toVar()
       const distance = float(0).toVar()
       If(found, () => {
@@ -273,11 +277,6 @@ export class WaveDepthCache {
         const shoreRow = int(shoreSeed.div(65536))
         const shorePlane = planeOf(float(shoreColumn), float(shoreRow))
         const herePlane = planeOf(float(column), float(row))
-        // Where no water at or above sea level lies near the shore, its own level.
-        const lowest = levels.element(shoreRow.mul(size).add(shoreColumn))
-        const shoreLevel = select(lowest.lessThan(NO_LEVEL / 2), lowest, curved(read(shoreColumn, shoreRow).y, shorePlane))
-        // Back under this texel's: the plane curves away from the ellipsoid.
-        level.assign(shoreLevel.sub(herePlane.dot(herePlane).mul(this.curvature)))
         // The shore lies half a texel past its seed, the last water texel. On land the seed is the nearest water: the
         // offset turns round, so it points inland on both sides and the distance changes sign.
         const offset = shorePlane.sub(herePlane)
@@ -287,11 +286,25 @@ export class WaveDepthCache {
         distance.assign(select(water, reach, reach.negate()))
       })
       const shoreWeight = select(found, float(1), float(0))
+      // The nearest flat water's level. Water with none in reach (a river a texel or two wide) keeps its own; land with
+      // none takes its nearest water's, so the mesh's edge stays at that water's level rather than sinking to sea level.
+      const spread = levels.element(index)
+      const levelKnown = spread.lessThan(NO_LEVEL / 2)
+      const seedLevel = float(0).toVar()
+      If(found, () => {
+        const seedIndex = shoreSeed.div(65536).mul(uint(size)).add(shoreSeed.mod(65536))
+        const seedSpread = levels.element(seedIndex)
+        seedLevel.assign(select(seedSpread.lessThan(NO_LEVEL / 2), seedSpread, read(int(shoreSeed.mod(65536)), int(shoreSeed.div(65536))).y))
+      })
+      const water = isWater(here)
+      const level = select(levelKnown, spread, select(water, here.y, seedLevel))
+      const levelWeight = select(drawn.and(levelKnown.or(water).or(found)), float(1), float(0))
       const value = vec4(
         // Where no tile was drawn the cache knows nothing: not water to the masks, so the terrain draws its own sea there.
         select(drawn, here.x, float(0)),
-        level.mul(shoreWeight),
-        shoreWeight,
+        // Over sea level, not over the plane: near 0 for a sea, so the half floats keep their millimetres.
+        level.mul(levelWeight),
+        levelWeight,
         select(drawn, max(here.z.negate(), 0), float(UNKNOWN_DEPTH_METERS)),
       )
       storageTexture(this.ground, ivec2(column, row), value).toStack()
@@ -332,13 +345,13 @@ export class WaveDepthCache {
     this.laidAtMilliseconds = now
     this.centre.value.copy(centre)
     this.halfSizeMeters.value = halfSizeMeters
-    this.curvature.value = 1 / (2 * surface.curvatureRadiusMeters)
     if (renderer === undefined || terrain === null) {
       this.valid.value = 0
       return
     }
     this.laidTilesVersion = terrain.visibleTilesVersion
     this.seaLevel.value = surface.seaLevelMeters
+    this.exaggeration.value = terrain.exaggeration
     const { camera } = this
     camera.left = -halfSizeMeters
     camera.right = halfSizeMeters
@@ -356,18 +369,19 @@ export class WaveDepthCache {
     this.valid.value = drawn ? 1 : 0
   }
 
-  /** The ground at a point of the plane, in any shader stage; `fallbackSurfaceMeters` where no shore is in reach. */
-  sample(plane: Node<'vec2'>, fallbackSurfaceMeters: Node<'float'>): WaveGround {
+  /**
+   * The ground at a point of the plane, in any shader stage. `seaLevelOverPlaneMeters` is where sea level lies over the
+   * plane there (it curves away from it with the Earth): the water's level is that, raised by the cache's.
+   */
+  sample(plane: Node<'vec2'>, seaLevelOverPlaneMeters: Node<'float'>): WaveGround {
     const uv = plane.sub(this.centre).div(this.halfSizeMeters.mul(2)).add(0.5)
     const texel = this.sampler.sample(vec2(uv)).level(float(0))
     const inside = uv.x.greaterThan(0).and(uv.x.lessThan(1)).and(uv.y.greaterThan(0)).and(uv.y.lessThan(1))
     const trusted = this.valid.mul(select(inside, float(1), float(0)))
-    // Levels come weighted by whether a shore was found, so filtering blends towards the fallback where none was.
-    const shore = texel.z.mul(trusted)
-    const level = texel.y.div(max(texel.z, 1e-4))
+    // Levels come weighted by whether they are known, so filtering blends towards sea level where they are not.
     return {
       water: float(1).add(texel.x.sub(1).mul(trusted)) as unknown as Node<'float'>,
-      surfaceMeters: fallbackSurfaceMeters.add(level.sub(fallbackSurfaceMeters).mul(shore)) as unknown as Node<'float'>,
+      surfaceMeters: seaLevelOverPlaneMeters.add(texel.y.mul(trusted)) as unknown as Node<'float'>,
       depthMeters: float(UNKNOWN_DEPTH_METERS).add(texel.w.sub(UNKNOWN_DEPTH_METERS).mul(trusted)) as unknown as Node<'float'>,
       known: trusted as unknown as Node<'float'>,
     }
@@ -403,10 +417,13 @@ export class WaveDepthCache {
 }
 
 const CLEAR_COLOR = new Color(1, 0, 0)
-/** The steps, in texels, of the passes spreading the lowest water level: it reaches 63 texels (1 km on the outer ring). */
-const SHORE_LEVEL_STEPS = [32, 16, 8, 4, 2, 1]
-/** No water at or above sea level in reach. */
+/** The steps, in texels, of the passes spreading the flat water's level: nearest first, out to 63 texels. */
+const WATER_LEVEL_STEPS = [1, 2, 4, 8, 16, 32]
+/** No flat water in reach. */
 const NO_LEVEL = 1e9
+/** Water is flat where its neighbours' levels differ by at most this many metres, or this slope of a texel if more. */
+const FLAT_WATER_METERS = 0.05
+const FLAT_WATER_SLOPE = 2e-3
 /** The shore's blur, each way: offsets in texels and binomial weights (1 6 15 20 15 6 1, over 64). */
 const SHORE_BLUR: ReadonlyArray<readonly [number, number]> = [-3, -2, -1, 0, 1, 2, 3].map((offset, index) => [offset, [1, 6, 15, 20, 15, 6, 1][index]! / 64] as const)
 const scratchMatrix = new Matrix4()

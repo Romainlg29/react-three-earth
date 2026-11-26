@@ -68,6 +68,7 @@ Every terrain tile carries what it needs for this, whatever the source (quantize
 | `terrainAspectDegrees`, `terrainAspectRadians` | Downhill compass direction, clockwise from north (0 north, 90 east); 0 on flat ground |
 | `terrainNormalEastNorthUp` | The ground's unit normal, x east, y north, z up |
 | `terrainWaterMask` | 1 on sea and lakes, 0 on land, between along coasts (see "Colour the sea") |
+| `terrainWaterLevelMeters` | Where it is water, the water's surface above the ellipsoid: the source's sea level for `RasterDemSource`, the terrain's height for a quantized-mesh mask |
 
 Set them on the material's `colorNode` in `createMaterial`: with no imagery the globe shows that colour, and
 imagery layers blend over it.
