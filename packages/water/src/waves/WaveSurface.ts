@@ -1,8 +1,8 @@
 import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, int, max, mix, mx_fractal_noise_float, mx_worley_noise_float, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
+import { cameraWorldMatrix, float, fwidth, int, max, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
-import { inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS } from './foam.js'
+import { choppinessForWind, inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS } from './foam.js'
 import type { SeaStateOptions } from './spectrum.js'
 import { WaveComputeField } from './WaveComputeField.js'
 import { WaveField, type WaveFieldOptions } from './WaveField.js'
@@ -80,6 +80,14 @@ export class WaveSurface {
   protected readonly unresolvedMeanSquareSlope = uniform(0)
   /** The sea surface's whole slope variance (`setSurfaceMeanSquareSlope`), cascades and finer ripples together. */
   protected surfaceMeanSquareSlope = 0
+  /** Choppiness λ, from the wind (`setWind`). */
+  readonly choppiness = uniform(WAVE_CHOPPINESS)
+  /** Downwind on the plane (east, north), unit: foam streaks along it. */
+  protected readonly downwind = uniform(new Vector2(1, 0))
+  /** How long the foam's streaks are against their width: 1 in a breeze, longer as the wind blows them out. */
+  protected readonly streakStretch = uniform(1)
+  /** Spume blown off the crests, 0 to 1: from a strong gale. Whitens the faces around the breaking crests. */
+  protected readonly spume = uniform(0)
   /** 1 once the GPU computes the displacement's derivatives, so the foam follows the breaking crests. */
   protected readonly foamFromWaves = uniform(0)
   /** Sample the slopes (and on the GPU the displacement's derivatives): their values swap to the GPU's textures. */
@@ -176,6 +184,20 @@ export class WaveSurface {
     this.useField(this.computeSpectrum ?? this.field)
   }
 
+  /**
+   * Sets the wind the foam follows: its speed in metres per second and where it blows from, degrees clockwise from north.
+   * The waves steepen with it (`choppinessForWind`), the foam is blown into streaks along it from a near gale (beyond
+   * 8 m/s, as Beaufort 8 describes), and spume tears off the crests from about 15 m/s.
+   */
+  setWind(windSpeedMetersPerSecond: number, windDirectionDegrees: number): void {
+    this.choppiness.value = choppinessForWind(windSpeedMetersPerSecond)
+    if (this.computeField !== null) this.computeField.choppiness.value = this.choppiness.value
+    const towards = ((windDirectionDegrees + 180) * Math.PI) / 180
+    this.downwind.value.set(Math.sin(towards), Math.cos(towards))
+    this.streakStretch.value = 1 + Math.max(windSpeedMetersPerSecond - 8, 0) * WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND
+    this.spume.value = Math.min(Math.max((windSpeedMetersPerSecond - 15) / 10, 0), 1)
+  }
+
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
   get compute(): WaveComputeField | null {
     return this.computeField
@@ -269,6 +291,7 @@ export class WaveSurface {
     this.foldSampler.value = compute.foldTexture
     this.foamSampler.value = compute.foamTexture
     compute.breakingScore.value = this.whitecapScore.value
+    compute.choppiness.value = this.choppiness.value
     this.foamFromWaves.value = 1
     return compute
   }
@@ -361,21 +384,26 @@ export class WaveSurface {
     })
     const stretched = stretch as Node<'vec2'>
     const sheared = shear as Node<'float'>
-    const lambda = WAVE_CHOPPINESS
+    const lambda = this.choppiness
     const jacobian = float(1)
       .sub(stretched.x.mul(lambda))
       .mul(float(1).sub(stretched.y.mul(lambda)))
-      .sub(sheared.mul(sheared).mul(lambda * lambda))
+      .sub(sheared.mul(sheared).mul(lambda.mul(lambda)))
     // The Jacobian's spread here (first order): λ σ, σ² the slope variance drawn. Foam below 1 + λ z σ, softly.
     const spread = sqrt(resolved as Node<'float'>).mul(lambda)
     const threshold = float(1).add(spread.mul(this.whitecapScore))
     const edge = spread.mul(0.25).add(1e-4)
     const breaking = float(1).sub(smoothstep(threshold.sub(edge), threshold.add(edge), jacobian))
+    // Spume: in a strong gale the wind tears the breaking crests into spray, whitening the steep faces around them too.
+    const spumeThreshold = float(1).add(spread.mul(this.whitecapScore.add(WAVE_SPUME_REACH)))
+    const spume = float(1).sub(smoothstep(threshold, spumeThreshold.add(edge), jacobian)).mul(this.spume).mul(WAVE_SPUME_OPACITY)
     const { slope: detailSlope, meanSquareSlope: detailMeanSquareSlope } = this.detail
       ? this.sampleDetail(plane, footprint)
       : { slope: vec2(0) as unknown as Node<'vec2'>, meanSquareSlope: float(0) as unknown as Node<'float'> }
     // Crests breaking now, and the foam left where they broke, fading.
-    const density = max(breaking, (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8)))
+    const lingering = (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8))
+    // The foam left behind is blown into streaks along the wind; fresh breakers stay whole.
+    const density = max(max(breaking, spume), lingering.mul(foamStreaks(plane, footprint, this.downwind as unknown as Node<'vec2'>, this.streakStretch)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
     const patterned = this.detail ? foamPattern(plane, footprint, density as Node<'float'>) : (density as Node<'float'>)
@@ -429,7 +457,7 @@ export class WaveSurface {
     this.field.cascades.forEach((cascade, index) => {
       const fade = this.cascadeFade(index, spacingMeters)
       const fold = this.foldSampler.sample(plane.div(cascade.lengthMeters)).depth(int(index)).level(float(0))
-      displacement = (displacement as Node<'vec3'>).add(vec3(fold.z.mul(-WAVE_CHOPPINESS), fold.w.mul(-WAVE_CHOPPINESS), fold.y).mul(fade))
+      displacement = (displacement as Node<'vec3'>).add(vec3(fold.z.mul(this.choppiness.negate()), fold.w.mul(this.choppiness.negate()), fold.y).mul(fade))
     })
     return (displacement as Node<'vec3'>).mul(this.foamFromWaves) as unknown as Node<'vec3'>
   }
@@ -491,6 +519,27 @@ export class WaveSurface {
 export const WAVE_DETAIL_SCALES = [3.7, 6.3] as const
 /** The detail layers' turns from the wind, radians: their own directions, as capillary ripples have. */
 const WAVE_DETAIL_ANGLES_RADIANS = [0.9, 2.3] as const
+
+/** How long the foam's streaks grow per m/s of wind beyond 8 m/s, against their width: 5 at 18 m/s. */
+export const WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND = 0.4
+/** The foam streaks' width, metres: the bands foam is blown into, as seen in a gale. */
+const FOAM_STREAK_WIDTH_METERS = 6
+/** How far beyond the breaking crests the spume reaches, in the Jacobian's standard deviations. */
+const WAVE_SPUME_REACH = 1.2
+/** How white the spume is at its fullest. */
+const WAVE_SPUME_OPACITY = 0.7
+
+/**
+ * Bands of foam along the wind, 0 to about 2 (mean 1): the noise stretched downwind by `stretch`, so lingering foam lies
+ * in streaks once the wind blows them out. 1 (no streaks) at a stretch of 1, and farther than a pixel per streak.
+ */
+function foamStreaks(plane: Node<'vec2'>, footprint: Node<'float'>, downwind: Node<'vec2'>, stretch: Node<'float'>): Node<'float'> {
+  const along = plane.dot(downwind).div(stretch)
+  const across = plane.dot(vec2(downwind.y, downwind.x.negate()))
+  const bands = mx_noise_float(vec2(across, along).div(FOAM_STREAK_WIDTH_METERS))
+  const strength = smoothstep(1, 3, stretch).mul(float(1).sub(smoothstep(FOAM_STREAK_WIDTH_METERS * 0.25, FOAM_STREAK_WIDTH_METERS, footprint)))
+  return float(1).add(bands.mul(1.8).mul(strength)).max(0) as unknown as Node<'float'>
+}
 
 /** The size of the foam's bubbly cells, metres. */
 const FOAM_CELL_METERS = 0.6

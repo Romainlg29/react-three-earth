@@ -12,6 +12,8 @@ export interface WaterPresetValues {
   readonly color: string | null
   /** A fixed roughness instead of the wind's, or null for the wind's. */
   readonly roughness: number | null
+  /** The share of the sky under cloud, 0 to 1: it dims the sun's glow through the crests and its glitter. */
+  readonly cloudCover: number
 }
 
 /**
@@ -20,17 +22,17 @@ export interface WaterPresetValues {
  */
 export const WATER_PRESETS = {
   /** A flat light-blue sea, lit but matte, as street maps draw it. */
-  map: { windSpeedMetersPerSecond: 0, chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35, fetchKilometers: 50, temperatureCelsius: 15, waves: false, color: '#a0c8f0', roughness: 1 },
+  map: { windSpeedMetersPerSecond: 0, chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35, fetchKilometers: 50, temperatureCelsius: 15, waves: false, color: '#a0c8f0', roughness: 1, cloudCover: 0 },
   /** Still air over clear water: a sharp sky reflection and sun glint. */
-  calm: { windSpeedMetersPerSecond: 1.5, chlorophyllMilligramsPerCubicMeter: 0.05, salinityPartsPerThousand: 35, fetchKilometers: 20, temperatureCelsius: 20, waves: true, color: null, roughness: null },
+  calm: { windSpeedMetersPerSecond: 1.5, chlorophyllMilligramsPerCubicMeter: 0.05, salinityPartsPerThousand: 35, fetchKilometers: 20, temperatureCelsius: 20, waves: true, color: null, roughness: null, cloudCover: 0 },
   /** A gentle breeze over open ocean. The default. */
-  breeze: { windSpeedMetersPerSecond: 5, chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35, fetchKilometers: 100, temperatureCelsius: 18, waves: true, color: null, roughness: null },
+  breeze: { windSpeedMetersPerSecond: 5, chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35, fetchKilometers: 100, temperatureCelsius: 18, waves: true, color: null, roughness: null, cloudCover: 0 },
   /** A fresh wind: a broad glint and the first whitecaps. */
-  'open-ocean': { windSpeedMetersPerSecond: 10, chlorophyllMilligramsPerCubicMeter: 0.2, salinityPartsPerThousand: 35, fetchKilometers: 500, temperatureCelsius: 15, waves: true, color: null, roughness: null },
-  /** A gale: about a tenth of the sea white with foam. */
-  storm: { windSpeedMetersPerSecond: 20, chlorophyllMilligramsPerCubicMeter: 0.3, salinityPartsPerThousand: 35, fetchKilometers: 800, temperatureCelsius: 10, waves: true, color: null, roughness: null },
+  'open-ocean': { windSpeedMetersPerSecond: 10, chlorophyllMilligramsPerCubicMeter: 0.2, salinityPartsPerThousand: 35, fetchKilometers: 500, temperatureCelsius: 15, waves: true, color: null, roughness: null, cloudCover: 0 },
+  /** A gale under an overcast sky: steep breaking seas, foam blown into streaks, spume off the crests. */
+  storm: { windSpeedMetersPerSecond: 20, chlorophyllMilligramsPerCubicMeter: 0.3, salinityPartsPerThousand: 35, fetchKilometers: 800, temperatureCelsius: 10, waves: true, color: null, roughness: null, cloudCover: 0.9 },
   /** Productive coastal water, rich in phytoplankton: green-blue. */
-  coastal: { windSpeedMetersPerSecond: 4, chlorophyllMilligramsPerCubicMeter: 3, salinityPartsPerThousand: 33, fetchKilometers: 30, temperatureCelsius: 16, waves: true, color: null, roughness: null },
+  coastal: { windSpeedMetersPerSecond: 4, chlorophyllMilligramsPerCubicMeter: 3, salinityPartsPerThousand: 33, fetchKilometers: 30, temperatureCelsius: 16, waves: true, color: null, roughness: null, cloudCover: 0 },
 } as const satisfies Record<string, WaterPresetValues>
 
 export type WaterPreset = keyof typeof WATER_PRESETS
