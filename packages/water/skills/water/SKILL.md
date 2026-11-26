@@ -85,7 +85,7 @@ export function addSea(earth: Earth): Water {
 | `calm` | 1.5 m/s | clear deep blue, a sharp sky reflection and sun glint |
 | `breeze` (default) | 5 m/s | open ocean blue, a softer glint |
 | `open-ocean` | 10 m/s | a broad glint, the first whitecaps (1 %) |
-| `storm` | 20 m/s | a tenth of the sea white with foam |
+| `storm` | 20 m/s | steep breaking seas, a tenth white with foam blown into streaks, spume, an overcast sky (`cloudCover` 0.9) |
 | `coastal` | 4 m/s | phytoplankton-rich green-blue |
 
 Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3} />`.
@@ -101,6 +101,15 @@ Settings override the preset: `<Water preset="calm" windSpeedMetersPerSecond={3}
 - `chlorophyllMilligramsPerCubicMeter`: the colour, from the absorption and scattering of seawater, phytoplankton and
   dissolved matter (ocean colour models). 0.03 deep blue gyres, 0.1 to 0.3 open ocean, 1 to 10 green-blue coasts.
 - `salinityPartsPerThousand`: 35 sea, 0 fresh water (a little less scattering, lighter water).
+- `cloudCover` (0 to 1, the preset's: 0.9 for `storm`, 0 otherwise): dims the sun's glow through the crests, its
+  glitter and the light under the waves. The sky and the sun's light on the sea are the atmosphere's, so a storm also
+  wants a dim one: `<Atmosphere exposure={4}>` (live), or haze, `AtmosphereParameters.fromVisibility(12_000)` (read once
+  when it mounts; under about 10 km the haze washes the sea out).
+
+The wind shapes a storm beyond the whitecap share: from 8 m/s the waves steepen (choppiness from 1 to 1.3 by 20 m/s,
+`choppinessForWind`), the foam left behind is blown into streaks along the wind (longer with it,
+`WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND`), and from 15 m/s spume whitens the steep faces around the breaking
+crests.
 
 ### Waves
 

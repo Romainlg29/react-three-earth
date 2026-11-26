@@ -50,6 +50,8 @@ export interface ExampleShellProps {
   plugins?: readonly EarthPlugin[]
   /** The physically based sky and sun; false lights the map evenly instead. Default: true unless `?atmosphere=0`. */
   atmosphere?: boolean
+  /** `<Atmosphere exposure>`: lower for a dim, overcast day. Default: the atmosphere's. */
+  atmosphereExposure?: number
   /** Props for `<EarthControls>`. */
   controls?: ComponentProps<typeof EarthControls>
   /** Receives the vanilla `Earth` once mounted: the panel's buttons drive `earth.camera`. */
@@ -71,7 +73,7 @@ export interface ExampleShellProps {
  * and a card with the example's title, what it shows, its own controls and a link back to the gallery. The card
  * collapses to its title on narrow screens so the map stays usable on a phone.
  */
-export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, showCard = true, className = 'example-canvas', date: dateOverride, viewSwitch = false }: ExampleShellProps) {
+export function ExampleShell({ title, description, camera, children, terrain, exaggeration, createTerrainMaterial, panel, controls, onEarth, plugins, overlay, atmosphere = withAtmosphere, atmosphereExposure, showCard = true, className = 'example-canvas', date: dateOverride, viewSwitch = false }: ExampleShellProps) {
   const [collapsed, setCollapsed] = useState(() => matchMedia('(max-width: 600px)').matches)
   return (
     <div className={className}>
@@ -80,7 +82,7 @@ export function ExampleShell({ title, description, camera, children, terrain, ex
           <InitialView view={camera} onEarth={onEarth} />
           <Terrain exaggeration={exaggeration} createMaterial={createTerrainMaterial}>{terrain ?? <QuantizedMeshSource url={terrainUrl} attribution={terrainAttribution} />}</Terrain>
           {children}
-          {atmosphere ? <Atmosphere /> : <PlainLights />}
+          {atmosphere ? <Atmosphere exposure={atmosphereExposure} /> : <PlainLights />}
           <EarthControls {...controls} />
           <MapControls viewSwitch={viewSwitch} />
         </Earth>

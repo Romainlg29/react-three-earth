@@ -35,6 +35,9 @@ const COASTS = placesFor<Coast>(
 
 const PRESETS = Object.keys(WATER_PRESETS) as WaterPreset[]
 
+/** A gale's light: dim, as under thick cloud (the atmosphere's default exposure is 10). */
+const STORM_EXPOSURE = 4
+
 /** The hull's size, metres: the corners its buoyancy samples. */
 const HULL_LENGTH_METERS = 11
 const HULL_BEAM_METERS = 3.6
@@ -133,6 +136,7 @@ export function SeaExample() {
       title="Sea"
       description="A physically based sea: its colour from the water's optics, its gloss, waves and whitecaps from the wind. Fly low over the water to see the waves."
       camera={COASTS[0]!.view}
+      atmosphereExposure={preset === 'storm' ? STORM_EXPOSURE : undefined}
       onEarth={setEarth}
       terrain={
         useFixtures ? (

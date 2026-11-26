@@ -22,6 +22,15 @@ export const WAVE_BREAKING_SHARE = 0.3
 export const WAVE_CHOPPINESS = 1
 
 /**
+ * Choppiness from the wind: linear theory's 1 in a breeze, rising to 1.3 by a gale (20 m/s), as a steep, young wind sea's
+ * crests sharpen and its troughs flatten beyond what a sum of sines draws (the second-order, Stokes-like part).
+ * Bounded below where the surface would fold over itself.
+ */
+export function choppinessForWind(windSpeedMetersPerSecond: number): number {
+  return WAVE_CHOPPINESS + 0.3 * Math.min(Math.max((windSpeedMetersPerSecond - 8) / 12, 0), 1)
+}
+
+/**
  * The standard score whose lower tail holds `coverage` of a normal distribution (Φ⁻¹), to about 1e-9 (Acklam's rational
  * approximation). -8 for no coverage at all, so nothing passes it.
  */
