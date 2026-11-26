@@ -257,10 +257,10 @@ describe('WaveDepthCache', () => {
     expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
     // Tiles changed: not before the refresh interval.
     terrain.visibleTilesVersion++
-    now.mockReturnValue(1100)
+    now.mockReturnValue(1900)
     mesh.update(true, source)
     expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
-    now.mockReturnValue(1300)
+    now.mockReturnValue(2000)
     mesh.update(true, source)
     expect(terrain.renderTiles).toHaveBeenCalledTimes(2)
     // Lower: finer cells, a smaller square, drawn at once.

@@ -164,7 +164,7 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   come out right, and the terrain's sea gives way under the mesh by the same map, with no gap. Where no shore is in
   reach (open sea, the middle of a large lake), the level is `seaLevelMeters`. The map covers the mesh (768 texels a
   side, half floats, about 17 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
-  its outer cells) or tiles change (at most four times a second): a draw of the tiles with a trivial shader and twenty-two
+  its outer cells) or tiles change (at most once a second, `WAVE_DEPTH_CACHE_REFRESH_SECONDS`): a draw of the tiles with a trivial shader and twenty-two
   compute dispatches.
 - The waves flatten over the last texels of the shore. With `depthFromElevation`, the wind's waves also calm where they
   would break in the shallows (taller than 0.78 of the depth, `WAVE_BREAKING_DEPTH_RATIO`) and the seafloor shows
