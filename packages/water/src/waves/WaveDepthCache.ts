@@ -7,8 +7,12 @@ import type { WaveSurface } from './WaveSurface.js'
 
 /** Texels of the cache across one cell of the mesh's outer ring. */
 export const WAVE_DEPTH_CACHE_TEXELS_PER_CELL = 8
-/** The least time between two refreshes for tiles alone (a tile shown or hidden), seconds; a move of the mesh refreshes at once. */
-export const WAVE_DEPTH_CACHE_REFRESH_SECONDS = 0.25
+/**
+ * The least time between two refreshes for tiles alone (a tile shown or hidden), seconds; a move of the mesh refreshes at
+ * once. Tiles change nearly every frame while the camera moves, and a refresh draws every tile again (a few milliseconds
+ * of the CPU's frame): once a second keeps that off most frames, and finer tiles change the coast little.
+ */
+export const WAVE_DEPTH_CACHE_REFRESH_SECONDS = 1
 /** Height of the cache's camera over the wave plane, metres: above any coast. It sees down as far below. */
 const CAMERA_HEIGHT_METERS = 10_000
 /** The depth written where nothing is known, metres: deep enough that no wave is calmed. */
