@@ -245,9 +245,9 @@ describe('WaveDepthCache', () => {
     mesh.update(true, source)
     expect(terrain.renderTiles).toHaveBeenCalledTimes(1)
     expect(mesh.ground.valid.value).toBe(1)
-    // The shore pass follows each draw, in one submit: seeds, the jump flood's ten steps (768 texels), the ground, and the
-    // shore's blur across and down.
-    expect((vi.mocked(renderer.compute).mock.lastCall![0] as unknown[]).length).toBe(14)
+    // The shore pass follows each draw, in one submit: seeds, their levels, the jump flood's ten steps (768 texels), the
+    // ground, and the shore's blur across and down.
+    expect((vi.mocked(renderer.compute).mock.lastCall![0] as unknown[]).length).toBe(15)
     expect(() => mesh.setSurf(-1, 8)).toThrow(/surf's height/)
     expect(() => mesh.setSurf(1, 0)).toThrow(/surf's period/)
     // Covers the outer ring: 2 × 48 of its 128 m cells.

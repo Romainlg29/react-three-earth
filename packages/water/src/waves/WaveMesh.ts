@@ -99,7 +99,7 @@ const SURF_WHITEWATER_DECAY = 3
 /** The foam lasting all over the surf zone, between the crests' whitewater. */
 const SURF_ZONE_FOAM_DENSITY = 0.12
 /** The surf zone's foam density averaged over a wave, where its waves are too fine to draw. */
-const SURF_FOAM_MEAN_DENSITY = 0.4
+const SURF_FOAM_MEAN_DENSITY = 0.25
 
 export interface WaveMeshOptions {
   /** Cells from the centre to the edge of each ring. Default: `WAVE_MESH_RESOLUTION`. */

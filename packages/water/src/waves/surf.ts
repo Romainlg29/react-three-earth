@@ -54,7 +54,8 @@ export function surfPhase(deep: number, distanceMeters: number, slope = SURF_BEA
 
 /** `shallowWavenumber` on the GPU. */
 export function shallowWavenumberNode(deep: Node<'float'>, depthMeters: Node<'float'>): Node<'float'> {
-  return deep.div(sqrt(tanh(deep.mul(max(depthMeters, SHALLOWEST_METERS))))) as unknown as Node<'float'>
+  // Bounded: tanh(10) is 1 to a float, and past it some GPUs' tanh overflows to NaN (e^x over e^x).
+  return deep.div(sqrt(tanh(deep.mul(max(depthMeters, SHALLOWEST_METERS)).min(10)))) as unknown as Node<'float'>
 }
 
 /** `shoalingCoefficient` on the GPU. */
@@ -70,7 +71,7 @@ export function shoalingCoefficientNode(kh: Node<'float'>): Node<'float'> {
 export function surfPhaseNode(deep: Node<'float'>, distanceMeters: Node<'float'>): Node<'float'> {
   const u = max(deep.mul(distanceMeters).mul(SURF_BEACH_SLOPE), 0)
   const root = sqrt(u)
-  const shallows = root.mul(2).div(pow(float(1).add(pow(root.mul(1.55), 1.75)), 1 / 1.75))
+  const shallows = root.mul(2).div(pow(float(1).add(pow(root.mul(1.55).max(1e-6), 1.75)), 1 / 1.75))
   return u.add(shallows).div(SURF_BEACH_SLOPE) as unknown as Node<'float'>
 }
 
