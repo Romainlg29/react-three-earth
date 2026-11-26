@@ -446,7 +446,12 @@ export class Water implements EarthPlugin {
       name: this.name,
       shade: inputs => {
         const ground = inputs.color.rgb
-        const waves = this.waveSurface.createNodes()
+        // Under the wave mesh the terrain's water gives way to it, by the mesh's own map of the ground (so no gap opens
+        // between them); land stays.
+        const plane = this.waveSurface.fragmentPlane()
+        const underMesh = this.waveMesh.coverage(plane, 4).greaterThanEqual(0.5).and(this.waveMesh.coversWater(plane))
+        // Waves only on the globe's sea, outside the mesh: land and the sea the mesh covers skip them.
+        const waves = this.waveSurface.sampleWaves(plane, terrainWaterMask.greaterThan(0).and(terrainFlatMorph.lessThan(1)).and(underMesh.not()) as unknown as Node<'bool'>)
         const onSea = terrainWaterMask.mul(float(1).sub(terrainFlatMorph))
         const body = this.waterBody(max(this.seaLevelMeters.sub(terrainElevationMeters), 0) as unknown as Node<'float'>)
         // Off the sea (and on the flat map) the foam is the whitecap share, as without waves.
@@ -459,9 +464,7 @@ export class Water implements EarthPlugin {
           color: vec4(mix(ground, sea, terrainWaterMask), inputs.color.a) as unknown as Node<'vec4'>,
           roughness: mix(inputs.roughness, this.waterRoughness(waves.resolvedMeanSquareSlope.mul(onSea), foam as unknown as Node<'float'>), terrainWaterMask) as unknown as Node<'float'>,
           metalness: mix(inputs.metalness, float(0), terrainWaterMask) as unknown as Node<'float'>,
-          // Under the wave mesh the terrain's water gives way to it, by the mesh's own map of the ground (so no gap opens
-          // between them); land stays.
-          mask: inputs.mask.and(this.waveMesh.coverage(waves.plane, 4).lessThan(0.5).or(this.waveMesh.coversWater(waves.plane).not())) as unknown as Node<'bool'>,
+          mask: inputs.mask.and(underMesh.not()) as unknown as Node<'bool'>,
           // The waves tilt the surface: their slopes, east and north, taken off the ground's normal.
           normal: inputs.normal
             .sub(cameraViewMatrix.mul(vec4(waves.east, 0)).xyz.mul(waves.slope.x.mul(onSea)))
