@@ -158,14 +158,15 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
 - `waveMesh: false` keeps the normals-only sea. The mesh hides above 1.5 km, on the flat map and on WebGL2 (no GPU
   displacement there).
 - The mesh reads the ground under it from a map of the terrain drawn from above (a depth cache, as Crest's): whether
-  the terrain is water at each point, the height it draws there, and its elevation. So it draws only over water, at the
-  water's own level: the height of its nearest shore (the lowest water drawn at or above sea level within about 60 texels of it, so a beach whose triangles climb under the water mask, or a coarse tile, does not lift the sea), found by a jump flood on the GPU. A lake below sea level (the Dead
-  Sea), a sea on the geoid, a terrain that draws the seafloor under its water mask, polders and land below sea level all
-  come out right, and the terrain's sea gives way under the mesh by the same map, with no gap. Where no shore is in
-  reach (open sea, the middle of a large lake), the level is `seaLevelMeters`. The map covers the mesh (768 texels a
-  side, half floats, about 17 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
-  its outer cells) or tiles change (at most once a second, `WAVE_DEPTH_CACHE_REFRESH_SECONDS`): a draw of the tiles with a trivial shader and twenty-two
-  compute dispatches.
+  the terrain is water at each point, the water's level there (`terrainWaterLevelMeters`) and the elevation. So it draws
+  only over water, at the water's own level: sea level for `RasterDemSource` (its seafloor drawn or flattened), the
+  drawn height of the water under a quantized mesh's mask, so a lake below sea level (the Dead Sea) or a sea on the geoid
+  comes out right. Only flat water counts: near a coast, where a coarse tile's triangles climb into the land under the
+  mask, the water (and the land beside it) takes the level of the nearest flat water within about 60 texels, so the sea
+  never rises into a plateau. The terrain's sea gives way under the mesh by the same map, with no gap; its land always
+  stays. The map covers the mesh (768 texels a side, half floats, about 17 MB of GPU memory with its buffers) and is drawn
+  again only when the mesh moves (every two of its outer cells) or tiles change (at most once a second,
+  `WAVE_DEPTH_CACHE_REFRESH_SECONDS`): a draw of the tiles with a trivial shader and twenty-two compute dispatches.
 - The waves flatten over the last texels of the shore. With `depthFromElevation`, the wind's waves also calm where they
   would break in the shallows (taller than 0.78 of the depth, `WAVE_BREAKING_DEPTH_RATIO`) and the seafloor shows
   through the mesh as on the terrain. The surf (below) takes a beach sloping 1 in 33 from the nearest shore

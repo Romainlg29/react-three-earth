@@ -181,7 +181,7 @@ export {
   terrainSlopePercent,
   terrainSlopeRadians,
 } from './tiles/terrainSurface.js'
-export { terrainWaterMask, TerrainWaterMaskPlugin, type TerrainWaterMaskPluginOptions } from './tiles/terrainWaterMask.js'
+export { terrainWaterLevelMeters, terrainWaterMask, TerrainWaterMaskPlugin, type TerrainWaterMaskPluginOptions } from './tiles/terrainWaterMask.js'
 export {
   ImageSource,
   MapStyleSource,
