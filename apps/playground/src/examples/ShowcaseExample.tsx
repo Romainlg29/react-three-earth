@@ -234,12 +234,6 @@ function Section({ title, open = false, children }: { title: string; open?: bool
   )
 }
 
-/** The sun's time today, from an hour in UTC. */
-function dateAtHour(hourUtc: number): Date {
-  const now = new Date()
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Math.floor(hourUtc), Math.round((hourUtc % 1) * 60)))
-}
-
 /**
  * `?example=showcase`: most of earthkit on one page. The globe and the flat map, terrain with presets from
  * `@earthkit/terrain-style`, the atmosphere and the sun's time, map styles with 3D buildings, GeoJSON layers
@@ -252,7 +246,6 @@ export function ShowcaseExample() {
   const [basemap, setBasemap] = useState<Basemap>('streets')
   const [preset, setPreset] = useState<TerrainStylePreset>('alpine')
   const [exaggeration, setExaggeration] = useState(1)
-  const [hourUtc, setHourUtc] = useState<number | null>(null)
   const [layers, setLayers] = useState<DataLayers>({ peaks: true, cities: false, landmarks: true, buildings: true, labels: true })
   const [tool, setTool] = useState<Tool>('explore')
   const [unitSystem, setUnitSystem] = useState<UnitSystem>('metric')
@@ -287,7 +280,6 @@ export function ShowcaseExample() {
   const otherStyle = useMemo(() => comparedStyle(basemap), [basemap])
   // A new preset is a new material factory: the terrain reloads its tiles with it.
   const terrainStyle = useTerrainStyle({ color: preset })
-  const date = useMemo(() => (hourUtc === null ? undefined : dateAtHour(hourUtc)), [hourUtc])
 
   const stopEditingFile = () => {
     fileDraw.setMode('static')
@@ -332,7 +324,6 @@ export function ShowcaseExample() {
       camera={START}
       onEarth={setEarth}
       plugins={plugins}
-      date={date}
       viewSwitch
       exaggeration={exaggeration}
       createTerrainMaterial={basemap === 'stylised' ? terrainStyle : undefined}
@@ -381,11 +372,6 @@ export function ShowcaseExample() {
               Exaggeration
               <input type="range" min={1} max={3} step={0.1} value={exaggeration} onChange={event => setExaggeration(Number(event.target.value))} />
               <output>{exaggeration.toFixed(1)}×</output>
-            </label>
-            <label className="example-field">
-              Sun (UTC)
-              <input type="range" min={0} max={23.75} step={0.25} value={hourUtc ?? new Date().getUTCHours() + new Date().getUTCMinutes() / 60} onChange={event => setHourUtc(Number(event.target.value))} />
-              <output>{hourUtc === null ? 'now' : `${String(Math.floor(hourUtc)).padStart(2, '0')}:${String(Math.round((hourUtc % 1) * 60)).padStart(2, '0')}`}</output>
             </label>
           </Section>
 

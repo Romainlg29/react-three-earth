@@ -64,7 +64,8 @@
 }
 
 /* Tall enough to tap. */
-.example-buttons button {
+.example-buttons button,
+.example-time-now {
   min-height: 36px;
   padding: 6px 12px;
   border: 1px solid #34405a;
@@ -115,6 +116,21 @@
   min-width: 3.5em;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+
+/* The time-of-day slider every example shares, under the example's own panel. */
+.example-time {
+  padding-top: 10px;
+  border-top: 1px solid #34405a;
+}
+
+.example-time label {
+  white-space: nowrap;
+}
+
+.example-time-now {
+  min-height: 30px;
+  padding: 4px 10px;
 }
 
 /* `?example=measure`: the labels let taps through to the map (the last vertex finishes a line under its label). */
