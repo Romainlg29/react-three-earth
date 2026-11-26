@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
+import { float, vec2 } from 'three/tsl'
+import type { Node } from 'three/webgpu'
+
 import { resolveState } from '../src/Water.js'
+import { WaveMesh, type WaveMeshGround } from '../src/waves/WaveMesh.js'
+import { WaveSurface } from '../src/waves/WaveSurface.js'
 import { peakPeriodSeconds } from '../src/waves/spectrum.js'
 import { deepWavenumber, shallowWavenumber, shoalingCoefficient, SURF_HEIGHT_SHARE, SURF_MAXIMUM_PERIOD_SECONDS, SURF_MINIMUM_PERIOD_SECONDS, surfPhase } from '../src/waves/surf.js'
 
@@ -66,5 +71,18 @@ describe('surf', () => {
     expect(resolveState({ waves: false, surfHeightMeters: 2 }).surfHeightMeters).toBe(0)
     expect(() => resolveState({ surfHeightMeters: -1 })).toThrow(/surfHeightMeters must be between 0/)
     expect(() => resolveState({ surfPeriodSeconds: 1 })).toThrow(/surfPeriodSeconds must be between 2 and 30/)
+  })
+
+  it('hands the surf zone to the mesh shading, and patterns its foam only with detail', () => {
+    let ground: WaveMeshGround | undefined
+    new WaveMesh(new WaveSurface(), (_waves, given) => {
+      ground = given
+      return { color: undefined as never, roughness: undefined as never }
+    })
+    expect(ground?.surfZone).toBeDefined()
+    const density = float(0.5) as unknown as Node<'float'>
+    const plane = vec2(0, 0) as unknown as Node<'vec2'>
+    expect(new WaveSurface({ detail: false }).patternFoam(plane, density)).toBe(density)
+    expect(new WaveSurface({ detail: true }).patternFoam(plane, density)).not.toBe(density)
   })
 })

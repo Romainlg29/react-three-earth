@@ -1,6 +1,6 @@
 import type { Terrain } from '@earthkit/globe'
 import { BufferAttribute, BufferGeometry, DoubleSide, Mesh, Vector2, Vector3, type Object3D } from 'three'
-import { abs, ceil, clamp, cos, exp2, float, floor, fract, frontFacing, log2, max, min, positionGeometry, select, sin, smoothstep, transformNormalToView, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
+import { abs, ceil, clamp, cos, exp, exp2, float, floor, fract, frontFacing, log2, max, min, mix, positionGeometry, select, sin, smoothstep, transformNormalToView, uniform, varying, vec2, vec3, vec4 } from 'three/tsl'
 import { MeshPhysicalNodeMaterial, type Node, type WebGPURenderer } from 'three/webgpu'
 
 import { WaveDepthCache, type WaveGround, type WaveShore } from './WaveDepthCache.js'
@@ -55,6 +55,8 @@ export interface WaveMeshView {
 export interface WaveMeshGround {
   /** How far the seafloor lies below sea level, metres (0 where unknown). */
   depthMeters: Node<'float'>
+  /** 1 in the surf zone, where the surf breaks (0 elsewhere): the water there is churned and clouded with sand. */
+  surfZone: Node<'float'>
 }
 
 /** What the mesh needs of the earth to read the ground under it: without it, it lies at sea level over everything. */
@@ -84,11 +86,20 @@ interface WaveSurf {
   /** Gerstner's `Q A k`: how far the crests lean and sharpen, 0 to below 1. */
   lean: Node<'float'>
   breaking: Node<'float'>
+  /** 1 where the vertices resolve the waves, 0 where they lie too far apart and only the surf zone's mean shows. */
+  resolved: Node<'float'>
 }
 
 /** How far a surf crest leans (Gerstner's `Q A k`) before it breaks, and once broken. */
 const SURF_LEAN = 0.45
 const SURF_BREAKING_LEAN = 0.85
+/** The whitewater a breaking crest leaves behind: its density just behind the crest, and how fast it thins over a wave. */
+const SURF_WHITEWATER_DENSITY = 0.75
+const SURF_WHITEWATER_DECAY = 3
+/** The foam lasting all over the surf zone, between the crests' whitewater. */
+const SURF_ZONE_FOAM_DENSITY = 0.12
+/** The surf zone's foam density averaged over a wave, where its waves are too fine to draw. */
+const SURF_FOAM_MEAN_DENSITY = 0.4
 
 export interface WaveMeshOptions {
   /** Cells from the centre to the edge of each ring. Default: `WAVE_MESH_RESOLUTION`. */
@@ -308,12 +319,13 @@ export class WaveMesh {
     const sets = cos(phase.add(this.surfTimePhase).mul(1 / 7)).mul(0.2).add(0.8)
     const along = sin(plane.dot(vec2(0.0071, 0.0053)).add(1.3)).mul(sin(plane.dot(vec2(-0.0043, 0.0089)))).mul(0.25).add(0.75)
     const wavelength = float(2 * Math.PI).div(wavenumber)
-    const weight = shore.known
+    const present = shore.known
       .mul(float(1).sub(smoothstep(deepLength.mul(0.25), deepLength.mul(0.5), depth)))
-      .mul(float(1).sub(smoothstep(wavelength.mul(1 / 4), wavelength.mul(1 / 2), spacingMeters)))
       .mul(smoothstep(0.5, 1, ground.water))
       .mul(fade)
-    const amplitude = min(height, limit).mul(0.5).mul(sets).mul(along).mul(weight) as unknown as Node<'float'>
+    // The waves themselves only where the vertices lie close enough to draw them; the surf zone's foam everywhere.
+    const resolved = float(1).sub(smoothstep(wavelength.mul(1 / 4), wavelength.mul(1 / 2), spacingMeters))
+    const amplitude = min(height, limit).mul(0.5).mul(sets).mul(along).mul(present).mul(resolved) as unknown as Node<'float'>
     // Gerstner: the water turns in orbits, gathering under the crests; `Q A k` grows to `SURF_BREAKING_LEAN` as they break.
     const lean = min(amplitude.mul(wavenumber), breaking.mul(SURF_BREAKING_LEAN - SURF_LEAN).add(SURF_LEAN)) as unknown as Node<'float'>
     const now = phase.add(this.surfTimePhase)
@@ -326,7 +338,8 @@ export class WaveMesh {
       amplitudeMeters: amplitude,
       wavenumber,
       lean,
-      breaking: breaking.mul(weight) as unknown as Node<'float'>,
+      breaking: breaking.mul(present) as unknown as Node<'float'>,
+      resolved: resolved as unknown as Node<'float'>,
     }
   }
 
@@ -340,10 +353,20 @@ export class WaveMesh {
     return towards.mul(amplitude.mul(wavenumber).mul(sin(now)).div(gathered)) as unknown as Node<'vec2'>
   }
 
-  /** The foam on the surf's breaking crests, on their front, the shoreward side. */
-  protected surfFoam(phase: Node<'float'>, breaking: Node<'float'>): Node<'float'> {
+  /**
+   * The surf zone's foam density, 0 to 1: thick on the breaking crests' front (the shoreward side), left behind them as
+   * they run on and thinning until the next crest (the bore's whitewater), over a lasting sheen of foam where the surf
+   * breaks. Broken into patches by the caller.
+   */
+  protected surfFoam(phase: Node<'float'>, breaking: Node<'float'>, resolved: Node<'float'>): Node<'float'> {
     const now = phase.add(this.surfTimePhase)
-    return breaking.mul(smoothstep(0.3, 1, cos(now.add(0.5)))) as unknown as Node<'float'>
+    const crest = smoothstep(0.3, 1, cos(now.add(0.5)))
+    // How far behind the last crest, a turn being one wave: the crest leaves the water seaward of it, at larger phases.
+    const behind = fract(now.div(2 * Math.PI))
+    const wake = exp(behind.mul(-SURF_WHITEWATER_DECAY)).mul(SURF_WHITEWATER_DENSITY)
+    // Where the waves are not resolved, their crests would alias: the foam's mean over a wave instead.
+    const foam = mix(float(SURF_FOAM_MEAN_DENSITY), max(crest, wake.add(SURF_ZONE_FOAM_DENSITY)), resolved)
+    return breaking.mul(foam).clamp(0, 1) as unknown as Node<'float'>
   }
 
   protected buildNodes(material: MeshPhysicalNodeMaterial, shade: (waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView) => WaveMeshShading): void {
@@ -379,18 +402,18 @@ export class WaveMesh {
     const waterLevel = varying(ground.surfaceMeters, 'waveLevel') as unknown as Node<'float'>
     // The surf, per pixel from its phase at the vertices: one varying pair rather than another lookup of the shore.
     const surfOrbit = varying(vec4(surf.towardsShore, surf.phase, surf.amplitudeMeters), 'waveSurfOrbit') as unknown as Node<'vec4'>
-    const surfShape = varying(vec4(surf.wavenumber, surf.lean, surf.breaking, 0), 'waveSurfShape') as unknown as Node<'vec4'>
+    const surfShape = varying(vec4(surf.wavenumber, surf.lean, surf.breaking, surf.resolved), 'waveSurfShape') as unknown as Node<'vec4'>
     const surfTowards = surfOrbit.xy.div(max(surfOrbit.xy.length(), 1e-6)) as unknown as Node<'vec2'>
     const sea = surface.sampleWaves(fragmentPlane)
     const waves: WaveSurfaceNodes = {
       ...sea,
       slope: sea.slope.add(this.surfSlope(surfTowards, surfOrbit.z as unknown as Node<'float'>, surfOrbit.w as unknown as Node<'float'>, max(surfShape.x, 1e-4) as unknown as Node<'float'>, surfShape.y as unknown as Node<'float'>)) as unknown as Node<'vec2'>,
-      foam: max(sea.foam, this.surfFoam(surfOrbit.z as unknown as Node<'float'>, surfShape.z as unknown as Node<'float'>)) as unknown as Node<'float'>,
+      foam: max(sea.foam, surface.patternFoam(fragmentPlane, this.surfFoam(surfOrbit.z as unknown as Node<'float'>, surfShape.z as unknown as Node<'float'>, surfShape.w as unknown as Node<'float'>))) as unknown as Node<'float'>,
     }
     // The slopes tilt the plane's up (the mesh's z), in its own frame: east is x, north y.
     const normal = vec3(waves.slope.x.negate(), waves.slope.y.negate(), 1).normalize() as unknown as Node<'vec3'>
     const toCamera = vec3(surface.cameraPlane.sub(drawnPlane), surface.cameraPlaneHeight.sub(waterLevel.add(waveHeightMeters))).normalize() as unknown as Node<'vec3'>
-    const { color, roughness, emissive, underside } = shade(waves, { depthMeters }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
+    const { color, roughness, emissive, underside } = shade(waves, { depthMeters, surfZone: surfShape.z as unknown as Node<'float'> }, { normal, toCamera, waveHeightMeters, significantWaveHeightMeters: this.significantWaveHeightMeters as unknown as Node<'float'> })
     // Both sides: a crest higher than the camera shows its underside, which would otherwise leave a hole to the sky's black.
     material.side = DoubleSide
     material.colorNode = select(frontFacing, color, vec3(0)) as unknown as Node<'vec3'>
