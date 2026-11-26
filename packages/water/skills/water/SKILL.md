@@ -159,12 +159,12 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   displacement there).
 - The mesh reads the ground under it from a map of the terrain drawn from above (a depth cache, as Crest's): whether
   the terrain is water at each point, the height it draws there, and its elevation. So it draws only over water, at the
-  water's own level: the height of its nearest shore (the lowest water drawn at or above sea level within four texels of it, so a beach whose triangles climb under the water mask does not lift the sea), found by a jump flood on the GPU. A lake below sea level (the Dead
+  water's own level: the height of its nearest shore (the lowest water drawn at or above sea level within about 60 texels of it, so a beach whose triangles climb under the water mask, or a coarse tile, does not lift the sea), found by a jump flood on the GPU. A lake below sea level (the Dead
   Sea), a sea on the geoid, a terrain that draws the seafloor under its water mask, polders and land below sea level all
   come out right, and the terrain's sea gives way under the mesh by the same map, with no gap. Where no shore is in
   reach (open sea, the middle of a large lake), the level is `seaLevelMeters`. The map covers the mesh (768 texels a
-  side, half floats, about 15 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
-  its outer cells) or tiles change (at most four times a second): a draw of the tiles with a trivial shader and fifteen
+  side, half floats, about 17 MB of GPU memory with its buffers) and is drawn again only when the mesh moves (every two of
+  its outer cells) or tiles change (at most four times a second): a draw of the tiles with a trivial shader and twenty-two
   compute dispatches.
 - The waves flatten over the last texels of the shore. With `depthFromElevation`, the wind's waves also calm where they
   would break in the shallows (taller than 0.78 of the depth, `WAVE_BREAKING_DEPTH_RATIO`) and the seafloor shows

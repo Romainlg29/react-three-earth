@@ -46,7 +46,7 @@ instead.
 - The library makes no network request of its own; every URL comes from the app.
 - Performance floor: 60 fps on a Pixel, constant 60 fps on an iPhone.
 - three is pinned to r187, 3d-tiles-renderer to 0.5.4 and @mapbox/tiny-sdf to 2.3.0: some code overrides their private APIs
-  (`composeRegionsOnGpu.ts`, `ImageOverlayPlugin.ts`, `MapStyleOverlay.setRegionVisible`; `Earth.hasListeners` reads three's `EventDispatcher._listeners`; `GlyphProvider.drawLocal` sets TinySDF's untyped `ctx.font` for clusters). Re-check those when bumping.
+  (`composeRegionsOnGpu.ts`, `ImageOverlayPlugin.ts`, `MapStyleOverlay.setRegionVisible`, `regionVisibility.ts`; `Earth.hasListeners` reads three's `EventDispatcher._listeners`; `GlyphProvider.drawLocal` sets TinySDF's untyped `ctx.font` for clusters). Re-check those when bumping.
 
 ## Releases
 

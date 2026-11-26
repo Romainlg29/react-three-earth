@@ -3,6 +3,7 @@ import type { Texture } from 'three'
 
 import { composeRegionsOnGpu, type GpuRegionComposition, type NormalizedRange, type TiledRegionImageSourceLike } from './composeRegionsOnGpu.js'
 import type { ImageryCompositor } from './ImageryCompositor.js'
+import { setRegionVisibleBalanced } from '../regionVisibility.js'
 
 /** An overlay that composes on the GPU when the plugin it is added to gives it a compositor. */
 export interface GpuComposedOverlay {
@@ -96,6 +97,11 @@ export class XYZImageryOverlay extends XYZTilesOverlay implements GpuComposedOve
   getTexture(range: NormalizedRange, level = upstream.calculateLevel.call(this, range)): Promise<Texture | null> | Texture | null {
     this.regionComposition?.prioritize([...range, level])
     return upstream.getTexture.call(this, range, level)
+  }
+
+  // Upstream throws when a tile is reported hidden without having been counted shown (`setRegionVisibleBalanced`).
+  setRegionVisible(range: number[], visible: boolean): void {
+    setRegionVisibleBalanced(this, range, visible)
   }
 }
 

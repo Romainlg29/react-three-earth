@@ -5,6 +5,7 @@ import type { MeshBasicNodeMaterial, NodeMaterial, WebGPURenderer } from 'three/
 
 import type { GeographicBounds } from '../core/camera.js'
 import type { ImageryCompositor } from '../tiles/imagery/ImageryCompositor.js'
+import { setRegionVisibleBalanced } from '../tiles/regionVisibility.js'
 import type { StyleLayerTypeDefinition, StyleLayerTypeRegistry } from '../plugins/styleLayerTypes.js'
 import type { SymbolEffectRegistry } from '../plugins/symbolEffects.js'
 import type { GpuComposedOverlay } from '../tiles/imagery/XYZImageryOverlay.js'
@@ -897,7 +898,7 @@ export class MapStyleOverlay extends XYZTilesOverlay implements GpuComposedOverl
   // 3DTilesRenderer tells which regions the visible terrain tiles show; a region stays locked (and loaded) while its
   // tile is only cached, so being loaded does not mean being drawn.
   setRegionVisible(range: number[], visible: boolean): void {
-    ;(XYZTilesOverlay.prototype as unknown as { setRegionVisible?: (range: number[], visible: boolean) => void }).setRegionVisible?.call(this, range, visible)
+    setRegionVisibleBalanced(this, range, visible)
     const key = range.join('_')
     const count = (this.visibleRegions.get(key)?.count ?? 0) + (visible ? 1 : -1)
     if (count <= 0) this.visibleRegions.delete(key)
