@@ -141,8 +141,12 @@ export class WaveSurface {
   protected timeSecondsValue = 0
   /** Texels a side of the GPU's simulation (`setLevel` changes it). */
   computeGridSize: number
-  /** Whether fragments draw the close-up ripples and break the foam into cells: read when a shader is built. */
-  detail: boolean
+  /** Whether fragments draw the close-up ripples and break the foam into cells (`setLevel` changes it, shaders and all). */
+  get detail(): boolean {
+    return this.detailWeight.value > 0.5
+  }
+  /** 1 while `detail` holds: the shaders branch on it, so turning it on or off needs no new ones. */
+  readonly detailWeight = uniform(1)
   /** The GPU simulation steps every this many updates. */
   framesPerSimulationStep: number
   protected framesSinceStep = 0
@@ -150,7 +154,7 @@ export class WaveSurface {
   constructor({ computeGridSize = WAVE_COMPUTE_GRID_SIZE, detail = true, framesPerSimulationStep = 1, ...options }: WaveSurfaceOptions = {}) {
     checkComputeGridSize(computeGridSize)
     this.computeGridSize = computeGridSize
-    this.detail = detail
+    this.detailWeight.value = detail ? 1 : 0
     checkFramesPerSimulationStep(framesPerSimulationStep)
     this.framesPerSimulationStep = framesPerSimulationStep
     this.fieldOptions = options
@@ -219,7 +223,7 @@ export class WaveSurface {
       if (this.computeField !== null) this.stopCompute()
     }
     this.framesPerSimulationStep = framesPerSimulationStep
-    this.detail = detail
+    this.detailWeight.value = detail ? 1 : 0
   }
 
   /** The GPU simulation while a WebGPU renderer runs `update`; null on the CPU path (WebGL2). */
@@ -422,10 +426,15 @@ export class WaveSurface {
    * density as given. Call it where every pixel runs (it takes the plane's derivatives).
    */
   patternFoam(plane: Node<'vec2'>, density: Node<'float'>): Node<'float'> {
-    if (!this.detail) return density
     const footprint = max(fwidth(plane.x), fwidth(plane.y)) as unknown as Node<'float'>
     const gradients: PlaneGradients = { x: dFdx(plane) as unknown as Node<'vec2'>, y: dFdy(plane) as unknown as Node<'vec2'> }
-    return this.foamPattern(plane, footprint, density, gradients)
+    return Fn(() => {
+      const foam = float(density).toVar()
+      If(this.detailWeight.greaterThan(0.5), () => {
+        foam.assign(this.foamPattern(plane, footprint, density, gradients))
+      })
+      return foam
+    })() as unknown as Node<'float'>
   }
 
   /**
@@ -469,16 +478,24 @@ export class WaveSurface {
     // Spume: in a strong gale the wind tears the breaking crests into spray, whitening the steep faces around them too.
     const spumeThreshold = float(1).add(spread.mul(this.whitecapScore.add(WAVE_SPUME_REACH)))
     const spume = float(1).sub(smoothstep(threshold, spumeThreshold.add(edge), jacobian)).mul(this.spume).mul(WAVE_SPUME_OPACITY)
-    const { slope: detailSlope, meanSquareSlope: detailMeanSquareSlope } = this.detail
-      ? this.sampleDetail(plane, footprint)
-      : { slope: vec2(0) as unknown as Node<'vec2'>, meanSquareSlope: float(0) as unknown as Node<'float'> }
+    // The close-up ripples and the foam's cells only with `detail`: skipped, not just weighted away, without it.
+    const detailSlope = vec2(0).toVar()
+    const detailMeanSquareSlope = float(0).toVar()
+    If(this.detailWeight.greaterThan(0.5), () => {
+      const ripples = this.sampleDetail(plane, footprint)
+      detailSlope.assign(ripples.slope)
+      detailMeanSquareSlope.assign(ripples.meanSquareSlope)
+    })
     // Crests breaking now, and the foam left where they broke, fading.
     const lingering = (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8))
     // The foam left behind is blown into streaks along the wind; fresh breakers stay whole.
     const density = max(max(breaking, spume), lingering.mul(this.foamStreaks(plane, footprint, gradients)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
-    const patterned = this.detail ? this.foamPattern(plane, footprint, density as Node<'float'>, gradients) : (density as Node<'float'>)
+    const patterned = float(density as Node<'float'>).toVar()
+    If(this.detailWeight.greaterThan(0.5), () => {
+      patterned.assign(this.foamPattern(plane, footprint, density as Node<'float'>, gradients))
+    })
     const foam = mix(this.whitecapCoverage, patterned, drawnShare)
     const totalSlope = (slope as Node<'vec2'>).add(detailSlope)
     return vec4(totalSlope, (resolved as Node<'float'>).add(detailMeanSquareSlope), foam) as unknown as Node<'vec4'>

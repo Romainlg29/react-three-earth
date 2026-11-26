@@ -82,7 +82,11 @@ describe('surf', () => {
     expect(ground?.surfZone).toBeDefined()
     const density = float(0.5) as unknown as Node<'float'>
     const plane = vec2(0, 0) as unknown as Node<'vec2'>
-    expect(new WaveSurface({ detail: false }).patternFoam(plane, density)).toBe(density)
-    expect(new WaveSurface({ detail: true }).patternFoam(plane, density)).not.toBe(density)
+    // Patterned or not by a uniform the shader branches on, so a quality change needs no new shader.
+    const surface = new WaveSurface({ detail: false })
+    expect(surface.patternFoam(plane, density)).not.toBe(density)
+    expect(surface.detailWeight.value).toBe(0)
+    surface.setLevel({ detail: true })
+    expect(surface.detailWeight.value).toBe(1)
   })
 })

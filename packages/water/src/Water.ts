@@ -9,7 +9,7 @@ import {
   type TerrainShadingDefinition,
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
-import { cameraViewMatrix, ceil, dot, exp, exp2, float, floor, fwidth, hash, log2, max, min, mix, normalize, pow, saturate, smoothstep, sqrt, step, uniform, vec3, vec4 } from 'three/tsl'
+import { cameraViewMatrix, ceil, dot, exp, exp2, float, floor, Fn, fwidth, hash, If, log2, max, min, mix, normalize, pow, saturate, smoothstep, sqrt, step, uniform, vec3, vec4 } from 'three/tsl'
 import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
@@ -282,7 +282,7 @@ export class Water implements EarthPlugin {
   protected qualityValue: WaterQuality
   /** `quality: 'auto'`: the first frame may still find a software renderer. */
   protected readonly autoQuality: boolean
-  protected readonly adaptiveQuality: boolean
+  protected adaptiveQuality: boolean
   /** Whether the quality level draws the wave mesh. */
   protected meshAllowed = true
   /** Seconds since the last change of quality, and the slow seconds counted since. */
@@ -318,15 +318,22 @@ export class Water implements EarthPlugin {
   }
 
   /**
-   * Draws at another quality level from now on: the simulation's size and pace and the mesh at once, the detail in
-   * shaders built from then on, the mesh's resolution never (it keeps the first level's).
+   * Draws at another quality level from now on, everything at once: the simulation's size and pace, the mesh and its
+   * resolution, the close-up detail. A level picked here stays: it turns `adaptiveQuality` off.
    */
   setQuality(quality: WaterQuality): void {
     if (!Object.hasOwn(WATER_QUALITY_LEVELS, quality)) throw new Error(`Water: quality must be 'high', 'low' or 'minimal', got ${String(quality)}.`)
+    this.adaptiveQuality = false
+    this.applyQuality(quality)
+  }
+
+  /** Switches to a quality level (for `setQuality` and `adaptiveQuality`). */
+  protected applyQuality(quality: WaterQuality): void {
     const level = WATER_QUALITY_LEVELS[quality]
     this.qualityValue = quality
     this.meshAllowed = level.mesh
     this.waveSurface.setLevel(level)
+    this.waveMesh?.setResolution(level.meshResolution)
     this.secondsSinceQualityChange = 0
     this.slowSeconds = 0
   }
@@ -339,7 +346,7 @@ export class Water implements EarthPlugin {
     if (!this.checkedRenderer && renderer !== undefined) {
       this.checkedRenderer = true
       if (this.autoQuality && this.qualityValue !== 'minimal' && isSoftwareRenderer(renderer)) {
-        this.setQuality('minimal')
+        this.applyQuality('minimal')
         console.info("Water: the renderer draws in software (no GPU), so the sea draws at quality 'minimal'. Pass quality: 'high' or 'low' to choose.")
         return
       }
@@ -367,7 +374,7 @@ export class Water implements EarthPlugin {
       return
     }
     const milliseconds = Math.round(this.averageFrameSeconds * 1000)
-    this.setQuality(lower)
+    this.applyQuality(lower)
     console.info(`Water: frames took ${milliseconds} ms, so the sea now draws at quality '${lower}'. Pass adaptiveQuality: false to keep the quality given.`)
   }
 
@@ -573,10 +580,22 @@ export class Water implements EarthPlugin {
     return (this.crestColor as unknown as Node<'vec3'>).mul(this.sunIlluminance as unknown as Node<'vec3'>).mul(daylight.mul(UNDERSIDE_BRIGHTNESS)) as unknown as Node<'vec3'>
   }
 
+  /** The light the mesh sends out: scattered through the crests, and with `detail`, the sun's glitter. */
+  protected emissiveLight(waves: WaveSurfaceNodes, view: WaveMeshView): Node<'vec3'> {
+    const scattered = this.scatteredSunlight(view, waves.foam)
+    return Fn(() => {
+      const light = vec3(scattered).toVar()
+      If(this.waveSurface.detailWeight.greaterThan(0.5), () => {
+        light.addAssign(this.sunGlitter(waves, view, waves.foam))
+      })
+      return light
+    })() as unknown as Node<'vec3'>
+  }
+
   /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain, and the light scattered through its crests. */
   protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
-      emissive: this.waveSurface.detail ? (this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>) : this.scatteredSunlight(view, waves.foam),
+      emissive: this.emissiveLight(waves, view),
       color: mix(this.surfZoneBody(this.waterBody(ground.depthMeters), ground.surfZone), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
       underside: this.undersideLight(),
