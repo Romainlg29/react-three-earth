@@ -1,9 +1,10 @@
-import { DataArrayTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
-import { cameraWorldMatrix, float, fwidth, int, max, mix, mx_fractal_noise_float, mx_noise_float, mx_worley_noise_float, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
+import { DataArrayTexture, type DataTexture, HalfFloatType, LinearFilter, Matrix4, RepeatWrapping, RGBAFormat, Vector2, Vector3, type Camera, type Object3D } from 'three'
+import { cameraWorldMatrix, float, fwidth, int, max, mix, positionView, smoothstep, sqrt, texture, uniform, vec2, vec3, vec4 } from 'three/tsl'
 import type { Node, TextureNode, UniformNode, WebGPURenderer } from 'three/webgpu'
 
 import { choppinessForWind, inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS } from './foam.js'
 import type { SeaStateOptions } from './spectrum.js'
+import { createFoamTexture, FOAM_TEXTURE_CELLS } from './foamTexture.js'
 import { WaveComputeField } from './WaveComputeField.js'
 import { WaveField, type WaveFieldOptions } from './WaveField.js'
 
@@ -96,6 +97,9 @@ export class WaveSurface {
   /** Samples the foam the crests left (on the GPU path; zeros before). */
   protected readonly foamSampler: TextureNode
   protected readonly emptyFold: DataArrayTexture
+  /** The foam's cells and streaks' noise, built once (`createFoamTexture`): one lookup instead of noise per pixel. */
+  protected readonly foamPatternTexture: DataTexture
+  protected readonly foamPatternSampler: TextureNode
   protected readonly east = uniform(new Vector3(1, 0, 0))
   protected readonly north = uniform(new Vector3(0, 1, 0))
   protected readonly cameraFromAnchor = uniform(new Vector3())
@@ -154,6 +158,8 @@ export class WaveSurface {
     this.surfaceSampler = texture(this.field.texture)
     // Until the GPU writes them, no fold: zeros, one texel per cascade.
     const layers = this.field.cascades.length
+    this.foamPatternTexture = createFoamTexture()
+    this.foamPatternSampler = texture(this.foamPatternTexture)
     this.emptyFold = new DataArrayTexture(new Uint16Array(4 * layers), 1, 1, layers)
     this.emptyFold.format = RGBAFormat
     this.emptyFold.type = HalfFloatType
@@ -403,10 +409,10 @@ export class WaveSurface {
     // Crests breaking now, and the foam left where they broke, fading.
     const lingering = (left as Node<'float'>).div(max(resolved as Node<'float'>, 1e-8))
     // The foam left behind is blown into streaks along the wind; fresh breakers stay whole.
-    const density = max(max(breaking, spume), lingering.mul(foamStreaks(plane, footprint, this.downwind as unknown as Node<'vec2'>, this.streakStretch)))
+    const density = max(max(breaking, spume), lingering.mul(this.foamStreaks(plane, footprint)))
     // Where the waves fade out, their foam gives way to the whitecap share spread evenly.
     const drawnShare = (resolved as Node<'float'>).div(max(total as Node<'float'>, 1e-8)).mul(this.foamFromWaves)
-    const patterned = this.detail ? foamPattern(plane, footprint, density as Node<'float'>) : (density as Node<'float'>)
+    const patterned = this.detail ? this.foamPattern(plane, footprint, density as Node<'float'>) : (density as Node<'float'>)
     const foam = mix(this.whitecapCoverage, patterned, drawnShare)
     return {
       plane,
@@ -498,6 +504,31 @@ export class WaveSurface {
     return direction.copy(this.anchorEast).multiplyScalar(x).addScaledVector(this.anchorNorth, y).addScaledVector(this.anchorUp, z)
   }
 
+  /**
+   * Bands of foam along the wind, 0 to about 2 (mean 1): the foam texture's noise stretched downwind by `streakStretch`,
+   * so lingering foam lies in streaks once the wind blows them out. 1 (no streaks) at a stretch of 1, and farther than a
+   * pixel per streak.
+   */
+  protected foamStreaks(plane: Node<'vec2'>, footprint: Node<'float'>): Node<'float'> {
+    const downwind = this.downwind as unknown as Node<'vec2'>
+    const along = plane.dot(downwind).div(this.streakStretch)
+    const across = plane.dot(vec2(downwind.y, downwind.x.negate()))
+    // The green channel's noise has two features a tile: a tile spans two streaks.
+    const bands = this.foamPatternSampler.sample(vec2(across, along).div(FOAM_STREAK_WIDTH_METERS * 2)).y.mul(2).sub(1)
+    const strength = smoothstep(1, 3, this.streakStretch).mul(float(1).sub(smoothstep(FOAM_STREAK_WIDTH_METERS * 0.25, FOAM_STREAK_WIDTH_METERS, footprint)))
+    return float(1).add(bands.mul(2.2).mul(strength)).max(0) as unknown as Node<'float'>
+  }
+
+  /**
+   * Foam of `density` (0 to 1) broken into bubbly cells, from the foam texture: fresh foam covers them all, thinning foam
+   * opens their middles into a web, then wisps. Farther than a pixel per cell, the density itself.
+   */
+  protected foamPattern(plane: Node<'vec2'>, footprint: Node<'float'>, density: Node<'float'>): Node<'float'> {
+    const pattern = this.foamPatternSampler.sample(plane.div(FOAM_TILE_METERS)).x
+    const patches = smoothstep(pattern.sub(0.1), pattern.add(0.1), density)
+    return mix(patches, density, smoothstep(FOAM_CELL_METERS * 0.5, FOAM_CELL_METERS * 2, footprint)) as unknown as Node<'float'>
+  }
+
   /** 1 while a cascade's texels are well sampled at `footprint` metres, falling to 0 before it spans two of them. */
   protected cascadeFade(index: number, footprint: Node<'float'>): Node<'float'> {
     const texelMeters = this.texelSizes[index]!
@@ -509,6 +540,7 @@ export class WaveSurface {
     this.stopCompute()
     this.field.dispose()
     this.emptyFold.dispose()
+    this.foamPatternTexture.dispose()
   }
 }
 
@@ -528,34 +560,10 @@ const FOAM_STREAK_WIDTH_METERS = 6
 const WAVE_SPUME_REACH = 1.2
 /** How white the spume is at its fullest. */
 const WAVE_SPUME_OPACITY = 0.7
-
-/**
- * Bands of foam along the wind, 0 to about 2 (mean 1): the noise stretched downwind by `stretch`, so lingering foam lies
- * in streaks once the wind blows them out. 1 (no streaks) at a stretch of 1, and farther than a pixel per streak.
- */
-function foamStreaks(plane: Node<'vec2'>, footprint: Node<'float'>, downwind: Node<'vec2'>, stretch: Node<'float'>): Node<'float'> {
-  const along = plane.dot(downwind).div(stretch)
-  const across = plane.dot(vec2(downwind.y, downwind.x.negate()))
-  const bands = mx_noise_float(vec2(across, along).div(FOAM_STREAK_WIDTH_METERS))
-  const strength = smoothstep(1, 3, stretch).mul(float(1).sub(smoothstep(FOAM_STREAK_WIDTH_METERS * 0.25, FOAM_STREAK_WIDTH_METERS, footprint)))
-  return float(1).add(bands.mul(1.8).mul(strength)).max(0) as unknown as Node<'float'>
-}
-
 /** The size of the foam's bubbly cells, metres. */
 const FOAM_CELL_METERS = 0.6
-
-/**
- * Foam of `density` (0 to 1) broken into bubbly cells: fresh foam covers them all, thinning foam opens their middles
- * into a web, then wisps. Farther than a pixel per cell, the density itself.
- */
-function foamPattern(plane: Node<'vec2'>, footprint: Node<'float'>, density: Node<'float'>): Node<'float'> {
-  const swirl = mx_fractal_noise_float(plane.div(FOAM_CELL_METERS * 6), 3)
-  // The cells, warped: bubbles clear their middles first, so thinning foam is a web between them, then wisps.
-  const cells = mx_worley_noise_float(plane.div(FOAM_CELL_METERS).add(swirl.mul(1.5)))
-  const pattern = float(1).sub(cells).mul(0.75).add(swirl.mul(0.2)).add(0.1)
-  const patches = smoothstep(pattern.sub(0.1), pattern.add(0.1), density)
-  return mix(patches, density, smoothstep(FOAM_CELL_METERS * 0.5, FOAM_CELL_METERS * 2, footprint)) as unknown as Node<'float'>
-}
+/** One tile of the foam texture, metres. */
+const FOAM_TILE_METERS = FOAM_CELL_METERS * FOAM_TEXTURE_CELLS
 
 function isWebGPUBackend(renderer: WebGPURenderer): boolean {
   return (renderer.backend as { isWebGPUBackend?: boolean } | undefined)?.isWebGPUBackend === true

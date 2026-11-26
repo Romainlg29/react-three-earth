@@ -23,6 +23,7 @@ export {
 export { WAVE_CASCADE_LENGTHS_METERS, WAVE_GRID_SIZE, WAVE_REPEAT_PERIOD_SECONDS, WaveField, type WaveCascade, type WaveFieldOptions } from './waves/WaveField.js'
 export { choppinessForWind, inverseStandardNormal, WAVE_BREAKING_SHARE, WAVE_CHOPPINESS, WAVE_FOAM_LIFETIME_SECONDS } from './waves/foam.js'
 export { createButterflies, foamKept, WaveComputeField } from './waves/WaveComputeField.js'
+export { createFoamTexture, FOAM_TEXTURE_CELLS, FOAM_TEXTURE_SIZE } from './waves/foamTexture.js'
 export { earthCenteredFromGeographic, WAVE_COMPUTE_GRID_SIZE, WAVE_DETAIL_SCALES, WAVE_FOAM_STREAK_STRETCH_PER_METER_PER_SECOND, type WaveSurfaceOptions, WAVE_MAXIMUM_CAMERA_HEIGHT_METERS, WaveSurface, type WaveSurfaceNodes } from './waves/WaveSurface.js'
 export {
   createRings,

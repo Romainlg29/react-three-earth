@@ -443,3 +443,35 @@ describe('WaveComputeField', () => {
     expect(inverseStandardNormal(0)).toBe(-8)
   })
 })
+
+describe('the foam texture', () => {
+  it('tiles seamlessly, holds the cells over their full range and a streak noise centred on a half', async () => {
+    const { createFoamTextureData } = await import('../src/waves/foamTexture.js')
+    const size = 64
+    const data = createFoamTextureData(size)
+    expect(createFoamTextureData(size)).toBe(data)
+    const at = (column: number, row: number, channel: number): number => data[(row * size + column) * 4 + channel]!
+    let red = [255, 0]
+    let green = 0
+    for (let row = 0; row < size; row++) {
+      for (let column = 0; column < size; column++) {
+        red = [Math.min(red[0]!, at(column, row, 0)), Math.max(red[1]!, at(column, row, 0))]
+        green += at(column, row, 1) / 255 / (size * size)
+      }
+    }
+    expect(red[0]).toBeLessThan(60)
+    expect(red[1]).toBeGreaterThan(200)
+    expect(green).toBeGreaterThan(0.4)
+    expect(green).toBeLessThan(0.6)
+    // Across the seam the texels change no more than between neighbours inside the tile.
+    for (const channel of [0, 1]) {
+      let inside = 0
+      let seam = 0
+      for (let row = 0; row < size; row++) {
+        inside = Math.max(inside, Math.abs(at(1, row, channel) - at(0, row, channel)))
+        seam = Math.max(seam, Math.abs(at(0, row, channel) - at(size - 1, row, channel)))
+      }
+      expect(seam).toBeLessThanOrEqual(inside * 1.5 + 8)
+    }
+  })
+})
