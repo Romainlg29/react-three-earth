@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { computeWaterOptics, inherentOpticalProperties, surfaceRoughness, whitecapCoverage } from '../src/optics.js'
 import { WATER_PRESETS } from '../src/presets.js'
-import { detectWaterQuality, resolveState, Water, WATER_QUALITY_LEVELS } from '../src/Water.js'
+import { detectWaterQuality, isSoftwareRenderer, resolveState, Water, WATER_QUALITY_LEVELS, WATER_SLOW_FRAME_SECONDS } from '../src/Water.js'
 
 const ocean = { chlorophyllMilligramsPerCubicMeter: 0.1, salinityPartsPerThousand: 35 }
 
@@ -165,8 +165,73 @@ describe('water quality', () => {
     expect(new Water().quality).toBe('low')
     vi.unstubAllGlobals()
     expect(detectWaterQuality()).toBe('high')
-    expect(() => new Water({ quality: 'medium' as never })).toThrow(/'auto', 'high' or 'low'/)
+    expect(() => new Water({ quality: 'medium' as never })).toThrow(/'auto', 'high', 'low' or 'minimal'/)
     low.dispose()
     high.dispose()
+  })
+})
+
+describe('adapting the quality', () => {
+  const fakeRenderer = (adapterInfo: object) => ({ backend: { device: { adapterInfo } } }) as never
+  const webglRenderer = (name: string) =>
+    ({ backend: { gl: { RENDERER: 1, getExtension: () => ({ UNMASKED_RENDERER_WEBGL: 2 }), getParameter: (parameter: number) => (parameter === 2 ? name : 'WebKit WebGL') } } }) as never
+
+  it('tells a software renderer from a GPU', () => {
+    expect(isSoftwareRenderer(fakeRenderer({ vendor: 'google', architecture: 'swiftshader' }))).toBe(true)
+    expect(isSoftwareRenderer(fakeRenderer({ isFallbackAdapter: true }))).toBe(true)
+    expect(isSoftwareRenderer(fakeRenderer({ vendor: 'nvidia', architecture: 'ampere' }))).toBe(false)
+    expect(isSoftwareRenderer(webglRenderer('ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader driver)'))).toBe(true)
+    expect(isSoftwareRenderer(webglRenderer('llvmpipe (LLVM 15.0.7, 256 bits)'))).toBe(true)
+    expect(isSoftwareRenderer(webglRenderer('ANGLE (Apple, ANGLE Metal Renderer: Apple M2, Unspecified Version)'))).toBe(false)
+    expect(isSoftwareRenderer({ backend: {} } as never)).toBe(false)
+  })
+
+  it('draws the minimal sea without its mesh, and changes level at run time', () => {
+    const water = new Water({ quality: 'high' })
+    water.setQuality('minimal')
+    expect(water.quality).toBe('minimal')
+    expect(water.waveSurface.computeGridSize).toBe(WATER_QUALITY_LEVELS.minimal.computeGridSize)
+    expect(water.waveSurface.framesPerSimulationStep).toBe(WATER_QUALITY_LEVELS.minimal.framesPerSimulationStep)
+    expect(water.waveSurface.detail).toBe(false)
+    expect(WATER_QUALITY_LEVELS.minimal.mesh).toBe(false)
+    // The mesh keeps the resolution it was built with.
+    expect(water.waveMesh.resolution).toBe(WATER_QUALITY_LEVELS.high.meshResolution)
+    expect(() => water.setQuality('ultra' as never)).toThrow(/'high', 'low' or 'minimal'/)
+    water.dispose()
+  })
+
+  it("lowers the quality a level at a time while frames stay slow, and picks 'minimal' on a software renderer for 'auto'", () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {})
+    const run = (water: Water, frameSeconds: number, seconds: number, renderer?: never) => {
+      for (let time = 0; time < seconds; time += frameSeconds) (water as unknown as { adaptQuality(delta: number, renderer?: never): void }).adaptQuality(frameSeconds, renderer)
+    }
+    const fast = new Water({ quality: 'high' })
+    run(fast, 1 / 60, 20)
+    expect(fast.quality).toBe('high')
+    const slow = new Water({ quality: 'high' })
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 3.5)
+    expect(slow.quality).toBe('high')
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 2.5)
+    expect(slow.quality).toBe('low')
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 6)
+    expect(slow.quality).toBe('minimal')
+    run(slow, WATER_SLOW_FRAME_SECONDS * 2, 10)
+    expect(slow.quality).toBe('minimal')
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('adaptiveQuality: false'))
+    // Pauses (a hidden tab) do not count, and the option turns it off.
+    const paused = new Water({ quality: 'high' })
+    run(paused, 2, 60)
+    expect(paused.quality).toBe('high')
+    const fixed = new Water({ quality: 'high', adaptiveQuality: false })
+    run(fixed, WATER_SLOW_FRAME_SECONDS * 2, 20)
+    expect(fixed.quality).toBe('high')
+    const auto = new Water()
+    run(auto, 1 / 60, 0.1, fakeRenderer({ vendor: 'google', architecture: 'swiftshader' }))
+    expect(auto.quality).toBe('minimal')
+    const chosen = new Water({ quality: 'high', adaptiveQuality: false })
+    run(chosen, 1 / 60, 0.1, fakeRenderer({ vendor: 'google', architecture: 'swiftshader' }))
+    expect(chosen.quality).toBe('high')
+    for (const water of [fast, slow, paused, fixed, auto, chosen]) water.dispose()
+    info.mockRestore()
   })
 })

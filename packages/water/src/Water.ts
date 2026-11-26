@@ -10,7 +10,7 @@ import {
 } from '@earthkit/globe'
 import { Color, Vector3, type ColorRepresentation } from 'three'
 import { cameraViewMatrix, ceil, dot, exp, exp2, float, floor, fwidth, hash, log2, max, min, mix, normalize, pow, saturate, smoothstep, sqrt, step, uniform, vec3, vec4 } from 'three/tsl'
-import type { Node } from 'three/webgpu'
+import type { Node, WebGPURenderer } from 'three/webgpu'
 
 import { computeWaterOptics, surfaceMeanSquareSlope, surfaceRoughness, whitecapCoverage } from './optics.js'
 import { significantWaveHeight, type SeaStateOptions } from './waves/spectrum.js'
@@ -89,24 +89,77 @@ export interface WaterOptions extends WaterSettings {
   /** Unique on an earth, as every plugin's, and the terrain shading's name. Default: `'water'`. */
   name?: string
   /**
-   * How much the sea costs, read once: `'high'` (the full simulation, mesh and shading), `'low'` for phones (see
-   * `WATER_QUALITY_LEVELS`), or `'auto'`, low on a touch screen (a coarse pointer), high otherwise. Default: `'auto'`.
+   * How much the sea costs, read once: `'high'` (the full simulation, mesh and shading), `'low'` for phones, `'minimal'`
+   * for devices without a GPU (see `WATER_QUALITY_LEVELS`), or `'auto'`: low on a touch screen (a coarse pointer), high
+   * otherwise, and minimal once the first frame shows a software renderer (`isSoftwareRenderer`). Default: `'auto'`.
    */
   quality?: WaterQuality | 'auto'
+  /**
+   * Lower the quality a level (high, low, then minimal) while frames take longer than `WATER_SLOW_FRAME_SECONDS` on
+   * average for `WATER_SLOW_SECONDS`, never raising it again; a console message says when. Default: true.
+   */
+  adaptiveQuality?: boolean
 }
 
-/** What the sea costs: `'high'` on desktops, `'low'` on phones. */
-export type WaterQuality = 'high' | 'low'
+/** What the sea costs: `'high'` on desktops, `'low'` on phones, `'minimal'` without a GPU. */
+export type WaterQuality = 'high' | 'low' | 'minimal'
+
+/** What a quality level draws: see `WATER_QUALITY_LEVELS`. */
+export interface WaterQualityLevel {
+  /** The GPU simulation's texels a side. */
+  computeGridSize: number
+  /** How often the simulation steps, in frames. */
+  framesPerSimulationStep: number
+  /** The wave mesh's cells per ring, read once (a later level keeps the first's). */
+  meshResolution: number
+  /** The close-up ripples, the sun's glitter and foam broken into cells, in shaders built from then on. */
+  detail: boolean
+  /** Draw the wave mesh near the camera (else the terrain's waves, normals only). */
+  mesh: boolean
+}
 
 /**
  * Per quality level: the GPU simulation's texels a side and how often it steps, the mesh's cells per ring, and whether
  * the fragments draw the close-up ripples, the sun's glitter and foam broken into cells.
  */
-export const WATER_QUALITY_LEVELS: Readonly<Record<WaterQuality, { computeGridSize: number; framesPerSimulationStep: number; meshResolution: number; detail: boolean }>> = {
-  high: { computeGridSize: 256, framesPerSimulationStep: 1, meshResolution: 48, detail: true },
+export const WATER_QUALITY_LEVELS: Readonly<Record<WaterQuality, Readonly<WaterQualityLevel>>> = {
+  high: { computeGridSize: 256, framesPerSimulationStep: 1, meshResolution: 48, detail: true, mesh: true },
   // About a quarter of the simulation's work, steps every other frame, under half the mesh's triangles, plain shading.
-  low: { computeGridSize: 128, framesPerSimulationStep: 2, meshResolution: 32, detail: false },
+  low: { computeGridSize: 128, framesPerSimulationStep: 2, meshResolution: 32, detail: false, mesh: true },
+  // A sixteenth of the simulation, every third frame, and no mesh: the terrain's sea tilted by the waves, foam and all.
+  minimal: { computeGridSize: 64, framesPerSimulationStep: 3, meshResolution: 32, detail: false, mesh: false },
 }
+
+/** The quality levels from the costliest down, as `adaptiveQuality` steps through them. */
+const QUALITY_ORDER: readonly WaterQuality[] = ['high', 'low', 'minimal']
+
+/** A frame slower than this on average, seconds, counts as slow for `adaptiveQuality`: under 30 frames a second. */
+export const WATER_SLOW_FRAME_SECONDS = 1 / 30
+/** How long frames must stay slow before `adaptiveQuality` lowers the quality, seconds. */
+export const WATER_SLOW_SECONDS = 2
+/** Frames after a start or a change of quality that `adaptiveQuality` does not judge: shaders compile, tiles load. */
+const ADAPTIVE_SETTLE_SECONDS = 3
+
+/**
+ * Whether the renderer draws in software, on the CPU (SwiftShader, llvmpipe, Microsoft's Basic Render Driver, a
+ * WebGPU fallback adapter): a device without a usable GPU, where only the `'minimal'` sea keeps a frame rate. False
+ * when it cannot tell.
+ */
+export function isSoftwareRenderer(renderer: WebGPURenderer): boolean {
+  const backend = renderer.backend as { device?: { adapterInfo?: { isFallbackAdapter?: boolean; vendor?: string; architecture?: string; description?: string } }; gl?: WebGL2RenderingContext } | undefined
+  const info = backend?.device?.adapterInfo
+  if (info !== undefined) {
+    if (info.isFallbackAdapter === true) return true
+    return SOFTWARE_RENDERER.test(`${info.vendor ?? ''} ${info.architecture ?? ''} ${info.description ?? ''}`)
+  }
+  const gl = backend?.gl
+  if (gl === undefined) return false
+  const extension = gl.getExtension('WEBGL_debug_renderer_info')
+  const name: unknown = gl.getParameter(extension === null ? gl.RENDERER : extension.UNMASKED_RENDERER_WEBGL)
+  return typeof name === 'string' && SOFTWARE_RENDERER.test(name)
+}
+
+const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|software|basic render/i
 
 /** `'low'` on a touch screen (a coarse pointer, as phones and tablets have), `'high'` otherwise or without a window. */
 export function detectWaterQuality(): WaterQuality {
@@ -204,22 +257,90 @@ export class Water implements EarthPlugin {
   readonly waveMesh: WaveMesh
   /** The waves, simulated on the GPU under WebGPU (with foam on the breaking crests), else on the CPU, and laid under the camera. */
   readonly waveSurface: WaveSurface
-  /** The quality level it draws at (`WaterOptions.quality`, `'auto'` resolved). */
-  readonly quality: WaterQuality
+  protected qualityValue: WaterQuality
+  /** `quality: 'auto'`: the first frame may still find a software renderer. */
+  protected readonly autoQuality: boolean
+  protected readonly adaptiveQuality: boolean
+  /** Whether the quality level draws the wave mesh. */
+  protected meshAllowed = true
+  /** Seconds since the last change of quality, and the slow seconds counted since. */
+  protected secondsSinceQualityChange = 0
+  protected slowSeconds = 0
+  protected averageFrameSeconds = 0
+  protected checkedRenderer = false
 
   protected readonly probes = new Set<WaveProbe>()
   protected readonly buoyancies = new Set<WaveBuoyancy>()
 
-  constructor({ name = 'water', quality = 'auto', ...settings }: WaterOptions = {}) {
+  constructor({ name = 'water', quality = 'auto', adaptiveQuality = true, ...settings }: WaterOptions = {}) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
-    if (quality !== 'auto' && !(quality in WATER_QUALITY_LEVELS)) throw new Error(`Water: quality must be 'auto', 'high' or 'low', got ${String(quality)}.`)
+    if (quality !== 'auto' && !Object.hasOwn(WATER_QUALITY_LEVELS, quality)) throw new Error(`Water: quality must be 'auto', 'high', 'low' or 'minimal', got ${String(quality)}.`)
     this.name = name
-    this.quality = quality === 'auto' ? detectWaterQuality() : quality
-    const level = WATER_QUALITY_LEVELS[this.quality]
+    this.autoQuality = quality === 'auto'
+    this.adaptiveQuality = adaptiveQuality
+    this.qualityValue = quality === 'auto' ? detectWaterQuality() : quality
+    const level = WATER_QUALITY_LEVELS[this.qualityValue]
+    this.meshAllowed = level.mesh
     this.waveSurface = new WaveSurface({ computeGridSize: level.computeGridSize, framesPerSimulationStep: level.framesPerSimulationStep, detail: level.detail })
     this.settingsValue = {}
     this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground, view) => this.meshShading(waves, ground, view), { resolution: level.meshResolution })
     this.setSettings(settings)
+  }
+
+  /**
+   * The quality level it draws at: `WaterOptions.quality` with `'auto'` resolved, lowered by `adaptiveQuality` while
+   * frames run slow.
+   */
+  get quality(): WaterQuality {
+    return this.qualityValue
+  }
+
+  /**
+   * Draws at another quality level from now on: the simulation's size and pace and the mesh at once, the detail in
+   * shaders built from then on, the mesh's resolution never (it keeps the first level's).
+   */
+  setQuality(quality: WaterQuality): void {
+    if (!Object.hasOwn(WATER_QUALITY_LEVELS, quality)) throw new Error(`Water: quality must be 'high', 'low' or 'minimal', got ${String(quality)}.`)
+    const level = WATER_QUALITY_LEVELS[quality]
+    this.qualityValue = quality
+    this.meshAllowed = level.mesh
+    this.waveSurface.setLevel(level)
+    this.secondsSinceQualityChange = 0
+    this.slowSeconds = 0
+  }
+
+  /**
+   * Watches the frame time for `adaptiveQuality`, and on the first frame looks for a software renderer for `'auto'`:
+   * lowers the quality a level when frames stay slow, saying so on the console.
+   */
+  protected adaptQuality(deltaSeconds: number, renderer: WebGPURenderer | undefined): void {
+    if (!this.checkedRenderer && renderer !== undefined) {
+      this.checkedRenderer = true
+      if (this.autoQuality && this.qualityValue !== 'minimal' && isSoftwareRenderer(renderer)) {
+        this.setQuality('minimal')
+        console.info("Water: the renderer draws in software (no GPU), so the sea draws at quality 'minimal'. Pass quality: 'high' or 'low' to choose.")
+        return
+      }
+    }
+    // A frame after a pause (a hidden tab, a demand frame loop) says nothing about the frame rate.
+    if (!this.adaptiveQuality || !(deltaSeconds > 0) || deltaSeconds > 0.5) return
+    this.secondsSinceQualityChange += deltaSeconds
+    if (this.secondsSinceQualityChange < ADAPTIVE_SETTLE_SECONDS) {
+      this.averageFrameSeconds = deltaSeconds
+      return
+    }
+    // About half a second's memory.
+    this.averageFrameSeconds += (deltaSeconds - this.averageFrameSeconds) * Math.min(1, deltaSeconds / 0.5)
+    this.slowSeconds = this.averageFrameSeconds > WATER_SLOW_FRAME_SECONDS ? this.slowSeconds + deltaSeconds : 0
+    if (this.slowSeconds < WATER_SLOW_SECONDS) return
+    const lower = QUALITY_ORDER[QUALITY_ORDER.indexOf(this.qualityValue) + 1]
+    if (lower === undefined) {
+      this.slowSeconds = 0
+      return
+    }
+    const milliseconds = Math.round(this.averageFrameSeconds * 1000)
+    this.setQuality(lower)
+    console.info(`Water: frames took ${milliseconds} ms, so the sea now draws at quality '${lower}'. Pass adaptiveQuality: false to keep the quality given.`)
   }
 
   /** The settings as given (what the preset does not set), as passed to the constructor or `setSettings`. */
@@ -281,11 +402,12 @@ export class Water implements EarthPlugin {
     context.addObject(this.waveMesh.mesh)
     // Animates only while waves can show: not on the flat map, not from high above (the frames stop there too).
     context.onUpdate(({ deltaSeconds, camera, morph, renderer }) => {
+      this.adaptQuality(deltaSeconds, renderer)
       this.followSun(earth)
       const animating = this.stateValue.waves && morph < 1 && this.waveSurface.update(deltaSeconds, camera, earth, renderer)
       this.glitterTime.value = this.waveSurface.timeSeconds % GLITTER_PERIOD_SECONDS
       // The mesh only on the globe: on the way to the flat map the terrain bends away from its plane.
-      this.waveMesh.update(animating && this.stateValue.waveMesh && morph === 0, { renderer, terrain: earth.terrain, earth })
+      this.waveMesh.update(animating && this.stateValue.waveMesh && this.meshAllowed && morph === 0, { renderer, terrain: earth.terrain, earth })
       for (const probe of this.probes) probe.update(renderer)
       for (const buoyancy of this.buoyancies) buoyancy.update(deltaSeconds)
       return animating

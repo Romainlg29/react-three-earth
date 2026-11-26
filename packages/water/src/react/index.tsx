@@ -12,7 +12,7 @@ export interface WaterProps extends WaterOptions {
 
 /**
  * A physically based sea on the terrain, inside `<Earth>`: installs a `Water` plugin while mounted and applies its props
- * as they change (uniforms only, no reload). `name` and `quality` are read once.
+ * as they change (uniforms only, no reload). `name`, `quality` and `adaptiveQuality` are read once.
  *
  * ```tsx
  * <Earth>
@@ -22,8 +22,8 @@ export interface WaterProps extends WaterOptions {
  * </Earth>
  * ```
  */
-export function Water({ ref, name, quality, ...settings }: WaterProps) {
-  const [water] = useState(() => new WaterImpl({ name, quality, ...settings }))
+export function Water({ ref, name, quality, adaptiveQuality, ...settings }: WaterProps) {
+  const [water] = useState(() => new WaterImpl({ name, quality, adaptiveQuality, ...settings }))
   usePlugin(water)
   const key = JSON.stringify(settings)
   useLayoutEffect(() => {
