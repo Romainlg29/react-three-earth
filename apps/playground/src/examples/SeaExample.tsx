@@ -1,7 +1,7 @@
 import type { Earth as EarthImpl } from '@earthkit/globe'
 import { Imagery, MapStyleSource, QuantizedMeshSource, RasterDemSource, useEarth } from '@earthkit/globe/react'
-import { WATER_PRESETS, type Water as WaterImpl, type WaterPreset, type WaveProbePoint } from '@earthkit/water'
-import { useWaveProbe, Water } from '@earthkit/water/react'
+import { resolveWaterState, WATER_PRESETS, type Water as WaterImpl, type WaterPreset, type WaterSettings } from '@earthkit/water'
+import { useWaveBuoyancy, Water } from '@earthkit/water/react'
 import { useFrame } from '@react-three/fiber'
 import { useLayoutEffect, useMemo, useState } from 'react'
 import { BoxGeometry, CylinderGeometry, Group, Mesh } from 'three'
@@ -35,13 +35,9 @@ const COASTS = placesFor<Coast>(
 
 const PRESETS = Object.keys(WATER_PRESETS) as WaterPreset[]
 
-/** Where the hull is probed, metres in the boat's frame (x starboard, y forward): its bow and the two sides of its stern. */
-const HULL_POINTS = [
-  [0, 5],
-  [-2, -4],
-  [2, -4],
-] as const
-const METERS_PER_DEGREE = 111_320
+/** The hull's size, metres: the corners its buoyancy samples. */
+const HULL_LENGTH_METERS = 11
+const HULL_BEAM_METERS = 3.6
 
 interface BoatProps {
   water: WaterImpl | null
@@ -52,22 +48,13 @@ interface BoatProps {
 }
 
 /**
- * A small boat riding the waves: a probe reads the sea's height under its bow and both sides of its stern, and the
- * plane through the three gives its height, pitch and roll.
+ * A small boat riding the waves: a `WaveBuoyancy` samples the sea at its hull's four corners and gives its height, pitch
+ * and roll, followed with a little lag as a real hull's inertia would.
  */
 function Boat({ water, longitudeDegrees, latitudeDegrees, headingDegrees }: BoatProps) {
   const earth = useEarth()
   const [boat, setBoat] = useState<ReturnType<typeof createBoat> | null>(null)
-  const points = useMemo<WaveProbePoint[]>(() => {
-    const heading = (headingDegrees * Math.PI) / 180
-    const metersPerDegreeEast = METERS_PER_DEGREE * Math.cos((latitudeDegrees * Math.PI) / 180)
-    return HULL_POINTS.map(([starboard, forward]) => {
-      const east = forward * Math.sin(heading) + starboard * Math.cos(heading)
-      const north = forward * Math.cos(heading) - starboard * Math.sin(heading)
-      return { longitudeDegrees: longitudeDegrees + east / metersPerDegreeEast, latitudeDegrees: latitudeDegrees + north / METERS_PER_DEGREE }
-    })
-  }, [longitudeDegrees, latitudeDegrees, headingDegrees])
-  const probe = useWaveProbe(water, points)
+  const buoyancy = useWaveBuoyancy(water, { longitudeDegrees, latitudeDegrees, headingDegrees, lengthMeters: HULL_LENGTH_METERS, beamMeters: HULL_BEAM_METERS }, { draftMeters: 0.4 })
 
   // Made in the effect, not in state: a disposed anchor is no longer placed, and StrictMode runs effects twice.
   useLayoutEffect(() => {
@@ -82,14 +69,11 @@ function Boat({ water, longitudeDegrees, latitudeDegrees, headingDegrees }: Boat
   }, [earth, longitudeDegrees, latitudeDegrees])
 
   useFrame(() => {
-    const [bow, port, starboard] = probe?.samples ?? []
-    if (boat === null || bow === undefined || port === undefined || starboard === undefined || !bow.ready) return
-    // The plane z = height + roll x + pitch y through the three samples.
-    const roll = (starboard.heightMeters - port.heightMeters) / 4
-    const pitch = (bow.heightMeters - (port.heightMeters + starboard.heightMeters) / 2) / 9
-    const height = bow.heightMeters - 5 * pitch
-    boat.anchor.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters: height }, headingDegrees)
-    boat.hull.rotation.set(Math.atan(pitch), -Math.atan(roll), 0)
+    const state = buoyancy?.state
+    if (boat === null || state === undefined || !state.ready) return
+    boat.anchor.setPosition({ longitudeDegrees, latitudeDegrees, heightMeters: state.heightMeters }, headingDegrees)
+    // The hull's frame: x starboard, y forward, z up. Bow up turns about x, starboard up about y (the other way).
+    boat.hull.rotation.set(state.pitchRadians, -state.rollRadians, 0)
   })
   return null
 }
@@ -189,7 +173,7 @@ export function SeaExample() {
               Seafloor in shallow water
             </button>
           </div>
-          {water !== null ? <SeaState water={water} /> : null}
+          <SeaState preset={preset} windSpeedMetersPerSecond={wind ?? undefined} windDirectionDegrees={windDirection} />
         </>
       }
     >
@@ -210,9 +194,12 @@ export function SeaExample() {
   )
 }
 
-/** What the settings resolve to: read from `water.state` on every render of the panel. */
-function SeaState({ water }: { water: WaterImpl }) {
-  const { significantWaveHeightMeters, whitecapCoverage, waves } = water.state
+/**
+ * What the settings resolve to, from the same settings as the `<Water>`: `water.state` would lag a render behind, as the
+ * plugin takes new props in its layout effect, after the panel has rendered.
+ */
+function SeaState(settings: WaterSettings) {
+  const { significantWaveHeightMeters, whitecapCoverage, waves } = resolveWaterState(settings)
   return (
     <p className="example-status">
       {waves ? `Waves of ${significantWaveHeightMeters.toFixed(1)} m (significant height)` : 'No waves'}, {(whitecapCoverage * 100).toFixed(1)} % whitecaps.
