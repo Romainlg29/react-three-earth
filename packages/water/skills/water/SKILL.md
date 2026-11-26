@@ -163,7 +163,9 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   drawn height of the water under a quantized mesh's mask, so a lake below sea level (the Dead Sea) or a sea on the geoid
   comes out right. Only flat water counts: near a coast, where a coarse tile's triangles climb into the land under the
   mask, the water (and the land beside it) takes the level of the nearest flat water within about 60 texels, so the sea
-  never rises into a plateau. The terrain's sea gives way under the mesh by the same map, with no gap; its land always
+  never rises into a plateau; a river too narrow to have flat water keeps its own level. The level follows the terrain's
+  `exaggeration`. A quantized mesh that draws its seafloor under the water mask (bathymetry) puts the mesh on that
+  seafloor: use a `RasterDemSource` for such data, or a quantized mesh whose water lies at its surface. The terrain's sea gives way under the mesh by the same map, with no gap; its land always
   stays. The map covers the mesh (768 texels a side, half floats, about 17 MB of GPU memory with its buffers) and is drawn
   again only when the mesh moves (every two of its outer cells) or tiles change (at most once a second,
   `WAVE_DEPTH_CACHE_REFRESH_SECONDS`): a draw of the tiles with a trivial shader and twenty-two compute dispatches.

@@ -77,7 +77,9 @@ export const terrainWaterMask: Node<'float'> = select(
  * water: the source's `seaLevelMeters` for water from elevation (`RasterDemSource`, whose seafloor lies below it, drawn
  * or flattened), the terrain's own height where a tile's mask says water (quantized mesh, which draws its sea and lakes
  * at their surface). On land, the terrain's height. For anything drawn on the water (a sea mesh), rather than the
- * terrain's drawn height, which is the seafloor's where the source draws it.
+ * terrain's drawn height, which is the seafloor's where the source draws it. As loaded: multiply by the terrain's
+ * `exaggeration` for the height it is drawn at. Under a mask the level is the mesh's own height, so a quantized mesh that
+ * draws its seafloor under the mask (bathymetry) gives the seafloor here, not the sea.
  */
 export const terrainWaterLevelMeters: Node<'float'> = select(modeUniform.equal(WaterMaskMode.Elevation), seaLevelUniform, terrainElevationMeters) as unknown as Node<'float'>
 

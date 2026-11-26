@@ -83,6 +83,8 @@ export class WaveDepthCache {
   protected readonly camera = new OrthographicCamera()
   protected readonly material = new MeshBasicNodeMaterial()
   protected readonly seaLevel = uniform(0)
+  /** The terrain's exaggeration: the terrain draws its water's level scaled by it, so the mesh's level is too. */
+  protected readonly exaggeration = uniform(1)
   protected readonly sampler
   protected readonly shoreSampler
   protected readonly seeds: StorageBufferNode<'uint'>[]
@@ -119,7 +121,7 @@ export class WaveDepthCache {
     this.camera.matrixWorldAutoUpdate = false
     this.material.name = 'WaveDepthCache'
     this.material.blending = NoBlending
-    this.material.outputNode = vec4(terrainWaterMask, terrainWaterLevelMeters.sub(this.seaLevel), terrainElevationMeters.sub(this.seaLevel), 1)
+    this.material.outputNode = vec4(terrainWaterMask, terrainWaterLevelMeters.mul(this.exaggeration).sub(this.seaLevel), terrainElevationMeters.sub(this.seaLevel), 1)
     this.sampler = texture(this.ground)
     this.shoreSampler = texture(this.shore)
     this.seeds = [instancedArray(size * size, 'uint'), instancedArray(size * size, 'uint')]
@@ -284,11 +286,19 @@ export class WaveDepthCache {
         distance.assign(select(water, reach, reach.negate()))
       })
       const shoreWeight = select(found, float(1), float(0))
-      // The nearest flat water's level; water with none in reach keeps its own, land with none lies at sea level.
+      // The nearest flat water's level. Water with none in reach (a river a texel or two wide) keeps its own; land with
+      // none takes its nearest water's, so the mesh's edge stays at that water's level rather than sinking to sea level.
       const spread = levels.element(index)
       const levelKnown = spread.lessThan(NO_LEVEL / 2)
-      const level = select(levelKnown, spread, here.y)
-      const levelWeight = select(drawn.and(levelKnown.or(isWater(here))), float(1), float(0))
+      const seedLevel = float(0).toVar()
+      If(found, () => {
+        const seedIndex = shoreSeed.div(65536).mul(uint(size)).add(shoreSeed.mod(65536))
+        const seedSpread = levels.element(seedIndex)
+        seedLevel.assign(select(seedSpread.lessThan(NO_LEVEL / 2), seedSpread, read(int(shoreSeed.mod(65536)), int(shoreSeed.div(65536))).y))
+      })
+      const water = isWater(here)
+      const level = select(levelKnown, spread, select(water, here.y, seedLevel))
+      const levelWeight = select(drawn.and(levelKnown.or(water).or(found)), float(1), float(0))
       const value = vec4(
         // Where no tile was drawn the cache knows nothing: not water to the masks, so the terrain draws its own sea there.
         select(drawn, here.x, float(0)),
@@ -341,6 +351,7 @@ export class WaveDepthCache {
     }
     this.laidTilesVersion = terrain.visibleTilesVersion
     this.seaLevel.value = surface.seaLevelMeters
+    this.exaggeration.value = terrain.exaggeration
     const { camera } = this
     camera.left = -halfSizeMeters
     camera.right = halfSizeMeters
