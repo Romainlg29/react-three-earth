@@ -220,7 +220,7 @@ const FOAM_ALBEDO = 0.4
 /** Light crossing the surface twice, down to the seafloor and back up, keeps about half. */
 const SURFACE_TRANSMITTANCE = 0.5
 /** How much of the surf zone's colour is the sand its breaking waves stir up. */
-const SURF_ZONE_TURBIDITY = 0.45
+const SURF_ZONE_TURBIDITY = 0.3
 /** Suspended sand against the seafloor's albedo (which `SURFACE_TRANSMITTANCE` halved): brighter, nearer the surface. */
 const SURF_ZONE_SEDIMENT_BRIGHTNESS = 1.4
 
