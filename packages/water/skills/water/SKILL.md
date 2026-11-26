@@ -164,6 +164,21 @@ terrain's sea takes over, seamlessly, Earth's curvature included. It costs one d
   falls back to sea level.
 - The mesh shows no imagery (`imageryOpacity`): with it, the colour steps at the mesh's edge.
 
+### Quality on phones
+
+`quality` (read once, like `name`) sets what the sea costs. `'auto'` (the default) picks `'low'` on a touch screen (a
+coarse pointer) and `'high'` otherwise; `water.quality` says which it chose. Low simulates 128 texels a side instead of
+256, stepping every other frame, lays 32 cells a ring instead of 48 (about 66 000 triangles instead of 146 000, same
+reach) and leaves out the close-up ripples, the glitter and the foam's cells (`WATER_QUALITY_LEVELS`).
+
+```tsx
+import { Water } from '@earthkit/water/react'
+
+export function PhoneSea() {
+  return <Water preset="open-ocean" quality="low" />
+}
+```
+
 ### Seed and wave time
 
 `waveSeed` (an integer, default 1) seeds the waves' random phases. The same seed, sea state and wave time draw the same

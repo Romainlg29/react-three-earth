@@ -143,8 +143,8 @@ export class WaveMesh {
     this.mesh.visible = shown
     this.active.value = shown ? 1 : 0
     if (!shown) return
-    // Finer near the sea (about a 96th of the height), a power of two so the rings keep their places between changes.
-    this.cellSize.value = 2 ** Math.min(0, Math.max(Math.log2(WAVE_MESH_MINIMUM_CELL_METERS), Math.floor(Math.log2(height / 96))))
+    // Finer near the sea (the innermost ring reaches about half the height), a power of two so the rings keep their places.
+    this.cellSize.value = 2 ** Math.min(0, Math.max(Math.log2(WAVE_MESH_MINIMUM_CELL_METERS), Math.floor(Math.log2(height / (2 * this.resolution)))))
     lookAhead(surface.cameraPlane.value, surface.cameraForward, height, this.centre.value)
     if (source !== undefined) {
       // Over the outer ring, which snaps to twice its cells.

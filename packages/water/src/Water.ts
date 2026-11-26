@@ -80,6 +80,30 @@ export interface WaterSettings {
 export interface WaterOptions extends WaterSettings {
   /** Unique on an earth, as every plugin's, and the terrain shading's name. Default: `'water'`. */
   name?: string
+  /**
+   * How much the sea costs, read once: `'high'` (the full simulation, mesh and shading), `'low'` for phones (see
+   * `WATER_QUALITY_LEVELS`), or `'auto'`, low on a touch screen (a coarse pointer), high otherwise. Default: `'auto'`.
+   */
+  quality?: WaterQuality | 'auto'
+}
+
+/** What the sea costs: `'high'` on desktops, `'low'` on phones. */
+export type WaterQuality = 'high' | 'low'
+
+/**
+ * Per quality level: the GPU simulation's texels a side and how often it steps, the mesh's cells per ring, and whether
+ * the fragments draw the close-up ripples, the sun's glitter and foam broken into cells.
+ */
+export const WATER_QUALITY_LEVELS: Readonly<Record<WaterQuality, { computeGridSize: number; framesPerSimulationStep: number; meshResolution: number; detail: boolean }>> = {
+  high: { computeGridSize: 256, framesPerSimulationStep: 1, meshResolution: 48, detail: true },
+  // About a quarter of the simulation's work, steps every other frame, under half the mesh's triangles, plain shading.
+  low: { computeGridSize: 128, framesPerSimulationStep: 2, meshResolution: 32, detail: false },
+}
+
+/** `'low'` on a touch screen (a coarse pointer, as phones and tablets have), `'high'` otherwise or without a window. */
+export function detectWaterQuality(): WaterQuality {
+  const query = (globalThis as { matchMedia?: (query: string) => { matches: boolean } }).matchMedia
+  return typeof query === 'function' && query('(pointer: coarse)').matches ? 'low' : 'high'
 }
 
 /** The settings resolved over the preset, as `water.inspect()` reports them. */
@@ -167,15 +191,21 @@ export class Water implements EarthPlugin {
   /** The sea near the camera as geometry moved by the waves (GPU path only). */
   readonly waveMesh: WaveMesh
   /** The waves, simulated on the GPU under WebGPU (with foam on the breaking crests), else on the CPU, and laid under the camera. */
-  readonly waveSurface = new WaveSurface()
+  readonly waveSurface: WaveSurface
+  /** The quality level it draws at (`WaterOptions.quality`, `'auto'` resolved). */
+  readonly quality: WaterQuality
 
   protected readonly probes = new Set<WaveProbe>()
 
-  constructor({ name = 'water', ...settings }: WaterOptions = {}) {
+  constructor({ name = 'water', quality = 'auto', ...settings }: WaterOptions = {}) {
     if (typeof name !== 'string' || name.length === 0) throw new Error('Water: give it a non-empty `name`, or leave it out for "water".')
+    if (quality !== 'auto' && !(quality in WATER_QUALITY_LEVELS)) throw new Error(`Water: quality must be 'auto', 'high' or 'low', got ${String(quality)}.`)
     this.name = name
+    this.quality = quality === 'auto' ? detectWaterQuality() : quality
+    const level = WATER_QUALITY_LEVELS[this.quality]
+    this.waveSurface = new WaveSurface({ computeGridSize: level.computeGridSize, framesPerSimulationStep: level.framesPerSimulationStep, detail: level.detail })
     this.settingsValue = {}
-    this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground, view) => this.meshShading(waves, ground, view))
+    this.waveMesh = new WaveMesh(this.waveSurface, (waves, ground, view) => this.meshShading(waves, ground, view), { resolution: level.meshResolution })
     this.setSettings(settings)
   }
 
@@ -358,7 +388,7 @@ export class Water implements EarthPlugin {
   /** The sea on the wave mesh: the water's colour, seafloor and the wind's roughness, as on the terrain, and the light scattered through its crests. */
   protected meshShading(waves: WaveSurfaceNodes, ground: WaveMeshGround, view: WaveMeshView): WaveMeshShading {
     return {
-      emissive: this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>,
+      emissive: this.waveSurface.detail ? (this.scatteredSunlight(view, waves.foam).add(this.sunGlitter(waves, view, waves.foam)) as unknown as Node<'vec3'>) : this.scatteredSunlight(view, waves.foam),
       color: mix(this.waterBody(ground.depthMeters), vec3(FOAM_ALBEDO), waves.foam) as unknown as Node<'vec3'>,
       roughness: this.waterRoughness(waves.resolvedMeanSquareSlope, waves.foam),
     }
